@@ -240,18 +240,22 @@ describe("startDailyExpeditionLoop", () => {
   it("fallback timer fires tick after fallbackIntervalMs", async () => {
     // We deliberately do NOT use vi.useFakeTimers here — the tick reads from
     // ExpeditionStore (fake-indexeddb), whose internal queue depends on real
-    // microtask scheduling. Instead, use a very short interval (5 ms) and
-    // wait via real timers.
-    const h = makeDeps({ fallbackIntervalMs: 5 });
+    // microtask scheduling. Use a real interval but **poll for the assertion
+    // condition** rather than asserting after a fixed sleep — that pattern is
+    // robust under vitest's parallel worker pool (where a fixed sleep can be
+    // starved if other workers monopolize CPU).
+    const h = makeDeps({ fallbackIntervalMs: 30 });
     handle = startDailyExpeditionLoop(h.deps);
 
     // Before the first interval fires: no calls.
     expect(h.send).not.toHaveBeenCalled();
 
-    // Wait long enough for the interval to fire and the async tick chain
-    // (recent → fillSlots → send) to settle.
-    await new Promise((r) => setTimeout(r, 60));
-
+    // Poll up to 2s for >=2 send invocations (interval=30ms ⇒ expected ~60ms,
+    // 2s budget gives 30x margin even under heavy parallel load).
+    const deadline = Date.now() + 2000;
+    while (h.send.mock.calls.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
     expect(h.send.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });
