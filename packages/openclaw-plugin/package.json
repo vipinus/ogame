@@ -1,0 +1,29 @@
+{
+  "name": "@ogamex/openclaw-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root .",
+    "plugin:build": "openclaw plugins build --entry ./dist/index.js",
+    "plugin:validate": "openclaw plugins validate ."
+  },
+  "dependencies": {
+    "@ogamex/shared": "workspace:*",
+    "@sinclair/typebox": "^0.34.0",
+    "better-sqlite3": "^11.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "@types/better-sqlite3": "^7.6.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": { "optional": false }
+  }
+}

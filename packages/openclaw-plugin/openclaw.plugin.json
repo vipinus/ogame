@@ -1,0 +1,9 @@
+{
+  "id": "ogamex",
+  "name": "OgameX",
+  "description": "Ogame automation",
+  "activation": { "onStartup": true },
+  "enabledByDefault": true,
+  "startup": { "sidecar": true },
+  "configSchema": { "type": "object" }
+}
