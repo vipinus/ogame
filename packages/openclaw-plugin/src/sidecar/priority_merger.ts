@@ -1,0 +1,95 @@
+/**
+ * M5.4 PriorityMerger — pulls active Goals from the store, plans each via the
+ * injected planner, merges results by priority, and dispatches resulting
+ * Directives downstream via the injected send (typically WsServer.send or
+ * HttpServer.queueDownstream).
+ *
+ * Sorting: priority DESC (higher first), then created_at ASC (older first) as
+ * stable tiebreak. Already-blocked rows are still re-planned because state may
+ * have changed since they last failed.
+ *
+ * Planner result handling:
+ *   - Directive               → mark row "active",   send directive.dispatch.
+ *   - { blocked: "..." }      → mark row "blocked",  persist reason, count.
+ *   - { blocked: /already at or above/ } → mark row "completed" (terminal).
+ *
+ * Note: daily-task directives and pending user directives are not yet sourced
+ * from the plugin side (M5.x). This merger currently handles goal-derived
+ * directives only; the higher-level merge slot is reserved for later wiring.
+ */
+import type { Directive, DownstreamMsg, Goal, WorldState } from "@ogamex/shared";
+import type { GoalsStore, GoalRow } from "./goals_store.js";
+
+export interface PriorityMergerDeps {
+  store: GoalsStore;
+  planGoal: (goal: Goal, state: WorldState) => Directive | { blocked: string };
+  /** Send a DownstreamMsg via the bridge (WsServer.send or HttpServer.queueDownstream). */
+  send: (msg: DownstreamMsg) => void;
+}
+
+export interface DispatchResult {
+  dispatched: Directive[];
+  blocked: { goal_id: string; reason: string }[];
+  skipped_terminal: number;
+}
+
+const ALREADY_AT_TARGET_RE = /already at or above/i;
+
+function isBlocked(r: Directive | { blocked: string }): r is { blocked: string } {
+  return typeof (r as { blocked?: unknown }).blocked === "string";
+}
+
+/**
+ * Stable comparator: priority DESC, then created_at ASC (older goal first).
+ * Array#sort in V8 is stable since Node 12, but we use the explicit tiebreak
+ * regardless so behavior does not depend on insertion order from SQLite.
+ */
+function compareRows(a: GoalRow, b: GoalRow): number {
+  const dp = b.goal.priority - a.goal.priority;
+  if (dp !== 0) return dp;
+  return a.created_at - b.created_at;
+}
+
+export class PriorityMerger {
+  private readonly store: GoalsStore;
+  private readonly planGoal: (goal: Goal, state: WorldState) => Directive | { blocked: string };
+  private readonly send: (msg: DownstreamMsg) => void;
+
+  constructor(deps: PriorityMergerDeps) {
+    this.store = deps.store;
+    this.planGoal = deps.planGoal;
+    this.send = deps.send;
+  }
+
+  /**
+   * Plan & dispatch all non-terminal goals. Status transitions are written
+   * back to the store before this method returns; callers may observe them
+   * synchronously after dispatch resolves.
+   */
+  dispatch(state: WorldState): DispatchResult {
+    const rows = [...this.store.listActive()].sort(compareRows);
+
+    const dispatched: Directive[] = [];
+    const blocked: { goal_id: string; reason: string }[] = [];
+    let skipped_terminal = 0;
+
+    for (const row of rows) {
+      const result = this.planGoal(row.goal, state);
+      if (isBlocked(result)) {
+        if (ALREADY_AT_TARGET_RE.test(result.blocked)) {
+          this.store.updateStatus(row.goal.id, "completed");
+          skipped_terminal += 1;
+        } else {
+          this.store.updateStatus(row.goal.id, "blocked", result.blocked);
+          blocked.push({ goal_id: row.goal.id, reason: result.blocked });
+        }
+      } else {
+        this.store.updateStatus(row.goal.id, "active");
+        this.send({ type: "directive.dispatch", directive: result });
+        dispatched.push(result);
+      }
+    }
+
+    return { dispatched, blocked, skipped_terminal };
+  }
+}
