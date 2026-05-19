@@ -2031,12 +2031,13 @@ import { TokenManager } from "../../src/api/token_manager.js";
 import { Mission } from "@ogamex/shared";
 
 describe("sendFleet", () => {
-  it("POSTs URL-encoded with token + ship counts + cargo", async () => {
+  it("POSTs URL-encoded with token + ship counts + cargo; rotates token from newAjaxToken on success", async () => {
     const fetchMock = vi.fn(async () => new Response(
-      JSON.stringify({ success: true, fleetIdToReturn: 42 }),
+      JSON.stringify({ success: true, fleetIdToReturn: 42, newAjaxToken: "tok-X-NEW" }),
       { status: 200, headers: { "content-type": "application/json" } }
     ));
     const tm = new TokenManager(() => "tok-X");
+    const setSpy = vi.spyOn(tm, "set");
 
     const result = await sendFleet(
       { ships: { smallCargo: 50, recycler: 1 }, cargo: { m: 1000, c: 0, d: 500 },
@@ -2044,11 +2045,13 @@ describe("sendFleet", () => {
       { fetch: fetchMock as any, token: tm }
     );
 
-    expect(result).toEqual({ fleetId: 42, raw: { success: true, fleetIdToReturn: 42 } });
+    expect(result.fleetId).toBe(42);
+    expect(setSpy).toHaveBeenCalledWith("tok-X-NEW");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0]!;
     expect(url).toContain("action=sendFleet");
     expect(url).toContain("ajax=1");
+    expect(url).toContain("asJson=1");
     expect((opts as any).method).toBe("POST");
     const body = new URLSearchParams((opts as any).body);
     expect(body.get("token")).toBe("tok-X");
@@ -2126,7 +2129,7 @@ export class FleetApiError extends Error {
   constructor(message: string, public readonly raw?: unknown) { super(message); }
 }
 
-const DEFAULT_ENDPOINT = "/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1";
+const DEFAULT_ENDPOINT = "/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1";
 
 function buildBody(p: SendFleetParams, token: string): URLSearchParams {
   const body = new URLSearchParams();
@@ -2168,8 +2171,9 @@ export async function sendFleet(p: SendFleetParams, ctx: SendFleetCtx): Promise<
       credentials: "same-origin",
     });
     if (!res.ok) throw new FleetApiError(`HTTP ${res.status}`);
-    const json = await res.json() as SendFleetResult["raw"];
+    const json = await res.json() as SendFleetResult["raw"] & { newAjaxToken?: string };
     if (json.success && json.fleetIdToReturn !== undefined) {
+      if (json.newAjaxToken) ctx.token.set(json.newAjaxToken);
       return { fleetId: json.fleetIdToReturn, raw: json };
     }
     if (attempt === 1 && json.message && TOKEN_INVALID_RE.test(json.message)) {
@@ -2196,20 +2200,42 @@ git commit -m "feat(userscript/api): sendFleet with token self-heal retry + stru
 **Files:**
 - Append to: `src/api/fleet_api.ts`, test
 
+> Real protocol observed in `fixtures/ogame_html/movement.html` global JS:
+> - URL: `&page=ingame&component=movement&action=recallFleetAjax&ajax=1&asJson=1`
+> - Body: `{ fleetId, token }` URL-encoded
+> - Response: `{ success: boolean, newAjaxToken: string, ...}` — **token rotates on every recall** and MUST be fed back to `TokenManager.set()`
+
 - [ ] **Step 1: Failing test**
 
 ```ts
 describe("recallFleet", () => {
-  it("POSTs return=<fleetId> with token", async () => {
+  it("POSTs fleetId=<id> + token; updates TokenManager with newAjaxToken from response", async () => {
     const fetchMock = vi.fn(async () => new Response(
-      JSON.stringify({ success: true }), { status: 200 }));
+      JSON.stringify({ success: true, newAjaxToken: "tok-Z-NEW" }), { status: 200 }));
     const tm = new TokenManager(() => "tok-Z");
+    const setSpy = vi.spyOn(tm, "set");
     await recallFleet(42, { fetch: fetchMock as any, token: tm });
     const [url, opts] = fetchMock.mock.calls[0]!;
     expect(url).toContain("component=movement");
+    expect(url).toContain("action=recallFleetAjax");
+    expect(url).toContain("asJson=1");
     const body = new URLSearchParams((opts as any).body);
-    expect(body.get("return")).toBe("42");
+    expect(body.get("fleetId")).toBe("42");
     expect(body.get("token")).toBe("tok-Z");
+    expect(setSpy).toHaveBeenCalledWith("tok-Z-NEW");
+  });
+
+  it("invalidates token + retries once on invalid-token response", async () => {
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call++;
+      if (call === 1) return new Response(
+        JSON.stringify({ success: false, message: "Invalid token" }), { status: 200 });
+      return new Response(JSON.stringify({ success: true, newAjaxToken: "tok-NEW" }), { status: 200 });
+    });
+    const tm = new TokenManager(() => `t${call}`);
+    await recallFleet(7, { fetch: fetchMock as any, token: tm });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 ```
@@ -2217,13 +2243,19 @@ describe("recallFleet", () => {
 - [ ] **Step 2: Implement**
 
 ```ts
-const RECALL_ENDPOINT = "/game/index.php?page=ingame&component=movement&action=return&ajax=1";
+const RECALL_ENDPOINT = "/game/index.php?page=ingame&component=movement&action=recallFleetAjax&ajax=1&asJson=1";
+
+interface RecallResponse {
+  success: boolean;
+  newAjaxToken?: string;
+  message?: string;
+}
 
 export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<void> {
   let token = ctx.token.getFreshToken();
   for (let attempt = 1; attempt <= 2; attempt++) {
     const body = new URLSearchParams();
-    body.set("return", String(fleetId));
+    body.set("fleetId", String(fleetId));
     body.set("token", token);
     const res = await ctx.fetch(RECALL_ENDPOINT, {
       method: "POST",
@@ -2235,8 +2267,11 @@ export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<v
       credentials: "same-origin",
     });
     if (!res.ok) throw new FleetApiError(`HTTP ${res.status}`);
-    const json = await res.json() as { success: boolean; message?: string };
-    if (json.success) return;
+    const json = await res.json() as RecallResponse;
+    if (json.success) {
+      if (json.newAjaxToken) ctx.token.set(json.newAjaxToken);
+      return;
+    }
     if (attempt === 1 && json.message && TOKEN_INVALID_RE.test(json.message)) {
       await ctx.token.invalidate();
       token = ctx.token.getFreshToken();
@@ -2248,6 +2283,11 @@ export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<v
 ```
 
 - [ ] **Step 3: Pass + commit**
+
+```bash
+git add packages/runtime-userscript/src/api/fleet_api.ts packages/runtime-userscript/test/api/fleet_api.test.ts
+git commit -m "feat(userscript/api): recallFleet via recallFleetAjax with newAjaxToken rotation" -- packages/runtime-userscript/src/api/fleet_api.ts packages/runtime-userscript/test/api/fleet_api.test.ts
+```
 
 ### Task M2.4 — Three-case decider
 

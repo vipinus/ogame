@@ -1,0 +1,96 @@
+<!-- Real ogame snapshot, /game/index.php?page=ingame&component=movement -->
+<!-- Captured 2026-05-19 from s274-en (Scorpius), vacation mode, no fleets in motion. -->
+<!-- TRIMMED: full HTML was 200k+. Captures recall JS protocol + meta + fleet count. -->
+<!--
+PROTOCOL (canonical recall flow, observed live):
+  POST ajaxRecallFleetURI
+    URL  : /game/index.php?page=ingame&component=movement&action=recallFleetAjax&ajax=1&asJson=1
+    Body : URLSearchParams{ fleetId: <id>, token: <token> }
+    Resp : {"success": true|false, "newAjaxToken": "<rotated>", "message"?: "..."}
+  Token rotates on EVERY recall. Consumers MUST feed newAjaxToken into TokenManager.set().
+
+REDACTED: ogame-session, token, ajaxChatToken, changeSettingsToken, currentSpaceObjectId.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>Scorpius OGame</title>
+<meta name="ogame-session" content="REDACTED_SESSION"/>
+<meta name="ogame-version" content="12.10.0-r4"/>
+<meta name="ogame-timestamp" content="1779217479"/>
+<meta name="ogame-universe-speed" content="8"/>
+<meta name="ogame-universe-speed-fleet-peaceful" content="8"/>
+<meta name="ogame-universe-speed-fleet-war" content="2"/>
+<meta name="ogame-universe-speed-fleet-holding" content="4"/>
+<meta name="ogame-player-id" content="105948"/>
+<meta name="ogame-planet-id" content="33636121"/>
+<meta name="ogame-planet-coordinates" content="4:241:8"/>
+<meta name="ogame-planet-type" content="planet"/>
+
+<script type="text/javascript">
+  var ajaxEventboxURI    = 'https://s274-en.ogame.gameforge.com/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1';
+  var ajaxRecallFleetURI = 'https://s274-en.ogame.gameforge.com/game/index.php?page=ingame&component=movement&action=recallFleetAjax&ajax=1&asJson=1';
+  var ajaxResourceboxURI = 'https://s274-en.ogame.gameforge.com/game/index.php?page=fetchResources&ajax=1';
+  var currentSpaceObjectId = 33636121;
+  var currentPage = "movement";
+
+  var token   = "REDACTED_CSRF_TOKEN";
+  var session = "REDACTED_SESSION";
+  var playerId = 105948;
+
+  // Canonical recall handler (verbatim from live page, value = the protocol):
+  $("a.icon_link.recallFleet").click(function (e) {
+    e.preventDefault();
+    var fleetId = $(this).attr("data-fleet-id");
+    errorBoxDecision("召回", "召回艦隊", "是", "不", function() {
+      $.post(ajaxRecallFleetURI, { fleetId: fleetId, token: token }, (response) => {
+        let data = JSON.parse(response);
+        token = data.newAjaxToken;     // ← token rotation
+        if (data.success) {
+          let currentUrl = window.location.href;
+          let params = new URLSearchParams(currentUrl);
+          let currentComponent = params.get("component");
+          switch (currentComponent) {
+            case "movement":
+              window.location.reload();
+              return;
+            case "galaxy":
+              if (submitForm && typeof submitForm === "function") submitForm();
+              break;
+          }
+          getAjaxEventbox();
+          refreshFleetEvents();
+        }
+      });
+    });
+    return false;
+  });
+</script>
+</head>
+
+<body id="ingamepage">
+
+<!-- Vacation mode banner (active in this snapshot) -->
+<div id="advice-bar">
+  <a class="advice" title="假期模式|至少直到 21.05.2026 08:42:59 為止,該帳號將處於假期模式中.">
+    <img src="..." height="32" width="32"/>
+  </a>
+</div>
+
+<!-- Empty event box: no fleets in motion. In normal operation, this list is loaded
+     async via ajaxEventboxURI and contains <a class="icon_link recallFleet"
+     data-fleet-id="...">召回</a> elements that the handler above binds to. -->
+<table id="eventContent"><tbody></tbody></table>
+
+<!-- Fleet slot accounting (extractor hook for fleet.ts) -->
+<div id="slots">
+  <span class="tooltip" title="已使用艦隊指揮權數/艦隊指揮權數總計">
+    <span>艦隊:</span>0/15
+  </span>
+  <span class="tooltip" title="已使用遠征探險指揮權數/遠征探險指揮權數總計">
+    <span>遠征艦隊:</span>0/6
+  </span>
+</div>
+
+</body>
+</html>
