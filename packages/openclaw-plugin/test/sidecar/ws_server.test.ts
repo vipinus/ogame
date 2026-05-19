@@ -129,6 +129,35 @@ describe("WsServer", () => {
     b.close();
   });
 
+  it("accepts subprotocol-based auth (Sec-WebSocket-Protocol: bearer.<token>) for browser path", async () => {
+    const { server, port } = await startServer();
+    track(server);
+    // Browser DOM WebSocket forbids custom request headers; bearer token is
+    // smuggled via Sec-WebSocket-Protocol. ws lib does this when you pass it
+    // as the second arg of new WebSocket(url, protocols).
+    const ws = await new Promise<WebSocket>((resolve, reject) => {
+      const w = new WebSocket(`ws://127.0.0.1:${port}`, `bearer.${TOKEN}`);
+      const t = setTimeout(() => { reject(new Error("connect timeout")); try { w.terminate(); } catch { /* ignore */ } }, 200);
+      w.once("open", () => { clearTimeout(t); resolve(w); });
+      w.once("unexpected-response", (_req, res) => { clearTimeout(t); reject(new Error(`unexpected-response ${res.statusCode}`)); });
+      w.once("error", (err) => { clearTimeout(t); reject(err); });
+    });
+    expect(ws.protocol).toBe(`bearer.${TOKEN}`); // server MUST echo the accepted protocol
+    ws.close();
+  });
+
+  it("rejects subprotocol with wrong token", async () => {
+    const { server, port } = await startServer();
+    track(server);
+    await expect(new Promise<WebSocket>((resolve, reject) => {
+      const w = new WebSocket(`ws://127.0.0.1:${port}`, "bearer.wrong-token");
+      const t = setTimeout(() => { reject(new Error("connect timeout")); try { w.terminate(); } catch { /* ignore */ } }, 200);
+      w.once("open", () => { clearTimeout(t); resolve(w); });
+      w.once("unexpected-response", (_req, res) => { clearTimeout(t); reject(new Error(`unexpected-response ${res.statusCode}`)); });
+      w.once("error", (err) => { clearTimeout(t); reject(err); });
+    })).rejects.toThrow(/unexpected-response 401/);
+  });
+
   it("responds to PNA preflight (OPTIONS) with allow headers", async () => {
     const { server, port } = await startServer();
     track(server);

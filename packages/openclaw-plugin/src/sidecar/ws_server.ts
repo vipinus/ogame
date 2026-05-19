@@ -31,7 +31,13 @@ export class WsServer {
     if (this.http) return;
 
     const http = createServer((req, res) => this.onHttpRequest(req, res));
-    const wss = new WebSocketServer({ noServer: true });
+    // handleProtocols: echo back the bearer subprotocol that auth accepted, so
+    // browser DOM WebSocket sees its requested protocol acknowledged and stays open.
+    const expectedProto = `bearer.${this.options.token}`;
+    const wss = new WebSocketServer({
+      noServer: true,
+      handleProtocols: (protocols) => (protocols.has(expectedProto) ? expectedProto : false),
+    });
 
     http.on("upgrade", (req, socket, head) => this.onUpgrade(req, socket, head, wss));
 
@@ -122,7 +128,8 @@ export class WsServer {
   }
 
   private onUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, wss: WebSocketServer): void {
-    if (!this.checkAuth(req)) {
+    const authResult = this.checkAuth(req);
+    if (!authResult.ok) {
       // Bare HTTP 401 — ws's client will emit 'unexpected-response'.
       socket.write(
         "HTTP/1.1 401 Unauthorized\r\n" +
@@ -134,18 +141,39 @@ export class WsServer {
       socket.destroy();
       return;
     }
+    // Subprotocol selection is handled by the WebSocketServer's handleProtocols
+    // option (configured in start()), which ensures the upgrade response echoes
+    // the bearer.<token> protocol so browser clients stay open.
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
     });
   }
 
-  private checkAuth(req: IncomingMessage): boolean {
+  /**
+   * Auth accepts two transports:
+   * - `Authorization: Bearer <token>` (Node-side / WS tools)
+   * - `Sec-WebSocket-Protocol: bearer.<token>` (browser path — DOM WebSocket
+   *   forbids custom request headers, so token is smuggled as a subprotocol name)
+   */
+  private checkAuth(req: IncomingMessage): { ok: boolean; via?: "header" | "subprotocol"; protocol?: string } {
+    // Path 1: Authorization header
     const auth = req.headers["authorization"];
-    if (typeof auth !== "string") return false;
-    const m = /^Bearer\s+(.+)$/i.exec(auth);
-    if (!m) return false;
-    const presented = m[1]?.trim();
-    return presented === this.options.token;
+    if (typeof auth === "string") {
+      const m = /^Bearer\s+(.+)$/i.exec(auth);
+      if (m && m[1]?.trim() === this.options.token) {
+        return { ok: true, via: "header" };
+      }
+    }
+    // Path 2: Sec-WebSocket-Protocol subprotocol (browser path)
+    const proto = req.headers["sec-websocket-protocol"];
+    if (typeof proto === "string") {
+      const candidates = proto.split(",").map((s) => s.trim());
+      const wanted = `bearer.${this.options.token}`;
+      if (candidates.includes(wanted)) {
+        return { ok: true, via: "subprotocol", protocol: wanted };
+      }
+    }
+    return { ok: false };
   }
 
   private onMessage(data: unknown): void {
