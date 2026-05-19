@@ -3,7 +3,12 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { JSDOM } from "jsdom";
-import { extractResources, extractStorage, extractProduction } from "../../../src/probes/extractors/resources.js";
+import {
+  extractResources,
+  extractStorage,
+  extractProduction,
+  extractLifeformResources,
+} from "../../../src/probes/extractors/resources.js";
 
 const fixture = readFileSync(
   resolve(
@@ -74,5 +79,53 @@ describe("extractProduction", () => {
       <div id="crystal_box" title="Capacity: 1"></div>
       <div id="deuterium_box" title="Capacity: 1"></div>`);
     expect(extractProduction(local.window.document)).toBeNull();
+  });
+});
+
+const realFixture = readFileSync(
+  resolve(
+    process.cwd(),
+    "packages/runtime-userscript/test/fixtures/ogame_html/overview_real.html"
+  ),
+  "utf8"
+);
+const realDom = new JSDOM(realFixture);
+const realDoc = realDom.window.document;
+
+describe("real-ogame fixture compatibility", () => {
+  it("extracts metal/crystal/deut/energy from real ogame snapshot", () => {
+    expect(extractResources(realDoc)).toEqual({
+      m: 65923727, c: 8969969, d: 48116231, e: 9320,
+    });
+  });
+
+  it("extracts storage from Chinese HTML-table tooltip", () => {
+    expect(extractStorage(realDoc)).toEqual({
+      m_max: 470000, c_max: 33005000, d_max: 33005000,
+    });
+  });
+
+  it("extracts production from Chinese HTML-table tooltip (all zero in vacation mode)", () => {
+    expect(extractProduction(realDoc)).toEqual({
+      m_h: 0, c_h: 0, d_h: 0,
+    });
+  });
+
+  it("extracts LifeForm-specific resources (population/food/darkmatter)", () => {
+    expect(extractLifeformResources(realDoc)).toEqual({
+      population: 156597866, food: 777632, darkmatter: 103744,
+    });
+  });
+
+  it("returns null for LifeForm resources when not present (legacy fixture)", () => {
+    const legacy = readFileSync(
+      resolve(
+        process.cwd(),
+        "packages/runtime-userscript/test/fixtures/ogame_html/overview.html"
+      ),
+      "utf8"
+    );
+    const legacyDom = new JSDOM(legacy);
+    expect(extractLifeformResources(legacyDom.window.document)).toBeNull();
   });
 });
