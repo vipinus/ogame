@@ -1,0 +1,226 @@
+<!-- Real ogame snapshot, fleetdispatch page, server s274-en (Scorpius), 2026-05-19 -->
+<!-- Player: Commander Icarus, planet [4:241:8], LifeForm: Kaelesh, Explorer class -->
+<!-- This is a TRIMMED version: full HTML was 200k+, this captures the script vars + form DOM we extract from. -->
+<!-- The `ajaxRecallFleetURI`, `sendFleetUrl`, `token`, `missions`, `shipsData`, `currentPlanet`, `shipsOnPlanet`, `planets` JS vars confirm M2 spec endpoint shapes. -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="ogame-session" content="REDACTED_SESSION"/>
+<meta name="ogame-version" content="12.10.0-r4"/>
+<meta name="ogame-universe" content="s274-en.ogame.gameforge.com"/>
+<meta name="ogame-universe-speed" content="8"/>
+<meta name="ogame-universe-speed-fleet-peaceful" content="8"/>
+<meta name="ogame-universe-speed-fleet-war" content="2"/>
+<meta name="ogame-universe-speed-fleet-holding" content="4"/>
+<meta name="ogame-player-id" content="105948"/>
+<meta name="ogame-player-name" content="Commander Icarus"/>
+<meta name="ogame-planet-id" content="33636121"/>
+<meta name="ogame-planet-coordinates" content="4:241:8"/>
+<meta name="ogame-planet-type" content="planet"/>
+<meta name="ogame-alliance-tag" content="F2P"/>
+
+<script type="text/javascript">
+  var ajaxEventboxURI = 'https://s274-en.ogame.gameforge.com/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1';
+  var ajaxRecallFleetURI = 'https://s274-en.ogame.gameforge.com/game/index.php?page=ingame&component=movement&action=recallFleetAjax&ajax=1&asJson=1';
+  var ajaxResourceboxURI = 'https://s274-en.ogame.gameforge.com/game/index.php?page=fetchResources&ajax=1';
+  var currentSpaceObjectId = 33636121;
+</script>
+
+<script type="text/javascript">
+  // === GLOBALS exposed on fleetdispatch page ===
+  var token = "REDACTED_CSRF_TOKEN";
+  var playerId = 105948;
+  var playerName = "Commander Icarus";
+  var session = "REDACTED_SESSION";
+  var vacation = 0;
+
+  var currentPage = "fleetdispatch";
+
+  var checkTargetUrl = "https://s274-en.ogame.gameforge.com/game/index.php?page=ingame&component=fleetdispatch&action=checkTarget&ajax=1&asJson=1";
+  var sendFleetUrl   = "https://s274-en.ogame.gameforge.com/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1";
+  var saveSettingsUrl = "https://s274-en.ogame.gameforge.com/game/index.php?page=ingame&component=fleetdispatch&action=saveFleetBoxOrderSettings&ajax=1&asJson=1";
+
+  var FLEET_DEUTERIUM_SAVE_FACTOR = 0.5;
+
+  // Ship metadata (cargo capacity, fuel consumption, speed) — keyed by ogame ship id
+  var shipsData = {
+    "204": {"id":204, "name":"輕型戰鬥機",       "baseFuelCapacity":75,      "baseCargoCapacity":75,      "fuelConsumption":9,    "speed":33750},
+    "205": {"id":205, "name":"重型戰鬥機",       "baseFuelCapacity":151,     "baseCargoCapacity":151,     "fuelConsumption":36,   "speed":32123},
+    "206": {"id":206, "name":"巡洋艦",          "baseFuelCapacity":1200,    "baseCargoCapacity":1200,    "fuelConsumption":148,  "speed":48000},
+    "207": {"id":207, "name":"戰列艦",          "baseFuelCapacity":2250,    "baseCargoCapacity":2250,    "fuelConsumption":247,  "speed":43000},
+    "215": {"id":215, "name":"戰鬥巡洋艦",       "baseFuelCapacity":1125,    "baseCargoCapacity":1125,    "fuelConsumption":123,  "speed":43000},
+    "211": {"id":211, "name":"導彈艦",          "baseFuelCapacity":750,     "baseCargoCapacity":750,     "fuelConsumption":346,  "speed":21500},
+    "213": {"id":213, "name":"毀滅者",          "baseFuelCapacity":3000,    "baseCargoCapacity":3000,    "fuelConsumption":494,  "speed":21500},
+    "214": {"id":214, "name":"死星",            "baseFuelCapacity":1500000, "baseCargoCapacity":1500000, "fuelConsumption":1,    "speed":430},
+    "218": {"id":218, "name":"惡魔飛船",         "baseFuelCapacity":15000,   "baseCargoCapacity":15000,   "fuelConsumption":544,  "speed":30100},
+    "219": {"id":219, "name":"探路者",          "baseFuelCapacity":15000,   "baseCargoCapacity":15000,   "fuelConsumption":148,  "speed":51600},
+    "202": {"id":202, "name":"小型運輸艦",       "baseFuelCapacity":8280,    "baseCargoCapacity":8280,    "fuelConsumption":9,    "speed":32000},
+    "203": {"id":203, "name":"大型運輸艦",       "baseFuelCapacity":41402,   "baseCargoCapacity":41402,   "fuelConsumption":24,   "speed":20250},
+    "208": {"id":208, "name":"殖民船",          "baseFuelCapacity":12420,   "baseCargoCapacity":12420,   "fuelConsumption":494,  "speed":8000},
+    "209": {"id":209, "name":"回收船",          "baseFuelCapacity":33122,   "baseCargoCapacity":33122,   "fuelConsumption":148,  "speed":5400},
+    "210": {"id":210, "name":"間諜衛星",         "baseFuelCapacity":8,       "baseCargoCapacity":0,       "fuelConsumption":1,    "speed":270000000},
+    "217": {"id":217, "name":"履帶車",          "baseFuelCapacity":0,       "baseCargoCapacity":0,       "fuelConsumption":1,    "speed":0}
+  };
+
+  var SPEEDFAKTOR_FLEET_PEACEFUL = 8;
+  var SPEEDFAKTOR_FLEET_WAR = 2;
+  var SPEEDFAKTOR_FLEET_HOLDING = 4;
+  var SPEED_FLEET_MOON_DESTRUCTION = 310;
+  var PLANETTYPE_PLANET = 1;
+  var PLANETTYPE_DEBRIS = 2;
+  var PLANETTYPE_MOON = 3;
+  var EXPEDITION_POSITION = 16;
+  var MAX_NUMBER_OF_PLANETS = 9;
+  var MAX_GALAXY = 5;
+  var MAX_SYSTEM = 499;
+  var MAX_POSITION = 16;
+
+  // Mission codes — canonical
+  var missions = {
+    "MISSION_NONE":0,
+    "MISSION_ATTACK":1,
+    "MISSION_UNIONATTACK":2,
+    "MISSION_TRANSPORT":3,
+    "MISSION_DEPLOY":4,
+    "MISSION_HOLD":5,          // ACS_DEFEND in our spec
+    "MISSION_ESPIONAGE":6,
+    "MISSION_COLONIZE":7,
+    "MISSION_RECYCLE":8,
+    "MISSION_DESTROY":9,       // moon destruction
+    "MISSION_MISSILEATTACK":10,
+    "MISSION_EXPEDITION":15
+  };
+
+  var currentPlanet = {"galaxy":4, "system":241, "position":8, "type":1, "name":"殖民"};
+  var targetPlanet  = {"galaxy":4, "system":241, "position":8, "type":1, "name":"殖民"};
+
+  // Current ships on this planet (REAL — only 4500 large cargo + 1 recycler!)
+  var shipsOnPlanet = [
+    {"id":203, "number":4500},
+    {"id":209, "number":1}
+  ];
+
+  // All 9 planets + their moons (planet+moon=2 entries each)
+  var planets = [
+    {"galaxy":4, "system":241, "position":8, "type":1, "name":"殖民"},
+    {"galaxy":1, "system":486, "position":7, "type":1, "name":"殖民"},
+    {"galaxy":1, "system":486, "position":7, "type":3, "name":"月球"},
+    {"galaxy":2, "system":75,  "position":7, "type":1, "name":"殖民"},
+    {"galaxy":2, "system":75,  "position":7, "type":3, "name":"月球"},
+    {"galaxy":2, "system":279, "position":8, "type":1, "name":"殖民"},
+    {"galaxy":2, "system":279, "position":8, "type":3, "name":"月球"},
+    {"galaxy":3, "system":194, "position":8, "type":1, "name":"殖民"},
+    {"galaxy":3, "system":194, "position":8, "type":3, "name":"月球"},
+    {"galaxy":3, "system":260, "position":8, "type":1, "name":"殖民"},
+    {"galaxy":3, "system":260, "position":8, "type":3, "name":"月球"},
+    {"galaxy":3, "system":260, "position":9, "type":1, "name":"殖民"},
+    {"galaxy":3, "system":260, "position":9, "type":3, "name":"月球"},
+    {"galaxy":3, "system":279, "position":7, "type":1, "name":"殖民"},
+    {"galaxy":3, "system":279, "position":7, "type":3, "name":"月球"},
+    {"galaxy":4, "system":241, "position":8, "type":3, "name":"月球"},
+    {"galaxy":4, "system":242, "position":8, "type":1, "name":"殖民"},
+    {"galaxy":4, "system":242, "position":8, "type":3, "name":"月球"}
+  ];
+
+  var fleetCount = 0;
+  var maxFleetCount = 15;
+  var expeditionCount = 0;
+  var maxExpeditionCount = 6;
+
+  var lifeformEnabled = true;
+  var metalOnPlanet = 65923727;
+  var crystalOnPlanet = 8969969;
+  var deuteriumOnPlanet = 48116231;
+  var foodOnPlanet = 777632;
+
+  var isOnVacation = true;     // ⚠️ vacation mode active
+  var moveInProgress = false;
+  var planetCount = 9;
+  var explorationCount = 6;
+</script>
+</head>
+
+<body id="ingamepage">
+
+<!-- Vacation banner -->
+<div id="advice-bar">
+  <a class="advice" title="假期模式|至少直到 21.05.2026 08:42:59 為止,該帳號將處於假期模式中.">
+    <img src="..." height="32" width="32">
+  </a>
+</div>
+
+<!-- Resources bar (same as overview_real.html) -->
+<div id="resources">
+  <div id="metal_box" title="金屬|<table class=&quot;resourceTooltip&quot;>...</table>">
+    <span class="value"><span id="resources_metal" data-raw="65923727">65,923,727</span></span>
+  </div>
+  <div id="crystal_box"><span class="value"><span id="resources_crystal" data-raw="8969969">8,969,969</span></span></div>
+  <div id="deuterium_box"><span class="value"><span id="resources_deuterium" data-raw="48116231">48,116,231</span></span></div>
+  <div id="energy_box"><span class="value"><span id="resources_energy" data-raw="9320">9,320</span></span></div>
+  <div id="population_box"><span class="value"><span id="resources_population" data-raw="156597866">156,597,866</span></span></div>
+  <div id="food_box"><span class="value"><span id="resources_food" data-raw="777632">777,632</span></span></div>
+  <div id="darkmatter_box"><span class="value"><span id="resources_darkmatter" data-raw="103744">103,744</span></span></div>
+</div>
+
+<!-- Fleet dispatch form (vacation prevents actual submission) -->
+<div id="fleet1">
+  <h2>派遣艦隊 I - 殖民</h2>
+  <div class="fleetStatus">
+    <div id="slots">
+      <span>艦隊:</span>0/15
+      <span>遠征艦隊:</span>0/6
+    </div>
+  </div>
+  <div id="warning">
+    <h3>艦隊無法派遣</h3>
+    <p><span class="icon icon_warning"></span>假期模式中不能派遣艦隊!</p>
+  </div>
+</div>
+
+<!-- Fleet step 2: select target -->
+<div id="fleet2" style="display:none;">
+  <input name="type" id="type" type="hidden" value="1"/>
+  <input name="mission" type="hidden" value="0"/>
+  <div id="buttonz">
+    <div id="fleetboxdestination">
+      <div class="content">
+        <table id="mission">
+          <tr>
+            <td id="start">
+              <div class="planetname">殖民</div>
+              <div class="coords">座標: <span>4:241:8</span></div>
+            </td>
+            <td id="target">
+              <input name="galaxy"   id="galaxy"   type="text" value="4"/>
+              <input name="system"   id="system"   type="text" value="241"/>
+              <input name="position" id="position" type="text" value="8"/>
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <!-- Block 3 form (briefing + resources + submit) -->
+    <div id="fleetboxbriefingandresources">
+      <form name="sendForm" method="post" action="https://s274-en.ogame.gameforge.com/game/index.php?page=ingame&amp;component=movement">
+        <input name="galaxy" type="hidden" value="4"/>
+        <input name="system" type="hidden" value="241"/>
+        <input name="position" type="hidden" value="8"/>
+        <input name="type" type="hidden" value="1"/>
+        <input name="mission" type="hidden" value="0"/>
+        <input name="union2" type="hidden" value="0"/>
+        <input name="holdingOrExpTime" id="holdingOrExpTime" type="hidden" value="0"/>
+        <input name="speed" type="hidden" value="10"/>
+        <input name="prioMetal" type="hidden" value="2"/>
+        <input name="prioCrystal" type="hidden" value="3"/>
+        <input name="prioDeuterium" type="hidden" value="4"/>
+        <input name="prioFood" type="hidden" value="1"/>
+        <!-- speed selector -->
+        <input type="hidden" name="speed" id="speed" value="10"/>
+        <a id="sendFleet" class="start" href="">派遣艦隊</a>
+      </form>
+    </div>
+  </div>
+</div>
+</body>
+</html>

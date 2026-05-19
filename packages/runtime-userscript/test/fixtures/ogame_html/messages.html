@@ -1,0 +1,79 @@
+<!-- Real ogame snapshot, messages page, server s274-en (Scorpius), 2026-05-19 -->
+<!-- TRIMMED: full HTML was 200k+. Captures async-load URLs + tab structure for M3 expedition report parsing. -->
+<!-- Real reports are NOT inline — loaded via `getAsJsonUrl` AJAX per tab. M3 needs to mock this endpoint OR -->
+<!-- intercept the response. The visible tab structure tells us category id mapping (1=communication, 2=fleets, 3=economy, 4=ogame, 5=universe, 6=favorites). -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="ogame-session" content="REDACTED_SESSION"/>
+<meta name="ogame-version" content="12.10.0-r4"/>
+<meta name="ogame-player-id" content="105948"/>
+
+<script type="text/javascript">
+  // Async URLs for loading messages
+  var getAsAjaxUrl = 'https://s274-en.ogame.gameforge.com/game/index.php?page=componentOnly&component=messages&ajax=1';
+  var getAsJsonUrl = 'https://s274-en.ogame.gameforge.com/game/index.php?page=componentOnly&component=messages&asJson=1';
+
+  var currentPage = "messages";
+  var token = "REDACTED_CSRF_TOKEN";
+
+  var simBackendUrl = 'https://s274-en.ogame.gameforge.com/game/index.php?page=componentOnly&component=combatsim&asJson=1';
+  var combatSimUrl = 'https://s274-en.ogame.gameforge.com/game/index.php?page=standalone&component=combatsim';
+  var shareMessageUrl = 'https://s274-en.ogame.gameforge.com/game/index.php?page=componentOnly&component=messagedetails&asJson=1';
+  var broadcastMessageUrl = 'https://s274-en.ogame.gameforge.com/game/index.php?page=ingame&component=alliance&tab=broadcast&action=sendBroadcast&asJson=1';
+
+  let activeTab = 2;          // 2 = fleets (combat reports, expedition reports go here)
+  let activeSubTab = 20;      // expedition reports
+  let displayedMessages = 10;
+
+  $(function(){
+    ogame.messages.loadMainTab(activeTab, activeSubTab);
+  });
+</script>
+</head>
+
+<body id="ingamepage">
+
+<div id="messagecontainercomponent" class="maincontent">
+  <div class="content">
+    <h3>新聞訂閱</h3>
+    <div class="mainTabs">
+      <div class="singleTab marker" data-category-id="2">
+        <div class="tabImage tb_fleets"></div>
+        <div class="tabLabel">艦隊數</div>
+        <div class="newMessagesCount" style="display:none;">0</div>
+      </div>
+      <div class="singleTab" data-category-id="1">
+        <div class="tabImage tb_communication"></div>
+        <div class="tabLabel">訊息交流</div>
+        <div class="newMessagesCount">1</div>
+      </div>
+      <div class="singleTab" data-category-id="3">
+        <div class="tabImage tb_economy"></div>
+        <div class="tabLabel">經濟</div>
+      </div>
+      <div class="singleTab" data-category-id="5">
+        <div class="tabImage tb_universe"></div>
+        <div class="tabLabel">宇宙</div>
+      </div>
+      <div class="singleTab" data-category-id="4">
+        <div class="tabImage tb_system"></div>
+        <div class="tabLabel">OGame</div>
+      </div>
+      <div class="singleTab" data-category-id="6">
+        <div class="tabImage tb_favorites"></div>
+        <div class="tabLabel fav">喜好</div>
+      </div>
+    </div>
+
+    <!-- Message list loaded async via getAsJsonUrl after page load.
+         M3 expedition_report parser needs to hook the JSON response. -->
+    <div class="messageContent">
+      <img class="ajax_load_img64px" src="..." alt="loading">
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
