@@ -1,0 +1,17 @@
+[Unit]
+Description=OgameX — OpenClaw Chrome session keeper
+After=graphical-session.target network-online.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/ogamex/ogamex-chrome.sh
+ExecStop=%h/.config/ogamex/ogamex-chrome.sh stop
+Restart=on-failure
+RestartSec=10s
+# Avoid restart storms (max 3 restarts in 5min)
+StartLimitBurst=3
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=graphical-session.target
