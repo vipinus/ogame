@@ -2,11 +2,32 @@ import * as http from "node:http";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { UpstreamMsg, DownstreamMsg } from "@ogamex/shared";
+import {
+  renderDebugHtml,
+} from "./debug_render.js";
+import type {
+  DebugDirectiveEntry,
+  DebugEventEntry,
+} from "./debug_buffer.js";
 
 export interface HttpServerOptions {
   port: number;
   token: string;
   pollTimeoutMs?: number; // default 30000
+  /**
+   * M8.1: optional health-report builder. When supplied, `GET /ogamex/v1/health`
+   * returns its serialized output. When absent, the endpoint still answers 200
+   * with a minimal `{ok:true,ts}` heartbeat so operators can confirm the
+   * sidecar process is alive without needing the bridge token.
+   */
+  healthReporter?: () => Promise<unknown>;
+  /**
+   * M8.5: optional debug-snapshot provider. When supplied, `GET /ogamex/v1/debug`
+   * returns its snapshot rendered as HTML. When absent, the endpoint still
+   * answers 200 with an empty page so operators can verify the sidecar is
+   * routing correctly. NO auth required (operator view).
+   */
+  debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
 }
 
 interface QueueEntry {
@@ -21,6 +42,8 @@ type UpstreamHandler<T extends UpstreamMsg["type"]> = (
 
 const PUSH_PATH = "/ogamex/v1/push";
 const POLL_PATH = "/ogamex/v1/poll";
+const HEALTH_PATH = "/ogamex/v1/health";
+const DEBUG_PATH = "/ogamex/v1/debug";
 const ALLOWED_ORIGIN = "https://*.ogame.org";
 
 /**
@@ -28,8 +51,16 @@ const ALLOWED_ORIGIN = "https://*.ogame.org";
  * but over HTTP for environments where Private Network Access blocks the
  * ws:// upgrade. Plain Node http — no express/fastify.
  */
+interface ResolvedHttpServerOptions {
+  port: number;
+  token: string;
+  pollTimeoutMs: number;
+  healthReporter?: () => Promise<unknown>;
+  debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
+}
+
 export class HttpServer {
-  private readonly opts: Required<HttpServerOptions>;
+  private readonly opts: ResolvedHttpServerOptions;
   private readonly handlers = new Map<string, Set<(msg: UpstreamMsg) => void>>();
   private readonly queue: QueueEntry[] = [];
   private readonly waiters: Array<(entries: QueueEntry[]) => void> = [];
@@ -40,6 +71,8 @@ export class HttpServer {
       port: opts.port,
       token: opts.token,
       pollTimeoutMs: opts.pollTimeoutMs ?? 30000,
+      ...(opts.healthReporter !== undefined ? { healthReporter: opts.healthReporter } : {}),
+      ...(opts.debugSnapshot !== undefined ? { debugSnapshot: opts.debugSnapshot } : {}),
     };
   }
 
@@ -117,6 +150,20 @@ export class HttpServer {
       return;
     }
 
+    // M8.1: /health is GET-only, NO auth required — operators may not have
+    // the bridge token but still need a way to verify the sidecar is alive.
+    if (method === "GET" && url === HEALTH_PATH) {
+      void this.handleHealth(res);
+      return;
+    }
+
+    // M8.5: /debug is GET-only, NO auth required — operator view, served as
+    // a self-contained HTML page that lists the last 100 directives + events.
+    if (method === "GET" && url === DEBUG_PATH) {
+      this.handleDebug(res);
+      return;
+    }
+
     if (method !== "POST") {
       this.writeCorsHeaders(res);
       res.statusCode = 405;
@@ -149,7 +196,7 @@ export class HttpServer {
     res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
     res.setHeader("Access-Control-Allow-Private-Network", "true");
     res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   }
 
   private checkAuth(req: http.IncomingMessage): boolean {
@@ -157,6 +204,34 @@ export class HttpServer {
     if (typeof header !== "string") return false;
     const expected = `Bearer ${this.opts.token}`;
     return header === expected;
+  }
+
+  private handleDebug(res: http.ServerResponse): void {
+    const snap = this.opts.debugSnapshot
+      ? this.opts.debugSnapshot()
+      : { directives: [], events: [] };
+    const html = renderDebugHtml(snap);
+    this.writeCorsHeaders(res);
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.end(html);
+  }
+
+  private async handleHealth(res: http.ServerResponse): Promise<void> {
+    let report: unknown = { ok: true, ts: Date.now() };
+    if (this.opts.healthReporter) {
+      try {
+        report = await this.opts.healthReporter();
+      } catch (e) {
+        // A throwing health reporter must not 500 the endpoint — operators
+        // need *some* response. Surface the error inside the JSON body.
+        report = { ok: false, ts: Date.now(), error: (e as Error).message };
+      }
+    }
+    this.writeCorsHeaders(res);
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(report));
   }
 
   private async handlePush(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

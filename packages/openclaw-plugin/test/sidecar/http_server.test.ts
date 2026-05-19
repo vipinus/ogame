@@ -129,6 +129,30 @@ describe("HttpServer", () => {
     expect(elapsed).toBeLessThan(1000);
   });
 
+  it("GET /ogamex/v1/health without auth → 200 with default heartbeat JSON", async () => {
+    const { baseUrl } = await startServer();
+    const res = await fetch(`${baseUrl}/ogamex/v1/health`, { method: "GET" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; ts: number };
+    expect(body.ok).toBe(true);
+    expect(typeof body.ts).toBe("number");
+  });
+
+  it("GET /ogamex/v1/health with healthReporter → returns its serialized output", async () => {
+    const server = new HttpServer({
+      port: 0,
+      token: TOKEN,
+      healthReporter: async () => ({ ok: false, ts: 123, custom: "hello" }),
+    });
+    await server.start();
+    track(server);
+    const port = (server as unknown as { port: () => number }).port();
+    const res = await fetch(`http://127.0.0.1:${port}/ogamex/v1/health`, { method: "GET" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; ts: number; custom: string };
+    expect(body).toEqual({ ok: false, ts: 123, custom: "hello" });
+  });
+
   it("POST /poll resolves early when a message is queued mid-poll", async () => {
     const { server, baseUrl } = await startServer({ pollTimeoutMs: 5000 });
     const t0 = Date.now();

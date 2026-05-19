@@ -34,6 +34,8 @@ import { GoalsStore } from "./goals_store.js";
 import { GeminiClient } from "./gemini_client.js";
 import { PriorityMerger } from "./priority_merger.js";
 import { planGoal } from "./planner.js";
+import { buildHealthReport } from "./health.js";
+import { DebugBuffer } from "./debug_buffer.js";
 import {
   createFailureAggregator,
   type FailureAggregator,
@@ -226,9 +228,43 @@ export async function startSidecar(
   // with a 4xx from the API, but tests inject `analyzer` and never hit it.
   const geminiClient = new GeminiClient({ apiKey });
 
+  // --- WorldState mirror + userscript liveness -----------------------------
+  // Declared up here (before the transports) so the M8.1 healthReporter can
+  // close over them at HttpServer construction time. Both are populated by
+  // the `state.snapshot` handler registered further below.
+  const stateRef: { current: WorldState | null } = { current: null };
+  const lastSeen: { at: number | null } = { at: null };
+  const sidecarStartedAt = Date.now();
+
+  // --- DebugBuffer (M8.5) --------------------------------------------------
+  // Rings the last 100 dispatched directives + 100 upstream events. Wired
+  // into both the PriorityMerger send path and the cross-transport relay
+  // further below. Constructed up here so the HttpServer constructor can
+  // close over `debug.snapshot` for the /v1/debug HTML page.
+  const debug = new DebugBuffer();
+
   // --- Transports ----------------------------------------------------------
   const ws = new WsServer({ port: config.wsPort, token: config.bridgeToken });
-  const http = new HttpServer({ port: config.httpPort, token: config.bridgeToken });
+  // The HttpServer's /v1/health route delegates to buildHealthReport via a
+  // thunk closure — needs `stateRef`, `lastSeen`, and the `ws.clients` set,
+  // all of which exist before this point. The thunk is invoked per-request.
+  const httpServerCtor = (): HttpServer => new HttpServer({
+    port: config.httpPort,
+    token: config.bridgeToken,
+    healthReporter: () => buildHealthReport({
+      startedAt: sidecarStartedAt,
+      lastUserscriptSeenAt: lastSeen.at,
+      // WsServer.clients is private; we read it via a structural cast. This
+      // matches the comment in the M8.1 spec — we don't want to break the
+      // WsServer encapsulation by adding a public method just for health.
+      bridgeOpen: () => (ws as unknown as { clients: Set<unknown> }).clients.size > 0,
+      llmPing: () => pingGemini(geminiClient),
+      stateRef,
+      strategyVersion: () => strategyManager.load().version,
+    }),
+    debugSnapshot: () => debug.snapshot(),
+  });
+  const http = httpServerCtor();
   await Promise.all([ws.start(), http.start()]);
 
   // --- Cross-transport relay ------------------------------------------------
@@ -243,6 +279,15 @@ export async function startSidecar(
     const set = new Set<AnyHandler>();
     registry.set(t, set);
     const fan = (m: UpstreamMsg): void => {
+      // M8.5: every upstream message lands in the DebugBuffer once, before
+      // consumer handlers run. directive_completed is doubly-recorded — once
+      // as a generic event row, once as a state mutation on the matching
+      // dispatched directive. Errors here would only happen if the buffer
+      // itself throws (it doesn't), so no try/catch.
+      debug.recordEvent(m);
+      if (m.type === "event.directive_completed") {
+        debug.recordComplete(m.directive_id, m.result);
+      }
       for (const h of set) {
         try { h(m); } catch { /* handler errors must not crash the relay */ }
       }
@@ -280,11 +325,6 @@ export async function startSidecar(
     reporter = new Reporter({ channelId: config.discordChannelId, send });
   }
 
-  // --- WorldState mirror ---------------------------------------------------
-  // Updated by the state.snapshot handler; consumed by the failure
-  // aggregator (for LLM analysis context) and the memory writer cascade.
-  const stateRef: { current: WorldState | null } = { current: null };
-
   // --- MemoryWriter --------------------------------------------------------
   const memoryWriter = startMemoryWriter({
     memoryDir,
@@ -297,6 +337,13 @@ export async function startSidecar(
     store: goalsStore,
     planGoal,
     send: (msg: DownstreamMsg) => {
+      // M8.5: record every dispatched directive in the DebugBuffer so the
+      // /v1/debug page can show what was sent + (later) whether it completed.
+      // Other DownstreamMsg variants (strategy.full, ping…) are skipped — the
+      // debug page is directive-centric, not bridge-traffic-centric.
+      if (msg.type === "directive.dispatch") {
+        debug.recordDispatch(msg.directive);
+      }
       ws.send(msg);
       // HTTP-side consumers (long-poll) also need the directive — queue it
       // so a polling userscript receives the dispatch.
@@ -323,6 +370,7 @@ export async function startSidecar(
 
   ws.on("state.snapshot", (msg) => {
     stateRef.current = msg.snapshot;
+    lastSeen.at = Date.now();
     memoryWriter.push({
       state: msg.snapshot,
       goals: goalsStore.listActive(),
@@ -412,6 +460,35 @@ export async function startSidecar(
     stateRef,
     stop,
   };
+}
+
+/**
+ * M8.1 — measure round-trip to the LLM with a 5s ceiling. Returns the rtt in
+ * ms on success; otherwise an error string suitable for surfacing in the
+ * /v1/health JSON body. We deliberately use a trivial prompt + temperature 0
+ * so we're not racking up tokens just to answer health checks.
+ */
+async function pingGemini(client: GeminiClient): Promise<{ ok: boolean; rttMs: number | null; error?: string }> {
+  const TIMEOUT_MS = 5000;
+  const start = Date.now();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timeout")), TIMEOUT_MS);
+    if (typeof (timer as { unref?: () => void }).unref === "function") {
+      (timer as { unref: () => void }).unref();
+    }
+  });
+  try {
+    await Promise.race([
+      client.generate("ping", { temperature: 0 }),
+      timeout,
+    ]);
+    return { ok: true, rttMs: Date.now() - start };
+  } catch (e) {
+    return { ok: false, rttMs: null, error: (e as Error).message };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**
