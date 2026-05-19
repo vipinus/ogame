@@ -44,6 +44,10 @@ import {
   startMemoryWriter,
   type MemoryWriterHandle,
 } from "./memory_writer.js";
+import {
+  startDigestScheduler,
+  type DigestSchedulerHandle,
+} from "./digest_scheduler.js";
 import type {
   AnalyzeInput,
   AnalyzeResult,
@@ -81,6 +85,8 @@ export interface SidecarHandle {
   priorityMerger: PriorityMerger;
   failureAggregator: FailureAggregator;
   memoryWriter: MemoryWriterHandle;
+  /** M8.2 daily digest publisher — exposes publishNow() for manual triggers. */
+  digestScheduler: DigestSchedulerHandle;
   /** Current world-state mirror, populated by the state.snapshot handler. */
   stateRef: { current: WorldState | null };
   /** Stop everything. */
@@ -363,6 +369,18 @@ export async function startSidecar(
     ...(config.analyzer !== undefined ? { analyzer: config.analyzer } : {}),
   });
 
+  // --- DigestScheduler (M8.2) ----------------------------------------------
+  // Publishes a markdown summary of Strategy/Goals/Snapshot to Discord once
+  // per local day at 06:00 UTC by default. Skips silently if no reporter is
+  // configured. The poll interval is intentionally coarse — minute granularity
+  // is plenty for a daily digest, and avoids wakeups during normal operation.
+  const digestScheduler = startDigestScheduler({
+    reporter,
+    goalsStore,
+    strategyManager,
+    stateRef,
+  });
+
   // -------------------------------------------------------------------------
   // Upstream handlers — registered ONCE against the wrapped on, which the
   // cross-transport relay fans both ws and http arrivals into.
@@ -439,6 +457,7 @@ export async function startSidecar(
   // BEFORE `stop()`), close transports, release SQLite handle.
   // -------------------------------------------------------------------------
   const stop = async (): Promise<void> => {
+    digestScheduler.stop();
     memoryWriter.stop();
     await Promise.all([ws.stop(), http.stop()]);
     try {
@@ -457,6 +476,7 @@ export async function startSidecar(
     priorityMerger,
     failureAggregator,
     memoryWriter,
+    digestScheduler,
     stateRef,
     stop,
   };
