@@ -64,6 +64,9 @@ importers:
       '@types/jsdom':
         specifier: ^28.0.3
         version: 28.0.3
+      '@types/ws':
+        specifier: ^8.5.0
+        version: 8.18.1
       fake-indexeddb:
         specifier: ^6.2.5
         version: 6.2.5
@@ -79,6 +82,9 @@ importers:
       vitest:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.19.19)(jsdom@29.1.1)
+      ws:
+        specifier: ^8.18.0
+        version: 8.20.1
 
   packages/shared:
     dependencies:
