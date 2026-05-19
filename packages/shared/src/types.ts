@@ -3,7 +3,8 @@ import type { ShipKey, ShipCount } from "./ship_ids.js";
 export type Coords = readonly [galaxy: number, system: number, position: number];
 export type CelestialType = "planet" | "moon";
 
-export type Resources = { m: number; c: number; d: number; e?: number };
+export type Resources = { m: number; c: number; d: number; e: number };  // planet state (energy required)
+export type CargoResources = { m: number; c: number; d: number };         // fleet cargo (no energy)
 export type Storage = { m_max: number; c_max: number; d_max: number };
 export type Production = { m_h: number; c_h: number; d_h: number };
 
@@ -20,7 +21,7 @@ export interface Planet {
   storage: Storage;
   production: Production;
   buildings: Record<string, number>;
-  queue: BuildingQueueItem | null;
+  build_q: BuildingQueueItem | null;
   shipyard_q: ShipyardQueueItem | null;
   defense_q: DefenseQueueItem | null;
   ships: ShipCount;
@@ -72,11 +73,11 @@ export interface FleetMovement {
   origin: Coords;
   origin_type: CelestialType;
   dest: Coords;
-  dest_type: 1 | 2 | 3;
+  dest_type: DestTypeCode;
   arrival_at: number;
   return_at: number | null;
   ships: ShipCount;
-  cargo: Resources;
+  cargo: CargoResources;
 }
 
 export interface IncomingEvent {
@@ -90,15 +91,24 @@ export interface IncomingEvent {
   raw_html_id?: string;
 }
 
+export const DestType = {
+  planet: 1,
+  debris: 2,
+  moon: 3,
+} as const;
+export type DestTypeCode = typeof DestType[keyof typeof DestType];
+
 export const Mission = {
   ATTACK: 1, ACS_ATTACK: 2, TRANSPORT: 3, DEPLOY: 4, ACS_DEFEND: 5,
   SPY: 6, COLONIZE: 7, RECYCLE: 8, MOON_DESTROY: 9, EXPEDITION: 15,
 } as const;
 export type MissionCode = typeof Mission[keyof typeof Mission];
 
+export type ResearchQueueItem = { tech: string; level: number; ends_at: number };
+
 export interface ResearchState {
   levels: Record<string, number>;
-  queue: { tech: string; level: number; ends_at: number } | null;
+  queue: ResearchQueueItem | null;
 }
 
 export interface WorldState {
@@ -214,6 +224,11 @@ export interface EmergencyStrategy {
 }
 
 // --- Expedition outcome (extended with LifeForm types) ---
+export interface LifeformExpeditionExtras {
+  artifacts_gained: Record<string, number>;
+  lifeform_xp_gained: { species: LifeformSpecies; amount: number } | null;
+}
+
 export type ExpeditionOutcomeType =
   | "resources_small" | "resources_medium" | "resources_large"
   | "ships_gained_small" | "ships_gained_medium" | "ships_gained_large"
@@ -227,7 +242,7 @@ export type ExpeditionOutcomeType =
   | "artifact_small" | "artifact_medium" | "artifact_large"
   | "lifeform_xp" | "discovery_signal";
 
-export interface ExpeditionOutcome {
+export interface ExpeditionOutcome extends LifeformExpeditionExtras {
   expedition_id: string;
   source_planet_id: string;
   source_coords: Coords;
@@ -243,15 +258,12 @@ export interface ExpeditionOutcome {
   resources_gained: Resources;
   ships_gained: ShipCount;
   ships_lost: ShipCount;
-  // 2026 LifeForm 扩展
-  artifacts_gained: Record<string, number>;
-  lifeform_xp_gained: { species: LifeformSpecies; amount: number } | null;
   raw_report_id: string;
   raw_report_html_sample?: string;
 }
 
 // Discovery mission outcome (new in 2026)
-export interface DiscoveryOutcome {
+export interface DiscoveryOutcome extends LifeformExpeditionExtras {
   discovery_id: string;
   source_planet_id: string;
   source_coords: Coords;
@@ -259,8 +271,6 @@ export interface DiscoveryOutcome {
   fleet_sent: ShipCount;
   launched_at: number;
   returned_at: number;
-  artifacts_gained: Record<string, number>;
-  lifeform_xp_gained: { species: LifeformSpecies; amount: number } | null;
   outcome_summary: string;
   raw_report_id: string;
 }
