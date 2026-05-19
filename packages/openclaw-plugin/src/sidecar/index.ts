@@ -1,9 +1,11 @@
 /**
- * M4.5 — Sidecar boot.
+ * M4.5 + M5/M6 — Sidecar boot.
  *
- * Wires together the M4.2 WsServer, M4.3 HttpServer, and M4.4 Reporter into
- * a single lifecycle handle. The OpenClaw plugin entry (`src/index.ts`)
- * imports `startSidecar` and fires it on module load when configured via env.
+ * Wires together the M4.2 WsServer, M4.3 HttpServer, M4.4 Reporter, the M5
+ * goals/planner/priority-merger stack, and the M6 strategy/memory/failure
+ * pipeline into a single lifecycle handle. The OpenClaw plugin entry
+ * (`src/index.ts`) imports `startSidecar` and fires it on module load when
+ * configured via env.
  *
  * Both transports carry the same protocol envelope (UpstreamMsg /
  * DownstreamMsg). A message arriving on either transport must reach
@@ -13,30 +15,129 @@
  * methods so that each registration is mirrored into a shared per-type
  * registry; both servers' raw `on` is wired once to broadcast into that
  * registry. Consumers get transport-agnostic delivery.
+ *
+ * Upstream message routing (registered after wiring is complete):
+ *   - `state.snapshot`     → stateRef mirror + MemoryWriter push + PriorityMerger dispatch
+ *   - `event.daily_failure`→ FailureAggregator.record (LLM-driven strategy patching)
+ *   - `event.emergency`    → Reporter.pushEmergency (Discord)
+ *   - `hello`              → server replies with current Strategy via ws.send (strategy.full)
  */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { WsServer } from "./ws_server.js";
 import { HttpServer } from "./http_server.js";
 import { Reporter } from "./reporter.js";
-import type { UpstreamMsg } from "@ogamex/shared";
+import { StrategyManager } from "./strategy_manager.js";
+import { GoalsStore } from "./goals_store.js";
+import { GeminiClient } from "./gemini_client.js";
+import { PriorityMerger } from "./priority_merger.js";
+import { planGoal } from "./planner.js";
+import {
+  createFailureAggregator,
+  type FailureAggregator,
+} from "./failure_aggregator.js";
+import {
+  startMemoryWriter,
+  type MemoryWriterHandle,
+} from "./memory_writer.js";
+import type {
+  AnalyzeInput,
+  AnalyzeResult,
+} from "../llm/strategy_analyzer.js";
+import type {
+  DownstreamMsg,
+  Strategy,
+  UpstreamMsg,
+  WorldState,
+} from "@ogamex/shared";
 
 export interface SidecarConfig {
   wsPort: number;
   httpPort: number;
   bridgeToken: string;
   discordChannelId?: string;
+  /** Where to store strategy.json + git audit repo. Default ~/.openclaw/workspace/ogamex-strategy. */
+  strategyRepoDir?: string;
+  /** Path to goals SQLite file. Default ~/.openclaw/workspace/ogamex-goals.db. ":memory:" for tests. */
+  goalsDbPath?: string;
+  /** OpenClaw memory dir. Default ~/.openclaw/workspace/memory. */
+  memoryDir?: string;
+  /** Gemini API key. Default process.env.GEMINI_API_KEY. */
+  geminiApiKey?: string;
+  /** Test-only override forwarded to FailureAggregator — bypasses Gemini. */
+  analyzer?: (input: AnalyzeInput, llm: GeminiClient) => Promise<AnalyzeResult>;
 }
 
 export interface SidecarHandle {
   ws: WsServer;
   http: HttpServer;
   reporter: Reporter | null;
+  strategyManager: StrategyManager;
+  goalsStore: GoalsStore;
+  priorityMerger: PriorityMerger;
+  failureAggregator: FailureAggregator;
+  memoryWriter: MemoryWriterHandle;
+  /** Current world-state mirror, populated by the state.snapshot handler. */
+  stateRef: { current: WorldState | null };
+  /** Stop everything. */
   stop(): Promise<void>;
 }
 
 export interface StartSidecarOptions {
   /** Override the Discord transport. Tests inject a vi.fn; prod uses defaultDiscordSend. */
   sendDiscord?: (channelId: string, content: string) => Promise<void>;
+  /**
+   * Seed Strategy when the strategy repo is empty. When omitted, a minimal
+   * stub Strategy is bootstrapped so the sidecar can still come up — useful
+   * for the M4.5 transport-only smoke tests; production callers SHOULD pass
+   * a real Strategy so the LLM and audit trail start from a sensible state.
+   */
+  defaultStrategy?: Strategy;
+}
+
+/** Conservative defaults — every required Strategy field present, every flag off. */
+function bootstrapStrategy(): Strategy {
+  return {
+    version: 0,
+    updated_at: Date.now(),
+    updated_by: "userscript-bootstrap",
+    reason: "bootstrap",
+    daily: {
+      expedition: {
+        enabled: false,
+        auto_fill_slots: false,
+        source_planet: null,
+        duration: "short",
+        target_position: 16,
+        fleet_templates: {},
+        galaxy_strategy: {
+          mode: "fixed",
+          home_galaxy_first: true,
+          switch_threshold: { black_hole_rate_24h: 0.05, sample_size_min: 20 },
+          cross_galaxy_deut_budget: 0,
+        },
+        cargo_load: { smallCargo_capacity_pct: 100, largeCargo_capacity_pct: 100 },
+      },
+      resource_balance: { enabled: false, trigger_overflow_pct: 90 },
+      defense_replenish: { enabled: false, keep_minimum: {} },
+      default_build: { enabled: false, strategy: "balanced", ratio: {} },
+      heartbeat: { enabled: false, schedule: [] },
+    },
+    emergency: {
+      attack: {
+        save_window_minutes: 15,
+        prefer_moon: true,
+        alliance_safe_planets: [],
+        safety_margin_minutes: 2,
+      },
+      spy: { push_immediate: true, counter_spy: false, log_attacker: true },
+      anomaly: { push_immediate: true, pause_planet_automation: false },
+      resource_critical: { threshold_pct: 95, try_redistribute_first: true },
+    },
+    audit_rules_thresholds: {},
+  };
 }
 
 // All UpstreamMsg variants we relay between transports. Keep in sync with
@@ -54,17 +155,80 @@ const UPSTREAM_TYPES: ReadonlyArray<UpstreamMsg["type"]> = [
 ];
 
 /**
- * Spin up all sidecar servers + (optionally) the Reporter and return a handle.
- * Resolves only after both servers are listening.
+ * Default workspace root. Under vitest we land in a *fresh per-boot* tmp
+ * directory so multiple `startSidecar` calls in the same suite never step on
+ * each other's git repo or sqlite file. Production resolves to the canonical
+ * `~/.openclaw/workspace`.
+ */
+function defaultWorkspaceDir(): string {
+  if (process.env["VITEST"] === "true" || process.env["VITEST"] === "1") {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "ogamex-sidecar-"));
+  }
+  return path.join(os.homedir(), ".openclaw", "workspace");
+}
+
+/**
+ * Stand-in WorldState used when the failure-aggregator triggers an LLM
+ * analysis before the userscript has sent its first `state.snapshot`. Real
+ * traffic almost certainly arrives in the opposite order, but the contract
+ * still has to be honored — `getState` must never return null.
+ */
+function emptyWorldState(): WorldState {
+  return {
+    server: { universe: "", speed: 1 },
+    player: { id: "", name: "", alliance: null },
+    planets: [],
+    research: { levels: {}, queue: null },
+    fleets_outbound: [],
+    events_incoming: [],
+    artifacts: { artifacts: {} },
+    discovery_slots: { used: 0, max: 0 },
+    discovery_active: [],
+    last_update: 0,
+    page_snapshots: {},
+  };
+}
+
+/**
+ * Spin up all sidecar servers, M5/M6 components, and (optionally) the
+ * Reporter. Resolves only after both servers are listening.
  */
 export async function startSidecar(
   config: SidecarConfig,
   opts?: StartSidecarOptions,
 ): Promise<SidecarHandle> {
+  const effectiveOpts: StartSidecarOptions = opts ?? {};
+  // -------------------------------------------------------------------------
+  // Bootstrap order: persistent stores first (so the rest of the pipeline can
+  // assume strategy.json + goals.db exist), then transports, then live
+  // wiring. Anything that needs a clock or async I/O happens via injection
+  // so this whole function stays synchronous up to the `await` on .start().
+  // -------------------------------------------------------------------------
+
+  const workspaceDir = defaultWorkspaceDir();
+
+  const strategyRepoDir = config.strategyRepoDir ?? path.join(workspaceDir, "ogamex-strategy");
+  const goalsDbPath = config.goalsDbPath ?? path.join(workspaceDir, "ogamex-goals.db");
+  const memoryDir = config.memoryDir ?? path.join(workspaceDir, "memory");
+
+  const strategyManager = new StrategyManager({
+    repoDir: strategyRepoDir,
+    defaultStrategy: effectiveOpts.defaultStrategy ?? bootstrapStrategy(),
+  });
+  // init() is idempotent — safe to call even when the repo already exists.
+  strategyManager.init();
+
+  const goalsStore = new GoalsStore({ dbPath: goalsDbPath });
+
+  const apiKey = config.geminiApiKey ?? process.env["GEMINI_API_KEY"] ?? "";
+  // We construct the Gemini client unconditionally — even an empty key — so
+  // downstream callers can still hold the reference. Real calls would fail
+  // with a 4xx from the API, but tests inject `analyzer` and never hit it.
+  const geminiClient = new GeminiClient({ apiKey });
+
+  // --- Transports ----------------------------------------------------------
   const ws = new WsServer({ port: config.wsPort, token: config.bridgeToken });
   const http = new HttpServer({ port: config.httpPort, token: config.bridgeToken });
-
-  // Start both in parallel — they bind to independent OS-assigned ports.
   await Promise.all([ws.start(), http.start()]);
 
   // --- Cross-transport relay ------------------------------------------------
@@ -109,10 +273,102 @@ export async function startSidecar(
   ws.on = wrapOn as typeof ws.on;
   http.on = wrapOn as typeof http.on;
 
+  // --- Reporter (optional) -------------------------------------------------
   let reporter: Reporter | null = null;
   if (config.discordChannelId !== undefined && config.discordChannelId !== "") {
-    const send = opts?.sendDiscord ?? defaultDiscordSend;
+    const send = effectiveOpts.sendDiscord ?? defaultDiscordSend;
     reporter = new Reporter({ channelId: config.discordChannelId, send });
+  }
+
+  // --- WorldState mirror ---------------------------------------------------
+  // Updated by the state.snapshot handler; consumed by the failure
+  // aggregator (for LLM analysis context) and the memory writer cascade.
+  const stateRef: { current: WorldState | null } = { current: null };
+
+  // --- MemoryWriter --------------------------------------------------------
+  const memoryWriter = startMemoryWriter({
+    memoryDir,
+    debounceMs: 5000,
+    forceRefreshMs: 60_000,
+  });
+
+  // --- PriorityMerger ------------------------------------------------------
+  const priorityMerger = new PriorityMerger({
+    store: goalsStore,
+    planGoal,
+    send: (msg: DownstreamMsg) => {
+      ws.send(msg);
+      // HTTP-side consumers (long-poll) also need the directive — queue it
+      // so a polling userscript receives the dispatch.
+      http.queueDownstream(msg);
+    },
+  });
+
+  // --- FailureAggregator ---------------------------------------------------
+  const failureAggregator = createFailureAggregator({
+    strategyManager,
+    gemini: geminiClient,
+    getState: () => stateRef.current ?? emptyWorldState(),
+    send: (msg: DownstreamMsg) => {
+      ws.send(msg);
+      http.queueDownstream(msg);
+    },
+    ...(config.analyzer !== undefined ? { analyzer: config.analyzer } : {}),
+  });
+
+  // -------------------------------------------------------------------------
+  // Upstream handlers — registered ONCE against the wrapped on, which the
+  // cross-transport relay fans both ws and http arrivals into.
+  // -------------------------------------------------------------------------
+
+  ws.on("state.snapshot", (msg) => {
+    stateRef.current = msg.snapshot;
+    memoryWriter.push({
+      state: msg.snapshot,
+      goals: goalsStore.listActive(),
+      strategy: strategyManager.load(),
+    });
+    // Dispatch active goals (idempotent — already-active rows still get a
+    // freshly-planned next step). Synchronous; errors propagate inside the
+    // relay's try/catch and won't crash the socket loop.
+    priorityMerger.dispatch(msg.snapshot);
+  });
+
+  ws.on("event.daily_failure", (msg) => {
+    // record() is async; fire-and-forget. We attach a catch so a stuck
+    // analyzer never produces an unhandled rejection (which would crash
+    // Node in --unhandled-rejections=strict mode).
+    void failureAggregator.record({
+      task: msg.task,
+      attempts: msg.attempts,
+      last_error: msg.last_error,
+      context: msg.context,
+    }).catch((err: unknown) => {
+      console.error("[ogamex/sidecar] failureAggregator.record failed", err);
+    });
+  });
+
+  ws.on("event.emergency", (msg) => {
+    if (reporter === null) return;
+    // Emergency push throws on failure (reporter contract). Swallow here so
+    // a temporarily flaky Discord doesn't crash the relay — operator sees
+    // the failure in plugin logs.
+    void reporter.pushEmergency(msg.markdown_report).catch((err: unknown) => {
+      console.error("[ogamex/sidecar] reporter.pushEmergency failed", err);
+    });
+  });
+
+  ws.on("hello", () => {
+    // The userscript has just connected and announced its strategy_version.
+    // Reply with the canonical Strategy so it can reconcile any drift.
+    // We use ws.send (broadcast to all connected clients) — the userscript
+    // is the only expected consumer; if multiple clients are connected they
+    // all benefit from the same snapshot.
+    ws.send({ type: "strategy.full", strategy: strategyManager.load() });
+  });
+
+  // --- Online banner -------------------------------------------------------
+  if (reporter !== null) {
     const wsPort = ws.port();
     const httpPort = http.port();
     const banner =
@@ -129,11 +385,33 @@ export async function startSidecar(
     console.info("[ogamex/sidecar] OgameX online (no discord channel configured)");
   }
 
+  // -------------------------------------------------------------------------
+  // Shutdown — clear memory-writer timers (no implicit flush; callers that
+  // want a final snapshot on disk must `await handle.memoryWriter.flush()`
+  // BEFORE `stop()`), close transports, release SQLite handle.
+  // -------------------------------------------------------------------------
   const stop = async (): Promise<void> => {
+    memoryWriter.stop();
     await Promise.all([ws.stop(), http.stop()]);
+    try {
+      goalsStore.close();
+    } catch (err) {
+      console.error("[ogamex/sidecar] goalsStore.close failed", err);
+    }
   };
 
-  return { ws, http, reporter, stop };
+  return {
+    ws,
+    http,
+    reporter,
+    strategyManager,
+    goalsStore,
+    priorityMerger,
+    failureAggregator,
+    memoryWriter,
+    stateRef,
+    stop,
+  };
 }
 
 /**
