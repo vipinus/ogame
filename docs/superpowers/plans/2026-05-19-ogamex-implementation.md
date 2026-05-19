@@ -367,6 +367,50 @@ export interface Planet {
   defense_q: DefenseQueueItem | null;
   ships: ShipCount;
   defense: Record<string, number>;
+  lifeform: LifeformState | null;        // 2026 LifeForm 扩展，§3.4
+}
+
+// === LifeForm 2026 系统 ===
+export type LifeformSpecies = "humans" | "rocktal" | "mechas" | "kaelesh";
+
+export const LIFEFORM_DISPLAY_NAME: Record<LifeformSpecies, string> = {
+  humans: "人类",
+  rocktal: "岩族",
+  mechas: "机械族",
+  kaelesh: "凯莱什",
+};
+
+export interface LifeformState {
+  species: LifeformSpecies;
+  level: number;
+  exp: number;
+  buildings: Record<string, number>;     // lifeform 专属建筑等级 (id → level)
+  research: Record<string, number>;      // lifeform 专属科研等级
+  slots: {
+    building: { used: number; max: number };
+    research: { used: number; max: number };
+  };
+  active_bonuses: Record<string, number>;
+  unlocked_bonuses: string[];
+}
+
+export interface DiscoveryMission {
+  id: string;
+  origin: Coords;
+  origin_type: CelestialType;
+  dest: Coords;
+  arrival_at: number;
+  return_at: number | null;
+  ships: ShipCount;                      // 必含 pathfinder ≥ 1
+}
+
+export interface PlayerArtifactInventory {
+  artifacts: Record<string, number>;     // artifact_id → count
+}
+
+export interface LifeformExpeditionExtras {
+  artifacts_gained: Record<string, number>;
+  lifeform_xp_gained: { species: LifeformSpecies; amount: number } | null;
 }
 
 export interface FleetMovement {
@@ -411,6 +455,9 @@ export interface WorldState {
   research: ResearchState;
   fleets_outbound: FleetMovement[];
   events_incoming: IncomingEvent[];
+  artifacts: PlayerArtifactInventory;              // 2026 LifeForm 扩展
+  discovery_slots: { used: number; max: number }; // 2026
+  discovery_active: DiscoveryMission[];            // 2026
   last_update: number;
   page_snapshots: Record<string, number>;
 }
@@ -435,7 +482,12 @@ export interface Directive {
 // --- Goal ---
 export type GoalType =
   | "research" | "build" | "build_universal"
-  | "colonize" | "build_ships" | "build_defense" | "terraformer_to";
+  | "colonize" | "build_ships" | "build_defense" | "terraformer_to"
+  // 2026 LifeForm 扩展（§3.4.6）
+  | "pick_lifeform"            // 给指定星球选生命体（一次性）
+  | "lifeform_level_to"        // 把指定星球生命体堆到 N 级
+  | "lifeform_research"        // 研究某生命体科技到 N 级
+  | "lifeform_building";       // 建生命体建筑到 N 级
 
 export type GoalStatus = "pending" | "active" | "blocked" | "completed" | "cancelled" | "pending_confirm";
 
@@ -517,7 +569,10 @@ export type ExpeditionOutcomeType =
   | "merchant" | "explorer"
   | "delay_short" | "delay_long"
   | "early_return" | "black_hole"
-  | "nothing" | "item_dark_matter" | "item_other";
+  | "nothing" | "item_dark_matter" | "item_other"
+  // 2026 LifeForm 扩展
+  | "artifact_small" | "artifact_medium" | "artifact_large"
+  | "lifeform_xp" | "discovery_signal";
 
 export interface ExpeditionOutcome {
   expedition_id: string;
@@ -535,8 +590,26 @@ export interface ExpeditionOutcome {
   resources_gained: Resources;
   ships_gained: ShipCount;
   ships_lost: ShipCount;
+  // 2026 LifeForm 扩展
+  artifacts_gained: Record<string, number>;                     // {ancient_relic: 1, ...}
+  lifeform_xp_gained: { species: LifeformSpecies; amount: number } | null;
   raw_report_id: string;
   raw_report_html_sample?: string;
+}
+
+// Discovery mission (similar to expedition but for artifacts)
+export interface DiscoveryOutcome {
+  discovery_id: string;
+  source_planet_id: string;
+  source_coords: Coords;
+  target_coords: Coords;
+  fleet_sent: ShipCount;
+  launched_at: number;
+  returned_at: number;
+  artifacts_gained: Record<string, number>;
+  lifeform_xp_gained: { species: LifeformSpecies; amount: number } | null;
+  outcome_summary: string;
+  raw_report_id: string;
 }
 ```
 
@@ -559,10 +632,12 @@ git add packages/shared/
 git commit -m "feat(shared): core domain types and ship id table"
 ```
 
-### Task M0.3 — tech_tree.ts
+### Task M0.3 — tech_tree.ts (base — buildings/research/ships/defenses)
 
 **Files:**
 - Create: `packages/shared/src/tech_tree.ts`, `packages/shared/test/tech_tree.test.ts`
+
+> **Note**: LifeForm 2026 系统的 ~50 buildings + ~80 research 在 Task M0.3b 单独处理。本任务只覆盖基础 14 建筑 / 16 科研 / 18 舰船 / 10 防御。
 
 - [ ] **Step 1: Write failing test for prerequisite lookup**
 
@@ -936,6 +1011,76 @@ Run tests. Expected: all pass.
 git add packages/shared/src/tech_tree.ts packages/shared/test/tech_tree.test.ts
 git commit -m "feat(shared): tech_tree with 14 buildings, 16 research, 18 ships, 10 defenses, prereqs, costs, expedition slot formula"
 ```
+
+### Task M0.3b — LifeForm tech database (2026 扩展)
+
+**Goal:** Populate static tech database for 4 lifeforms (humans / rocktal / mechas / kaelesh), each with ~12-13 buildings + ~18-20 research, plus the artifact catalog.
+
+**Files:**
+- Create: `packages/shared/src/lifeform/humans_tech.ts`
+- Create: `packages/shared/src/lifeform/rocktal_tech.ts`
+- Create: `packages/shared/src/lifeform/mechas_tech.ts`
+- Create: `packages/shared/src/lifeform/kaelesh_tech.ts`
+- Create: `packages/shared/src/lifeform/artifacts.ts`
+- Create: `packages/shared/src/lifeform/index.ts`  (re-export aggregator)
+- Create: `packages/shared/src/lifeform/types.ts`  (per-lifeform-tech entry interface)
+- Test: `packages/shared/test/lifeform/*.test.ts`
+
+#### Data sourcing
+
+Internal game data is NOT inlined in this plan — it's bulky and version-specific. **Data-fetch protocol:**
+
+1. **Implementer first asks**: "Do we have a data dump from the alibaba 服 (or international 服) ogame DB available? If so where? If not, can the user provide one (planet → resources → lifeform → buildings/research full list with prereqs + cost formulas)?"
+
+2. **Fallback**: pull from community wiki (e.g., [ogame-tech.com](https://ogame-tech.com), [OGotcha repo's data files](https://github.com/OGotcha/OGotcha)). Treat as draft, mark `verified_against_live: false` per entry, and have an audit rule fire if any entry's cost prediction is off > 10% from actual page reading.
+
+#### Entry shape (per lifeform)
+
+```ts
+// packages/shared/src/lifeform/types.ts
+import type { Resources } from "../types.js";
+
+export type LifeformBuildingId = string;
+export type LifeformResearchId = string;
+export type ArtifactId = string;
+
+export interface LifeformBuildingEntry {
+  id: LifeformBuildingId;
+  display_name_zh: string;
+  display_name_en: string;
+  requires: Record<string, number>;        // can reference base tech AND other lifeform tech
+  cost_at: (level: number) => Resources;
+  duration_seconds?: (level: number, ctx: any) => number;
+  bonuses_at?: (level: number) => Record<string, number>;   // 产出/防御 multiplier
+}
+
+export interface LifeformResearchEntry {
+  id: LifeformResearchId;
+  display_name_zh: string;
+  display_name_en: string;
+  requires: Record<string, number>;
+  artifact_cost?: Record<ArtifactId, number>;        // 消耗 artifact 才能研究
+  cost_at: (level: number) => Resources;
+  duration_seconds?: (level: number, ctx: any) => number;
+  bonuses_at?: (level: number) => Record<string, number>;
+}
+
+export interface LifeformTechCatalog {
+  species: import("../types.js").LifeformSpecies;
+  buildings: Record<LifeformBuildingId, LifeformBuildingEntry>;
+  research: Record<LifeformResearchId, LifeformResearchEntry>;
+}
+```
+
+#### Steps
+
+- [ ] **Step 1:** Ask user / locate data source. If unavailable, escalate as NEEDS_CONTEXT.
+- [ ] **Step 2:** Write `lifeform/types.ts` per shape above.
+- [ ] **Step 3:** For each of 4 species, write `<species>_tech.ts` exporting a `LifeformTechCatalog`. Include all buildings + research found in data source.
+- [ ] **Step 4:** Write `artifacts.ts` exporting `Record<ArtifactId, { display_name_zh, display_name_en, sources: ("expedition"|"discovery")[], rarity: "low"|"med"|"high" }>`.
+- [ ] **Step 5:** Write `lifeform/index.ts` aggregating + providing `LIFEFORM_TECH[species]` accessor.
+- [ ] **Step 6:** Tests verify: prereq lookups, cost growth for level N, artifact consumption parsed correctly, and per-species building/research count matches expected.
+- [ ] **Step 7:** Commit: `feat(shared/lifeform): tech database for 4 species + artifacts`
 
 ### Task M0.4 — Shared schemas (typebox)
 
