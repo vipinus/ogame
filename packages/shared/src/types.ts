@@ -274,3 +274,26 @@ export interface DiscoveryOutcome extends LifeformExpeditionExtras {
   outcome_summary: string;
   raw_report_id: string;
 }
+
+// --- M4 Bridge protocol (userscript ↔ OpenClaw plugin sidecar) ---
+// Spec §10.2. WS at ws://127.0.0.1:18790 + HTTP long-poll fallback.
+
+export type UpstreamMsg =
+  | { type: "hello"; strategy_version: number; userscript_version: string }
+  | { type: "state.snapshot"; ts: number; snapshot: WorldState; strategy_version: number }
+  | { type: "event.emergency"; subtype: string; data: unknown; markdown_report: string }
+  | { type: "event.daily_failure"; task: string; attempts: number; last_error: string; context: unknown }
+  | { type: "event.directive_completed"; directive_id: string; result: unknown }
+  | { type: "event.extractor_failure"; extractor: string; raw_html_sample: string }
+  | { type: "audit.condition_unmet"; rule_id: string; evidence: unknown }
+  | { type: "pong"; ts: number };
+
+export type DownstreamMsg =
+  | { type: "strategy.full"; strategy: Strategy }
+  | { type: "strategy.update"; version: number; patch: Record<string, unknown>; reason: string }
+  | { type: "directive.dispatch"; directive: Directive }
+  | { type: "directive.cancel"; id: string; reason: string }
+  | { type: "config.set"; key: string; value: unknown }
+  | { type: "ping"; ts: number };
+
+export type BridgeMsg = UpstreamMsg | DownstreamMsg;
