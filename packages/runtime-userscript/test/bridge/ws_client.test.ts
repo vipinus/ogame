@@ -178,13 +178,13 @@ describe("BridgeClient", () => {
     // Drop the first connection — client should auto-reconnect.
     firstSock.close();
 
-    // Allow event loop to flush close → schedule.
-    await sleep(5);
-    expect(["reconnecting", "disconnected", "connecting"]).toContain(c.status());
-
+    // Verify the END state: the server observes a fresh connection AND the
+    // client transitions back to "open". The intermediate states
+    // (reconnecting/disconnected/connecting) race-condition under
+    // parallel-worker load — close→reconnect can complete inside the
+    // smallest sleep window, so asserting them was flaky.
     await secondConnP;
-    // Wait for client-side open event.
-    for (let i = 0; i < 50 && c.status() !== "open"; i++) await sleep(10);
+    for (let i = 0; i < 100 && c.status() !== "open"; i++) await sleep(10);
     expect(c.status()).toBe("open");
   });
 
