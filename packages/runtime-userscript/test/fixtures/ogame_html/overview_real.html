@@ -1,0 +1,169 @@
+<!-- Real ogame snapshot, captured 2026-05-19 from server s274-en (Scorpius), -->
+<!-- universe speed=8, player: Commander Icarus, planet [4:241:8] -->
+<!-- Used for regression: extractors built against minimal fixtures MUST also handle this. -->
+<!-- Player name and alliance left as-is per user (player is the OWNER of this repo). -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>Scorpius OGame</title>
+<meta name="ogame-session" content="REDACTED_SESSION_TOKEN"/>
+<meta name="ogame-version" content="12.10.0-r4"/>
+<meta name="ogame-timestamp" content="1779215961"/>
+<meta name="ogame-universe" content="s274-en.ogame.gameforge.com"/>
+<meta name="ogame-universe-name" content="Scorpius"/>
+<meta name="ogame-universe-speed" content="8"/>
+<meta name="ogame-universe-speed-fleet-peaceful" content="8"/>
+<meta name="ogame-universe-speed-fleet-war" content="2"/>
+<meta name="ogame-universe-speed-fleet-holding" content="4"/>
+<meta name="ogame-language" content="en"/>
+<meta name="ogame-donut-galaxy" content="1"/>
+<meta name="ogame-donut-system" content="1"/>
+<meta name="ogame-player-id" content="105948"/>
+<meta name="ogame-player-name" content="Commander Icarus"/>
+<meta name="ogame-planet-id" content="33636121"/>
+<meta name="ogame-planet-name" content="殖民"/>
+<meta name="ogame-planet-coordinates" content="4:241:8"/>
+<meta name="ogame-planet-type" content="planet"/>
+<meta name="ogame-alliance-id" content="500124"/>
+<meta name="ogame-alliance-name" content="Team"/>
+<meta name="ogame-alliance-tag" content="F2P"/>
+<script>
+  var token = "REDACTED_CSRF_TOKEN";
+  var playerId = 105948;
+  var session = "REDACTED_SESSION";
+  var currentSpaceObjectId = 33636121;
+</script>
+</head>
+<body>
+
+<!-- ============ RESOURCES BAR ============ -->
+<div id="resources">
+  <div class="resource_tile metal">
+    <div id="metal_box" class="metal tooltipHTML resource"
+         title="金屬|&lt;table class=&quot;resourceTooltip&quot;&gt;&lt;tr&gt;&lt;th&gt;現有量:&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;overmark&quot;&gt;65,923,727&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;th&gt;儲存容量&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;overmark&quot;&gt;470,000&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;th&gt;當前產量:&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;overmark&quot;&gt;0&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;th&gt;保護倉容量:&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;middlemark&quot;&gt;29,233&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;">
+      <span class="value"><span id="resources_metal" data-raw="65923727">65,923,727</span></span>
+    </div>
+  </div>
+  <div class="resource_tile crystal">
+    <div id="crystal_box" class="crystal tooltipHTML resource"
+         title="晶體|&lt;table class=&quot;resourceTooltip&quot;&gt;&lt;tr&gt;&lt;th&gt;現有量:&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;&quot;&gt;8,969,969&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;th&gt;儲存容量&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;&quot;&gt;33,005,000&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;th&gt;當前產量:&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;overmark&quot;&gt;0&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;">
+      <span class="value"><span id="resources_crystal" data-raw="8969969">8,969,969</span></span>
+    </div>
+  </div>
+  <div class="resource_tile deuterium">
+    <div id="deuterium_box" class="deuterium tooltipHTML resource"
+         title="重氫|&lt;table class=&quot;resourceTooltip&quot;&gt;&lt;tr&gt;&lt;th&gt;現有量:&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;overmark&quot;&gt;48,116,231&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;th&gt;儲存容量&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;overmark&quot;&gt;33,005,000&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;th&gt;當前產量:&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;overmark&quot;&gt;0&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;">
+      <span class="value"><span id="resources_deuterium" data-raw="48116231">48,116,231</span></span>
+    </div>
+  </div>
+  <div class="resource_tile energy">
+    <div id="energy_box" class="energy tooltipHTML resource"
+         title="能源|&lt;table class=&quot;resourceTooltip&quot;&gt;&lt;tr&gt;&lt;th&gt;現有量:&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;&quot;&gt;9,320&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;th&gt;當前產量:&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;undermark&quot;&gt;+13,512&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;th&gt;消耗量&lt;/th&gt;&lt;td&gt;&lt;span class=&quot;overmark&quot;&gt;-4,192&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;">
+      <span class="value"><span id="resources_energy" data-raw="9320">9,320</span></span>
+    </div>
+  </div>
+
+  <!-- LifeForm-specific resources (NEW in 2026) -->
+  <div class="resource_tile population">
+    <div id="population_box" class="population tooltipHTML resource"
+         title="人口|...">
+      <span class="value"><span id="resources_population" data-raw="156597866">156,597,866</span></span>
+    </div>
+  </div>
+  <div class="resource_tile food">
+    <div id="food_box" class="food tooltipHTML resource" title="食物|...">
+      <span class="value"><span id="resources_food" data-raw="777632">777,632</span></span>
+    </div>
+  </div>
+  <div class="resource_tile darkmatter">
+    <div id="darkmatter_box" class="darkmatter tooltipHTML resource" title="暗物質|...">
+      <span class="value"><span id="resources_darkmatter" data-raw="103744">103,744</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- ============ EVENT BOX (empty — loaded async via ajaxEventboxURI) ============ -->
+<table id="eventContent"><tbody></tbody></table>
+
+<!-- ============ PLANET LIST ============ -->
+<div id="planetList">
+  <div class="smallplanet smaller" id="planet-33642996">
+    <a href="...&cp=33642996" class="planetlink">
+      <img src="..." class="planetPic" alt="殖民">
+      <span class="planet-name">殖民</span>
+      <span class="planet-koords">[1:486:7]</span>
+    </a>
+    <a class="moonlink" href="...&cp=33650177" data-jumpgateLevel="1">
+      <img src="..." class="icon-moon" alt="月球">
+    </a>
+  </div>
+  <div class="smallplanet smaller" id="planet-33637366">
+    <a href="...&cp=33637366" class="planetlink">
+      <span class="planet-name">殖民</span>
+      <span class="planet-koords">[2:75:7]</span>
+    </a>
+    <a class="moonlink" href="...&cp=33639410" data-jumpgateLevel="1"></a>
+  </div>
+  <div class="smallplanet smaller" id="planet-33640786">
+    <a class="planetlink">
+      <span class="planet-name">殖民</span>
+      <span class="planet-koords">[2:279:8]</span>
+    </a>
+    <a class="moonlink" data-jumpgateLevel="1"></a>
+  </div>
+  <div class="smallplanet smaller" id="planet-33653036">
+    <a class="planetlink">
+      <span class="planet-name">殖民</span>
+      <span class="planet-koords">[3:194:8]</span>
+    </a>
+    <a class="moonlink" data-jumpgateLevel="1"></a>
+  </div>
+  <div class="smallplanet smaller" id="planet-33644188">
+    <a class="planetlink">
+      <span class="planet-name">殖民</span>
+      <span class="planet-koords">[3:260:8]</span>
+    </a>
+    <a class="moonlink" data-jumpgateLevel="1"></a>
+  </div>
+  <div class="smallplanet smaller" id="planet-33650372">
+    <a class="planetlink">
+      <span class="planet-name">殖民</span>
+      <span class="planet-koords">[3:260:9]</span>
+    </a>
+    <a class="moonlink" data-jumpgateLevel="1"></a>
+  </div>
+  <div class="smallplanet smaller" id="planet-33637818">
+    <a class="planetlink">
+      <span class="planet-name">殖民</span>
+      <span class="planet-koords">[3:279:7]</span>
+    </a>
+    <a class="moonlink" data-jumpgateLevel="1"></a>
+  </div>
+  <div class="smallplanet smaller hightlightPlanet" id="planet-33636121">
+    <a class="planetlink active">
+      <span class="planet-name">殖民</span>
+      <span class="planet-koords">[4:241:8]</span>
+    </a>
+    <a class="moonlink" data-jumpgateLevel="1"></a>
+  </div>
+  <div class="smallplanet smaller" id="planet-33639762">
+    <a class="planetlink">
+      <span class="planet-name">殖民</span>
+      <span class="planet-koords">[4:242:8]</span>
+    </a>
+    <a class="moonlink" data-jumpgateLevel="1"></a>
+  </div>
+</div>
+
+<!-- Vacation mode banner -->
+<div class="adviceWrapper">
+  <div id="advice-bar">
+    <a class="advice" title="假期模式|至少直到 21.05.2026 08:42:59 為止,該帳號將處於假期模式中.">
+      <img src="..." height="32" width="32">
+    </a>
+  </div>
+</div>
+
+</body>
+</html>
