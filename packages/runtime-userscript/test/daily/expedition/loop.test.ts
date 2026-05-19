@@ -21,6 +21,17 @@ import {
 const NOW = 1_700_000_000_000;
 const HOUR = 3_600_000;
 
+/**
+ * Poll a predicate up to `timeoutMs`, sleeping `stepMs` between checks.
+ * Robust under vitest parallel-worker scheduling (fixed sleeps can be starved).
+ */
+async function waitFor(pred: () => boolean, timeoutMs = 2000, stepMs = 10): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!pred() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+}
+
 function makePlanet(
   overrides: Partial<Planet> & Pick<Planet, "id" | "coords">,
 ): Planet {
@@ -172,8 +183,8 @@ describe("startDailyExpeditionLoop", () => {
       reportHtml: NOTHING_REPORT_HTML,
     });
 
-    // Wait for the async handler chain (parse → put → emit → tick).
-    await new Promise((r) => setTimeout(r, 20));
+    // Poll for the async handler chain (parse → put → emit → tick → fillSlots).
+    await waitFor(() => h.send.mock.calls.length >= 2);
 
     expect(h.putSpy).toHaveBeenCalledTimes(1);
     expect(updatedSpy).toHaveBeenCalledTimes(1);
@@ -193,7 +204,8 @@ describe("startDailyExpeditionLoop", () => {
       reportHtml: NOTHING_REPORT_HTML,
     });
 
-    await new Promise((r) => setTimeout(r, 20));
+    // Negative assertion — give plenty of headroom so absence is meaningful even under load.
+    await new Promise((r) => setTimeout(r, 150));
 
     expect(h.putSpy).not.toHaveBeenCalled();
     expect(updatedSpy).not.toHaveBeenCalled();
@@ -209,7 +221,7 @@ describe("startDailyExpeditionLoop", () => {
 
     h.bus.emit("fleet_returned", { fleet: makeExpeditionFleet() });
 
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 150));
 
     expect(h.putSpy).not.toHaveBeenCalled();
     expect(updatedSpy).not.toHaveBeenCalled();
@@ -221,7 +233,7 @@ describe("startDailyExpeditionLoop", () => {
     handle = startDailyExpeditionLoop(h.deps);
 
     h.bus.emit("expedition_data_updated", {});
-    await new Promise((r) => setTimeout(r, 20));
+    await waitFor(() => h.send.mock.calls.length >= 2);
 
     expect(h.send.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(h.putSpy).not.toHaveBeenCalled(); // no parse-path side effects
@@ -250,12 +262,9 @@ describe("startDailyExpeditionLoop", () => {
     // Before the first interval fires: no calls.
     expect(h.send).not.toHaveBeenCalled();
 
-    // Poll up to 2s for >=2 send invocations (interval=30ms ⇒ expected ~60ms,
-    // 2s budget gives 30x margin even under heavy parallel load).
-    const deadline = Date.now() + 2000;
-    while (h.send.mock.calls.length < 2 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
+    // Poll for >=2 send invocations (interval=30ms ⇒ expected ~60ms; waitFor
+    // gives 2s margin — robust under heavy parallel-worker load).
+    await waitFor(() => h.send.mock.calls.length >= 2);
     expect(h.send.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });
