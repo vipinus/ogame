@@ -3239,6 +3239,59 @@ export const queryStateTool = (statesRef: { current: WorldState | null }) => too
 - `ogame_add_goal` requires confirmation via separate `/confirm` tool call.
 - Directives dispatched to userscript via WS arrive within 1s.
 
+### Task M5.0 — Gemini API client (direct, sidecar-embedded)
+
+**Files:**
+- Create: `packages/openclaw-plugin/src/sidecar/gemini_client.ts`, test
+
+**Decision (2026-05-19):** bypass the OpenClaw agent loop for LLM planning latency.
+Measured E2E for `openclaw agent --message ...` is ~23s even with `gemini-2.5-flash`
+because the bottleneck is OpenClaw CLI bootstrap + agent loop, not the model.
+Direct HTTPS call to `generativelanguage.googleapis.com` is 1-3s.
+
+API:
+```ts
+export interface GeminiClientOptions {
+  apiKey: string;                     // GEMINI_API_KEY
+  model?: string;                     // default "gemini-2.5-flash"
+  baseUrl?: string;                   // for tests
+  timeoutMs?: number;                 // default 30000
+}
+
+export interface GeminiGenerateOptions {
+  systemInstruction?: string;
+  temperature?: number;
+  responseMimeType?: "application/json" | "text/plain";
+  responseSchema?: object;            // structured-output JSON schema (passed through to Gemini)
+}
+
+export class GeminiClient {
+  constructor(opts: GeminiClientOptions);
+  generate(prompt: string, gen?: GeminiGenerateOptions): Promise<string>;
+  /** Parse JSON response — throws if responseMimeType != json or output is invalid. */
+  generateJson<T = unknown>(prompt: string, schema: object, gen?: Omit<GeminiGenerateOptions, "responseMimeType" | "responseSchema">): Promise<T>;
+}
+```
+
+Endpoint: `POST https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent?key=<apiKey>`
+
+Body shape (verified against Google docs):
+```json
+{
+  "contents": [{ "role": "user", "parts": [{ "text": "<prompt>" }] }],
+  "systemInstruction": { "parts": [{ "text": "..." }] },
+  "generationConfig": {
+    "temperature": 0.2,
+    "responseMimeType": "application/json",
+    "responseSchema": { ... }
+  }
+}
+```
+
+Response: `response.candidates[0].content.parts[0].text` is the model output.
+
+Tests use a mock fetch — assert URL + headers + body shape + decoded result.
+
 ### Task M5.1 — Goals SQLite store
 
 **Files:**
@@ -3261,7 +3314,11 @@ For each goal type, return either the next executable directive or a blocked rea
 
 ### Task M5.3 — Tools: add_goal, cancel_goal, query_goals, get_eta, explain_directive
 
-Each tool with TDD (mock store + planner). `add_goal` returns a `pending_action_id` and emits a confirmation prompt; finalization happens via separate `ogame_confirm` tool (or user reply "yes" matched by OpenClaw).
+Each tool with TDD (mock store + planner + GeminiClient). `add_goal` accepts a
+natural-language string, calls `GeminiClient.generateJson(...)` (from M5.0)
+with a Goal-shaped JSON schema to parse it into a structured Goal, then returns
+a `pending_action_id` and emits a confirmation prompt; finalization happens via
+separate `ogame_confirm` tool (or user reply "yes" matched by OpenClaw).
 
 ### Task M5.4 — Priority merger + directive dispatch
 
