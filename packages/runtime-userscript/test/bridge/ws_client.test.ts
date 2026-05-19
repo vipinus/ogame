@@ -211,11 +211,136 @@ describe("BridgeClient", () => {
   it("send() before connect drops the message with a warning and does not throw", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => { /* silence */ });
     try {
-      const c = trackClient(new BridgeClient({ WebSocketCtor, reconnectOnLoss: false }));
+      // replayOnReconnect:false preserves the historical drop-on-disconnect
+      // semantics this test was written against (the default is now true,
+      // which would queue the message instead — see M7.4 replay queue tests
+      // below for that path).
+      const c = trackClient(new BridgeClient({
+        WebSocketCtor, reconnectOnLoss: false, replayOnReconnect: false,
+      }));
       expect(() => c.send({ type: "pong", ts: 1 })).not.toThrow();
       expect(warn).toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // --- M7.4: replay queue ---
+
+  it("queues sends issued before connect() and flushes them on open", async () => {
+    const s = track(await startServer());
+    const c = trackClient(new BridgeClient({ WebSocketCtor, reconnectOnLoss: false }));
+    const msg: Extract<UpstreamMsg, { type: "hello" }> = {
+      type: "hello",
+      strategy_version: 1,
+      userscript_version: "0.0.1",
+    };
+    // Send BEFORE connect — should be queued.
+    c.send(msg);
+    expect(c.queuedCount()).toBe(1);
+    expect(c.droppedCount()).toBe(0);
+
+    const connP = s.nextConnect();
+    await c.connect(url(s), "tok");
+    const serverSocket = await connP;
+
+    const recvP = new Promise<unknown>((resolve) => {
+      serverSocket.once("message", (data) => resolve(JSON.parse(data.toString())));
+    });
+    expect(await recvP).toEqual(msg);
+    expect(c.queuedCount()).toBe(0);
+  });
+
+  it("queues sends issued while reconnecting and flushes them on reopen", async () => {
+    const s = track(await startServer());
+    const c = trackClient(new BridgeClient({
+      WebSocketCtor,
+      reconnectOnLoss: true,
+      initialBackoffMs: 10,
+      maxBackoffMs: 50,
+    }));
+    const firstConnP = s.nextConnect();
+    await c.connect(url(s), "tok");
+    const firstSock = await firstConnP;
+    expect(c.status()).toBe("open");
+
+    const secondConnP = s.nextConnect();
+    // Drop server-side; client transitions reconnecting → connecting → open.
+    firstSock.close();
+
+    // Poll until the status leaves "open" — at that point a send() will queue.
+    for (let i = 0; i < 100 && c.status() === "open"; i++) await sleep(2);
+    expect(c.status()).not.toBe("open");
+
+    const msg: Extract<UpstreamMsg, { type: "pong" }> = { type: "pong", ts: 7 };
+    c.send(msg);
+    expect(c.queuedCount()).toBeGreaterThan(0);
+
+    const secondSock = await secondConnP;
+    const recvP = new Promise<unknown>((resolve) => {
+      secondSock.once("message", (data) => resolve(JSON.parse(data.toString())));
+    });
+    expect(await recvP).toEqual(msg);
+    for (let i = 0; i < 50 && c.queuedCount() !== 0; i++) await sleep(2);
+    expect(c.queuedCount()).toBe(0);
+  });
+
+  it("drops the oldest queued messages when maxQueueSize is exceeded", async () => {
+    const s = track(await startServer());
+    const c = trackClient(new BridgeClient({
+      WebSocketCtor, reconnectOnLoss: false, maxQueueSize: 3,
+    }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => { /* silence */ });
+    try {
+      // 5 distinguishable messages before connect — only the latest 3 (ts 3,4,5)
+      // should survive after FIFO eviction.
+      for (let ts = 1; ts <= 5; ts++) {
+        c.send({ type: "pong", ts });
+      }
+      expect(c.queuedCount()).toBe(3);
+      expect(c.droppedCount()).toBe(2);
+
+      const connP = s.nextConnect();
+      await c.connect(url(s), "tok");
+      const serverSocket = await connP;
+
+      const received: unknown[] = [];
+      const done = new Promise<void>((resolve) => {
+        serverSocket.on("message", (data) => {
+          received.push(JSON.parse(data.toString()));
+          if (received.length === 3) resolve();
+        });
+      });
+      await done;
+      expect(received).toEqual([
+        { type: "pong", ts: 3 },
+        { type: "pong", ts: 4 },
+        { type: "pong", ts: 5 },
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not queue when replayOnReconnect is false; drops with warning instead", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => { /* silence */ });
+    try {
+      const c = trackClient(new BridgeClient({
+        WebSocketCtor, reconnectOnLoss: false, replayOnReconnect: false,
+      }));
+      c.send({ type: "pong", ts: 1 });
+      expect(c.queuedCount()).toBe(0);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stop() clears the pending replay queue", () => {
+    const c = trackClient(new BridgeClient({ WebSocketCtor, reconnectOnLoss: false }));
+    for (let ts = 1; ts <= 5; ts++) c.send({ type: "pong", ts });
+    expect(c.queuedCount()).toBe(5);
+    c.stop();
+    expect(c.queuedCount()).toBe(0);
   });
 });

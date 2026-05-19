@@ -28,6 +28,12 @@ export interface BridgeClientOptions {
 
   /** Maximum reconnect backoff. Default 30000. */
   maxBackoffMs?: number;
+
+  /** Buffer messages while disconnected; flush on reconnect. Default true. */
+  replayOnReconnect?: boolean;
+
+  /** Max queued messages before oldest is dropped. Default 100. */
+  maxQueueSize?: number;
 }
 
 export type BridgeStatus =
@@ -46,6 +52,7 @@ type HandlerMap = { [K in DownstreamType]?: Set<DownstreamHandler<K>> };
 // Constants
 const DEFAULT_INITIAL_BACKOFF_MS = 1000;
 const DEFAULT_MAX_BACKOFF_MS = 30000;
+const DEFAULT_MAX_QUEUE_SIZE = 100;
 const JITTER_FRACTION = 0.2;
 
 // Minimal structural type for the parts of WebSocket we use. Keeps tests free
@@ -83,6 +90,11 @@ export class BridgeClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private nextBackoffMs: number;
 
+  private readonly replayOnReconnect: boolean;
+  private readonly maxQueueSize: number;
+  private queue: UpstreamMsg[] = [];
+  private dropped = 0;
+
   constructor(opts: BridgeClientOptions = {}) {
     const ctor = opts.WebSocketCtor
       ?? (typeof WebSocket !== "undefined" ? WebSocket : undefined);
@@ -96,6 +108,8 @@ export class BridgeClient {
     this.initialBackoffMs = opts.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS;
     this.maxBackoffMs = opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.nextBackoffMs = this.initialBackoffMs;
+    this.replayOnReconnect = opts.replayOnReconnect ?? true;
+    this.maxQueueSize = opts.maxQueueSize ?? DEFAULT_MAX_QUEUE_SIZE;
   }
 
   /** Resolves once the first 'open' event fires. Rejects on initial connect error. */
@@ -106,17 +120,43 @@ export class BridgeClient {
     return this.openSocket();
   }
 
-  /** Send an UpstreamMsg. No-op (with warning) if not currently OPEN. */
+  /**
+   * Send an UpstreamMsg.
+   *
+   * - If OPEN: forwards immediately.
+   * - Else if `replayOnReconnect` is enabled and the client is not stopped:
+   *   the message is buffered into an in-memory queue and flushed on the next
+   *   `open` transition. When the queue exceeds `maxQueueSize`, the OLDEST
+   *   queued message is evicted and `droppedCount()` increments (FIFO eviction
+   *   preserves the most-recent intent of the caller).
+   * - Else (stopped, or replay disabled): drops with a warning.
+   */
   send(msg: UpstreamMsg): void {
     const ws = this.ws;
-    if (!ws || ws.readyState !== WS_OPEN) {
-      const st = this.state;
-      // eslint-disable-next-line no-console
-      console.warn(`[BridgeClient] send dropped, status=${st}`);
+    if (this.state === "open" && ws && ws.readyState === WS_OPEN) {
+      ws.send(JSON.stringify(msg));
       return;
     }
-    ws.send(JSON.stringify(msg));
+    if (this.replayOnReconnect && this.state !== "stopped") {
+      this.queue.push(msg);
+      if (this.queue.length > this.maxQueueSize) {
+        this.queue.shift();
+        this.dropped++;
+        // eslint-disable-next-line no-console
+        console.warn("[BridgeClient] queue overflow, dropped oldest");
+      }
+      return;
+    }
+    const st = this.state;
+    // eslint-disable-next-line no-console
+    console.warn(`[BridgeClient] send dropped, status=${st}`);
   }
+
+  /** Test/inspection: number of queued messages awaiting replay. */
+  queuedCount(): number { return this.queue.length; }
+
+  /** Test/inspection: number of messages dropped due to queue overflow. */
+  droppedCount(): number { return this.dropped; }
 
   /** Subscribe to a downstream message type. Returns an unsubscribe fn. */
   on<T extends DownstreamType>(type: T, handler: DownstreamHandler<T>): () => void {
@@ -129,13 +169,15 @@ export class BridgeClient {
     return () => { set?.delete(handler); };
   }
 
-  /** Stop client and disable reconnect. Idempotent. */
+  /** Stop client and disable reconnect. Clears any pending replay queue.
+   *  Idempotent. */
   stop(): void {
     this.state = "stopped";
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.queue = [];
     const ws = this.ws;
     this.ws = null;
     if (ws) {
@@ -184,6 +226,17 @@ export class BridgeClient {
         settled = true;
         this.state = "open";
         this.nextBackoffMs = this.initialBackoffMs;
+        // Drain any messages that were queued while we were disconnected /
+        // reconnecting. We splice() once up-front so any failure mid-flush
+        // does not re-enqueue and create an infinite loop on the next open.
+        const toFlush = this.queue.splice(0);
+        for (const m of toFlush) {
+          try { this.ws!.send(JSON.stringify(m)); }
+          catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn("[BridgeClient] replay send failed", e);
+          }
+        }
         resolve();
       };
 
