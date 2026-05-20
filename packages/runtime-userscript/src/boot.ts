@@ -154,7 +154,24 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const fls = extractFleetMovements(env.doc);
       store.setPartial({ fleets_outbound: fls });
     }
+    if (targetId === "planetList") {
+      const pls = extractPlanets(env.doc);
+      if (pls.length > 0) store.setPartial({ planets: pls });
+    }
   });
+
+  // 6b. Boot-time race: planetList sometimes renders AFTER document-end. Schedule
+  //     a one-shot re-extract at +500ms + +2000ms to catch late renders. The
+  //     dom.changed MO handler above covers all later updates.
+  const schedulePlanetReExtract = (delayMs: number): ReturnType<typeof setTimeout> =>
+    setTimeout(() => {
+      const pls = extractPlanets(env.doc);
+      if (pls.length > 0 && pls.length !== store.state.planets.length) {
+        store.setPartial({ planets: pls });
+      }
+    }, delayMs);
+  const lateExtract1 = schedulePlanetReExtract(500);
+  const lateExtract2 = schedulePlanetReExtract(2000);
 
   // 7. Persist on every state.updated, debounced loosely
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -187,6 +204,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       offDomChanged();
       offState();
       if (persistTimer) clearTimeout(persistTimer);
+      clearTimeout(lateExtract1);
+      clearTimeout(lateExtract2);
     },
   };
 }

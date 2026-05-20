@@ -13,6 +13,7 @@ const WATCHED_IDS = [
   "fleet2",
   "fleet3",
   "fleet4",
+  "planetList",
 ] as const;
 
 /**

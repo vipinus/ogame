@@ -8,6 +8,28 @@ declare const GM_getValue: ((key: string, def?: string) => string) | undefined;
 
 const DEFAULT_BRIDGE_URL = "ws://127.0.0.1:18790";
 
+/**
+ * Resolve a config value via the following precedence:
+ *   1. Tampermonkey GM_getValue (preferred; survives across reloads)
+ *   2. window.localStorage (page-level; useful when GM grants aren't configured)
+ *   3. provided default
+ * Page-level localStorage is also handy for smoke testing without a userscript
+ * manager: just `localStorage.setItem("OGAMEX_BRIDGE_TOKEN", "...")` and reload.
+ */
+function readConfig(key: string, def: string): string {
+  if (typeof GM_getValue === "function") {
+    try {
+      const v = GM_getValue(key, "");
+      if (v) return v;
+    } catch { /* fall through */ }
+  }
+  try {
+    const v = window.localStorage.getItem(key);
+    if (v) return v;
+  } catch { /* localStorage may be unavailable in some sandboxes */ }
+  return def;
+}
+
 /** Stub config until M5+ pulls from Strategy.daily.expedition. Dormant by default. */
 function defaultExpeditionConfig(): ExpeditionConfig {
   return {
@@ -39,13 +61,9 @@ function defaultExpeditionConfig(): ExpeditionConfig {
     // Expose for in-browser inspection
     (window as unknown as { __OGAMEX__: unknown }).__OGAMEX__ = handle;
 
-    // Wire bridge if a token is configured via Tampermonkey GM_getValue
-    const bridgeUrl = typeof GM_getValue === "function"
-      ? GM_getValue("OGAMEX_BRIDGE_URL", DEFAULT_BRIDGE_URL)
-      : DEFAULT_BRIDGE_URL;
-    const bridgeToken = typeof GM_getValue === "function"
-      ? GM_getValue("OGAMEX_BRIDGE_TOKEN", "")
-      : "";
+    // Wire bridge if a token is configured (GM_getValue OR window.localStorage)
+    const bridgeUrl = readConfig("OGAMEX_BRIDGE_URL", DEFAULT_BRIDGE_URL);
+    const bridgeToken = readConfig("OGAMEX_BRIDGE_TOKEN", "");
     let wired: Awaited<ReturnType<typeof wireBridge>> | null = null;
     if (bridgeToken) {
       try {
