@@ -420,3 +420,54 @@ export function costFor(techId: string, level: number): Resources {
 export function expeditionSlots(astrophysicsLevel: number): number {
   return Math.floor(Math.sqrt(astrophysicsLevel));
 }
+
+/**
+ * Ogame's DOM data-technology attribute uses NUMERIC ids while our TECH_TREE
+ * keys are string ids. This map is the authoritative mapping for the two
+ * worlds. Verified against live s274-en DOM (2026-05-19 smoke). Used by:
+ *   - userscript directive_executor (string → numeric for button selector)
+ *   - userscript buildings extractor (numeric → string for state)
+ *   - plugin planner (no direct use; reads TECH_TREE keys only)
+ *
+ * IDs follow ogame's internal numbering (buildings 1..44, research 106..199).
+ */
+export const OGAME_DATA_TECHNOLOGY: Record<string, string> = {
+  // Resource buildings
+  metalMine: "1",
+  crystalMine: "2",
+  deuteriumSynth: "3",
+  solarPlant: "4",
+  fusionReactor: "12",
+  metalStorage: "22",
+  crystalStorage: "23",
+  deuteriumTank: "24",
+  // Facilities
+  roboticsFactory: "14",
+  shipyard: "21",
+  researchLab: "31",
+  alliance_depot: "34",
+  missile_silo: "44",
+  naniteFactory: "15",
+  terraformer: "33",
+  // Research
+  energyTech: "113",
+  laserTech: "120",
+  ionTech: "121",
+  hyperspaceTech: "114",
+  plasmaTech: "122",
+  combustion: "115",
+  impulseDrive: "117",
+  hyperspaceDrive: "118",
+  espionageTech: "106",
+  computerTech: "108",
+  astrophysics: "124",
+  intergalactic: "123",
+  gravitonTech: "199",
+  weapons: "109",
+  shielding: "110",
+  armor: "111",
+};
+
+/** Reverse of OGAME_DATA_TECHNOLOGY. Computed once at module load. */
+export const OGAME_DATA_TECHNOLOGY_REVERSE: Record<string, string> = Object
+  .fromEntries(Object.entries(OGAME_DATA_TECHNOLOGY).map(([k, v]) => [v, k]));

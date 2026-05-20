@@ -11,6 +11,8 @@ import {
 } from "./probes/extractors/resources.js";
 import { extractIncomingEvents } from "./probes/extractors/events.js";
 import { extractPlanets } from "./probes/extractors/planets.js";
+import { extractTechLevels } from "./probes/extractors/buildings.js";
+import { TECH_TREE } from "@ogamex/shared";
 import { extractFleetMovements } from "./probes/extractors/fleet.js";
 import { extractToken, type OgameWindow } from "./probes/extractors/token.js";
 
@@ -52,6 +54,37 @@ function readMeta(doc: Document, name: string): string | undefined {
   return doc.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content || undefined;
 }
 
+/**
+ * Convert PlanetIdentity[] (extractor output) to Planet[] (state shape) by
+ * preserving existing per-planet data (buildings/ships/queues) where ids
+ * match, and synthesizing safe defaults for fresh planets.
+ */
+function mergeWithExistingPlanets(
+  ids: import("./probes/extractors/planets.js").PlanetIdentity[],
+  existing: import("@ogamex/shared").Planet[],
+): import("@ogamex/shared").Planet[] {
+  const byId = new Map(existing.map((p) => [p.id, p] as const));
+  return ids.map((p) => {
+    const prev = byId.get(p.id);
+    if (prev) {
+      return { ...prev, ...p } as import("@ogamex/shared").Planet;
+    }
+    return {
+      ...p,
+      resources: { m: 0, c: 0, d: 0, e: 0 },
+      storage: { m_max: 0, c_max: 0, d_max: 0 },
+      production: { m_h: 0, c_h: 0, d_h: 0 },
+      buildings: {},
+      build_q: null,
+      shipyard_q: null,
+      defense_q: null,
+      ships: {},
+      defense: {},
+      lifeform: null,
+    } as import("@ogamex/shared").Planet;
+  });
+}
+
 function detectVacationMode(doc: Document): boolean {
   // The advice bar contains an icon with a title that includes "假期模式" / "vacation mode"
   const banners = doc.querySelectorAll<HTMLElement>("#advice-bar [title]");
@@ -60,6 +93,53 @@ function detectVacationMode(doc: Document): boolean {
     if (t.includes("假期模式") || /vacation\s*mode/i.test(t)) return true;
   }
   return false;
+}
+
+/**
+ * Read current ogame page DOM for building / research levels, partition by
+ * TECH_TREE kind, and merge into the right slots of state:
+ *   - kind "building" → state.planets[activeIdx].buildings (active planet = the one
+ *     whose id matches the <meta name="ogame-planet-id"> content)
+ *   - kind "research" → state.research.levels (player-wide)
+ *
+ * Ship and defense kinds aren't extracted here (different DOM shape). Each
+ * invocation is idempotent: missing tech ids just don't show up.
+ */
+function mergeTechLevels(doc: Document, store: StateStore): void {
+  const levels = extractTechLevels(doc);
+  if (Object.keys(levels).length === 0) return;
+  const buildings: Record<string, number> = {};
+  const research: Record<string, number> = {};
+  for (const [id, lvl] of Object.entries(levels)) {
+    const entry = (TECH_TREE as Record<string, { kind: string }>)[id];
+    if (!entry) continue;
+    if (entry.kind === "building") buildings[id] = lvl;
+    else if (entry.kind === "research") research[id] = lvl;
+  }
+  const cur = store.state;
+  const patch: Partial<typeof cur> = {};
+  // Merge buildings into the currently-active planet, identified by
+  // <meta name="ogame-planet-id">. Without that meta we can't safely target.
+  const activeIdRaw = doc.querySelector<HTMLMetaElement>("meta[name=\"ogame-planet-id\"]")?.content;
+  if (Object.keys(buildings).length > 0 && activeIdRaw && cur.planets.length > 0) {
+    const idx = cur.planets.findIndex((p) => p.id === activeIdRaw);
+    if (idx >= 0) {
+      const updated = [...cur.planets];
+      const existing = updated[idx]!;
+      updated[idx] = {
+        ...existing,
+        buildings: { ...(existing.buildings ?? {}), ...buildings },
+      } as typeof existing;
+      patch.planets = updated;
+    }
+  }
+  if (Object.keys(research).length > 0) {
+    patch.research = {
+      ...cur.research,
+      levels: { ...(cur.research?.levels ?? {}), ...research },
+    };
+  }
+  if (Object.keys(patch).length > 0) store.setPartial(patch);
 }
 
 /**
@@ -155,7 +235,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       store.setPartial({ fleets_outbound: fls });
     }
     if (targetId === "planetList") {
-      const pls = extractPlanets(env.doc);
+      const pls = mergeWithExistingPlanets(extractPlanets(env.doc), store.state.planets);
       if (pls.length > 0) store.setPartial({ planets: pls });
     }
   });
@@ -165,13 +245,18 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   //     dom.changed MO handler above covers all later updates.
   const schedulePlanetReExtract = (delayMs: number): ReturnType<typeof setTimeout> =>
     setTimeout(() => {
-      const pls = extractPlanets(env.doc);
+      const pls = mergeWithExistingPlanets(extractPlanets(env.doc), store.state.planets);
       if (pls.length > 0 && pls.length !== store.state.planets.length) {
         store.setPartial({ planets: pls });
       }
+      // Same window: harvest building / research levels from current page.
+      mergeTechLevels(env.doc, store);
     }, delayMs);
   const lateExtract1 = schedulePlanetReExtract(500);
   const lateExtract2 = schedulePlanetReExtract(2000);
+  // Also harvest immediately so the very first state.snapshot push carries
+  // real building/research levels when the page is fully rendered at boot.
+  mergeTechLevels(env.doc, store);
 
   // 7. Persist on every state.updated, debounced loosely
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
