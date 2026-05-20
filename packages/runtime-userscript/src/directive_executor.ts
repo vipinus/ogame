@@ -153,6 +153,20 @@ export class UiDirectiveExecutor implements DirectiveExecutor {
     // 2) Humanized delay so the click doesn't look bot-like.
     await this.sleep(this.clickDelay());
 
+    // 3a) Preflight: if the tech's <li> exists with data-status="disabled"
+    //     (ogame sets this when the build queue is full, prerequisites unmet,
+    //     or resources insufficient), short-circuit with a clear error.
+    //     Saves 5s of polling for a button that ogame will never render.
+    const numericId = OGAME_NUMERIC_ID[targetId];
+    if (numericId) {
+      const li = this.doc.querySelector<HTMLElement>(`li.technology[data-technology="${numericId}"]`);
+      const status = li?.getAttribute("data-status");
+      if (status === "disabled") {
+        const reason = li?.getAttribute("data-tooltip-title") ?? "tech is disabled";
+        throw new Error(`${targetId} unavailable: ${reason}`);
+      }
+    }
+
     // 3) Locate the upgrade button. Try real ogame selectors first (numeric
     //    data-technology), then the synthetic data-ogamex-upgrade contract.
     //    ogame SPA renders the target page async, so poll for the button to
