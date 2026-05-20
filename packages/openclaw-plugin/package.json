@@ -25,5 +25,8 @@
   },
   "peerDependenciesMeta": {
     "openclaw": { "optional": false }
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
   }
 }
