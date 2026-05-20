@@ -41,7 +41,8 @@ export interface AddGoalResult {
 
 interface ParsedGoalShape {
   type: GoalType;
-  target: Record<string, unknown>;
+  /** JSON-encoded; client decodes. See GoalJsonSchema for why. */
+  target_json: string;
   planet?: string;
   priority?: number;
   deadline?: number;
@@ -61,6 +62,10 @@ const GOAL_TYPES: readonly GoalType[] = [
   "lifeform_building",
 ];
 
+// Gemini's responseSchema (a constrained OpenAPI 3 subset) does NOT support
+// `additionalProperties` on object types. Workaround: model emits a
+// JSON-encoded string for `target`, which we parse client-side. Same trick is
+// documented in M6.3 strategy_analyzer for the same root cause.
 const GoalJsonSchema = {
   type: "object",
   properties: {
@@ -68,19 +73,19 @@ const GoalJsonSchema = {
       type: "string",
       enum: [...GOAL_TYPES],
     },
-    target: { type: "object", additionalProperties: true },
+    target_json: { type: "string", description: "JSON-encoded target spec, e.g. {\"tech\":\"gravitonTech\",\"level\":6}" },
     planet: { type: "string" },
     priority: { type: "number" },
     deadline: { type: "number" },
   },
-  required: ["type", "target"],
+  required: ["type", "target_json"],
 } as const;
 
 function buildPrompt(naturalLanguage: string): string {
   return [
     "Parse this user instruction into a structured Goal. Extract:",
     "- type (research|build|build_universal|colonize|build_ships|build_defense|terraformer_to|pick_lifeform|lifeform_level_to|lifeform_research|lifeform_building)",
-    "- target (object — for research: {tech, level}; for build: {building, level, planet}; etc.)",
+    "- target_json (JSON-encoded string — for research: \"{\\\"tech\\\":\\\"gravitonTech\\\",\\\"level\\\":6}\"; for build: \"{\\\"building\\\":\\\"naniteFactory\\\",\\\"level\\\":3,\\\"planet\\\":\\\"home\\\"}\")",
     "- planet (optional planet id or name)",
     "- priority (1-10, default 5)",
     "- deadline (optional ms epoch — leave undefined if not stated)",
@@ -126,12 +131,23 @@ export function makeAddGoalTool(deps: AddGoalDeps): AddGoalDefinition {
         return { error: `unsupported goal type: ${String(parsed.type)}` };
       }
 
+      let target: Record<string, unknown>;
+      try {
+        const decoded = JSON.parse(parsed.target_json) as unknown;
+        if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) {
+          return { error: `target_json did not parse to an object: ${parsed.target_json.slice(0, 80)}` };
+        }
+        target = decoded as Record<string, unknown>;
+      } catch (err) {
+        return { error: `target_json malformed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+
       const priority = params.priority ?? parsed.priority ?? 5;
 
       const goal: Goal = {
         id: randomUUID(),
         type: parsed.type,
-        target: parsed.target,
+        target,
         priority,
         status: "pending",
         created_at: Date.now(),

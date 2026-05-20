@@ -35,7 +35,7 @@ describe("makeAddGoalTool", () => {
 
   it("happy path: parses NL, stores pending Goal, returns confirmation prompt", async () => {
     const fakeFetch = makeFakeFetch(
-      JSON.stringify({ type: "research", target: { tech: "gravitation", level: 6 }, priority: 7 }),
+      JSON.stringify({ type: "research", target_json: JSON.stringify({ tech: "gravitation", level: 6 }), priority: 7 }),
     );
     const gemini = new GeminiClient({ apiKey: "k", fetch: fakeFetch });
     const tool = makeAddGoalTool({ gemini, store });
@@ -65,7 +65,7 @@ describe("makeAddGoalTool", () => {
 
   it("explicit params.priority overrides parsed priority", async () => {
     const fakeFetch = makeFakeFetch(
-      JSON.stringify({ type: "research", target: { tech: "gravitation", level: 6 }, priority: 3 }),
+      JSON.stringify({ type: "research", target_json: JSON.stringify({ tech: "gravitation", level: 6 }), priority: 3 }),
     );
     const gemini = new GeminiClient({ apiKey: "k", fetch: fakeFetch });
     const tool = makeAddGoalTool({ gemini, store });
@@ -78,7 +78,7 @@ describe("makeAddGoalTool", () => {
 
   it("falls back to priority=5 when neither caller nor model supply one", async () => {
     const fakeFetch = makeFakeFetch(
-      JSON.stringify({ type: "research", target: { tech: "gravitation", level: 6 } }),
+      JSON.stringify({ type: "research", target_json: JSON.stringify({ tech: "gravitation", level: 6 }) }),
     );
     const gemini = new GeminiClient({ apiKey: "k", fetch: fakeFetch });
     const tool = makeAddGoalTool({ gemini, store });
@@ -126,7 +126,7 @@ describe("makeAddGoalTool", () => {
 
   it("rejects unsupported goal type from the model", async () => {
     const fakeFetch = makeFakeFetch(
-      JSON.stringify({ type: "definitely_not_a_goal_type", target: {} }),
+      JSON.stringify({ type: "definitely_not_a_goal_type", target_json: "{}" }),
     );
     const gemini = new GeminiClient({ apiKey: "k", fetch: fakeFetch });
     const tool = makeAddGoalTool({ gemini, store });

@@ -56,8 +56,14 @@ function planResearchGoal(goal: Goal, state: WorldState): PlanResult {
 
   // Source planet for research lab lookup: M5.6 will resolve this from the
   // goal's planet/research-lab pairing; for M5.2 we fall back to planets[0].
-  const sourcePlanetId =
-    goal.planet ?? state.planets[0]?.id ?? "";
+  // If goal.planet is set but doesn't match any actual planet id (e.g. the LLM
+  // wrote a friendly name like "homeworld"), fall back to first planet too.
+  const goalPlanetMatches =
+    typeof goal.planet === "string" &&
+    state.planets.some((p) => p.id === goal.planet);
+  const sourcePlanetId = goalPlanetMatches
+    ? (goal.planet as string)
+    : state.planets[0]?.id ?? "";
 
   const ctx: PlanCtx = {
     state,
@@ -96,7 +102,7 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
     }
     if (reqEntry.kind === "building") {
       const planet = ctx.state.planets.find((p) => p.id === ctx.sourcePlanetId);
-      const actual = planet?.buildings[reqTech] ?? 0;
+      const actual = planet?.buildings?.[reqTech] ?? 0;
       if (actual < reqLevel) {
         return planBuild(reqTech, reqLevel, ctx.sourcePlanetId, { ...ctx, depth: ctx.depth + 1 });
       }
@@ -177,7 +183,7 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   const planet = ctx.state.planets.find((p) => p.id === planetId);
   if (!planet) return { blocked: `planet not found: ${planetId}` };
 
-  const current = planet.buildings[building] ?? 0;
+  const current = planet.buildings?.[building] ?? 0;
   if (current >= targetLevel) {
     return {
       blocked: `already at or above target level (${current} >= ${targetLevel}) for ${building} on ${planetId}`,
@@ -192,7 +198,7 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
       return { blocked: `unknown prereq tech: ${reqTech} (required by ${building})` };
     }
     if (reqEntry.kind === "building") {
-      const actual = planet.buildings[reqTech] ?? 0;
+      const actual = planet?.buildings?.[reqTech] ?? 0;
       if (actual < reqLevel) {
         return planBuild(reqTech, reqLevel, planetId, { ...ctx, depth: ctx.depth + 1 });
       }

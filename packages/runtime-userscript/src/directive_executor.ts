@@ -21,15 +21,70 @@ export interface UiExecutorDeps {
 const SUPPORTED_ACTIONS = new Set(["build", "research"]);
 
 /**
- * Resolves the synthetic upgrade-button selector contract used by the
- * DOM-augmenter / M5.7 smoke harness. We use a single dedicated data attribute
- * so the executor doesn't need to know about ogame's many skin-specific class
- * names — the augmenter is responsible for stamping
- * `data-ogamex-upgrade="<action>:<id>"` on the correct button. M5.7 will tune
- * the augmenter against the live DOM.
+ * Ogame's DOM uses NUMERIC data-technology ids (1=metalMine, 31=researchLab,
+ * 199=gravitonTech, ...) but our TECH_TREE / Goal uses string ids. Map the
+ * ones we support to keep the executor self-contained.
+ *
+ * Verified against live ogame DOM on s274-en (2026-05-19 smoke):
+ *   `<button class="upgrade" data-technology="<numericId>">`.
+ *
+ * Sources: spec §3 + in-game data-technology values for buildings (1..44)
+ * and research (106..199).
  */
-function upgradeSelector(action: string, id: string): string {
-  return `[data-ogamex-upgrade="${action}:${id}"]`;
+const OGAME_NUMERIC_ID: Record<string, string> = {
+  // Resource buildings
+  metalMine: "1",
+  crystalMine: "2",
+  deuteriumSynth: "3",
+  solarPlant: "4",
+  fusionReactor: "12",
+  metalStorage: "22",
+  crystalStorage: "23",
+  deuteriumTank: "24",
+  // Facilities
+  roboticsFactory: "14",
+  shipyard: "21",
+  researchLab: "31",
+  alliance_depot: "34",
+  missile_silo: "44",
+  naniteFactory: "15",
+  terraformer: "33",
+  // Research
+  energyTech: "113",
+  laserTech: "120",
+  ionTech: "121",
+  hyperspaceTech: "114",
+  plasmaTech: "122",
+  combustion: "115",
+  impulseDrive: "117",
+  hyperspaceDrive: "118",
+  espionageTech: "106",
+  computerTech: "108",
+  astrophysics: "124",
+  intergalactic: "123",
+  gravitonTech: "199",
+  weapons: "109",
+  shielding: "110",
+  armor: "111",
+};
+
+/**
+ * Build a selector for the upgrade button. Tries three patterns in order:
+ *   1. Real ogame DOM: `button.upgrade[data-technology="<numericId>"]`.
+ *   2. Synthetic fallback: `[data-ogamex-upgrade="<action>:<stringId>"]`
+ *      (kept for unit tests + future DOM-augmenter use).
+ *   3. Broader real fallback: any `[data-technology="<numericId>"]` element
+ *      with a clickable upgrade child (catches skin variants).
+ */
+function candidateSelectors(action: string, stringId: string): string[] {
+  const numericId = OGAME_NUMERIC_ID[stringId];
+  const selectors: string[] = [];
+  if (numericId) {
+    selectors.push(`button.upgrade[data-technology="${numericId}"]`);
+    selectors.push(`[data-technology="${numericId}"] .upgrade`);
+  }
+  selectors.push(`[data-ogamex-upgrade="${action}:${stringId}"]`);
+  return selectors;
 }
 
 /** Build a navigation URL for an ogame ingame page. */
@@ -98,42 +153,71 @@ export class UiDirectiveExecutor implements DirectiveExecutor {
     // 2) Humanized delay so the click doesn't look bot-like.
     await this.sleep(this.clickDelay());
 
-    // 3) Locate the upgrade button using the synthetic selector contract.
-    //    NOTE: real ogame DOM doesn't expose this attribute natively — the
-    //    DOM-augmenter (M5.7) is responsible for stamping it onto the
-    //    appropriate skin-specific element. Keeping the selector synthetic
-    //    here means M5.6 stays decoupled from skin variations.
-    const selector = upgradeSelector(directive.action, targetId);
-    const button = this.doc.querySelector<HTMLElement>(selector);
-    if (!button) {
-      throw new Error(`upgrade button not found for ${targetId}`);
+    // 3) Locate the upgrade button. Try real ogame selectors first (numeric
+    //    data-technology), then the synthetic data-ogamex-upgrade contract.
+    //    ogame SPA renders the target page async, so poll for the button to
+    //    appear (up to 5s total at 100ms intervals) before giving up.
+    const selectors = candidateSelectors(directive.action, targetId);
+    const probeBtn = (): { el: HTMLElement; sel: string } | null => {
+      for (const sel of selectors) {
+        const el = this.doc.querySelector<HTMLElement>(sel);
+        if (el) return { el, sel };
+      }
+      return null;
+    };
+    let hit = probeBtn();
+    if (!hit) {
+      const deadline = Date.now() + 5000;
+      while (!hit && Date.now() < deadline) {
+        await this.sleep(100);
+        hit = probeBtn();
+      }
+    }
+    if (!hit) {
+      throw new Error(
+        `upgrade button not found for ${targetId} after 5s (tried: ${selectors.join(" | ")})`,
+      );
     }
 
     // 4) Click. ogame's own delegated handlers will fire from here.
-    button.click();
+    console.info(`[UiDirectiveExecutor] clicking ${hit.sel} for ${directive.action}:${targetId}`);
+    hit.el.click();
 
     return { action: directive.action, clicked: true };
   }
 
   private navigate(component: string, planetId: string | undefined): void {
-    const url = navUrl(component, planetId);
-    // ogame.ajaxNavigation.navigate(url) when the in-game SPA is loaded.
+    const relUrl = navUrl(component, planetId);
+    // 1) Prefer SPA navigation via ogame.ajaxNavigation when the in-game SPA
+    //    exposes it. Real ogame DOES populate window.ogame but does NOT
+    //    expose ajaxNavigation in page main world for many skins — so this
+    //    branch is usually skipped on the live game and we fall through.
     const ogame = (this.win as unknown as { ogame?: { ajaxNavigation?: { navigate?: (u: string) => void } } }).ogame;
     const ajaxNav = ogame?.ajaxNavigation;
     const nav = ajaxNav?.navigate;
     if (ajaxNav && typeof nav === "function") {
-      nav.call(ajaxNav, url);
+      nav.call(ajaxNav, relUrl);
       return;
     }
-    // Fall back to a full-page nav only if we actually have a location
-    // object. In jsdom tests we skip this branch so we don't accidentally
-    // navigate the test document away.
+    // 2) Already on the target page? Skip navigation to avoid useless reloads.
+    //    Check both via location.search and location.href substring (defensive
+    //    for jsdom + real Chrome variants).
+    const currentHref = this.win.location?.href ?? "";
+    if (currentHref.includes(`component=${component}`)) {
+      return;
+    }
+    // 3) Full-page nav fallback. In tests jsdom doesn't follow, so this is
+    //    effectively a no-op there. The real Chrome will navigate properly.
     const loc = this.win.location;
     if (loc && typeof (loc as Location).assign === "function") {
-      // Intentionally no-op in test env: tests don't provide ogame and we
-      // don't want jsdom to follow the URL. M5.7 will exercise the real
-      // navigation branch via a live-game smoke.
-      // (Left empty by design — keeping the function reachable is enough.)
+      try {
+        // Use a relative URL so it joins against the current origin (the
+        // ogame server). All test fixtures set jsdom origin to about:blank
+        // so this no-ops cleanly.
+        (loc as Location).assign(relUrl);
+      } catch {
+        /* swallow — jsdom may throw on cross-origin navigation in tests */
+      }
     }
   }
 }

@@ -395,9 +395,13 @@ export async function startSidecar(
       strategy: strategyManager.load(),
     });
     // Dispatch active goals (idempotent — already-active rows still get a
-    // freshly-planned next step). Synchronous; errors propagate inside the
-    // relay's try/catch and won't crash the socket loop.
-    priorityMerger.dispatch(msg.snapshot);
+    // freshly-planned next step). Wrap in try/catch so a single goal's
+    // planning failure does NOT swallow subsequent state.snapshots.
+    try {
+      priorityMerger.dispatch(msg.snapshot);
+    } catch (e) {
+      console.error("[ogamex/sidecar] priorityMerger.dispatch threw", e);
+    }
   });
 
   ws.on("event.daily_failure", (msg) => {
