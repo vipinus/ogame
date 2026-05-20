@@ -57,6 +57,10 @@ export interface HealthReport {
     has_snapshot: boolean;
     server_universe: string | null;
     planets_count: number;
+    /** Identity slice per known planet — id + name + coords + type. Used by
+     *  the add_goal CLI to populate planet_coords context without needing a
+     *  full state.snapshot fetch. Empty array when no snapshot received. */
+    planets: Array<{ id: string; name: string; coords: number[]; type: string }>;
     fleets_outbound_count: number;
     events_incoming_count: number;
     hostile_events_count: number;
@@ -126,6 +130,11 @@ export async function buildHealthReport(deps: HealthDeps): Promise<HealthReport>
       has_snapshot: hasSnapshot,
       server_universe: snapshot?.server.universe ?? null,
       planets_count: snapshot?.planets.length ?? 0,
+      planets: snapshot?.planets
+        .filter((p) => Array.isArray(p.coords) && p.coords.length === 3)
+        .map((p) => ({
+          id: p.id, name: p.name ?? "", coords: [...(p.coords as readonly number[])], type: p.type ?? "planet",
+        })) ?? [],
       fleets_outbound_count: snapshot?.fleets_outbound.length ?? 0,
       events_incoming_count: snapshot?.events_incoming.length ?? 0,
       hostile_events_count: hostileEventsCount,

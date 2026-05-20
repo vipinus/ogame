@@ -31,6 +31,14 @@ export interface AddGoalDeps {
   store: GoalsStore;
   /** Override the model used for the parse. Default "gemini-2.5-flash". */
   model?: string;
+  /**
+   * Provider for the player's planet list — used to inject `available planets`
+   * context into the Gemini prompt so the model can resolve friendly names
+   * ("母星" / "home" / "earth") to canonical "G:S:P" coordinates. Returns an
+   * empty array if no state has been received yet; the LLM will then omit
+   * planet_coords and let the planner fall back to planets[0].
+   */
+  listPlanets?: () => Array<{ id: string; name: string; coords: readonly [number, number, number] | number[]; type: string }>;
 }
 
 export interface AddGoalResult {
@@ -43,7 +51,10 @@ interface ParsedGoalShape {
   type: GoalType;
   /** JSON-encoded; client decodes. See GoalJsonSchema for why. */
   target_json: string;
-  planet?: string;
+  /** Coords in canonical "G:S:P" form (e.g. "1:190:6"). LLM is told to
+   *  resolve any friendly names ("home", "母星", "earth") to the player's
+   *  actual coords via the planets context we inject. */
+  planet_coords?: string;
   priority?: number;
   deadline?: number;
 }
@@ -74,19 +85,60 @@ const GoalJsonSchema = {
       enum: [...GOAL_TYPES],
     },
     target_json: { type: "string", description: "JSON-encoded target spec, e.g. {\"tech\":\"gravitonTech\",\"level\":6}" },
-    planet: { type: "string" },
+    planet_coords: { type: "string", description: "Planet coordinates in G:S:P form, e.g. \"1:190:6\". Resolve friendly names (home/母星/earth/etc.) to actual coords from the planets list." },
     priority: { type: "number" },
     deadline: { type: "number" },
   },
   required: ["type", "target_json"],
 } as const;
 
-function buildPrompt(naturalLanguage: string): string {
+/** Parse "G:S:P" → [g, s, p] or null. Tolerates whitespace; rejects bad shapes. */
+function parseCoords(coordStr: string | undefined): [number, number, number] | null {
+  if (!coordStr) return null;
+  const m = coordStr.trim().match(/^(\d+)\s*:\s*(\d+)\s*:\s*(\d+)$/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/**
+ * Look up the planet whose coords match parsed.planet_coords. Returns the
+ * planet.id (which the planner uses to find buildings/queues), or undefined
+ * if no match (so the planner falls back to state.planets[0]).
+ */
+function resolvePlanet(
+  coordStr: string | undefined,
+  planets: ReadonlyArray<{ id: string; coords: readonly [number, number, number] | number[] }>,
+): string | undefined {
+  const c = parseCoords(coordStr);
+  if (!c) return undefined;
+  const match = planets.find((p) =>
+    p.coords[0] === c[0] && p.coords[1] === c[1] && p.coords[2] === c[2]
+  );
+  return match?.id;
+}
+
+function buildPrompt(
+  naturalLanguage: string,
+  planets: ReadonlyArray<{ name: string; coords: readonly [number, number, number] | number[]; type: string }>,
+): string {
+  const planetLines = planets.length === 0
+    ? "- (no planet data available — leave planet_coords empty and the planner will default to the first planet)"
+    : planets
+        .map((p) => {
+          const c = p.coords;
+          return `- "${c[0]}:${c[1]}:${c[2]}" (${p.type} "${p.name}")`;
+        })
+        .join("\n");
   return [
-    "Parse this user instruction into a structured Goal. Extract:",
+    "Parse this user instruction into a structured Goal.",
+    "",
+    "Available planets (use the coords string verbatim for planet_coords; resolve friendly names like 'home' / '母星' / 'earth' to the correct row):",
+    planetLines,
+    "",
+    "Extract these fields:",
     "- type (research|build|build_universal|colonize|build_ships|build_defense|terraformer_to|pick_lifeform|lifeform_level_to|lifeform_research|lifeform_building)",
-    "- target_json (JSON-encoded string — for research: \"{\\\"tech\\\":\\\"gravitonTech\\\",\\\"level\\\":6}\"; for build: \"{\\\"building\\\":\\\"naniteFactory\\\",\\\"level\\\":3,\\\"planet\\\":\\\"home\\\"}\")",
-    "- planet (optional planet id or name)",
+    "- target_json (JSON-encoded string — research: \"{\\\"tech\\\":\\\"gravitonTech\\\",\\\"level\\\":6}\"; build: \"{\\\"building\\\":\\\"naniteFactory\\\",\\\"level\\\":3}\")",
+    "- planet_coords (canonical \"G:S:P\" coords from the list above, e.g. \"1:190:6\"; OMIT entirely if user did not specify a planet or there is only one)",
     "- priority (1-10, default 5)",
     "- deadline (optional ms epoch — leave undefined if not stated)",
     "",
@@ -108,7 +160,8 @@ export function makeAddGoalTool(deps: AddGoalDeps): AddGoalDefinition {
       "Parse a natural-language goal description into a structured Goal, store as pending, and return a confirmation prompt.",
     parameters: AddGoalParams,
     execute: async (params) => {
-      const prompt = buildPrompt(params.natural_language);
+      const planets = deps.listPlanets ? deps.listPlanets() : [];
+      const prompt = buildPrompt(params.natural_language, planets);
 
       let parsed: ParsedGoalShape;
       try {
@@ -144,6 +197,12 @@ export function makeAddGoalTool(deps: AddGoalDeps): AddGoalDefinition {
 
       const priority = params.priority ?? parsed.priority ?? 5;
 
+      // Resolve planet_coords ("G:S:P") to a real planet.id by matching
+      // against the player's known planets. If no match (or LLM omitted
+      // coords), leave the field absent so the planner falls back to its
+      // own default (state.planets[0]).
+      const resolvedPlanetId = resolvePlanet(parsed.planet_coords, planets);
+
       const goal: Goal = {
         id: randomUUID(),
         type: parsed.type,
@@ -154,7 +213,7 @@ export function makeAddGoalTool(deps: AddGoalDeps): AddGoalDefinition {
         progress_pct: 0,
         current_step: "awaiting confirmation",
         eta_at: null,
-        ...(parsed.planet !== undefined ? { planet: parsed.planet } : {}),
+        ...(resolvedPlanetId !== undefined ? { planet: resolvedPlanetId } : {}),
         ...(parsed.deadline !== undefined ? { deadline: parsed.deadline } : {}),
       };
 
