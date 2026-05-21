@@ -124,7 +124,7 @@ function buildPrompt(input: AnalyzeInput): string {
 
   // Key world-state numbers.
   const sourcePlanet =
-    worldState.planets.find((p) => p.id === expedition.source_planet) ?? worldState.planets[0];
+    Object.values(worldState.planets ?? {}).find((p) => p.id === expedition.source_planet) ?? Object.values(worldState.planets ?? {})[0];
   const sourceSummary = sourcePlanet
     ? {
         id: sourcePlanet.id,

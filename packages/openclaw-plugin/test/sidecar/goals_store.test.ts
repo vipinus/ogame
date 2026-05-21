@@ -151,4 +151,29 @@ describe("GoalsStore", () => {
     store.close();
     expect(() => store.get("close-1")).toThrow();
   });
+
+  it("setMainGoal(id) marks one goal as main and clears any previous main", () => {
+    store.add(makeGoal({ id: "a" }));
+    store.add(makeGoal({ id: "b" }));
+    store.add(makeGoal({ id: "c" }));
+    // Set b as main.
+    const main1 = store.setMainGoal("b");
+    expect(main1?.goal.id).toBe("b");
+    expect(store.getMainGoal()?.goal.id).toBe("b");
+    expect(store.get("a")?.goal.is_main_goal).toBeUndefined();
+    expect(store.get("b")?.goal.is_main_goal).toBe(true);
+    expect(store.get("c")?.goal.is_main_goal).toBeUndefined();
+
+    // Switch to c → b's flag clears.
+    store.setMainGoal("c");
+    expect(store.getMainGoal()?.goal.id).toBe("c");
+    expect(store.get("b")?.goal.is_main_goal).toBe(false);
+    expect(store.get("c")?.goal.is_main_goal).toBe(true);
+
+    // setMainGoal(null) clears entirely.
+    const cleared = store.setMainGoal(null);
+    expect(cleared).toBeNull();
+    expect(store.getMainGoal()).toBeNull();
+    expect(store.get("c")?.goal.is_main_goal).toBe(false);
+  });
 });

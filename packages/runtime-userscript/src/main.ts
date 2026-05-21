@@ -49,6 +49,25 @@ function defaultExpeditionConfig(): ExpeditionConfig {
   };
 }
 
+// Bail early on non-game pages — the userscript's @match is permissive
+// (*.ogame.gameforge.com/*) which also matches lobby/account subdomains
+// where the in-game DOM (meta tags, planetList, resource bar) doesn't
+// exist. If we boot anyway, the stripped state.snapshot push wipes the
+// real game tab's state via the WS bridge. Detect the in-game shell via
+// the canonical <meta name="ogame-universe-speed"> tag — present on
+// every ogame ingame page, absent everywhere else.
+// Skip boot inside iframes — the executor's "background iframe" approach
+// loads ogame pages in hidden iframes for off-screen clicks; if userscript
+// runs inside those frames too, each frame becomes a NEW bridge client
+// pushing its own state.snapshot every 60s, dispatching its own directives,
+// and spawning more iframes. That's the recursive loop the user was seeing.
+const _inIframe = window.self !== window.top;
+const _isGamePage = !!document.querySelector('meta[name="ogame-universe-speed"]');
+if (_inIframe) {
+  console.info("[OgameX] running inside iframe — skipping boot (parent frame handles state)");
+} else if (!_isGamePage) {
+  console.info("[OgameX] not an in-game page (no ogame-universe-speed meta) — skipping boot");
+} else
 (async () => {
   try {
     const handle = await boot({
@@ -79,6 +98,10 @@ function defaultExpeditionConfig(): ExpeditionConfig {
 
     // Wire all userscript runtime subsystems (emergency / daily / goal / auditor)
     try {
+      // The sidecar exposes an unauthenticated operator HTTP on the same host
+      // (no-auth by design — same threat model as /v1/debug). The panel base
+      // URL is configurable so dev / staging operators can re-target it.
+      const goalsPanelBaseUrl = readConfig("OGAMEX_GOALS_PANEL_URL", "http://127.0.0.1:18791");
       const runtime = wireRuntime(handle, {
         ...(wired?.client ? { bridge: wired.client } : {}),
         expeditionConfig: defaultExpeditionConfig,
@@ -86,6 +109,7 @@ function defaultExpeditionConfig(): ExpeditionConfig {
         doc: document,
         auditThresholds: {},
         fetch: window.fetch.bind(window),
+        ...(goalsPanelBaseUrl ? { goalsPanelBaseUrl } : {}),
       });
       (window as unknown as { __OGAMEX_RUNTIME__: unknown }).__OGAMEX_RUNTIME__ = runtime;
       console.info("[OgameX] runtime subsystems wired");

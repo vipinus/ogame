@@ -39,7 +39,7 @@ export function startEmergencySave(
 
   const offAttack = bus.on("emergency.attack", (p: any) => {
     // pick source: planet whose coords match the attack's destination
-    const target = stateRef.current.planets.find(pl =>
+    const target = Object.values(stateRef.current.planets ?? {}).find(pl =>
       pl.coords[0] === p.to[0] && pl.coords[1] === p.to[1] && pl.coords[2] === p.to[2]);
     if (!target) return;
     void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: target.id, arrivesAt: p.arrives_at });

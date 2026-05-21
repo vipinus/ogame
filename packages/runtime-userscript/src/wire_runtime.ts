@@ -21,10 +21,12 @@ import { startDailyExpeditionLoop } from "./daily/expedition/loop.js";
 import { ExpeditionStore } from "./store/expedition_store.js";
 import { startGoalRunner } from "./goal_runner.js";
 import { UiDirectiveExecutor } from "./directive_executor.js";
+import { ApiDirectiveExecutor } from "./api_executor.js";
 import { startAuditor } from "./auditor.js";
 import { TokenManager } from "./api/token_manager.js";
 import { extractToken, type OgameWindow } from "./probes/extractors/token.js";
 import type { StateRef } from "./emergency/attack_detector.js";
+import { startGoalsPanel, type GoalsPanelHandle } from "./overlay/goals_panel.js";
 
 export interface RuntimeWireOptions {
   /** BridgeClient to bind GoalRunner. Optional — if absent, GoalRunner is not started. */
@@ -38,6 +40,12 @@ export interface RuntimeWireOptions {
   auditThresholds: Record<string, number>;
   /** Fetch impl for fleet API. */
   fetch: typeof fetch;
+  /**
+   * Sidecar HTTP base URL (e.g. "http://127.0.0.1:18791"). When set, mounts
+   * an in-page goals overlay that polls /v1/goals and exposes cancel /
+   * pause / resume buttons. Omit to skip the overlay (tests, dev).
+   */
+  goalsPanelBaseUrl?: string;
 }
 
 export interface RuntimeWireHandle {
@@ -104,11 +112,16 @@ export function wireRuntime(
   // 5. UI executor + GoalRunner (only when a bridge is provided).
   let runner: ReturnType<typeof startGoalRunner> | null = null;
   if (opts.bridge) {
-    const executor = new UiDirectiveExecutor({ win: opts.win, doc: opts.doc });
+    // API executor (POST to ogame AJAX) is primary. UI executor (iframe
+    // click) kept as fallback for any action API doesn't handle. The
+    // runaway-shipyard incident was the iframe path's compounding clicks,
+    // NOT api executor — fixed by adding planner build_q in-flight check.
+    const apiExecutor = new ApiDirectiveExecutor({ win: opts.win, doc: opts.doc });
+    const uiExecutor = new UiDirectiveExecutor({ win: opts.win, doc: opts.doc });
     runner = startGoalRunner({
       client: opts.bridge,
       gate: emergencyGate,
-      executors: [executor],
+      executors: [apiExecutor, uiExecutor],
     });
   }
 
@@ -118,6 +131,20 @@ export function wireRuntime(
     store: boot.store,
     initialThresholds: opts.auditThresholds,
   });
+
+  // 7. Optional goals overlay panel — operator-facing, polls sidecar HTTP.
+  let goalsPanel: GoalsPanelHandle | null = null;
+  if (opts.goalsPanelBaseUrl) {
+    try {
+      goalsPanel = startGoalsPanel({
+        httpBaseUrl: opts.goalsPanelBaseUrl,
+        doc: opts.doc,
+        fetch: opts.fetch,
+      });
+    } catch (e) {
+      console.warn("[wireRuntime] goalsPanel start failed", e);
+    }
+  }
 
   return {
     stop(): void {
@@ -146,6 +173,11 @@ export function wireRuntime(
         offGate();
       } catch (e) {
         console.warn("[wireRuntime] offGate failed", e);
+      }
+      try {
+        goalsPanel?.stop();
+      } catch (e) {
+        console.warn("[wireRuntime] goalsPanel.stop failed", e);
       }
     },
   };

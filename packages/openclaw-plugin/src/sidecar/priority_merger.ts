@@ -33,18 +33,31 @@ export interface DispatchResult {
   skipped_terminal: number;
 }
 
-const ALREADY_AT_TARGET_RE = /already at or above/i;
+/**
+ * Terminal-blocked patterns. Any blocked reason matching this regex causes the
+ * merger to mark the goal as COMPLETED rather than blocked — these reasons all
+ * mean "there is nothing left for this goal to do". Includes:
+ *   - "already at or above target …"            (research/build at level)
+ *   - "already upgrading in ogame queue …"     (build_q already targets it)
+ *   - "… in flight"                             (fleet already outbound)
+ *   - "… production started"                   (shipyard_q has the ship)
+ */
+const ALREADY_AT_TARGET_RE =
+  /already at or above target|already upgrading in ogame queue|in flight|production started/i;
 
 function isBlocked(r: Directive | { blocked: string }): r is { blocked: string } {
   return typeof (r as { blocked?: unknown }).blocked === "string";
 }
 
 /**
- * Stable comparator: priority DESC, then created_at ASC (older goal first).
- * Array#sort in V8 is stable since Node 12, but we use the explicit tiebreak
- * regardless so behavior does not depend on insertion order from SQLite.
+ * Comparator: main-goal first, then priority DESC, then created_at ASC.
+ * The is_main_goal flag is an OPERATOR-set OVERRIDE — must always run before
+ * any other goal, even one with a higher numeric priority.
  */
 function compareRows(a: GoalRow, b: GoalRow): number {
+  const am = a.goal.is_main_goal === true ? 1 : 0;
+  const bm = b.goal.is_main_goal === true ? 1 : 0;
+  if (am !== bm) return bm - am;
   const dp = b.goal.priority - a.goal.priority;
   if (dp !== 0) return dp;
   return a.created_at - b.created_at;
@@ -73,7 +86,26 @@ export class PriorityMerger {
     const blocked: { goal_id: string; reason: string }[] = [];
     let skipped_terminal = 0;
 
+    // Slot tracking — ogame physics: research is GLOBAL (1 player), build &
+    // shipyard are PER PLANET (1 each). Pre-seed from in-flight state queues
+    // (build_q with future ends_at, research.queue active) so already-queued
+    // ogame work also blocks new directives that would race it.
+    const now = Date.now();
+    let researchSlot = !!(state.research?.queue && (state.research.queue.ends_at ?? 0) > now);
+    const buildSlot = new Set<string>();
+    const shipsSlot = new Set<string>();
+    for (const p of Object.values(state.planets ?? {})) {
+      const bq = p.build_q as { ends_at?: number } | null;
+      if (bq && (bq.ends_at ?? 0) > now) buildSlot.add(p.id);
+      const sq = p.shipyard_q as { ends_at?: number } | null;
+      if (sq && (sq.ends_at ?? 0) > now) shipsSlot.add(p.id);
+    }
+
     for (const row of rows) {
+      // Operator-paused row: skip entirely. Status / reason untouched.
+      if (row.status === "blocked" && typeof row.reason === "string" && row.reason.startsWith("PAUSED")) {
+        continue;
+      }
       const result = this.planGoal(row.goal, state);
       if (isBlocked(result)) {
         if (ALREADY_AT_TARGET_RE.test(result.blocked)) {
@@ -83,11 +115,39 @@ export class PriorityMerger {
           this.store.updateStatus(row.goal.id, "blocked", result.blocked);
           blocked.push({ goal_id: row.goal.id, reason: result.blocked });
         }
-      } else {
-        this.store.updateStatus(row.goal.id, "active");
-        this.send({ type: "directive.dispatch", directive: result });
-        dispatched.push(result);
+        continue;
       }
+      // Slot allocation — check before claiming.
+      const params = result.params as { planet_id?: string };
+      const planetId = params.planet_id;
+      if (result.action === "research") {
+        if (researchSlot) {
+          const reason = "research slot in use";
+          this.store.updateStatus(row.goal.id, "blocked", reason);
+          blocked.push({ goal_id: row.goal.id, reason });
+          continue;
+        }
+        researchSlot = true;
+      } else if (result.action === "build" || result.action === "build_universal") {
+        if (planetId && buildSlot.has(planetId)) {
+          const reason = `build slot on ${planetId} in use this tick`;
+          this.store.updateStatus(row.goal.id, "blocked", reason);
+          blocked.push({ goal_id: row.goal.id, reason });
+          continue;
+        }
+        if (planetId) buildSlot.add(planetId);
+      } else if (result.action === "build_ships" || result.action === "build_defense") {
+        if (planetId && shipsSlot.has(planetId)) {
+          const reason = `shipyard slot on ${planetId} in use this tick`;
+          this.store.updateStatus(row.goal.id, "blocked", reason);
+          blocked.push({ goal_id: row.goal.id, reason });
+          continue;
+        }
+        if (planetId) shipsSlot.add(planetId);
+      }
+      this.store.updateStatus(row.goal.id, "active");
+      this.send({ type: "directive.dispatch", directive: result });
+      dispatched.push(result);
     }
 
     return { dispatched, blocked, skipped_terminal };

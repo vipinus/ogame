@@ -95,7 +95,7 @@ function ruleResourceOverflow(state: WorldState, thresholds: Record<string, numb
   if (typeof pct !== "number") return [];
   const out: AuditEvidence[] = [];
   const ts = Date.now();
-  for (const planet of state.planets) {
+  for (const planet of Object.values(state.planets ?? {})) {
     for (const { res, cap } of RESOURCE_KEYS) {
       const value = planet.resources[res];
       const max = planet.storage[cap];
@@ -144,7 +144,7 @@ function ruleBuildQueueEmpty(state: WorldState, thresholds: Record<string, numbe
   if (idleObserved < idleMs) return [];
   const out: AuditEvidence[] = [];
   const ts = now;
-  for (const planet of state.planets) {
+  for (const planet of Object.values(state.planets ?? {})) {
     if (planet.build_q === null) {
       out.push({
         rule_id: "build_queue_empty",
@@ -315,7 +315,7 @@ function ruleDefenseMinimumBreach(
   if (typeof flag !== "number" || flag < 1) return [];
   const out: AuditEvidence[] = [];
   const ts = Date.now();
-  for (const planet of state.planets) {
+  for (const planet of Object.values(state.planets ?? {})) {
     for (const [shipKey, minRequired] of Object.entries(keepMinimum)) {
       if (typeof minRequired !== "number" || minRequired <= 0) continue;
       const have = planet.defense[shipKey] ?? 0;
@@ -387,12 +387,12 @@ export function startAuditor(deps: AuditorDeps): AuditorHandle {
   });
 
   const sampleQueueFill = (state: WorldState): void => {
-    if (state.planets.length === 0) return;
+    if (Object.keys(state.planets ?? {}).length === 0) return;
     let filled = 0;
-    for (const planet of state.planets) {
+    for (const planet of Object.values(state.planets ?? {})) {
       if (planet.build_q !== null) filled++;
     }
-    const ratio = filled / state.planets.length;
+    const ratio = filled / Object.keys(state.planets ?? {}).length;
     fillSamples.push(ratio);
     if (fillSamples.length > SAMPLE_BUFFER_MAX) fillSamples.shift();
   };

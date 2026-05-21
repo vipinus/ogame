@@ -157,8 +157,7 @@ describe("MemoryWriter", () => {
   it("rendered markdown contains expected sections", async () => {
     const handle = startMemoryWriter({ memoryDir: memDir, debounceMs: 10, forceRefreshMs: 100_000 });
     const planetState = makeState({
-      planets: [
-        {
+      planets: [{
           id: "pl-1",
           name: "Home",
           coords: [1, 2, 3],
@@ -173,8 +172,7 @@ describe("MemoryWriter", () => {
           ships: {},
           defense: {},
           lifeform: null,
-        },
-      ],
+        }],
     });
     handle.push(makeSnapshot({ state: planetState, goals: [makeGoalRow("a")] }));
 

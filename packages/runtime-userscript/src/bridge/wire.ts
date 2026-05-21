@@ -14,7 +14,8 @@ import { BridgeClient } from "./ws_client.js";
 export interface WireBridgeOptions {
   bridgeUrl: string;
   bridgeToken: string;
-  /** Default 10000 ms. */
+  /** Default 60000 ms (1 minute) — matches the bridge auto-optimizer tick
+   *  cadence; pushing more frequently buys nothing the optimizer can use. */
   pushIntervalMs?: number;
   /** ± jitter applied to each push interval (uniform). Default 2000 ms. */
   jitterMs?: number;
@@ -33,7 +34,7 @@ export interface WireBridgeHandle {
   stop(): void;
 }
 
-const DEFAULT_PUSH_INTERVAL_MS = 10_000;
+const DEFAULT_PUSH_INTERVAL_MS = 20_000;
 const DEFAULT_JITTER_MS = 2_000;
 const DEFAULT_USERSCRIPT_VERSION = "0.0.1";
 const DEFAULT_STRATEGY_VERSION = 0;
@@ -60,28 +61,41 @@ export async function wireBridge(
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  // Push the first snapshot at +2s after boot so the operator gets fast
+  // first feedback (no 60s wait). Safe to do this now that the executor
+  // uses SPA ajaxNavigation (doesn't trigger a full reload + boot loop)
+  // and the goal_runner serializes execution. The 2s delay gives boot
+  // time to populate planets/resources/production via the retry harvest.
+  const pushOnce = (): void => {
+    try {
+      client.send({
+        type: "state.snapshot",
+        ts: Date.now(),
+        snapshot: boot.store.state,
+        strategy_version: strategyVersion,
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[wireBridge] push failed", e);
+    }
+  };
   const schedule = (): void => {
     if (stopped) return;
-    // Uniform ±jit jitter applied per tick.
     const delay = base + (Math.random() * 2 - 1) * jit;
     timer = setTimeout(() => {
       timer = null;
       if (stopped) return;
-      try {
-        client.send({
-          type: "state.snapshot",
-          ts: Date.now(),
-          snapshot: boot.store.state,
-          strategy_version: strategyVersion,
-        });
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn("[wireBridge] push failed", e);
-      }
+      pushOnce();
       schedule();
     }, Math.max(0, delay));
   };
+  // First push at +2s, then every `base` ms.
+  setTimeout(() => { if (!stopped) pushOnce(); }, 2000);
   schedule();
+
+  // Resource-jump push trigger removed — combined with rapid retries it
+  // burned through dispatch budget without helping when executor itself
+  // can't navigate. Re-enable once SPA nav has a working primitive.
 
   const offEmergency = boot.bus.on("emergency.attack", (payload: unknown) => {
     const p = (payload ?? {}) as {

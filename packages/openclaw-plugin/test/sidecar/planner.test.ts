@@ -22,13 +22,14 @@ function makeGoal(overrides: Partial<Goal> & Pick<Goal, "type" | "target">): Goa
 function makePlanet(
   id: string,
   buildings: Record<string, number> = {},
+  resources?: { m?: number; c?: number; d?: number; e?: number },
 ): Planet {
   return {
     id,
     name: id,
     coords: [1, 1, 1],
     type: "planet",
-    resources: { m: 0, c: 0, d: 0, e: 0 },
+    resources: { m: resources?.m ?? 0, c: resources?.c ?? 0, d: resources?.d ?? 0, e: resources?.e ?? 100 },
     storage: { m_max: 0, c_max: 0, d_max: 0 },
     production: { m_h: 0, c_h: 0, d_h: 0 },
     buildings,
@@ -43,11 +44,13 @@ function makePlanet(
 
 function makeState(opts: {
   researchLevels?: Record<string, number>;
-  planets?: Array<{ id: string; buildings?: Record<string, number> }>;
+  planets?: Array<{ id: string; buildings?: Record<string, number>; resources?: { m?: number; c?: number; d?: number; e?: number } }>;
 } = {}): WorldState {
-  const planets = (opts.planets ?? [{ id: "p1", buildings: {} }]).map((p) =>
-    makePlanet(p.id, p.buildings ?? {}),
+  const planetArr = (opts.planets ?? [{ id: "p1", buildings: {} }]).map((p) =>
+    makePlanet(p.id, p.buildings ?? {}, p.resources),
   );
+  // Post Map refactor: state.planets is Record<string, Planet>.
+  const planets = Object.fromEntries(planetArr.map((p) => [p.id, p]));
   return {
     server: { universe: "uni1", speed: 1 },
     player: { id: "p1", name: "tester", alliance: null },
@@ -281,5 +284,52 @@ describe("planGoal — deep recursion", () => {
     expect(result.params.building).toBe("researchLab");
     expect(result.params.target_level).toBe(1);
     expect(result.goal_id).toBe("g-deep");
+  });
+});
+
+describe("planGoal — energy gating", () => {
+  it("auto-recurses into solar upgrade when energy is negative", () => {
+    // Energy-gated mine + energy<0 → planner should emit a solar build
+    // directive (auto-prereq) instead of just blocking. Owner sets the mine
+    // goal once; planner handles the prereq chain.
+    const state = makeState({
+      planets: [{ id: "p1", buildings: { metalMine: 13, solarPlant: 12 }, resources: { e: -50 } }],
+    });
+    const goal = makeGoal({ id: "g-mm", type: "build", target: { building: "metalMine", level: 18, planet: "p1" }, priority: 6 });
+    const result = planGoal(goal, state);
+    expect(isDirective(result)).toBe(true);
+    if (!isDirective(result)) return;
+    expect(result.action).toBe("build");
+    expect(result.params.building).toBe("solarPlant");
+    expect(result.params.target_level).toBe(13); // solarPlant +1 from current 12
+  });
+
+  it("solar prereq emits for all energy-gated mines (metal/crystal/deut) when greenfield", () => {
+    // Greenfield colony (solar=0, mines=0) — planner should propose solar L1
+    // regardless of which mine the operator asked for.
+    const state = makeState({ planets: [{ id: "p1", buildings: {}, resources: { e: 0 } }] });
+    for (const b of ["metalMine", "crystalMine", "deuteriumSynth"]) {
+      const goal = makeGoal({ id: `g-${b}`, type: "build", target: { building: b, level: 5, planet: "p1" } });
+      const result = planGoal(goal, state);
+      expect(isDirective(result)).toBe(true);
+      if (isDirective(result)) {
+        expect(result.params.building).toBe("solarPlant");
+        expect(result.params.target_level).toBe(1);
+      }
+    }
+  });
+
+  it("does NOT block solarPlant/fusionReactor when energy is negative — those PRODUCE energy", () => {
+    const state = makeState({ planets: [{ id: "p1", buildings: { solarPlant: 11 }, resources: { e: -50 } }] });
+    const goal = makeGoal({ id: "g-solar", type: "build", target: { building: "solarPlant", level: 12, planet: "p1" } });
+    const result = planGoal(goal, state);
+    expect(isDirective(result)).toBe(true);
+  });
+
+  it("does NOT block mines when energy is non-negative", () => {
+    const state = makeState({ planets: [{ id: "p1", buildings: { metalMine: 5 }, resources: { e: 100 } }] });
+    const goal = makeGoal({ id: "g-mm", type: "build", target: { building: "metalMine", level: 6, planet: "p1" } });
+    const result = planGoal(goal, state);
+    expect(isDirective(result)).toBe(true);
   });
 });

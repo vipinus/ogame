@@ -8,7 +8,7 @@ describe("StateStore", () => {
   it("constructs with a default empty state", () => {
     const store = new StateStore(new EventBus());
     expect(store.state).toEqual(emptyWorldState());
-    expect(store.state.planets).toEqual([]);
+    expect(store.state.planets).toEqual({});
     expect(store.state.events_incoming).toEqual([]);
   });
 

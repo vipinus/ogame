@@ -67,6 +67,9 @@ const GOAL_TYPES: readonly GoalType[] = [
   "build_ships",
   "build_defense",
   "terraformer_to",
+  "expedition",
+  "deploy",
+  "transport",
   "pick_lifeform",
   "lifeform_level_to",
   "lifeform_research",
@@ -103,7 +106,7 @@ function parseCoords(coordStr: string | undefined): [number, number, number] | n
 /**
  * Look up the planet whose coords match parsed.planet_coords. Returns the
  * planet.id (which the planner uses to find buildings/queues), or undefined
- * if no match (so the planner falls back to state.planets[0]).
+ * if no match (so the planner falls back to Object.values(state.planets ?? {})[0]).
  */
 function resolvePlanet(
   coordStr: string | undefined,
@@ -136,7 +139,7 @@ function buildPrompt(
     planetLines,
     "",
     "Extract these fields:",
-    "- type (research|build|build_universal|colonize|build_ships|build_defense|terraformer_to|pick_lifeform|lifeform_level_to|lifeform_research|lifeform_building)",
+    "- type (research|build|build_universal|colonize|build_ships|build_defense|terraformer_to|expedition|deploy|transport|pick_lifeform|lifeform_level_to|lifeform_research|lifeform_building)",
     "- target_json (JSON-encoded string — research: \"{\\\"tech\\\":\\\"gravitonTech\\\",\\\"level\\\":6}\"; build: \"{\\\"building\\\":\\\"naniteFactory\\\",\\\"level\\\":3}\")",
     "- planet_coords (canonical \"G:S:P\" coords from the list above, e.g. \"1:190:6\"; OMIT entirely if user did not specify a planet or there is only one)",
     "- priority (1-10, default 5)",
@@ -200,7 +203,7 @@ export function makeAddGoalTool(deps: AddGoalDeps): AddGoalDefinition {
       // Resolve planet_coords ("G:S:P") to a real planet.id by matching
       // against the player's known planets. If no match (or LLM omitted
       // coords), leave the field absent so the planner falls back to its
-      // own default (state.planets[0]).
+      // own default (Object.values(state.planets ?? {})[0]).
       const resolvedPlanetId = resolvePlanet(parsed.planet_coords, planets);
 
       const goal: Goal = {

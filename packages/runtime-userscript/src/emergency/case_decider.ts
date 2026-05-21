@@ -33,7 +33,7 @@ function totalShips(ships: ShipCount): number {
  * Always requires at least 1 recycler — throws otherwise (caller handles degradation).
  */
 export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecision {
-  const source = state.planets.find(p => p.id === sourcePlanetId);
+  const source = Object.values(state.planets ?? {}).find(p => p.id === sourcePlanetId);
   if (!source) {
     throw new Error(`source planet ${sourcePlanetId} not found in state.planets`);
   }
@@ -69,7 +69,7 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
   }
 
   // source.type === "planet" — check for same-coord moon
-  const sameCoordMoon = state.planets.find(
+  const sameCoordMoon = Object.values(state.planets ?? {}).find(
     p => p.type === "moon" && sameCoords(p.coords, source.coords),
   );
 

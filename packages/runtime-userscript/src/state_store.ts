@@ -6,7 +6,7 @@ export function emptyWorldState(): WorldState {
   return {
     server: { universe: "", speed: 1 },
     player: { id: "", name: "", alliance: null },
-    planets: [],
+    planets: {},
     research: { levels: {}, queue: null },
     fleets_outbound: [],
     events_incoming: [],
@@ -69,6 +69,16 @@ export class StateStore {
     if (!this.kv) return;
     const loaded = await this.kv.get<WorldState>(STATE_KEY);
     if (loaded) {
+      // Migration v0.0.134 → 0.0.135: planets schema Array → Record. Old
+      // persisted state has planets as Array; convert to Record keyed by id.
+      if (Array.isArray((loaded as unknown as { planets?: unknown }).planets)) {
+        const arr = (loaded as unknown as { planets: Array<{ id: string }> }).planets;
+        const rec: Record<string, unknown> = {};
+        for (const p of arr) {
+          if (p && typeof p === "object" && typeof p.id === "string") rec[p.id] = p;
+        }
+        (loaded as unknown as { planets: unknown }).planets = rec;
+      }
       this._state = loaded;
       this.bus.emit("state.updated", { ts: this._state.last_update, hydrated: true });
     }

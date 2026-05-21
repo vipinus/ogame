@@ -153,6 +153,93 @@ describe("HttpServer", () => {
     expect(body).toEqual({ ok: false, ts: 123, custom: "hello" });
   });
 
+  describe("operator goals endpoints (no-auth)", () => {
+    async function startWithGoalHooks(hooks: {
+      listGoals?: () => Array<unknown>;
+      cancelGoal?: (id: string) => { ok: boolean; reason?: string };
+      pauseGoal?: (id: string) => { ok: boolean; reason?: string };
+      resumeGoal?: (id: string) => { ok: boolean; reason?: string };
+    }): Promise<string> {
+      const server = new HttpServer({ port: 0, token: TOKEN, ...hooks });
+      await server.start();
+      track(server);
+      const port = (server as unknown as { port: () => number }).port();
+      return `http://127.0.0.1:${port}`;
+    }
+
+    it("GET /v1/goals returns goals array from listGoals callback", async () => {
+      const goals = [{ id: "g1", type: "research", status: "active", priority: 5 }];
+      const baseUrl = await startWithGoalHooks({ listGoals: () => goals });
+      const res = await fetch(`${baseUrl}/ogamex/v1/goals`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { goals: typeof goals };
+      expect(body.goals).toEqual(goals);
+    });
+
+    it("GET /v1/goals returns empty list when listGoals not wired", async () => {
+      const baseUrl = await startWithGoalHooks({});
+      const res = await fetch(`${baseUrl}/ogamex/v1/goals`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { goals: unknown[] };
+      expect(body.goals).toEqual([]);
+    });
+
+    it("POST /v1/goals/<id>/cancel calls cancelGoal and returns ok", async () => {
+      const calls: string[] = [];
+      const baseUrl = await startWithGoalHooks({
+        cancelGoal: (id) => { calls.push(id); return { ok: true }; },
+      });
+      const res = await fetch(`${baseUrl}/ogamex/v1/goals/abc-123/cancel`, { method: "POST" });
+      expect(res.status).toBe(200);
+      expect(calls).toEqual(["abc-123"]);
+      const body = (await res.json()) as { ok: boolean };
+      expect(body.ok).toBe(true);
+    });
+
+    it("POST /v1/goals/<id>/cancel returns 404 when handler reports goal not found", async () => {
+      const baseUrl = await startWithGoalHooks({
+        cancelGoal: () => ({ ok: false, reason: "goal not found" }),
+      });
+      const res = await fetch(`${baseUrl}/ogamex/v1/goals/missing/cancel`, { method: "POST" });
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { ok: boolean; reason: string };
+      expect(body).toEqual({ ok: false, reason: "goal not found" });
+    });
+
+    it("POST /v1/goals/<id>/cancel returns 503 when cancelGoal not wired", async () => {
+      const baseUrl = await startWithGoalHooks({});
+      const res = await fetch(`${baseUrl}/ogamex/v1/goals/x/cancel`, { method: "POST" });
+      expect(res.status).toBe(503);
+      await res.text();
+    });
+
+    it("POST /v1/goals/<id>/pause and /resume route to the correct handler", async () => {
+      const calls: Array<{ action: string; id: string }> = [];
+      const baseUrl = await startWithGoalHooks({
+        pauseGoal: (id) => { calls.push({ action: "pause", id }); return { ok: true }; },
+        resumeGoal: (id) => { calls.push({ action: "resume", id }); return { ok: true }; },
+      });
+      let res = await fetch(`${baseUrl}/ogamex/v1/goals/g7/pause`, { method: "POST" });
+      expect(res.status).toBe(200);
+      await res.text();
+      res = await fetch(`${baseUrl}/ogamex/v1/goals/g7/resume`, { method: "POST" });
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(calls).toEqual([{ action: "pause", id: "g7" }, { action: "resume", id: "g7" }]);
+    });
+
+    it("URL-decodes goal id before passing to handler", async () => {
+      const got: string[] = [];
+      const baseUrl = await startWithGoalHooks({
+        cancelGoal: (id) => { got.push(id); return { ok: true }; },
+      });
+      const res = await fetch(`${baseUrl}/ogamex/v1/goals/has%20space/cancel`, { method: "POST" });
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(got).toEqual(["has space"]);
+    });
+  });
+
   it("POST /poll resolves early when a message is queued mid-poll", async () => {
     const { server, baseUrl } = await startServer({ pollTimeoutMs: 5000 });
     const t0 = Date.now();

@@ -41,7 +41,7 @@ export function makeQueryStateTool(ref: WorldStateRef): QueryStateDefinition {
       if (planet === undefined || planet === "") {
         return ref.current;
       }
-      const found = ref.current.planets.find((p) => p.name === planet);
+      const found = Object.values(ref.current.planets ?? {}).find((p) => p.name === planet);
       if (found !== undefined) {
         return found;
       }

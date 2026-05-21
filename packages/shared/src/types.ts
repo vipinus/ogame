@@ -112,9 +112,25 @@ export interface ResearchState {
 }
 
 export interface WorldState {
-  server: { universe: string; speed: number };
+  server: {
+    universe: string;
+    /** Economy speed — applies to build time + mine production.
+     *  From <meta name="ogame-universe-speed"> at boot. */
+    speed: number;
+    /** Research speed — separate multiplier on modern ogame servers
+     *  (e.g. Scorpius: eco=8, research=16). From /api/serverData.xml.
+     *  Falls back to `speed` when absent. */
+    research_speed?: number;
+    /** Fleet speed multipliers (transport/expedition/attack/defend/harvest). */
+    fleet_peaceful_speed?: number;
+    fleet_war_speed?: number;
+    fleet_holding_speed?: number;
+  };
   player: { id: string; name: string; alliance: string | null };
-  planets: Planet[];
+  /** Planets keyed by ogame numeric planet ID. Refactored 2026-05-21
+   *  from Array to remove planets[0]-as-special-home assumption.
+   *  Iterate with Object.values(state.planets). */
+  planets: Record<string, Planet>;
   research: ResearchState;
   fleets_outbound: FleetMovement[];
   events_incoming: IncomingEvent[];
@@ -146,6 +162,7 @@ export interface Directive {
 export type GoalType =
   | "research" | "build" | "build_universal"
   | "colonize" | "build_ships" | "build_defense" | "terraformer_to"
+  | "expedition" | "deploy" | "transport"
   // 2026 LifeForm 扩展
   | "pick_lifeform"
   | "lifeform_level_to"
@@ -167,6 +184,18 @@ export interface Goal {
   current_step: string;
   eta_at: number | null;
   blocked_reason?: string;
+  /**
+   * Marks this goal as the player's PRIMARY OBJECTIVE. The PriorityMerger
+   * plans the main goal FIRST every tick; the planner's recursive prereq
+   * descent ensures all dependencies are scheduled before the goal itself.
+   * Other goals only consume a dispatch slot (per-planet build slot, global
+   * research slot) if the main chain didn't already claim it.
+   *
+   * At most one goal should have `is_main_goal: true` at any time; the
+   * GoalsStore's setMainGoal() helper enforces this by clearing others
+   * before flipping the target.
+   */
+  is_main_goal?: boolean;
 }
 
 // --- Strategy ---

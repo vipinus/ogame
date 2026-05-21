@@ -98,11 +98,35 @@ export function extractStorage(doc: Document): Storage | null {
 }
 
 export function extractProduction(doc: Document): Production | null {
+  // Primary path: tooltip title parsing — works on Overview / Resources
+  // pages that render the top resource bar (metal_box / crystal_box / ...).
   const m = parseTitle(getTitle(doc, "metal_box"), doc);
   const c = parseTitle(getTitle(doc, "crystal_box"), doc);
   const d = parseTitle(getTitle(doc, "deuterium_box"), doc);
-  if (m.perHour === undefined || c.perHour === undefined || d.perHour === undefined) return null;
-  return { m_h: m.perHour, c_h: c.perHour, d_h: d.perHour };
+  if (m.perHour !== undefined && c.perHour !== undefined && d.perHour !== undefined) {
+    return { m_h: m.perHour, c_h: c.perHour, d_h: d.perHour };
+  }
+  // Fallback: ogame v12 inlines a reloadResources({...}) call in a
+  // <script> tag on every page (resources, research, fleet, etc.) even
+  // when the top bar isn't rendered. `resources.metal.production` is
+  // per-second — convert to per-hour. This was the missing path that
+  // caused production=0 in the snapshot on supplies/research pages.
+  for (const s of Array.from(doc.querySelectorAll("script"))) {
+    const txt = s.textContent ?? "";
+    const match = txt.match(/reloadResources\(\s*(\{[\s\S]*?"resources"[\s\S]*?\})\s*\)/);
+    if (!match) continue;
+    try {
+      const j = JSON.parse(match[1]!);
+      const r = j.resources ?? {};
+      const mp = r.metal?.production;
+      const cp = r.crystal?.production;
+      const dp = r.deuterium?.production;
+      if (typeof mp === "number" && typeof cp === "number" && typeof dp === "number") {
+        return { m_h: Math.round(mp * 3600), c_h: Math.round(cp * 3600), d_h: Math.round(dp * 3600) };
+      }
+    } catch { /* malformed — try next script tag */ }
+  }
+  return null;
 }
 
 /** LifeForm 2026 resources — population/food/darkmatter. */

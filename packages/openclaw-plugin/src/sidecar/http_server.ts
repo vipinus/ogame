@@ -1,4 +1,7 @@
+import * as fs from "node:fs";
 import * as http from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { UpstreamMsg, DownstreamMsg } from "@ogamex/shared";
@@ -9,6 +12,27 @@ import type {
   DebugDirectiveEntry,
   DebugEventEntry,
 } from "./debug_buffer.js";
+
+/** Where the expedition pause/resume flag is persisted. Single shared file so
+ *  the daily-task runner and the operator can both observe the same state. */
+const EXPEDITION_STATE_FILE = path.join(os.tmpdir(), "ogamex-expedition.json");
+
+function readExpeditionState(): Record<string, unknown> {
+  try {
+    const raw = fs.readFileSync(EXPEDITION_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* missing or malformed — treat as empty */
+  }
+  return {};
+}
+
+function writeExpeditionState(state: Record<string, unknown>): void {
+  fs.writeFileSync(EXPEDITION_STATE_FILE, JSON.stringify(state, null, 2));
+}
 
 export interface HttpServerOptions {
   port: number;
@@ -28,6 +52,16 @@ export interface HttpServerOptions {
    * routing correctly. NO auth required (operator view).
    */
   debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
+  stateProvider?: () => unknown;
+  /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
+  listGoals?: () => Array<unknown>;
+  expeditionProvider?: () => unknown;
+  /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
+  cancelGoal?: (id: string) => { ok: boolean; reason?: string };
+  pauseGoal?: (id: string) => { ok: boolean; reason?: string };
+  resumeGoal?: (id: string) => { ok: boolean; reason?: string };
+  setMainGoal?: (id: string) => { ok: boolean; reason?: string };
+  unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
 }
 
 interface QueueEntry {
@@ -44,6 +78,8 @@ const PUSH_PATH = "/ogamex/v1/push";
 const POLL_PATH = "/ogamex/v1/poll";
 const HEALTH_PATH = "/ogamex/v1/health";
 const DEBUG_PATH = "/ogamex/v1/debug";
+const EXPEDITION_PAUSE_PATH = "/ogamex/v1/expedition/pause";
+const EXPEDITION_RESUME_PATH = "/ogamex/v1/expedition/resume";
 const ALLOWED_ORIGIN = "https://*.ogame.org";
 
 /**
@@ -57,6 +93,16 @@ interface ResolvedHttpServerOptions {
   pollTimeoutMs: number;
   healthReporter?: () => Promise<unknown>;
   debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
+  stateProvider?: () => unknown;
+  /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
+  listGoals?: () => Array<unknown>;
+  expeditionProvider?: () => unknown;
+  /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
+  cancelGoal?: (id: string) => { ok: boolean; reason?: string };
+  pauseGoal?: (id: string) => { ok: boolean; reason?: string };
+  resumeGoal?: (id: string) => { ok: boolean; reason?: string };
+  setMainGoal?: (id: string) => { ok: boolean; reason?: string };
+  unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
 }
 
 export class HttpServer {
@@ -73,6 +119,14 @@ export class HttpServer {
       pollTimeoutMs: opts.pollTimeoutMs ?? 30000,
       ...(opts.healthReporter !== undefined ? { healthReporter: opts.healthReporter } : {}),
       ...(opts.debugSnapshot !== undefined ? { debugSnapshot: opts.debugSnapshot } : {}),
+      ...(opts.stateProvider !== undefined ? { stateProvider: opts.stateProvider } : {}),
+      ...(opts.listGoals !== undefined ? { listGoals: opts.listGoals } : {}),
+      ...(opts.expeditionProvider !== undefined ? { expeditionProvider: opts.expeditionProvider } : {}),
+      ...(opts.cancelGoal !== undefined ? { cancelGoal: opts.cancelGoal } : {}),
+      ...(opts.pauseGoal !== undefined ? { pauseGoal: opts.pauseGoal } : {}),
+      ...(opts.resumeGoal !== undefined ? { resumeGoal: opts.resumeGoal } : {}),
+      ...(opts.setMainGoal !== undefined ? { setMainGoal: opts.setMainGoal } : {}),
+      ...(opts.unsetMainGoal !== undefined ? { unsetMainGoal: opts.unsetMainGoal } : {}),
     };
   }
 
@@ -164,6 +218,36 @@ export class HttpServer {
       return;
     }
 
+    // Operator API (no auth, LAN trust). GET state/goals/expedition.
+    if (method === "GET" && url === "/ogamex/v1/state") {
+      this.handleProviderGet(res, this.opts.stateProvider);
+      return;
+    }
+    if (method === "GET" && url === "/ogamex/v1/goals") {
+      // listGoals returns the bare array. Wrap in {goals: [...]}. If not
+      // wired, return empty list (operator UI can still load).
+      this.writeCorsHeaders(res);
+      const goals = this.opts.listGoals ? this.opts.listGoals() : [];
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ goals }));
+      return;
+    }
+    if (method === "GET" && url === "/ogamex/v1/expedition") {
+      this.handleProviderGet(res, this.opts.expeditionProvider);
+      return;
+    }
+    // Goal mutation endpoints (no auth). POST /v1/goals/{id}/{action}
+    if (method === "POST") {
+      const m = url?.match(/^\/ogamex\/v1\/goals\/([^/]+)\/(cancel|pause|resume|set-main|unset-main)$/);
+      if (m) {
+        const [, idEnc, action] = m;
+        const id = decodeURIComponent(idEnc!);
+        this.handleGoalAction(res, id, action! as "cancel" | "pause" | "resume" | "set-main" | "unset-main");
+        return;
+      }
+    }
+
     if (method !== "POST") {
       this.writeCorsHeaders(res);
       res.statusCode = 405;
@@ -186,10 +270,93 @@ export class HttpServer {
       void this.handlePoll(req, res);
       return;
     }
+    if (url === EXPEDITION_PAUSE_PATH) {
+      this.handleExpeditionFlag(res, true);
+      return;
+    }
+    if (url === EXPEDITION_RESUME_PATH) {
+      this.handleExpeditionFlag(res, false);
+      return;
+    }
 
     this.writeCorsHeaders(res);
     res.statusCode = 404;
     res.end();
+  }
+
+  /**
+   * Generic GET handler — call optional provider, return JSON. 503 if not configured.
+   */
+  private handleProviderGet(res: http.ServerResponse, provider?: () => unknown): void {
+    this.writeCorsHeaders(res);
+    if (!provider) {
+      res.statusCode = 503;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: false, reason: "no provider wired" }));
+      return;
+    }
+    try {
+      const body = provider();
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(body));
+    } catch (e) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: false, reason: (e as Error).message }));
+    }
+  }
+
+  /**
+   * POST /v1/goals/{id}/{action} — delegate to wired goalAction hook.
+   */
+  private handleGoalAction(res: http.ServerResponse, id: string, action: "cancel" | "pause" | "resume" | "set-main" | "unset-main"): void {
+    this.writeCorsHeaders(res);
+    const fn = action === "cancel" ? this.opts.cancelGoal
+             : action === "pause"  ? this.opts.pauseGoal
+             : action === "resume" ? this.opts.resumeGoal
+             : action === "set-main"   ? this.opts.setMainGoal
+             : action === "unset-main" ? this.opts.unsetMainGoal
+             : undefined;
+    if (!fn) {
+      res.statusCode = 503;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: false, reason: `no ${action} handler wired` }));
+      return;
+    }
+    try {
+      const result = fn(id);
+      res.statusCode = result.ok ? 200 : 404;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: false, reason: (e as Error).message }));
+    }
+  }
+
+  /**
+   * Write the boolean `paused` flag into the shared expedition-state file.
+   * Read-modify-write the JSON object so any other keys (e.g. last_run_at)
+   * survive the toggle.
+   */
+  private handleExpeditionFlag(res: http.ServerResponse, paused: boolean): void {
+    let ok = true;
+    let error: string | undefined;
+    try {
+      const state = readExpeditionState();
+      state["paused"] = paused;
+      state["updated_at"] = Date.now();
+      writeExpeditionState(state);
+    } catch (e) {
+      ok = false;
+      error = (e as Error).message;
+    }
+    this.writeCorsHeaders(res);
+    res.statusCode = ok ? 200 : 500;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(ok ? { ok: true, paused } : { ok: false, error }));
   }
 
   private writeCorsHeaders(res: http.ServerResponse): void {

@@ -71,14 +71,10 @@ function makeWorldState(): WorldState {
   return {
     server: { universe: "uni42", speed: 1 },
     player: { id: "p1", name: "Calvin", alliance: null },
-    planets: [
-      // Minimal Planet shape: cast as Planet[] avoids needing full type.
-      // For the digest, only the count matters.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { id: "33000001" } as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { id: "33000002" } as any,
-    ],
+    // Minimal Planet shape — only counts matter for the digest. Post Map
+    // refactor: state.planets is Record<string, Planet>.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    planets: { "33000001": { id: "33000001" } as any, "33000002": { id: "33000002" } as any },
     research: { levels: {}, queue: null },
     fleets_outbound: [
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

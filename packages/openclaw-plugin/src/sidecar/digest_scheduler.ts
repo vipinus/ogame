@@ -250,7 +250,7 @@ function snapshotSection(deps: DigestSchedulerDeps): string {
   const hostiles = s.events_incoming.length;
   lines.push(`- Universe: ${s.server.universe}`);
   lines.push(`- Player: ${s.player.name}`);
-  lines.push(`- Planets: ${s.planets.length}`);
+  lines.push(`- Planets: ${Object.keys(s.planets ?? {}).length}`);
   lines.push(`- Outbound fleets: ${s.fleets_outbound.length}`);
   lines.push(`- Hostile events: ${hostiles}`);
   return lines.join("\n");

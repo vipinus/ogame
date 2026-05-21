@@ -198,10 +198,10 @@ function renderMarkdown(snap: MemorySnapshotInput, nowMs: number): string {
   lines.push(`- Alliance: ${state.player.alliance ?? "(none)"}`);
   lines.push("");
 
-  lines.push(`## Planets (${state.planets.length})`);
+  lines.push(`## Planets (${Object.keys(state.planets ?? {}).length})`);
   lines.push("| Coord | Name | Metal | Crystal | Deuterium |");
   lines.push("|---|---|---|---|---|");
-  for (const p of state.planets) {
+  for (const p of Object.values(state.planets ?? {})) {
     const coord = `${p.coords[0]}:${p.coords[1]}:${p.coords[2]}`;
     lines.push(
       `| ${coord} | ${p.name} | ${Math.floor(p.resources.m)} | ${Math.floor(p.resources.c)} | ${Math.floor(p.resources.d)} |`,

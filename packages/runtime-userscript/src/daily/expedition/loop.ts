@@ -98,7 +98,7 @@ export function startDailyExpeditionLoop(
     // M3.7 derives missing context with placeholders. Source planet is best-effort
     // matched by coords; otherwise "unknown". Template id and launched_at are not
     // available off the FleetMovement payload yet — M4 will plumb them through.
-    const sourcePlanet = deps.store.state.planets.find(
+    const sourcePlanet = Object.values(deps.store.state.planets ?? {}).find(
       (p) =>
         p.coords[0] === fleet.origin[0] &&
         p.coords[1] === fleet.origin[1] &&

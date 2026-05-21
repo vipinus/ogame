@@ -82,7 +82,7 @@ export async function fillExpeditionSlots(
   }
 
   // 4. Source planet must exist.
-  const sourcePlanet = state.planets.find((p) => p.id === config.source_planet);
+  const sourcePlanet = Object.values(state.planets ?? {}).find((p) => p.id === config.source_planet);
   if (sourcePlanet === undefined) {
     return { launched: 0, reasons: ["source planet not found"] };
   }

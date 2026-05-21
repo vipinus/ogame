@@ -77,6 +77,13 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
 
   async function run(directive: Directive): Promise<void> {
     if (stopped) return;
+    // Expiry check: directive's deadline may have passed while it sat in the
+    // queue (or arrived already-stale from sidecar). Ack expired without
+    // running the executor — saves wasted ogame POSTs.
+    if (typeof directive.expires_at === "number" && Date.now() > directive.expires_at) {
+      ack(directive.id, { success: false, error: "expired" });
+      return;
+    }
     let chosen: DirectiveExecutor | null = null;
     for (const ex of executors) {
       let handles = false;
@@ -94,17 +101,37 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       }
     }
     if (!chosen) {
+      // eslint-disable-next-line no-console
+      console.warn(`[GoalRunner] no executor for action=${directive.action}`);
       ack(directive.id, {
         success: false,
         error: `no executor for action ${directive.action}`,
       });
       return;
     }
+    // Defer ALL autonomous POSTs while operator is actively using ogame UI.
+    // Without this, sidecar's per-tick directives keep firing into the same
+    // session ogame is processing user clicks for → "server not responding"
+    // anti-bot trip. Boot.ts sets window.__ogamexUserBusyUntil on mousedown
+    // / keydown. Defer the directive (NACK with a retry-soon signal).
+    const busyUntil = (globalThis as { window?: { __ogamexUserBusyUntil?: number } }).window?.__ogamexUserBusyUntil ?? 0;
+    if (busyUntil > Date.now()) {
+      const waitMs = Math.min(busyUntil - Date.now(), 60_000);
+      console.log(`[GoalRunner] DEFER ${directive.action} — operator active, retry in ${(waitMs / 1000).toFixed(0)}s`);
+      ack(directive.id, { success: false, error: `deferred: operator active, retry after ${waitMs}ms` });
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[GoalRunner] executing ${directive.action} via ${chosen.constructor.name}`);
     try {
       const result = await chosen.execute(directive);
+      // eslint-disable-next-line no-console
+      console.log(`[GoalRunner] execute OK`, result);
       ack(directive.id, { success: true, result });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // eslint-disable-next-line no-console
+      console.warn(`[GoalRunner] execute FAILED for ${directive.action}:`, msg);
       ack(directive.id, { success: false, error: msg });
     }
   }
@@ -122,15 +149,60 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     void run(directive);
   }
 
+  // Serialize directive execution + dedupe recent ids. Without this,
+  // sidecar's per-tick dispatch (3 directives at once for research +
+  // build + build_ships) triggers 3 parallel navigates → reload storm.
+  // Dedupe window matches the push interval so the SAME directive id
+  // arriving on consecutive ticks doesn't re-execute.
+  // Dedupe by EXACT id only — the merger generates a fresh id per tick,
+  // so signature dedupe (action+params) blocked legitimate retries after
+  // resources arrived. Id dedupe is essentially a no-op for fresh ids
+  // but protects against accidental same-id replay within the WS layer.
+  const RECENT_IDS_TTL_MS = 5_000;
+  const recentIds = new Map<string, number>(); // id → expiresAt
+  let executing = false;
+  const execQueue: Directive[] = [];
+  const gcRecent = (): void => {
+    const now = Date.now();
+    for (const [id, exp] of recentIds) if (exp < now) recentIds.delete(id);
+  };
+  async function pumpQueue(): Promise<void> {
+    if (executing) return;
+    while (execQueue.length > 0) {
+      const d = execQueue.shift()!;
+      executing = true;
+      try {
+        await run(d);
+      } finally {
+        executing = false;
+      }
+    }
+  }
+
   const unsubDispatch = client.on("directive.dispatch", (msg) => {
     if (stopped) return;
     const d: unknown = msg.directive;
     if (!isValidDirective(d)) {
-      // eslint-disable-next-line no-console
       console.warn("[GoalRunner] dropped invalid directive", d);
       return;
     }
-    handleDispatch(d);
+    const dr = d as Directive;
+    gcRecent();
+    if (recentIds.has(dr.id)) {
+      // Exact id replay — only happens on rare WS retry. Skip.
+      return;
+    }
+    recentIds.set(dr.id, Date.now() + RECENT_IDS_TTL_MS);
+    console.log(`[GoalRunner] received ${dr.action} ${JSON.stringify(dr.params).slice(0,80)} id=${dr.id.slice(0,8)}`);
+    // PriorityGate is held by an in-progress emergency response (fleet save,
+    // anomaly halt). While active, queue directives in `pending` to drain
+    // when gate flips inactive.
+    if (gate.isActive()) {
+      pending.push(dr);
+      return;
+    }
+    execQueue.push(dr);
+    void pumpQueue();
   });
 
   const unsubGate = gate.onChange((active) => {

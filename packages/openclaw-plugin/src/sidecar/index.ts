@@ -89,6 +89,18 @@ export interface SidecarHandle {
   digestScheduler: DigestSchedulerHandle;
   /** Current world-state mirror, populated by the state.snapshot handler. */
   stateRef: { current: WorldState | null };
+  /**
+   * Report current expedition slot usage. When no state.snapshot has arrived
+   * yet, `state_ready` is false and used/max are -1 sentinels — operators can
+   * use that to distinguish "no expeditions launched" from "haven't heard
+   * from the userscript yet".
+   */
+  listExpedition(): {
+    state_ready: boolean;
+    used: number;
+    max: number;
+    paused: boolean;
+  };
   /** Stop everything. */
   stop(): Promise<void>;
 }
@@ -185,7 +197,7 @@ function emptyWorldState(): WorldState {
   return {
     server: { universe: "", speed: 1 },
     player: { id: "", name: "", alliance: null },
-    planets: [],
+    planets: {},
     research: { levels: {}, queue: null },
     fleets_outbound: [],
     events_incoming: [],
@@ -195,6 +207,75 @@ function emptyWorldState(): WorldState {
     last_update: 0,
     page_snapshots: {},
   };
+}
+
+/**
+ * Walk every planet in the new snapshot and compare ship counts against the
+ * previous snapshot. For each ship type whose count INCREASED on a planet,
+ * find an active build_ships goal targeting that ship on that planet and
+ * decrement its `amount` by the delta. When the remaining amount drops to
+ * <= 0, mark the goal completed.
+ */
+function updateBuildShipsProgress(
+  prev: WorldState,
+  next: WorldState,
+  store: GoalsStore,
+): void {
+  const activeRows = store.listActive();
+  // Index active build_ships goals by (planet_id || "", ship) for O(1) lookup.
+  const goalByKey = new Map<string, { goalId: string; remaining: number }>();
+  for (const row of activeRows) {
+    if (row.goal.type !== "build_ships") continue;
+    const t = row.goal.target as { ship?: unknown; amount?: unknown; planet?: unknown };
+    const ship = typeof t.ship === "string" ? t.ship : "";
+    if (!ship) continue;
+    const planetRef =
+      (typeof t.planet === "string" && t.planet) || row.goal.planet || "";
+    const amount = typeof t.amount === "number" ? t.amount : 0;
+    const key = `${planetRef}::${ship}`;
+    goalByKey.set(key, { goalId: row.goal.id, remaining: amount });
+  }
+  if (goalByKey.size === 0) return;
+
+  for (const [planetId, planet] of Object.entries(next.planets ?? {})) {
+    const prevPlanet = prev.planets?.[planetId];
+    if (!prevPlanet) continue;
+    const prevShips = prevPlanet.ships ?? {};
+    const newShips = planet.ships ?? {};
+    for (const [ship, newCountRaw] of Object.entries(newShips)) {
+      const newCount = typeof newCountRaw === "number" ? newCountRaw : 0;
+      const prevCount = (prevShips as Record<string, number | undefined>)[ship] ?? 0;
+      const delta = newCount - prevCount;
+      if (delta <= 0) continue;
+      // Try planet-id key first, then coord key, then unscoped (no planet).
+      const coordKey = planet.coords.join(":");
+      const candidates = [
+        `${planetId}::${ship}`,
+        `${coordKey}::${ship}`,
+        `::${ship}`,
+      ];
+      let match: { goalId: string; remaining: number } | undefined;
+      let matchKey: string | undefined;
+      for (const k of candidates) {
+        const found = goalByKey.get(k);
+        if (found) { match = found; matchKey = k; break; }
+      }
+      if (!match || !matchKey) continue;
+      const newRemaining = match.remaining - delta;
+      try {
+        store.updateTarget(match.goalId, { amount: Math.max(0, newRemaining) });
+        if (newRemaining <= 0) {
+          store.updateStatus(match.goalId, "completed");
+          goalByKey.delete(matchKey);
+        } else {
+          // Refresh map so subsequent deltas this tick stay accurate.
+          goalByKey.set(matchKey, { goalId: match.goalId, remaining: newRemaining });
+        }
+      } catch (e) {
+        console.error("[ogamex/sidecar] ship-progress update failed", match.goalId, e);
+      }
+    }
+  }
 }
 
 /**
@@ -269,6 +350,87 @@ export async function startSidecar(
       strategyVersion: () => strategyManager.load().version,
     }),
     debugSnapshot: () => debug.snapshot(),
+    // Operator API providers — surface state/goals/expedition over HTTP.
+    stateProvider: () => stateRef.current ?? { ok: false, reason: "no snapshot yet" },
+    listGoals: () => goalsStore.list().map((r) => ({
+      id: r.goal.id,
+      type: r.goal.type,
+      target: r.goal.target,
+      planet: r.goal.planet,
+      priority: r.goal.priority,
+      status: r.status,
+      reason: r.reason,
+      is_main_goal: r.goal.is_main_goal === true,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    })),
+    expeditionProvider: () => {
+      const ready = stateRef.current !== null;
+      let paused = false;
+      try {
+        const fp = path.join(os.tmpdir(), "ogamex-expedition.json");
+        const raw = fs.readFileSync(fp, "utf8");
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        paused = parsed["paused"] === true;
+      } catch { /* missing or malformed — treat as not paused */ }
+      if (!ready) return { state_ready: false, used: -1, max: -1, paused, active: [] };
+      // Slot source: max from scraped (if available) else derive from astro
+      // level (floor(sqrt(astro)) + class bonus). Used: fleets_outbound m=15
+      // count is most accurate (real-time), fall back to scraped server.*.
+      const srv = (stateRef.current?.server ?? {}) as { used_expedition_slots?: number; max_expedition_slots?: number; player_class?: string };
+      const astro = stateRef.current?.research?.levels?.["astrophysics"] ?? 0;
+      const fleets15 = (stateRef.current?.fleets_outbound ?? []).filter((f) => f.mission === 15).length;
+      const classBonus = (srv.player_class ?? process.env["OGAMEX_DEFAULT_CLASS"] ?? "") === "discoverer" ? 2 : 0;
+      const computedMax = Math.floor(Math.sqrt(astro)) + classBonus;
+      const slots = {
+        used: Math.max(fleets15, srv.used_expedition_slots ?? 0),
+        max: srv.max_expedition_slots && srv.max_expedition_slots > 0 ? srv.max_expedition_slots : computedMax,
+      };
+      const fleets = stateRef.current?.fleets_outbound ?? [];
+      const now = Date.now();
+      const active = fleets.filter((f) => f.mission === 15).map((f, i) => ({
+        fleet_id: f.id ?? `mvt-${i}`,
+        arrival_at: f.arrival_at ?? 0,
+        return_at: f.return_at ?? null,
+        eta_in_seconds: Math.max(0, Math.floor(((f.arrival_at ?? 0) - now) / 1000)),
+        origin: Array.isArray(f.origin) ? f.origin.join(":") : null,
+        dest: Array.isArray(f.dest) ? f.dest.join(":") : null,
+        ships: f.ships ?? {},
+      }));
+      return {
+        active,
+        used: slots.used,
+        max: slots.max,
+        astrophysics_level: astro,
+        paused,
+        state_ready: true,
+      };
+    },
+    cancelGoal: (id) => {
+      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
+      goalsStore.updateStatus(id, "cancelled", "via /v1/goals/{id}/cancel");
+      return { ok: true };
+    },
+    pauseGoal: (id) => {
+      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
+      goalsStore.updateStatus(id, "blocked", "paused by operator");
+      return { ok: true };
+    },
+    resumeGoal: (id) => {
+      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
+      goalsStore.updateStatus(id, "pending", "resumed by operator");
+      return { ok: true };
+    },
+    setMainGoal: (id) => {
+      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
+      goalsStore.setMainGoal(id);
+      return { ok: true };
+    },
+    unsetMainGoal: (id) => {
+      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
+      goalsStore.setMainGoal(null);
+      return { ok: true };
+    },
   });
   const http = httpServerCtor();
   await Promise.all([ws.start(), http.start()]);
@@ -387,8 +549,21 @@ export async function startSidecar(
   // -------------------------------------------------------------------------
 
   ws.on("state.snapshot", (msg) => {
+    const prev = stateRef.current;
     stateRef.current = msg.snapshot;
     lastSeen.at = Date.now();
+
+    // Ship-build progress watcher — when a planet's ship count rises between
+    // snapshots, decrement the matching build_ships goal's `amount` by the
+    // delta. When amount drops to <= 0, the goal is completed.
+    if (prev !== null) {
+      try {
+        updateBuildShipsProgress(prev, msg.snapshot, goalsStore);
+      } catch (e) {
+        console.error("[ogamex/sidecar] ship-progress watcher threw", e);
+      }
+    }
+
     memoryWriter.push({
       state: msg.snapshot,
       goals: goalsStore.listActive(),
@@ -398,7 +573,13 @@ export async function startSidecar(
     // freshly-planned next step). Wrap in try/catch so a single goal's
     // planning failure does NOT swallow subsequent state.snapshots.
     try {
-      priorityMerger.dispatch(msg.snapshot);
+      const result = priorityMerger.dispatch(msg.snapshot);
+      const actions = result.dispatched.map((d) => {
+        const params = d.params as { building?: string; tech?: string; ship?: string };
+        const label = params.building ?? params.tech ?? params.ship ?? d.action;
+        return `${d.action}/${label}`;
+      }).join(",");
+      console.log(`[merger] dispatched=${result.dispatched.length} blocked=${result.blocked.length} done=0 actions=${actions}`);
     } catch (e) {
       console.error("[ogamex/sidecar] priorityMerger.dispatch threw", e);
     }
@@ -471,6 +652,21 @@ export async function startSidecar(
     }
   };
 
+  const listExpedition: SidecarHandle["listExpedition"] = () => {
+    const ready = stateRef.current !== null;
+    const paused = readExpeditionPaused();
+    if (!ready) {
+      return { state_ready: false, used: -1, max: -1, paused };
+    }
+    const slots = stateRef.current?.discovery_slots ?? { used: 0, max: 0 };
+    return {
+      state_ready: true,
+      used: slots.used,
+      max: slots.max,
+      paused,
+    };
+  };
+
   return {
     ws,
     http,
@@ -482,8 +678,25 @@ export async function startSidecar(
     memoryWriter,
     digestScheduler,
     stateRef,
+    listExpedition,
     stop,
   };
+}
+
+/**
+ * Read the operator-controlled `paused` flag from the shared expedition
+ * state file written by `/v1/expedition/{pause,resume}`. Missing or malformed
+ * file ⇒ not paused.
+ */
+function readExpeditionPaused(): boolean {
+  try {
+    const expeditionStateFile = path.join(os.tmpdir(), "ogamex-expedition.json");
+    const raw = fs.readFileSync(expeditionStateFile, "utf8");
+    const parsed = JSON.parse(raw);
+    return !!(parsed && typeof parsed === "object" && (parsed as { paused?: unknown }).paused === true);
+  } catch {
+    return false;
+  }
 }
 
 /**

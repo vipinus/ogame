@@ -54,8 +54,7 @@ function makeWorldState(): WorldState {
   return {
     server: { universe: "uni", speed: 1 },
     player: { id: "u", name: "test", alliance: null },
-    planets: [
-      {
+    planets: [{
         id: "p1",
         name: "Homeworld",
         coords: [1, 1, 1],
@@ -70,8 +69,7 @@ function makeWorldState(): WorldState {
         ships: {},
         defense: {},
         lifeform: null,
-      },
-    ],
+      }],
     research: { levels: { astrophysics: 4 }, queue: null },
     fleets_outbound: [],
     events_incoming: [],

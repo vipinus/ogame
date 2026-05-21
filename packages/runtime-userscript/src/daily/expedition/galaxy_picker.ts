@@ -23,10 +23,10 @@ function getSourceGalaxy(
   config: ExpeditionConfig,
 ): number {
   if (config.source_planet !== null) {
-    const found = state.planets.find((p) => p.id === config.source_planet);
+    const found = Object.values(state.planets ?? {}).find((p) => p.id === config.source_planet);
     if (found !== undefined) return found.coords[0];
   }
-  const first = state.planets[0];
+  const first = Object.values(state.planets ?? {})[0];
   if (first !== undefined) return first.coords[0];
   return 1;
 }

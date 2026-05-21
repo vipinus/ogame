@@ -129,12 +129,12 @@ export async function buildHealthReport(deps: HealthDeps): Promise<HealthReport>
     state: {
       has_snapshot: hasSnapshot,
       server_universe: snapshot?.server.universe ?? null,
-      planets_count: snapshot?.planets.length ?? 0,
-      planets: snapshot?.planets
+      planets_count: Object.keys(snapshot?.planets ?? {}).length ?? 0,
+      planets: Object.values(snapshot?.planets ?? {})
         .filter((p) => Array.isArray(p.coords) && p.coords.length === 3)
         .map((p) => ({
           id: p.id, name: p.name ?? "", coords: [...(p.coords as readonly number[])], type: p.type ?? "planet",
-        })) ?? [],
+        })),
       fleets_outbound_count: snapshot?.fleets_outbound.length ?? 0,
       events_incoming_count: snapshot?.events_incoming.length ?? 0,
       hostile_events_count: hostileEventsCount,

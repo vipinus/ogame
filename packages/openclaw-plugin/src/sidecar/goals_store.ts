@@ -66,6 +66,7 @@ export class GoalsStore {
   private readonly stmtInsert: Database.Statement<[string, string, GoalStatus, string | null, number, number]>;
   private readonly stmtGet: Database.Statement<[string]>;
   private readonly stmtUpdateStatus: Database.Statement<[GoalStatus, string | null, number, string]>;
+  private readonly stmtUpdateGoalJson: Database.Statement<[string, number, string]>;
   private readonly stmtDelete: Database.Statement<[string]>;
   private readonly stmtListAll: Database.Statement<[]>;
   private readonly stmtListByStatus: Database.Statement<[GoalStatus]>;
@@ -84,6 +85,9 @@ export class GoalsStore {
     this.stmtUpdateStatus = this.db.prepare<[GoalStatus, string | null, number, string]>(
       "UPDATE goals SET status = ?, reason = ?, updated_at = ? WHERE id = ?",
     );
+    this.stmtUpdateGoalJson = this.db.prepare<[string, number, string]>(
+      "UPDATE goals SET goal_json = ?, updated_at = ? WHERE id = ?",
+    );
     this.stmtDelete = this.db.prepare<[string]>("DELETE FROM goals WHERE id = ?");
     this.stmtListAll = this.db.prepare<[]>("SELECT * FROM goals ORDER BY created_at DESC");
     this.stmtListByStatus = this.db.prepare<[GoalStatus]>(
@@ -99,6 +103,11 @@ export class GoalsStore {
     const json = JSON.stringify(goal);
     // Throws SqliteError UNIQUE constraint on duplicate id — propagate.
     this.stmtInsert.run(goal.id, json, "pending", null, ts, ts);
+    // If this goal is being added with is_main_goal=true, enforce the
+    // single-main invariant by clearing any sibling row's flag.
+    if (goal.is_main_goal === true) {
+      this.setMainGoal(goal.id);
+    }
     return { goal, status: "pending", created_at: ts, updated_at: ts };
   }
 
@@ -142,6 +151,79 @@ export class GoalsStore {
     const [a, b, c] = NON_TERMINAL as readonly [GoalStatus, GoalStatus, GoalStatus];
     const raws = this.stmtListActive.all(a, b, c) as RawRow[];
     return raws.map(rowFromRaw);
+  }
+
+  /**
+   * Replace `target` on the stored Goal by MERGING newTarget into the
+   * existing target object, then writing the updated goal_json back. Used by
+   * the build_ships progress watcher to decrement remaining amount as units
+   * roll out of the shipyard.
+   *
+   * Throws if the id is unknown.
+   */
+  updateTarget(id: string, newTarget: Record<string, unknown>): GoalRow {
+    const existing = this.get(id);
+    if (existing === null) {
+      throw new Error(`GoalsStore.updateTarget: unknown goal id "${id}"`);
+    }
+    const merged: Goal = {
+      ...existing.goal,
+      target: { ...existing.goal.target, ...newTarget },
+    };
+    const ts = this.now();
+    const result = this.stmtUpdateGoalJson.run(JSON.stringify(merged), ts, id);
+    if (result.changes === 0) {
+      throw new Error(`GoalsStore.updateTarget: update failed for id "${id}"`);
+    }
+    const row = this.get(id);
+    if (row === null) {
+      throw new Error(`GoalsStore.updateTarget: row vanished after update for id "${id}"`);
+    }
+    return row;
+  }
+
+  /**
+   * Mark goal `id` as the player's PRIMARY OBJECTIVE — sets is_main_goal=true
+   * on that row and clears the flag on every other row. Pass `null` to
+   * clear the main flag entirely (no goal is main anymore).
+   *
+   * Returns the updated main row, or null when clearing.
+   */
+  setMainGoal(id: string | null): GoalRow | null {
+    const ts = this.now();
+    // First, clear is_main_goal on every other row (or all rows when id is null).
+    const allRows = this.stmtListAll.all() as RawRow[];
+    for (const raw of allRows) {
+      if (raw.id === id) continue;
+      const g = JSON.parse(raw.goal_json) as Goal;
+      if (g.is_main_goal === true || g.is_main_goal === false) {
+        const cleared: Goal = { ...g, is_main_goal: false };
+        this.stmtUpdateGoalJson.run(JSON.stringify(cleared), ts, raw.id);
+      }
+    }
+    if (id === null) return null;
+    // Now flip the target row's flag to true.
+    const targetRaw = this.stmtGet.get(id) as RawRow | undefined;
+    if (targetRaw === undefined) {
+      throw new Error(`GoalsStore.setMainGoal: unknown goal id "${id}"`);
+    }
+    const targetGoal = JSON.parse(targetRaw.goal_json) as Goal;
+    const updated: Goal = { ...targetGoal, is_main_goal: true };
+    this.stmtUpdateGoalJson.run(JSON.stringify(updated), ts, id);
+    const row = this.get(id);
+    return row;
+  }
+
+  /** Return the row currently flagged is_main_goal=true, or null. */
+  getMainGoal(): GoalRow | null {
+    const raws = this.stmtListAll.all() as RawRow[];
+    for (const raw of raws) {
+      const g = JSON.parse(raw.goal_json) as Goal;
+      if (g.is_main_goal === true) {
+        return rowFromRaw(raw);
+      }
+    }
+    return null;
   }
 
   close(): void {
