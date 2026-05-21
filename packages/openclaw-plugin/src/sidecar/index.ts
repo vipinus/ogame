@@ -58,6 +58,18 @@ import type {
   UpstreamMsg,
   WorldState,
 } from "@ogamex/shared";
+import { TECH_TREE, LIFEFORM_TECH } from "@ogamex/shared";
+
+interface PrereqTreeNode {
+  tech: string;
+  targetLevel: number;
+  currentLevel: number;
+  kind: "research" | "building";
+  met: boolean;
+  children: PrereqTreeNode[];
+  eta_seconds?: number | null;
+  subtree_eta_seconds?: number;
+}
 
 export interface SidecarConfig {
   wsPort: number;
@@ -352,18 +364,111 @@ export async function startSidecar(
     debugSnapshot: () => debug.snapshot(),
     // Operator API providers — surface state/goals/expedition over HTTP.
     stateProvider: () => stateRef.current ?? { ok: false, reason: "no snapshot yet" },
-    listGoals: () => goalsStore.list().map((r) => ({
-      id: r.goal.id,
-      type: r.goal.type,
-      target: r.goal.target,
-      planet: r.goal.planet,
-      priority: r.goal.priority,
-      status: r.status,
-      reason: r.reason,
-      is_main_goal: r.goal.is_main_goal === true,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-    })),
+    listGoals: () => {
+      const planets = stateRef.current?.planets ?? {};
+      const idToCoords = (ref: string | undefined): string | undefined => {
+        if (!ref) return undefined;
+        if (/^\d+:\d+:\d+$/.test(ref)) return ref;
+        const p = planets[ref];
+        return Array.isArray(p?.coords) ? p.coords.join(":") : ref;
+      };
+      // Build prereq tree for a goal. Walks TECH_TREE (regular) or
+      // LIFEFORM_TECH.<species>.buildings (lifeform). Each node carries
+      // current level (from state) + target + met flag. ETA fields stay
+      // null for now — proper computation needs cost/speed integration.
+      const buildTree = (
+        techName: string,
+        targetLevel: number,
+        kind: "research" | "building",
+        planetId: string | undefined,
+      ): PrereqTreeNode | null => {
+        // Treat "research" + regular "building" via TECH_TREE; lifeform via catalog.
+        const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
+        const research = stateRef.current?.research?.levels ?? {};
+        const tech = (TECH_TREE as Record<string, { kind?: string; requires?: Record<string, number> }>)[techName];
+        if (!tech) return null;
+        const current = kind === "research"
+          ? (research[techName] ?? 0)
+          : (planet?.buildings?.[techName] ?? 0);
+        const children: PrereqTreeNode[] = [];
+        for (const [req, lvl] of Object.entries(tech.requires ?? {})) {
+          const reqEntry = (TECH_TREE as Record<string, { kind?: string }>)[req];
+          if (!reqEntry) continue;
+          const subKind = reqEntry.kind === "research" ? "research" : "building";
+          const node = buildTree(req, lvl, subKind, planetId);
+          if (node) children.push(node);
+        }
+        return {
+          tech: techName, targetLevel, currentLevel: current, kind,
+          met: current >= targetLevel,
+          children,
+          eta_seconds: null,
+          subtree_eta_seconds: 0,
+        };
+      };
+      const buildLifeformTree = (
+        buildingName: string,
+        targetLevel: number,
+        planetId: string | undefined,
+      ): PrereqTreeNode | null => {
+        const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
+        const species = (planet?.lifeform as { species?: string } | null)?.species ?? "humans";
+        const catalog = LIFEFORM_TECH[species as keyof typeof LIFEFORM_TECH];
+        if (!catalog) return null;
+        const entry = catalog.buildings[buildingName];
+        if (!entry) return null;
+        const lfb = (planet as { lifeform_buildings?: Record<string, number> } | undefined)?.lifeform_buildings ?? {};
+        const current = lfb[buildingName] ?? 0;
+        const children: PrereqTreeNode[] = [];
+        for (const [req, lvl] of Object.entries(entry.requires)) {
+          const node = buildLifeformTree(req, lvl, planetId);
+          if (node) children.push(node);
+        }
+        return {
+          tech: buildingName, targetLevel, currentLevel: current,
+          kind: "building",
+          met: current >= targetLevel,
+          children,
+          eta_seconds: null,
+          subtree_eta_seconds: 0,
+        };
+      };
+      return goalsStore.list().map((r) => {
+        const target = r.goal.target as { tech?: string; building?: string; level?: number; target_level?: number };
+        const lvl = target.target_level ?? target.level ?? 1;
+        let prereq_tree: PrereqTreeNode | null = null;
+        const planetRef = typeof r.goal.planet === "string" ? r.goal.planet : undefined;
+        // Resolve planet ref (id-or-coord) to id for tree lookup.
+        let resolvedPlanetId = planetRef;
+        if (planetRef && /^\d+:\d+:\d+$/.test(planetRef)) {
+          for (const [id, p] of Object.entries(planets)) {
+            if (Array.isArray(p?.coords) && p.coords.join(":") === planetRef) {
+              resolvedPlanetId = id; break;
+            }
+          }
+        }
+        if (r.goal.type === "research" && target.tech) {
+          prereq_tree = buildTree(target.tech, lvl, "research", resolvedPlanetId);
+        } else if (r.goal.type === "build" && target.building) {
+          prereq_tree = buildTree(target.building, lvl, "building", resolvedPlanetId);
+        } else if (r.goal.type === "lifeform_building" && target.building) {
+          prereq_tree = buildLifeformTree(target.building, lvl, resolvedPlanetId);
+        }
+        return {
+          id: r.goal.id,
+          type: r.goal.type,
+          target: r.goal.target,
+          planet: idToCoords(r.goal.planet),
+          priority: r.goal.priority,
+          status: r.status,
+          reason: r.reason,
+          is_main_goal: r.goal.is_main_goal === true,
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+          prereq_tree,
+        };
+      });
+    },
     expeditionProvider: () => {
       const ready = stateRef.current !== null;
       let paused = false;
@@ -404,6 +509,27 @@ export async function startSidecar(
         astrophysics_level: astro,
         paused,
         state_ready: true,
+      };
+    },
+    emergencyProvider: () => {
+      // Minimal emergency stub — surfaces hostile incoming events from
+      // state.events_incoming as the panel expects. Full attack-save
+      // orchestration lives userscript-side; this endpoint is just a read.
+      const ev = stateRef.current?.events_incoming ?? [];
+      const now = Date.now();
+      const hostile = ev.filter((e) => e.hostile === true).map((e) => ({
+        id: e.id ?? "",
+        type: e.type ?? "attack",
+        arrives_at: e.arrives_at ?? 0,
+        eta_in_seconds: Math.max(0, Math.floor(((e.arrives_at ?? 0) - now) / 1000)),
+        from: Array.isArray(e.from) ? e.from.join(":") : null,
+        to: Array.isArray(e.to) ? e.to.join(":") : null,
+        ships_count: typeof e.ships_count === "number" ? e.ships_count : "?",
+      }));
+      return {
+        hostile,
+        count: hostile.length,
+        snapshot_age_ms: stateRef.current?.last_update ? (now - stateRef.current.last_update) : null,
       };
     },
     cancelGoal: (id) => {

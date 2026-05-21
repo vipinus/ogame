@@ -14,7 +14,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Directive, Goal, GoalType, Planet, WorldState, ShipCount } from "@ogamex/shared";
-import { TECH_TREE, nameToId } from "@ogamex/shared";
+import { TECH_TREE, nameToId, LIFEFORM_TECH } from "@ogamex/shared";
 
 export type PlanResult = Directive | { blocked: string };
 
@@ -84,9 +84,88 @@ export function planGoal(goal: Goal, state: WorldState): PlanResult {
     case "deploy":
     case "transport":
       return planFleetSendGoal(goal, state);
+    case "lifeform_building":
+      return planLifeformBuildingGoal(goal, state);
     default:
       return { blocked: `goal type ${goal.type} not implemented` };
   }
+}
+
+/**
+ * Lifeform building goal — same scheduleEntry endpoint as regular buildings
+ * (verified via sniffer 2026-05-21: technologyId=11102 biosphereFarm), but
+ * prereq chain lives in LIFEFORM_TECH catalog (humans/rocktal/mechas/kaelesh).
+ * Target shape: {building:"researchCentre", level:N, planet?:string}.
+ */
+function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
+  const target = goal.target as { building?: string; level?: number; planet?: string };
+  const building = target.building ?? "";
+  const level = target.level ?? 0;
+  if (!building) return { blocked: "lifeform_building goal missing target.building" };
+  if (level <= 0) return { blocked: "lifeform_building goal needs target.level > 0" };
+  const planet = resolvePlanet(target.planet ?? goal.planet, state) ?? Object.values(state.planets)[0];
+  if (!planet) return { blocked: "lifeform_building: no planet" };
+
+  // Determine species from planet.lifeform (set by userscript). Default to
+  // humans if unknown — verified species path. Other species need sniffer.
+  const species = ((planet.lifeform as { species?: string } | null)?.species ?? "humans") as keyof typeof LIFEFORM_TECH;
+  const catalog = LIFEFORM_TECH[species];
+  if (!catalog) return { blocked: `lifeform: unknown species ${species}` };
+  const entry = catalog.buildings[building];
+  if (!entry) return { blocked: `lifeform_building: ${building} not in ${species} catalog` };
+
+  // lifeform_buildings tracked on planet — separate from regular buildings.
+  const lfBldg = (planet as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {};
+  const current = lfBldg[building] ?? 0;
+  if (current >= level) {
+    return { blocked: `already at or above target — ${building} L${current} ≥ ${level}` };
+  }
+
+  // Population/Food balance — auto-build food when housing grows. Without
+  // this, owner ends up with overcrowded planets → workers starve → mines
+  // run at reduced output. Rule: biosphereFarm must keep up with all
+  // population buildings.
+  const POPULATION_BLDGS = ["residentialSector", "skyscraper", "metropolis"];
+  const FOOD_BLDG = "biosphereFarm";
+  // Food MUST stay ahead of population — owner rule "酒足饭饱大于生活空间".
+  // expectedFood = (sum of all population building levels) + FOOD_SAFETY_MARGIN
+  // so workers never starve, even if owner queues multiple housing in a row.
+  const FOOD_SAFETY_MARGIN = 2;
+  if (POPULATION_BLDGS.includes(building)) {
+    const otherPop = POPULATION_BLDGS
+      .filter((b) => b !== building)
+      .reduce((sum, b) => sum + (lfBldg[b] ?? 0), 0);
+    const expectedFoodLvl = level + otherPop + FOOD_SAFETY_MARGIN;
+    const currentFood = lfBldg[FOOD_BLDG] ?? 0;
+    if (currentFood < expectedFoodLvl) {
+      const subGoal: Goal = { ...goal, target: { building: FOOD_BLDG, level: expectedFoodLvl, planet: planet.id } } as Goal;
+      return planLifeformBuildingGoal(subGoal, state);
+    }
+  }
+
+  // Prereq check — recurse into missing prereqs first.
+  for (const [prereqName, reqLvl] of Object.entries(entry.requires)) {
+    if ((lfBldg[prereqName] ?? 0) < reqLvl) {
+      const subGoal: Goal = { ...goal, target: { building: prereqName, level: reqLvl, planet: planet.id } } as Goal;
+      return planLifeformBuildingGoal(subGoal, state);
+    }
+  }
+
+  // Emit directive — reuse "build" action (ApiExec routes scheduleEntry).
+  const techId = nameToId(building);
+  if (!techId) return { blocked: `lifeform_building: no numeric id for ${building}` };
+  return {
+    id: `dir-${randomUUID()}`,
+    source: "goal",
+    method: "ui",
+    priority: goal.priority,
+    action: "build",
+    params: { building, technology_id: techId, target_level: current + 1, planet_id: planet.id },
+    preconds: [],
+    expires_at: Date.now() + DIRECTIVE_TTL_MS,
+    reason: `lifeform build ${building} L${current + 1} on ${planet.coords?.join(":") ?? planet.id}`,
+    goal_id: goal.id,
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

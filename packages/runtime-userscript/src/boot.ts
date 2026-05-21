@@ -468,7 +468,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.138";
+  const USERSCRIPT_VERSION = "0.0.141";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   console.log(`[OgameX] meta probes: speed=${ogame_meta.universe_speed} fleet_p=${metaSpeedFleetP} fleet_w=${metaSpeedFleetW} fleet_h=${metaSpeedFleetH}`);
   const _prod = extractProduction(env.doc);

@@ -56,6 +56,7 @@ export interface HttpServerOptions {
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
   listGoals?: () => Array<unknown>;
   expeditionProvider?: () => unknown;
+  emergencyProvider?: () => unknown;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -97,6 +98,7 @@ interface ResolvedHttpServerOptions {
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
   listGoals?: () => Array<unknown>;
   expeditionProvider?: () => unknown;
+  emergencyProvider?: () => unknown;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -122,6 +124,7 @@ export class HttpServer {
       ...(opts.stateProvider !== undefined ? { stateProvider: opts.stateProvider } : {}),
       ...(opts.listGoals !== undefined ? { listGoals: opts.listGoals } : {}),
       ...(opts.expeditionProvider !== undefined ? { expeditionProvider: opts.expeditionProvider } : {}),
+      ...(opts.emergencyProvider !== undefined ? { emergencyProvider: opts.emergencyProvider } : {}),
       ...(opts.cancelGoal !== undefined ? { cancelGoal: opts.cancelGoal } : {}),
       ...(opts.pauseGoal !== undefined ? { pauseGoal: opts.pauseGoal } : {}),
       ...(opts.resumeGoal !== undefined ? { resumeGoal: opts.resumeGoal } : {}),
@@ -134,7 +137,7 @@ export class HttpServer {
     return new Promise((resolve, reject) => {
       const server = http.createServer((req, res) => this.handleRequest(req, res));
       server.once("error", reject);
-      server.listen(this.opts.port, "127.0.0.1", () => {
+      server.listen(this.opts.port, "0.0.0.0", () => {
         server.removeListener("error", reject);
         this.server = server;
         resolve();
@@ -237,6 +240,19 @@ export class HttpServer {
       this.handleProviderGet(res, this.opts.expeditionProvider);
       return;
     }
+    if (method === "GET" && url === "/ogamex/v1/emergency") {
+      this.handleProviderGet(res, this.opts.emergencyProvider);
+      return;
+    }
+    // Serve userscript file for tampermonkey installation. Path is fixed —
+    // operator drops the built .user.js at /tmp/ogame-runtime.user.js. No
+    // auth (public install link). Cache-bust headers to avoid CDN sticking
+    // a stale 405 / old version.
+    if (method === "GET" && url?.startsWith("/dl/") && url.endsWith(".user.js")) {
+      // Match any /dl/...user.js — version-pinned paths bust CDN cache.
+      this.handleUserscriptDownload(res);
+      return;
+    }
     // Goal mutation endpoints (no auth). POST /v1/goals/{id}/{action}
     if (method === "POST") {
       const m = url?.match(/^\/ogamex\/v1\/goals\/([^/]+)\/(cancel|pause|resume|set-main|unset-main)$/);
@@ -282,6 +298,27 @@ export class HttpServer {
     this.writeCorsHeaders(res);
     res.statusCode = 404;
     res.end();
+  }
+
+  /**
+   * Serve the built userscript .user.js for tampermonkey install. Reads
+   * /tmp/ogame-runtime.user.js (operator drops latest dist there during
+   * deploy). 404 if missing. No-cache headers tell CDN never to cache —
+   * userscript updates land in operator browsers on next page reload.
+   */
+  private handleUserscriptDownload(res: http.ServerResponse): void {
+    this.writeCorsHeaders(res);
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    try {
+      const body = fs.readFileSync("/tmp/ogame-runtime.user.js");
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      res.end(body);
+    } catch (e) {
+      res.statusCode = 404;
+      res.setHeader("Content-Type", "text/plain");
+      res.end(`userscript file not found: ${(e as Error).message}`);
+    }
   }
 
   /**
@@ -360,7 +397,16 @@ export class HttpServer {
   }
 
   private writeCorsHeaders(res: http.ServerResponse): void {
-    res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+    // Browsers reject wildcard host patterns (e.g. "*.ogame.org") — only "*"
+    // or an exact origin match works. Echo the Origin back if it matches
+    // ogame.org / ogame.gameforge.com domains; else default to "*" (LAN trust).
+    // Read origin via res.req — Node 10+ back-ref to IncomingMessage.
+    const req = (res as { req?: http.IncomingMessage }).req;
+    const origin = req?.headers.origin;
+    const allowOrigin = typeof origin === "string" && /^https?:\/\/[^/]*\.ogame\.(org|gameforge\.com)$/.test(origin)
+      ? origin
+      : "*";
+    res.setHeader("Access-Control-Allow-Origin", allowOrigin);
     res.setHeader("Access-Control-Allow-Private-Network", "true");
     res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");

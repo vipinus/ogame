@@ -6,7 +6,10 @@ import type { ExpeditionConfig } from "@ogamex/shared";
 
 declare const GM_getValue: ((key: string, def?: string) => string) | undefined;
 
-const DEFAULT_BRIDGE_URL = "ws://127.0.0.1:18790";
+// HTTPS by default — long-poll bridge works through cloud routers that don't
+// proxy WebSocket. wire.ts auto-detects scheme; flip to ws[s]:// when you have
+// real WS access (e.g. LAN dev, openclaw gateway).
+const DEFAULT_BRIDGE_URL = "https://ogame.anyfq.com";
 
 /**
  * Resolve a config value via the following precedence:
@@ -101,7 +104,7 @@ if (_inIframe) {
       // The sidecar exposes an unauthenticated operator HTTP on the same host
       // (no-auth by design — same threat model as /v1/debug). The panel base
       // URL is configurable so dev / staging operators can re-target it.
-      const goalsPanelBaseUrl = readConfig("OGAMEX_GOALS_PANEL_URL", "http://127.0.0.1:18791");
+      const goalsPanelBaseUrl = readConfig("OGAMEX_GOALS_PANEL_URL", "https://ogame.anyfq.com");
       const runtime = wireRuntime(handle, {
         ...(wired?.client ? { bridge: wired.client } : {}),
         expeditionConfig: defaultExpeditionConfig,

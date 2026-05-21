@@ -87,7 +87,7 @@ const PANEL_HOVER_CSS = `
 export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle {
   const doc = opts.doc ?? document;
   const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
-  const baseUrl = opts.httpBaseUrl ?? "http://127.0.0.1:18791";
+  const baseUrl = opts.httpBaseUrl ?? "https://ogame.anyfq.com";
   const pollMs = opts.pollMs ?? 3000;
   const showTerminal = opts.showTerminal ?? false;
 
@@ -136,11 +136,22 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   panel.addEventListener("mouseleave", onPanelLeave);
 
   // Restore saved position (if any). Default top:80px right:12px otherwise.
+  // Clamp to viewport — a saved offscreen position would make the panel
+  // invisible to the operator (common bug: dragged offscreen, then forget).
   const savedPos = loadJSON<{ left?: number; top?: number } | null>(LS_POS_KEY, null);
   if (savedPos && typeof savedPos.left === "number" && typeof savedPos.top === "number") {
-    panel.style.left = `${savedPos.left}px`;
-    panel.style.top = `${savedPos.top}px`;
+    const vw = doc.defaultView?.innerWidth ?? 1280;
+    const vh = doc.defaultView?.innerHeight ?? 720;
+    const margin = 40; // keep at least this many px of panel on-screen
+    const left = Math.max(0, Math.min(savedPos.left, vw - margin));
+    const top = Math.max(0, Math.min(savedPos.top, vh - margin));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
     panel.style.right = "auto";
+    // If clamped, persist the corrected value back so it sticks next reload.
+    if (left !== savedPos.left || top !== savedPos.top) {
+      saveJSON(LS_POS_KEY, { left, top });
+    }
   }
   let collapsed = loadJSON<boolean>(LS_COLLAPSED_KEY, false);
 

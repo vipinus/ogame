@@ -1,5 +1,6 @@
 import type { BootHandle } from "../boot.js";
 import { BridgeClient } from "./ws_client.js";
+import { HttpBridgeClient } from "./http_client.js";
 
 /**
  * M4.7 — wire BridgeClient into the userscript boot lifecycle.
@@ -43,13 +44,25 @@ export async function wireBridge(
   boot: BootHandle,
   opts: WireBridgeOptions,
 ): Promise<WireBridgeHandle> {
-  const client = opts.client ?? new BridgeClient({ reconnectOnLoss: true });
+  // Pick transport from URL scheme. http(s):// → HttpBridgeClient (long-poll);
+  // ws(s):// → WebSocket BridgeClient. Operators on networks where the cloud
+  // router can't proxy WebSocket can flip OGAMEX_BRIDGE_URL to https:// for
+  // the same protocol envelopes via /v1/push + /v1/poll instead.
+  const url = opts.bridgeUrl;
+  const isHttp = /^https?:\/\//.test(url);
+  const client = opts.client
+    ?? (isHttp
+      ? (new HttpBridgeClient() as unknown as BridgeClient)
+      : new BridgeClient({ reconnectOnLoss: true }));
   const base = opts.pushIntervalMs ?? DEFAULT_PUSH_INTERVAL_MS;
   const jit = opts.jitterMs ?? DEFAULT_JITTER_MS;
   const userscriptVersion = opts.userscriptVersion ?? DEFAULT_USERSCRIPT_VERSION;
   const strategyVersion = opts.strategyVersion ?? DEFAULT_STRATEGY_VERSION;
 
-  await client.connect(opts.bridgeUrl, opts.bridgeToken);
+  // For HTTP transport, strip any trailing /push or /poll; HttpBridgeClient
+  // appends /ogamex/v1/push and /ogamex/v1/poll automatically.
+  const connectUrl = isHttp ? url.replace(/\/(push|poll|ws)\/?$/, "") : url;
+  await client.connect(connectUrl, opts.bridgeToken);
 
   // Hello — fired immediately after the open event resolves.
   client.send({

@@ -57,6 +57,57 @@ export const SHIP_IDS_BY_NAME = {
   deathstar: 214, battlecruiser: 215, crawler: 217, reaper: 218, explorer: 219,
 } as const;
 
+// ─── Lifeform buildings ──────────────────────────────────────────────────
+// Verified 2026-05-21 via real ogame POST sniffer:
+//   body= technologyId=11102&amount=1&mode=1&token=...
+// Same /scheduleEntry endpoint as regular buildings — no special component.
+// Humans series 111xx, Rocktal 121xx, Mechas 131xx, Kaelesh 141xx.
+export const LIFEFORM_BUILDING_IDS = {
+  // Humans 111xx (verified: biosphereFarm=11102 via sniffer 2026-05-21)
+  residentialSector: 11101,
+  biosphereFarm: 11102,        // ✓ verified
+  researchCentre: 11103,
+  academyOfSciences: 11104,
+  neuroCalibrationCentre: 11105,
+  highEnergySmelting: 11106,
+  foodSilo: 11107,
+  fusionPoweredProduction: 11108,
+  skyscraper: 11109,
+  biotechLab: 11110,
+  metropolis: 11111,
+  plantationOfMostBenevolentBeing: 11112,
+  // Rocktal 121xx — IDs need sniffer verification before use.
+  meditationEnclave: 12101,
+  crystalFarm: 12102,
+  runeTechnologium: 12103,
+  runeForge: 12104,
+  oriktorium: 12105,
+  magmaForge: 12106,
+  disruptionChamber: 12107,
+  megalith: 12108,
+  crystalRefinery: 12109,
+  // Mechas 131xx — IDs need sniffer verification.
+  assemblyLine: 13101,
+  fusionCellFactory: 13102,
+  roboticsResearchCentre: 13103,
+  updateNetwork: 13104,
+  quantumComputerCentre: 13105,
+  automatisedAssemblyCentre: 13106,
+  highPerformanceTransformer: 13107,
+  microchipAssemblyLine: 13108,
+  productionAssemblyHall: 13109,
+  // Kaelesh 141xx — IDs need sniffer verification.
+  sanctuary: 14101,
+  antimatterCondenser: 14102,
+  vortexChamber: 14103,
+  hallsOfRealisation: 14104,
+  forumOfTranscendence: 14105,
+  antimatterConvector: 14106,
+  cloningLaboratory: 14107,
+  chrysalisAccelerator: 14108,
+  bioModifier: 14109,
+} as const;
+
 // ─── Defenses ─────────────────────────────────────────────────────────────
 export const DEFENSE_IDS = {
   rocketLauncher: 401,
@@ -77,6 +128,7 @@ export const TECH_ID_BY_NAME: Record<string, number> = {
   ...RESEARCH_IDS,
   ...SHIP_IDS_BY_NAME,
   ...DEFENSE_IDS,
+  ...LIFEFORM_BUILDING_IDS,
 };
 
 /** Reverse map: numeric id → canonical name. */
@@ -95,10 +147,12 @@ export function idToName(id: number): string | undefined {
 }
 
 /** Kind classification by ID range — useful for routing logic. */
-export function idKind(id: number): "building" | "research" | "ship" | "defense" | "unknown" {
+export function idKind(id: number): "building" | "research" | "ship" | "defense" | "lifeform_building" | "unknown" {
   if (id >= 1 && id <= 99) return "building";
   if (id >= 100 && id <= 199) return "research";
   if (id >= 200 && id <= 299) return "ship";
   if (id >= 400 && id <= 599) return "defense";
+  // Lifeform: 111xx (humans), 121xx (rocktal), 131xx (mechas), 141xx (kaelesh).
+  if (id >= 11000 && id <= 15000) return "lifeform_building";
   return "unknown";
 }

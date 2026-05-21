@@ -51,7 +51,7 @@ export class WsServer {
     await new Promise<void>((resolve, reject) => {
       const onErr = (e: Error) => reject(e);
       http.once("error", onErr);
-      http.listen(this.options.port, "127.0.0.1", () => {
+      http.listen(this.options.port, "0.0.0.0", () => {
         http.off("error", onErr);
         resolve();
       });
