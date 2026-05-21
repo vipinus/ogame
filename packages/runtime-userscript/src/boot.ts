@@ -13,7 +13,7 @@ import {
 import { extractIncomingEvents } from "./probes/extractors/events.js";
 import { extractPlanets } from "./probes/extractors/planets.js";
 import { extractTechLevels } from "./probes/extractors/buildings.js";
-import { TECH_TREE, TECH_NAME_BY_ID, idKind } from "@ogamex/shared";
+import { TECH_TREE, TECH_NAME_BY_ID, TECH_ID_BY_NAME, idKind } from "@ogamex/shared";
 import { extractFleetMovements } from "./probes/extractors/fleet.js";
 import { extractToken, type OgameWindow } from "./probes/extractors/token.js";
 
@@ -118,7 +118,13 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
   if (Object.keys(levels).length === 0) return;
   const buildings: Record<string, number> = {};
   const research: Record<string, number> = {};
+  const lifeformBuildings: Record<string, number> = {};
   for (const [id, lvl] of Object.entries(levels)) {
+    const techId = TECH_ID_BY_NAME[id];
+    if (techId !== undefined && idKind(techId) === "lifeform_building") {
+      lifeformBuildings[id] = lvl;
+      continue;
+    }
     const entry = (TECH_TREE as Record<string, { kind: string }>)[id];
     if (!entry) continue;
     if (entry.kind === "building") buildings[id] = lvl;
@@ -132,18 +138,19 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
   if (Object.keys(buildings).length > 0 && activeIdRaw && Object.keys(cur.planets).length > 0) {
     const existing = cur.planets[activeIdRaw];
     if (existing) {
-      // Anti-regression: building levels in ogame can only increase. A
-      // lower reading is a stale/wrong scrape (e.g. some page has a
-      // `.level` element for an unrelated stat that happens to be lower).
-      // Take MAX of current vs incoming so we never overwrite higher with
-      // lower. Same protection for research below.
       const mergedB: Record<string, number> = { ...(existing.buildings ?? {}) };
       for (const [k, v] of Object.entries(buildings)) {
         if (v >= (mergedB[k] ?? 0)) mergedB[k] = v;
       }
+      // Lifeform buildings — separate field. Anti-regression too.
+      const existingLf = (existing as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {};
+      const mergedLf: Record<string, number> = { ...existingLf };
+      for (const [k, v] of Object.entries(lifeformBuildings)) {
+        if (v >= (mergedLf[k] ?? 0)) mergedLf[k] = v;
+      }
       patch.planets = {
         ...cur.planets,
-        [activeIdRaw]: { ...existing, buildings: mergedB },
+        [activeIdRaw]: { ...existing, buildings: mergedB, lifeform_buildings: mergedLf } as typeof existing,
       };
     }
   }
@@ -238,13 +245,23 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // in ogame UI, PAUSE all autonomous pollers + POSTs for IDLE_GUARD_MS
   // to avoid triggering ogame's anti-bot rate limit ("server not responding").
   // Pollers check `(env.win as any).__ogamexUserBusyUntil > Date.now()`.
-  const IDLE_GUARD_MS = 60_000;
+  const IDLE_GUARD_MS = 10_000;
   const updateBusy = (): void => {
     (env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil = Date.now() + IDLE_GUARD_MS;
   };
   const onUserAct = (e: Event): void => {
     if (!e.isTrusted) return;
     updateBusy();
+    // Write user_busy_until into store IMMEDIATELY + force-push to sidecar.
+    // Closes the 5s mirror-interval gap where merger had stale ubu and kept
+    // dispatching during operator's active session.
+    const until = (env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0;
+    const cur = store.state.server ?? {};
+    if ((cur as { user_busy_until?: number }).user_busy_until !== until) {
+      store.setPartial({ server: { ...cur, user_busy_until: until } as typeof cur });
+    }
+    const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+    if (typeof pushNow === "function") pushNow();
   };
   env.doc.addEventListener("mousedown", onUserAct, true);
   env.doc.addEventListener("keydown", onUserAct, true);
@@ -252,6 +269,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     return ((env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0) > Date.now();
   }
   void userBusy; // used below in pollers
+  // Mirror busy-until into state.server every 5s so sidecar merger can also
+  // skip dispatch while operator is active. Without this, sidecar keeps
+  // emitting directives → GoalRunner DEFER 60s but pile up.
+  setInterval(() => {
+    const until = (env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0;
+    const cur = store.state.server ?? {};
+    if ((cur as { user_busy_until?: number }).user_busy_until !== until) {
+      store.setPartial({ server: { ...cur, user_busy_until: until } as typeof cur });
+    }
+  }, 5000);
 
   // 2. Wire probes
   const stopMO = startMutationObserver(env.doc, bus, env.win);
@@ -468,7 +495,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.141";
+  const USERSCRIPT_VERSION = "0.0.160";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   console.log(`[OgameX] meta probes: speed=${ogame_meta.universe_speed} fleet_p=${metaSpeedFleetP} fleet_w=${metaSpeedFleetW} fleet_h=${metaSpeedFleetH}`);
   const _prod = extractProduction(env.doc);
@@ -1016,6 +1043,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Way faster than HTML page scraping. Updates state every 5s.
   async function pollFetchResources(): Promise<void> {
     try {
+      // Only poll CURRENT planet. Earlier we rotated through all planets
+      // to refresh stale lifeform_resources, but every cp= GET sets the
+      // ogame session current-planet cookie. That poisoned ApiExec
+      // sendFleet (sees wrong planet → 140054 可用艦船不足). Cross-planet
+      // resource freshness now comes from refreshOnePage which is rate-
+      // limited and runs less frequently. Worst case stale colony data
+      // for a few minutes is acceptable; broken expeditions are not.
       const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
       if (!planetId) return;
       const url = `/game/index.php?page=fetchResources&ajax=1&cp=${planetId}`;
@@ -1053,7 +1087,21 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const c = j.resources.crystal?.amount ?? existing.resources?.c ?? 0;
         const d = j.resources.deuterium?.amount ?? existing.resources?.d ?? 0;
         const e = j.resources.energy?.amount ?? existing.resources?.e ?? 0;
-        let updatedPlanet: PlanetT = { ...existing, resources: { m, c, d, e } };
+        // Lifeform: population.storage = 生活空間 (living_space), food.capableToFeed = 酒足飯飽 (well_fed).
+        // Operator rule: build residentialSector unless living_space > well_fed.
+        const popJson = (j.resources as { population?: { amount?: number; storage?: number } }).population;
+        const foodJson = (j.resources as { food?: { amount?: number; capableToFeed?: number } }).food;
+        const lf_population = popJson?.amount ?? null;
+        const lf_living_space = popJson?.storage ?? null;
+        const lf_well_fed = foodJson?.capableToFeed ?? null;
+        const lf_food_amount = foodJson?.amount ?? null;
+        const lfExtra = (lf_living_space !== null || lf_well_fed !== null) ? {
+          lifeform_resources: {
+            population: lf_population, living_space: lf_living_space,
+            well_fed: lf_well_fed, food: lf_food_amount,
+          },
+        } : {};
+        let updatedPlanet: PlanetT = { ...existing, resources: { m, c, d, e }, ...lfExtra };
         // Production
         if (j.resources.metal?.production != null) {
           updatedPlanet = {
@@ -1175,7 +1223,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   setTimeout(() => { void pollExpeditionMails(); }, 5000);
   setInterval(() => { if (!userBusy()) void pollExpeditionMails(); }, 5 * 60 * 1000);
 
-  const REFRESH_PAGES = ["research", "supplies", "facilities", "shipyard", "fleetdispatch"];
+  const REFRESH_PAGES = ["research", "supplies", "facilities", "shipyard", "fleetdispatch", "lfbuildings"];
   let refreshIdx = 0;
   async function refreshOnePage(): Promise<void> {
     const page = REFRESH_PAGES[refreshIdx % REFRESH_PAGES.length]!;
@@ -1193,12 +1241,31 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const parser = new (env.win as unknown as { DOMParser: typeof DOMParser }).DOMParser();
       const parsedDoc = parser.parseFromString(html, "text/html");
 
-      // 1) Tech levels (research page → research_levels; supplies/facilities → buildings)
+      // Diagnostic dump for lfbuildings — ogame may use different DOM than
+      // regular buildings. Without seeing actual markup we can't write the
+      // right selector. Logs once per refresh tick so console doesn't flood.
+      if (page === "lfbuildings") {
+        const lis = parsedDoc.querySelectorAll<HTMLElement>('[data-technology]');
+        const sample = Array.from(lis).slice(0, 8).map((li) => ({
+          tag: li.tagName, id: li.getAttribute("data-technology"),
+          cls: (li.className ?? "").slice(0, 60),
+          lvl_dv: li.querySelector(".level")?.getAttribute("data-value"),
+          lvl_txt: (li.querySelector(".level")?.textContent ?? "").trim().slice(0, 20),
+        }));
+        console.log(`[OgameX/lf-dump] cp=${planetId} found ${lis.length} [data-technology] elements. Sample: ${JSON.stringify(sample)}`);
+      }
+      // 1) Tech levels (research/supplies/facilities → regular; lfbuildings → lifeform)
       const techMap = (await import("./probes/extractors/buildings.js")).extractTechLevels(parsedDoc);
       if (Object.keys(techMap).length > 0) {
         const buildings: Record<string, number> = {};
         const research: Record<string, number> = {};
+        const lifeform_buildings: Record<string, number> = {};
         for (const [id, lvl] of Object.entries(techMap)) {
+          const techId = TECH_ID_BY_NAME[id];
+          if (techId !== undefined && idKind(techId) === "lifeform_building") {
+            lifeform_buildings[id] = lvl;
+            continue;
+          }
           const entry = (TECH_TREE as Record<string, { kind: string }>)[id];
           if (!entry) continue;
           if (entry.kind === "building") buildings[id] = lvl;
@@ -1206,12 +1273,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }
         const cur = store.state;
         const patch: Partial<typeof cur> = {};
-        // Route building writes to the planet whose id we fetched against (cp=planetId).
         const targetPlanet = planetId ? cur.planets[planetId] : undefined;
-        if (Object.keys(buildings).length > 0 && targetPlanet && planetId) {
+        if (targetPlanet && planetId && (Object.keys(buildings).length > 0 || Object.keys(lifeform_buildings).length > 0)) {
           patch.planets = {
             ...cur.planets,
-            [planetId]: { ...targetPlanet, buildings: { ...(targetPlanet.buildings ?? {}), ...buildings } },
+            [planetId]: {
+              ...targetPlanet,
+              buildings: { ...(targetPlanet.buildings ?? {}), ...buildings },
+              ...(Object.keys(lifeform_buildings).length > 0 ? {
+                lifeform_buildings: { ...((targetPlanet as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {}), ...lifeform_buildings }
+              } : {}),
+            } as typeof targetPlanet,
           };
         }
         if (Object.keys(research).length > 0) {
@@ -1299,11 +1371,54 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   const _markUserActive = (e: Event): void => { if (e.isTrusted) lastUserActivity = Date.now(); };
   env.doc.addEventListener("mousedown", _markUserActive, true);
   env.doc.addEventListener("keydown", _markUserActive, true);
-  const ACTIVITY_IDLE_MS = 5000; // user idle this long → refresher resumes
-  // First refresh after 8s, then every 10s.
+  // First refresh after 8s, then every 10s. Respects the global userBusy
+  // guard (60s window after any user click/key) so background refresh
+  // doesn't compete with operator's own ogame POSTs.
   setTimeout(refreshOnePage, 8000);
+
+  // One-shot prereq discovery — fetch technologyDetails for every lifeform
+  // building on boot and dump real requirements to console. Operator
+  // copies this into shared/lifeform/humans_tech.ts. Removes the guessing.
+  setTimeout(async () => {
+    const LF_IDS = [11101, 11102, 11103, 11104, 11105, 11106, 11107, 11108, 11109, 11110, 11111, 11112];
+    const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
+    if (!planetId) {
+      console.warn("[OgameX/lf-prereq] no planet id, skipping prereq dump");
+      return;
+    }
+    // ogame's own technologydetails endpoint pattern (from page HTML):
+    //   POST /game/index.php?page=ingame&component=technologydetails&ajax=1&action=getDetails
+    //   body: technology=<id>&cp=<planet>&token=<jsToken>
+    // We use whatever 'token' is exposed globally (set by ogame's JS bootstrap).
+    const win = env.win as Window & { token?: string };
+    const jsToken = win.token ?? "";
+    for (const tid of LF_IDS) {
+      try {
+        const url = `/game/index.php?page=ingame&component=technologydetails&ajax=1&action=getDetails`;
+        const body = new URLSearchParams();
+        body.set("technology", String(tid));
+        body.set("cp", planetId);
+        if (jsToken) body.set("token", jsToken);
+        const r = await env.win.fetch(url, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body,
+        });
+        if (!r.ok) { console.warn(`[OgameX/lf-prereq] tid=${tid} HTTP ${r.status}`); continue; }
+        const txt = await r.text();
+        // Dump first 1000 chars of body — operator sees raw response to
+        // determine real prereq structure. ogame may return JSON or HTML.
+        console.info(`[OgameX/lf-prereq] tid=${tid} body[0:1000]=${txt.slice(0, 1000)}`);
+      } catch (e) {
+        console.warn(`[OgameX/lf-prereq] tid=${tid} fetch failed`, e);
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    console.info(`[OgameX/lf-prereq] discovery dump complete — see lines above for raw response data`);
+  }, 15_000);
   setInterval(() => {
-    if (Date.now() - lastUserActivity < ACTIVITY_IDLE_MS) return;
+    if (userBusy()) return;
     void refreshOnePage();
   }, 10_000);
 

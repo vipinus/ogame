@@ -468,6 +468,17 @@ export const OGAME_DATA_TECHNOLOGY: Record<string, string> = {
   armor: "111",
 };
 
-/** Reverse of OGAME_DATA_TECHNOLOGY. Computed once at module load. */
-export const OGAME_DATA_TECHNOLOGY_REVERSE: Record<string, string> = Object
-  .fromEntries(Object.entries(OGAME_DATA_TECHNOLOGY).map(([k, v]) => [v, k]));
+/** Reverse of OGAME_DATA_TECHNOLOGY. Computed once at module load.
+ *  Also merges lifeform building IDs (111xx-141xx) imported lazily to avoid
+ *  circular import. The extractor scrapes ALL li.technology[data-technology]
+ *  values; without lifeform here it would silently drop them. */
+import { LIFEFORM_BUILDING_IDS } from "./tech_ids.js";
+export const OGAME_DATA_TECHNOLOGY_REVERSE: Record<string, string> = (() => {
+  const out: Record<string, string> = Object.fromEntries(
+    Object.entries(OGAME_DATA_TECHNOLOGY).map(([k, v]) => [v, k]),
+  );
+  for (const [name, id] of Object.entries(LIFEFORM_BUILDING_IDS)) {
+    out[String(id)] = name;
+  }
+  return out;
+})();

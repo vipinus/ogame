@@ -154,8 +154,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (directive.action === "build_ships") return this.execShipBuild(directive, planetId);
     if (directive.action === "build") {
       const building = (directive.params as { building?: string }).building ?? "";
-      const component = FACILITY_NAMES.has(building) ? "facilities" : "supplies";
-      return this.execSimpleUpgrade(component, directive, planetId);
+      const techId = (directive.params as { technology_id?: number }).technology_id ?? 0;
+      // Lifeform buildings (111xx-141xx range) need component=lfbuildings
+      // for token validation. Regular buildings split supplies/facilities.
+      const isLifeform = techId >= 11000 && techId <= 15000;
+      const component = isLifeform ? "lfbuildings"
+                      : FACILITY_NAMES.has(building) ? "facilities"
+                      : "supplies";
+      return this.execSimpleUpgrade(component as "research" | "supplies" | "facilities", directive, planetId);
     }
     throw new Error(`api: unsupported ${directive.action}`);
   }
@@ -343,7 +349,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   }
 
   private async execSimpleUpgrade(
-    component: "research" | "supplies" | "facilities",
+    component: "research" | "supplies" | "facilities" | "lfbuildings",
     directive: Directive,
     planetId: string,
   ): Promise<{ action: string; clicked: boolean }> {
@@ -430,7 +436,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
       return { action: directive.action, clicked: true };
     }
-    if (parsed && parsed.success === false) {
+    if (parsed && (parsed.success === false || parsed.status === "failure")) {
       throw new Error(`${component}:${targetName} rejected: ${JSON.stringify(parsed.errors ?? parsed.error)}`);
     }
     return { action: directive.action, clicked: true };
@@ -507,7 +513,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
       return { action: directive.action, clicked: true };
     }
-    if (parsed && parsed.success === false) {
+    if (parsed && (parsed.success === false || parsed.status === "failure")) {
       throw new Error(`shipyard build rejected: ${JSON.stringify(parsed.errors ?? parsed.error)}`);
     }
     return { action: directive.action, clicked: true };
@@ -563,7 +569,11 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     console.info(`[ApiExec] expedition step1: GOT token len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } }> => {
-      const url = `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1`;
+      // cp=<planetId> routes to the specific source planet. Without it
+      // ogame's session uses the currently-active cp cookie (whatever
+      // planet the operator was last viewing) — and the fleet POSTs land
+      // on that planet, not the goal's planet.
+      const url = `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1&cp=${planetId}`;
       const r = await this.fetchFn(url, {
         method: "POST",
         credentials: "same-origin",
@@ -609,7 +619,11 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     }
     token = stage2.token;
 
-    // Stage 3: mission + send
+    // Stage 3: mission + send. Re-anchor session-cp by re-fetching the
+    // planet's fdUrl right before sendFleet — other pollers (esp. the
+    // cross-planet fetchResources rotation) can change the session cookie
+    // mid-flow → sendFleet hits wrong planet → "可用艦船不足" 140054.
+    await this.fetchFn(`/game/index.php?page=ingame&component=fleetdispatch&cp=${planetId}`, { credentials: "same-origin" });
     const stage3Body = new URLSearchParams({
       token,
       mission: "15",
@@ -628,7 +642,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (!numId || n <= 0) continue;
       stage3Body.append(`am${numId}`, String(n));
     }
-    const stage3Url = `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1`;
+    const stage3Url = `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1&cp=${planetId}`;
     console.info(`[ApiExec] expedition step4: sendFleet target=${galaxy}:${system}:16 ships=${JSON.stringify(ships)}`);
     const r = await this.fetchFn(stage3Url, {
       method: "POST",
@@ -646,13 +660,20 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // Parse OUTSIDE a swallowing catch so failures actually propagate.
     let parsed: { success?: boolean; errors?: Array<{ message?: string; error?: number }> } | null = null;
     try { parsed = JSON.parse(txt); } catch { /* not JSON — accept HTTP 200 as opaque success */ }
-    if (parsed && parsed.success === false) {
+    if (parsed && (parsed.success === false || parsed.status === "failure")) {
       const msg = parsed.errors?.[0]?.message ?? "unknown error";
       const code = parsed.errors?.[0]?.error ?? -1;
-      // Don't propagate to retry forever — throw so goal_runner acks fail
-      // and the daemon (cron + cooldown) decides whether to retry, not the
-      // 20s merger tick.
-      throw new Error(`expedition rejected by ogame (${code}): ${msg}`);
+      const reqBodyStr = stage3Body.toString();
+      try {
+        (this.win as Window & { __ogamexLastExpFailure?: unknown }).__ogamexLastExpFailure = {
+          ts: Date.now(), url: stage3Url, reqBody: reqBodyStr,
+          respBody: txt.slice(0, 800), sentShips: ships,
+          targetCoords: `${galaxy}:${system}:16`, planetId,
+        };
+      } catch { /* ignore */ }
+      // Include REQUEST body in error so /v1/goals reason shows exactly what
+      // we sent — operator can verify am202, am203, etc. counts vs planet.
+      throw new Error(`expedition rejected by ogame (${code}): ${msg} | req: ${reqBodyStr.slice(0, 250)} | resp: ${txt.slice(0, 200).replace(/\s+/g, " ")}`);
     }
     return { action: "expedition", clicked: true };
   }
@@ -686,7 +707,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     console.info(`[ApiExec] colonize step1: token len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } }> => {
-      const url = `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1`;
+      const url = `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1&cp=${planetId}`;
       const r = await this.fetchFn(url, {
         method: "POST", credentials: "same-origin",
         headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
@@ -731,7 +752,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (!numId || n <= 0) continue;
       stage3Body.append(`am${numId}`, String(n));
     }
-    const stage3Url = `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1`;
+    const stage3Url = `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1&cp=${planetId}`;
     console.info(`[ApiExec] colonize step4: sendFleet target=${tGalaxy}:${tSystem}:${tPos} mission=7`);
     const r = await this.fetchFn(stage3Url, {
       method: "POST", credentials: "same-origin",
@@ -743,7 +764,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (!r.ok) throw new Error(`colonize HTTP ${r.status}`);
     let parsed: { success?: boolean; errors?: Array<{ message?: string; error?: number }> } | null = null;
     try { parsed = JSON.parse(txt); } catch { /* */ }
-    if (parsed && parsed.success === false) {
+    if (parsed && (parsed.success === false || parsed.status === "failure")) {
       const msg = parsed.errors?.[0]?.message ?? "unknown";
       throw new Error(`colonize rejected: ${msg}`);
     }
@@ -779,7 +800,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     console.info(`[ApiExec] ${directive.action} step1: token len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; errors?: Array<{ message?: string; error?: number }> } }> => {
-      const url = `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1`;
+      const url = `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1&cp=${planetId}`;
       const r = await this.fetchFn(url, {
         method: "POST", credentials: "same-origin",
         headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
@@ -824,7 +845,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (!numId || n <= 0) continue;
       stage3Body.append(`am${numId}`, String(n));
     }
-    const stage3Url = `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1`;
+    const stage3Url = `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1&cp=${planetId}`;
     console.info(`[ApiExec] ${directive.action} step4: sendFleet ${tGalaxy}:${tSystem}:${tPos} mission=${mission}`);
     const r = await this.fetchFn(stage3Url, {
       method: "POST", credentials: "same-origin",
@@ -836,7 +857,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (!r.ok) throw new Error(`${directive.action} HTTP ${r.status}`);
     let parsed: { success?: boolean; errors?: Array<{ message?: string; error?: number }> } | null = null;
     try { parsed = JSON.parse(txt); } catch { /* */ }
-    if (parsed && parsed.success === false) {
+    if (parsed && (parsed.success === false || parsed.status === "failure")) {
       const msg = parsed.errors?.[0]?.message ?? "unknown";
       throw new Error(`${directive.action} rejected: ${msg}`);
     }

@@ -387,9 +387,12 @@ export async function startSidecar(
         const research = stateRef.current?.research?.levels ?? {};
         const tech = (TECH_TREE as Record<string, { kind?: string; requires?: Record<string, number> }>)[techName];
         if (!tech) return null;
+        const techKind = tech.kind ?? "";
         const current = kind === "research"
           ? (research[techName] ?? 0)
-          : (planet?.buildings?.[techName] ?? 0);
+          : techKind === "ship" || techKind === "defense"
+            ? ((planet?.ships as Record<string, number> | undefined)?.[techName] ?? 0)
+            : (planet?.buildings?.[techName] ?? 0);
         const children: PrereqTreeNode[] = [];
         for (const [req, lvl] of Object.entries(tech.requires ?? {})) {
           const reqEntry = (TECH_TREE as Record<string, { kind?: string }>)[req];
@@ -453,6 +456,11 @@ export async function startSidecar(
           prereq_tree = buildTree(target.building, lvl, "building", resolvedPlanetId);
         } else if (r.goal.type === "lifeform_building" && target.building) {
           prereq_tree = buildLifeformTree(target.building, lvl, resolvedPlanetId);
+        } else if (r.goal.type === "build_ships") {
+          const shipTarget = r.goal.target as { ship?: string; amount?: number };
+          if (shipTarget.ship) {
+            prereq_tree = buildTree(shipTarget.ship, shipTarget.amount ?? 1, "building", resolvedPlanetId);
+          }
         }
         return {
           id: r.goal.id,
@@ -581,6 +589,21 @@ export async function startSidecar(
       debug.recordEvent(m);
       if (m.type === "event.directive_completed") {
         debug.recordComplete(m.directive_id, m.result);
+        // Propagate ack to goalsStore — without this, failed ApiExec POSTs
+        // leave goals "active" forever, sidecar merger re-dispatches each
+        // cooldown cycle, and ogame anti-bot eventually trips. Map directive
+        // ID back to its goal and update status.
+        const goalId = directiveToGoal.get(m.directive_id);
+        if (goalId) {
+          directiveToGoal.delete(m.directive_id);
+          const result = m.result as { success?: boolean; error?: string } | undefined;
+          if (result?.success === true) {
+            goalsStore.updateStatus(goalId, "completed");
+          } else if (result?.success === false) {
+            const reason = String(result?.error ?? "ApiExec failed (no reason)").slice(0, 400);
+            goalsStore.updateStatus(goalId, "blocked", reason);
+          }
+        }
       }
       for (const h of set) {
         try { h(m); } catch { /* handler errors must not crash the relay */ }
@@ -637,6 +660,12 @@ export async function startSidecar(
       // debug page is directive-centric, not bridge-traffic-centric.
       if (msg.type === "directive.dispatch") {
         debug.recordDispatch(msg.directive);
+        // Remember directive_id → goal_id so we can mark the goal blocked
+        // when the ack returns with success:false. Without this, ApiExec
+        // failures (e.g., expedition 140054) leave the goal "active"
+        // forever and merger keeps re-dispatching every cooldown cycle.
+        const d = msg.directive as { id: string; goal_id?: string };
+        if (d.id && d.goal_id) directiveToGoal.set(d.id, d.goal_id);
       }
       ws.send(msg);
       // HTTP-side consumers (long-poll) also need the directive — queue it
@@ -644,6 +673,8 @@ export async function startSidecar(
       http.queueDownstream(msg);
     },
   });
+  // Directive → goal mapping (in-memory). Trimmed when ack arrives.
+  const directiveToGoal = new Map<string, string>();
 
   // --- FailureAggregator ---------------------------------------------------
   const failureAggregator = createFailureAggregator({
@@ -698,6 +729,15 @@ export async function startSidecar(
     // Dispatch active goals (idempotent — already-active rows still get a
     // freshly-planned next step). Wrap in try/catch so a single goal's
     // planning failure does NOT swallow subsequent state.snapshots.
+    // Operator busy guard — when userscript reports the operator is
+    // actively clicking ogame UI (mousedown/keydown within last 60s), pause
+    // ALL autonomous dispatch. Prevents our POSTs from competing with the
+    // operator's own UI actions / triggering ogame's anti-bot rate limit.
+    const userBusyUntil = (msg.snapshot.server as { user_busy_until?: number } | undefined)?.user_busy_until ?? 0;
+    if (userBusyUntil > Date.now()) {
+      console.log(`[merger] SKIP — operator active for ${Math.ceil((userBusyUntil - Date.now())/1000)}s more`);
+      return;
+    }
     try {
       const result = priorityMerger.dispatch(msg.snapshot);
       const actions = result.dispatched.map((d) => {
@@ -710,6 +750,22 @@ export async function startSidecar(
       console.error("[ogamex/sidecar] priorityMerger.dispatch threw", e);
     }
   });
+
+  // Aggressive merger tick — 500ms. Most ticks are no-ops (dispatched=0)
+  // when no new goals added. The cost is tiny (a few ms each) and the win
+  // is sub-second dispatch latency once a goal is added. Operator wants
+  // "中间不要等" — chain expeditions back-to-back through ApiExec.
+  setInterval(() => {
+    const snap = stateRef.current;
+    if (!snap) return;
+    const userBusyUntil = (snap.server as { user_busy_until?: number } | undefined)?.user_busy_until ?? 0;
+    if (userBusyUntil > Date.now()) return;
+    try {
+      priorityMerger.dispatch(snap);
+    } catch (e) {
+      console.error("[ogamex/sidecar] periodic merger threw", e);
+    }
+  }, 500);
 
   ws.on("event.daily_failure", (msg) => {
     // record() is async; fire-and-forget. We attach a catch so a stuck
@@ -736,6 +792,19 @@ export async function startSidecar(
   });
 
   ws.on("hello", () => {
+    // On reconnect, flush ANY queued downstream messages — stale directives
+    // accumulated during the disconnect window are useless and would
+    // overwhelm the userscript on resume (manifested as a queue of ~1000
+    // crystalMine/solarPlant/residentialSector POSTs against ogame).
+    if (http && typeof (http as unknown as { flushQueue?: () => void }).flushQueue === "function") {
+      (http as unknown as { flushQueue: () => void }).flushQueue();
+    }
+    // Also reset merger's per-goal cooldown — fresh client deserves fresh
+    // dispatch cycle, not silence because lastDispatchTs is from before
+    // disconnect.
+    if (typeof (priorityMerger as unknown as { resetCooldown?: () => void }).resetCooldown === "function") {
+      (priorityMerger as unknown as { resetCooldown: () => void }).resetCooldown();
+    }
     // The userscript has just connected and announced its strategy_version.
     // Reply with the canonical Strategy so it can reconcile any drift.
     // We use ws.send (broadcast to all connected clients) — the userscript

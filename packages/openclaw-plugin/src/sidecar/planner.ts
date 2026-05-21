@@ -127,20 +127,22 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
   // population buildings.
   const POPULATION_BLDGS = ["residentialSector", "skyscraper", "metropolis"];
   const FOOD_BLDG = "biosphereFarm";
-  // Food MUST stay ahead of population — owner rule "酒足饭饱大于生活空间".
-  // expectedFood = (sum of all population building levels) + FOOD_SAFETY_MARGIN
-  // so workers never starve, even if owner queues multiple housing in a row.
-  const FOOD_SAFETY_MARGIN = 2;
+  // Operator rule: "主要升级居住区域，若生活空间大于酒足饭饱了就升级生物农场".
+  // Compare RESOURCE quantities (not building levels) from ogame's own UI:
+  //   生活空間 = planet.lifeform_resources.living_space (set by residentialSector)
+  //   酒足飯飽 = planet.lifeform_resources.well_fed     (set by biosphereFarm)
+  // biosphereFarm 是 residentialSector 的支援建築 — 容量不夠才補。
   if (POPULATION_BLDGS.includes(building)) {
-    const otherPop = POPULATION_BLDGS
-      .filter((b) => b !== building)
-      .reduce((sum, b) => sum + (lfBldg[b] ?? 0), 0);
-    const expectedFoodLvl = level + otherPop + FOOD_SAFETY_MARGIN;
-    const currentFood = lfBldg[FOOD_BLDG] ?? 0;
-    if (currentFood < expectedFoodLvl) {
-      const subGoal: Goal = { ...goal, target: { building: FOOD_BLDG, level: expectedFoodLvl, planet: planet.id } } as Goal;
+    const lfr = (planet as { lifeform_resources?: { living_space?: number | null; well_fed?: number | null } }).lifeform_resources;
+    const livingSpace = lfr?.living_space ?? null;
+    const wellFed = lfr?.well_fed ?? null;
+    if (livingSpace !== null && wellFed !== null && livingSpace > wellFed) {
+      // Living capacity exceeds food capacity → biosphereFarm catches up.
+      const currentFood = lfBldg[FOOD_BLDG] ?? 0;
+      const subGoal: Goal = { ...goal, target: { building: FOOD_BLDG, level: currentFood + 1, planet: planet.id } } as Goal;
       return planLifeformBuildingGoal(subGoal, state);
     }
+    // Otherwise: food still adequate; let residential build.
   }
 
   // Prereq check — recurse into missing prereqs first.
@@ -150,6 +152,12 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
       return planLifeformBuildingGoal(subGoal, state);
     }
   }
+
+  // No auto-recurse to mine upgrades for lifeform goals: next-level mine
+  // usually costs MORE than the lf we want, leading to a worse deadlock
+  // (home build slot claimed by impossible mine, lf queue never moves).
+  // Operator policy: trust the lf goal — emit directly. ogame returns
+  // "資源不足" until crystal accumulates; lf queue stays clear meanwhile.
 
   // Emit directive — reuse "build" action (ApiExec routes scheduleEntry).
   const techId = nameToId(building);
@@ -409,6 +417,31 @@ function planBuildShipsGoal(goal: Goal, state: WorldState): PlanResult {
     return { blocked: `already at or above target — production started for ${ship} on ${planet.id}` };
   }
 
+  // Resource shortfall → auto-upgrade the bottleneck mine. Without this the
+  // ship build sits at ogame "資源不足" forever waiting on natural accumulation.
+  const shipEntry = TECH_TREE[ship];
+  const cost = shipEntry?.cost_at ? shipEntry.cost_at(1) : null;
+  if (cost) {
+    const totalCost = { m: cost.m * amount, c: cost.c * amount, d: cost.d * amount };
+    const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
+    const shortM = totalCost.m - r.m;
+    const shortC = totalCost.c - r.c;
+    const shortD = totalCost.d - r.d;
+    // Only trigger when SIGNIFICANTLY short (> 30% of cost) — accumulation
+    // handles small shortfalls. Pick the worst-shortfall resource.
+    const worst = [
+      { name: "metalMine", short: shortM, cost: totalCost.m },
+      { name: "crystalMine", short: shortC, cost: totalCost.c },
+      { name: "deuteriumSynth", short: shortD, cost: totalCost.d },
+    ].filter((x) => x.cost > 0 && x.short > x.cost * 0.3).sort((a, b) => b.short - a.short)[0];
+    if (worst) {
+      const currentLvl = (planet.buildings as Record<string, number>)[worst.name] ?? 0;
+      const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;
+      const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id };
+      return planBuild(worst.name, currentLvl + 1, planet.id, ctx);
+    }
+  }
+
   return {
     id: `dir-${randomUUID()}`,
     source: "goal",
@@ -450,13 +483,12 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
   const targetPosition = typeof target.target_position === "number" ? target.target_position : 16;
   const duration = typeof target.duration === "string" ? target.duration : "short";
 
-  // In-flight: an EXPEDITION fleet already outbound from this planet's coords.
   const sourceCoordsKey = planet.coords.join(":");
-  for (const f of state.fleets_outbound ?? []) {
-    if (f.mission === MISSION_EXPEDITION && f.origin.join(":") === sourceCoordsKey) {
-      return { blocked: "already at or above target — expedition fleet in flight" };
-    }
-  }
+  // No "1 expedition per planet" block — owner runs multiple parallel
+  // expeditions up to ogame's slot cap (max=4 for explorer). Slot
+  // capacity check happens at the daemon level (bridge expeditionTick).
+  // Each exp- goal here = one launch attempt regardless of how many
+  // fleets are already outbound. ogame will reject 140019 if cap full.
 
   return {
     id: `dir-${randomUUID()}`,

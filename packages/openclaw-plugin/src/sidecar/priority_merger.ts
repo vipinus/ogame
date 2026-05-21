@@ -67,11 +67,24 @@ export class PriorityMerger {
   private readonly store: GoalsStore;
   private readonly planGoal: (goal: Goal, state: WorldState) => Directive | { blocked: string };
   private readonly send: (msg: DownstreamMsg) => void;
+  // Per-goal dispatch rate limit. Without this, a 500ms merger tick combined
+  // with a goal that keeps planning the same directive (e.g., resource
+  // shortfall returns the same crystalMine each plan call) results in
+  // hundreds of `dir-<uuid>` per minute — GoalRunner queue overflow + ApiExec
+  // POST spam against ogame. Each goal can dispatch at most 1 directive
+  // every COOLDOWN_MS to ogame.
+  private readonly lastDispatchTs = new Map<string, number>();
+  private readonly DISPATCH_COOLDOWN_MS = 10_000;
 
   constructor(deps: PriorityMergerDeps) {
     this.store = deps.store;
     this.planGoal = deps.planGoal;
     this.send = deps.send;
+  }
+
+  /** Reset per-goal cooldown — invoked on client reconnect. */
+  resetCooldown(): void {
+    this.lastDispatchTs.clear();
   }
 
   /**
@@ -93,17 +106,26 @@ export class PriorityMerger {
     const now = Date.now();
     let researchSlot = !!(state.research?.queue && (state.research.queue.ends_at ?? 0) > now);
     const buildSlot = new Set<string>();
+    const lfBuildSlot = new Set<string>(); // separate lifeform queue per planet
     const shipsSlot = new Set<string>();
     for (const p of Object.values(state.planets ?? {})) {
       const bq = p.build_q as { ends_at?: number } | null;
       if (bq && (bq.ends_at ?? 0) > now) buildSlot.add(p.id);
       const sq = p.shipyard_q as { ends_at?: number } | null;
       if (sq && (sq.ends_at ?? 0) > now) shipsSlot.add(p.id);
+      // ogame's lf queue is tracked separately — we don't currently extract
+      // its in-flight state from page DOM, so this set seeds empty and only
+      // gets entries from same-tick claims.
     }
 
     for (const row of rows) {
       // Operator-paused row: skip entirely. Status / reason untouched.
       if (row.status === "blocked" && typeof row.reason === "string" && row.reason.startsWith("PAUSED")) {
+        continue;
+      }
+      // Per-goal cooldown — see lastDispatchTs comment for rationale.
+      const lastTs = this.lastDispatchTs.get(row.goal.id) ?? 0;
+      if (now - lastTs < this.DISPATCH_COOLDOWN_MS) {
         continue;
       }
       const result = this.planGoal(row.goal, state);
@@ -129,13 +151,20 @@ export class PriorityMerger {
         }
         researchSlot = true;
       } else if (result.action === "build" || result.action === "build_universal") {
-        if (planetId && buildSlot.has(planetId)) {
-          const reason = `build slot on ${planetId} in use this tick`;
+        // ogame physics: lifeform buildings have a SEPARATE per-planet
+        // build queue from regular supplies/facilities. Same "build" action
+        // here distinguishes via technology_id range (111xx-141xx = lifeform).
+        const techId = (result.params as { technology_id?: number }).technology_id ?? 0;
+        const isLifeform = techId >= 11000 && techId <= 15000;
+        const slotSet = isLifeform ? lfBuildSlot : buildSlot;
+        const slotLabel = isLifeform ? "lf build" : "build";
+        if (planetId && slotSet.has(planetId)) {
+          const reason = `${slotLabel} slot on ${planetId} in use this tick`;
           this.store.updateStatus(row.goal.id, "blocked", reason);
           blocked.push({ goal_id: row.goal.id, reason });
           continue;
         }
-        if (planetId) buildSlot.add(planetId);
+        if (planetId) slotSet.add(planetId);
       } else if (result.action === "build_ships" || result.action === "build_defense") {
         if (planetId && shipsSlot.has(planetId)) {
           const reason = `shipyard slot on ${planetId} in use this tick`;
@@ -147,6 +176,7 @@ export class PriorityMerger {
       }
       this.store.updateStatus(row.goal.id, "active");
       this.send({ type: "directive.dispatch", directive: result });
+      this.lastDispatchTs.set(row.goal.id, now);
       dispatched.push(result);
     }
 

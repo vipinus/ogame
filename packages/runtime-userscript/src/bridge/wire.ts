@@ -35,7 +35,10 @@ export interface WireBridgeHandle {
   stop(): void;
 }
 
-const DEFAULT_PUSH_INTERVAL_MS = 20_000;
+// Reduced 20→5s after operator feedback "延时太高了" — most goal→dispatch
+// latency comes from waiting for the next state.snapshot push. Faster push
+// = faster reactive dispatch. Trade: 4× more /v1/push traffic to sidecar.
+const DEFAULT_PUSH_INTERVAL_MS = 5_000;
 const DEFAULT_JITTER_MS = 2_000;
 const DEFAULT_USERSCRIPT_VERSION = "0.0.1";
 const DEFAULT_STRATEGY_VERSION = 0;
@@ -92,6 +95,13 @@ export async function wireBridge(
       console.warn("[wireBridge] push failed", e);
     }
   };
+  // Expose a globally callable pushNow() so the click handler in boot.ts can
+  // trigger immediate state.snapshot delivery to sidecar — closes the 5s
+  // window where merger had stale user_busy_until and kept dispatching.
+  // BootHandle has no win field; use globalThis.window directly.
+  if (typeof window !== "undefined") {
+    (window as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow = pushOnce;
+  }
   const schedule = (): void => {
     if (stopped) return;
     const delay = base + (Math.random() * 2 - 1) * jit;

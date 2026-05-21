@@ -175,17 +175,61 @@ export class HttpServer {
   }
 
   queueDownstream(msg: DownstreamMsg): void {
+    // Dedup directive.dispatch — if a directive with the same content
+    // (action+building+target_level+planet_id) is already pending undelivered,
+    // drop this one. Without dedup, sidecar's tight merger tick keeps emitting
+    // new dir-<uuid> for the SAME logical work when client is offline, and on
+    // reconnect dumps hundreds at once → ogame anti-bot trip.
+    if (msg.type === "directive.dispatch") {
+      const d = (msg as { directive?: { action?: string; params?: Record<string, unknown> } }).directive;
+      // Expedition is BATCH-launchable — each directive = 1 fleet, even
+      // if all share identical params (same ship template, same target).
+      // Dedupe only the persistent actions (build/research) where a 2nd
+      // identical entry means nothing new.
+      const isDedupableAction = d?.action === "build" || d?.action === "build_universal"
+        || d?.action === "research" || d?.action === "build_ships" || d?.action === "build_defense";
+      const sig = (d && isDedupableAction) ? `${d.action}|${JSON.stringify(d.params ?? {})}` : "";
+      if (sig) {
+        for (const e of this.queue) {
+          if (e.msg.type === "directive.dispatch") {
+            const ed = (e.msg as { directive?: { action?: string; params?: Record<string, unknown> } }).directive;
+            const esig = ed ? `${ed.action}|${JSON.stringify(ed.params ?? {})}` : "";
+            if (esig === sig) {
+              console.log(`[http_server] dedup directive ${sig.slice(0, 80)} — already queued`);
+              return;
+            }
+          }
+        }
+      }
+    }
     const entry: QueueEntry = {
       id: `m-${Date.now()}-${randomUUID().slice(0, 8)}`,
       msg,
       ts: Date.now(),
     };
+    // Hard cap to prevent unbounded growth during long client disconnect.
+    const MAX_QUEUE = 50;
+    if (this.queue.length >= MAX_QUEUE) {
+      // Drop oldest directive.dispatch first; keep state.snapshot (caller
+      // needs latest) — actually state goes the OTHER direction (upstream),
+      // so just drop oldest entry overall.
+      const dropped = this.queue.shift();
+      console.warn(`[http_server] queue cap ${MAX_QUEUE} hit, dropped ${dropped?.id ?? "?"}`);
+    }
     this.queue.push(entry);
     // Wake any waiting long-pollers.
     while (this.waiters.length > 0) {
       const w = this.waiters.shift();
       if (w) w([entry]);
     }
+  }
+
+  // Drop ALL queued downstream messages — invoked on `hello` (client reconnect)
+  // to prevent dumping stale directives that piled up during the disconnect.
+  flushQueue(): void {
+    const n = this.queue.length;
+    this.queue.length = 0;
+    if (n > 0) console.warn(`[http_server] flushed ${n} stale queued messages on reconnect`);
   }
 
   on<T extends UpstreamMsg["type"]>(type: T, handler: UpstreamHandler<T>): void {

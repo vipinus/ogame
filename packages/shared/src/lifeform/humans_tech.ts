@@ -43,9 +43,12 @@ const buildings: Record<string, LifeformBuildingEntry> = {
     id: "researchCentre",
     display_name_zh: "研究中心",
     display_name_en: "Research Centre",
-    requires: { residentialSector: 1 },
+    // Official prereq (gameforge PTS forum + community guides 2026-05-21):
+    // residentialSector L21 + biosphereFarm L22. Without these ogame UI
+    // marks status="off" + "所需條件不足".
+    requires: { residentialSector: 21, biosphereFarm: 22 },
     cost_at: pow(20_000, 1.4),
-    verified_against_live: false,
+    verified_against_live: true,
   },
   academyOfSciences: {
     id: "academyOfSciences",
