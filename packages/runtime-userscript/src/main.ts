@@ -2,6 +2,7 @@ import { boot } from "./boot.js";
 import { createIndexedKv } from "./store/indexed_db.js";
 import { wireBridge } from "./bridge/wire.js";
 import { wireRuntime } from "./wire_runtime.js";
+import { maybeAutoLoginFromHub } from "./auto_login.js";
 import type { ExpeditionConfig } from "@ogamex/shared";
 
 declare const GM_getValue: ((key: string, def?: string) => string) | undefined;
@@ -66,8 +67,13 @@ function defaultExpeditionConfig(): ExpeditionConfig {
 // and spawning more iframes. That's the recursive loop the user was seeing.
 const _inIframe = window.self !== window.top;
 const _isGamePage = !!document.querySelector('meta[name="ogame-universe-speed"]');
+const _isLobby = /lobby\.ogame\.gameforge\.com/i.test(window.location.href);
 if (_inIframe) {
   console.info("[OgameX] running inside iframe — skipping boot (parent frame handles state)");
+} else if (_isLobby) {
+  // Post-server-reset: ogame redirects to lobby/hub. Auto-click play to
+  // re-enter the universe. Script re-loads on the new in-game URL.
+  maybeAutoLoginFromHub(window);
 } else if (!_isGamePage) {
   console.info("[OgameX] not an in-game page (no ogame-universe-speed meta) — skipping boot");
 } else
