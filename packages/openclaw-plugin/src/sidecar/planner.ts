@@ -199,12 +199,26 @@ export function planGoal(goal: Goal, state: WorldState): PlanResult {
  * prereq chain lives in LIFEFORM_TECH catalog (humans/rocktal/mechas/kaelesh).
  * Target shape: {building:"researchCentre", level:N, planet?:string}.
  */
+// Common LLM-hallucinated names → real catalog keys. Add new aliases here
+// when Gemini (or operator typo) generates a wrong name that maps clearly
+// to a known building. Wiki/ogame.fandom commonly uses different English
+// names than our internal slugs.
+const LF_BUILDING_ALIASES: Record<string, string> = {
+  // Kaelesh
+  templeOfTheBenevolentBeing: "sanctuary",  // wiki name → catalog key
+  // (add more aliases here as discovered)
+};
+
 function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
   const target = goal.target as { building?: string; level?: number; planet?: string };
-  const building = target.building ?? "";
+  let building = target.building ?? "";
   const level = target.level ?? 0;
   if (!building) return { blocked: "lifeform_building goal missing target.building" };
   if (level <= 0) return { blocked: "lifeform_building goal needs target.level > 0" };
+  // Resolve alias before lookup so LLM hallucinations don't get stuck blocked.
+  if (LF_BUILDING_ALIASES[building]) {
+    building = LF_BUILDING_ALIASES[building]!;
+  }
   const planet = resolvePlanet(target.planet ?? goal.planet, state) ?? Object.values(state.planets)[0];
   if (!planet) return { blocked: "lifeform_building: no planet" };
 
