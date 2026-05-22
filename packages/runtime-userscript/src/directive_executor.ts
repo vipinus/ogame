@@ -181,6 +181,17 @@ export class UiDirectiveExecutor implements DirectiveExecutor {
       );
     }
 
+    // Operator gate — this executor performs raw DOM clicks + iframe nav,
+    // which fully takes over the foreground. Refuse while userBusy.
+    // GoalRunner also gates at dispatch, but this is belt+braces — if a
+    // directive sneaks through (e.g. existing in-flight execution), bail
+    // before touching the page.
+    const win = (typeof window !== "undefined") ? window as Window & { __ogamexUserBusyUntil?: number } : null;
+    const busyUntil = win?.__ogamexUserBusyUntil ?? 0;
+    if (busyUntil > Date.now()) {
+      throw new Error(`UiDirectiveExecutor refused: operator active (+${Math.round((busyUntil - Date.now()) / 1000)}s)`);
+    }
+
     // Expedition is a fundamentally different flow (3-step fleetdispatch)
     // so it lives in its own method — it doesn't share the
     // single-iframe-click model used by build/research/build_ships.

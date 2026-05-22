@@ -264,7 +264,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // in ogame UI, PAUSE all autonomous pollers + POSTs for IDLE_GUARD_MS
   // to avoid triggering ogame's anti-bot rate limit ("server not responding").
   // Pollers check `(env.win as any).__ogamexUserBusyUntil > Date.now()`.
-  const IDLE_GUARD_MS = 10_000;
+  // Operator: "我操作的时候 userscript 就不要操作前台的网页". 10s gate was
+  // too short — manual workflows often pause > 10s between clicks. 60s gives
+  // operator a real protected window. Background API POSTs (ApiExec) keep
+  // running; foreground DOM/click ops are blocked by additional gates.
+  const IDLE_GUARD_MS = 60_000;
   const updateBusy = (): void => {
     (env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil = Date.now() + IDLE_GUARD_MS;
   };
@@ -513,7 +517,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.220";
+  const USERSCRIPT_VERSION = "0.0.221";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema

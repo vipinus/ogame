@@ -173,8 +173,17 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    * chain, modus, etc. Returns null if not applicable.
    */
   /** Click ogame's left-nav menu button to SPA-navigate to a component
-   *  without full page reload. Returns true if a nav was kicked off. */
+   *  without full page reload. Returns true if a nav was kicked off.
+   *
+   *  Operator gate: if userBusy is active, refuse to nav — operator is
+   *  manually using a page and the click would yank them off it. The
+   *  caller treats false as "couldn't prepare page, defer the directive". */
   private kickMenuNav(component: string): boolean {
+    const busyUntil = (this.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0;
+    if (busyUntil > Date.now()) {
+      console.info(`[ApiExec/nav] refused -> ${component} (operator active, +${Math.round((busyUntil - Date.now()) / 1000)}s)`);
+      return false;
+    }
     const link = this.doc.querySelector<HTMLAnchorElement>(
       `a.menubutton[href*="component=${component}"]`,
     );
