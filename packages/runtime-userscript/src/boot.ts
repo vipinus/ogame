@@ -494,7 +494,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.183";
+  const USERSCRIPT_VERSION = "0.0.188";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   console.log(`[OgameX] meta probes: speed=${ogame_meta.universe_speed} fleet_p=${metaSpeedFleetP} fleet_w=${metaSpeedFleetW} fleet_h=${metaSpeedFleetH}`);
   const _prod = extractProduction(env.doc);
@@ -657,6 +657,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   const SHIP_NUMERIC_RE = /^(20[2-9]|21[0-9]|217|218|219)$/;
   const SHIP_ID_TO_NAME = TECH_NAME_BY_ID as Record<string, string>;
   function harvestShips(): void {
+    // GATED: only run on shipyard / fleetdispatch pages. On overview/research/
+    // other pages, li.technology with data-technology="203" can be present
+    // (e.g. ship-build preview, expedition slot indicator) but its tooltip's
+    // "(N)" refers to something OTHER than ship-owned count (e.g. "expedition
+    // slots used: 1") — writing N=1 there clobbers empire's correct 1500.
+    //
+    // Empire endpoint IS the multi-planet ship source. DOM-harvest only as
+    // belt-and-braces for the CURRENT planet on fleet pages.
+    const pageUrl = (env.win.location?.href ?? "");
+    if (!/component=(shipyard|fleetdispatch)/.test(pageUrl)) return;
     const lis = env.doc.querySelectorAll<HTMLElement>('li.technology[data-technology]');
     if (lis.length === 0) return;
     const out: Record<string, number> = {};
@@ -665,37 +675,21 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (!SHIP_NUMERIC_RE.test(numeric)) continue;
       const name = SHIP_ID_TO_NAME[numeric];
       if (!name) continue;
-      // Path 1: explicit count span.
-      const amtEl = li.querySelector<HTMLElement>(".amount, .level");
-      const txt = amtEl?.textContent ?? "";
-      const directN = Number(txt.replace(/[^0-9]/g, ""));
-      if (Number.isFinite(directN) && txt.trim() !== "") {
-        out[name] = directN;
-        continue;
-      }
-      // Path 2: parse "(N)" suffix in data-tooltip-title.
-      const tooltip = li.getAttribute("data-tooltip-title") ?? "";
-      const m = tooltip.match(/\((\d+)\)/);
-      if (m) {
-        out[name] = parseInt(m[1]!, 10);
+      // Only trust explicit data-max-amount (ogame's launchable count).
+      const inputEl = li.querySelector<HTMLInputElement>('input[name^="am"][data-max-amount]');
+      const dataMax = inputEl?.getAttribute("data-max-amount");
+      if (dataMax && /^\d+$/.test(dataMax)) {
+        out[name] = parseInt(dataMax, 10);
       }
     }
     if (Object.keys(out).length === 0) return;
     const cur = store.state;
     if (Object.keys(cur.planets).length === 0) return;
-    // Per-planet ships — identify which planet this page belongs to via
-    // <meta name="ogame-planet-id">. Without this, ships of every page
-    // would clobber the active planet's data (single global), breaking
-    // multi-planet daemon decisions (e.g. expedition picks wrong source).
     const activeIdRaw = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
     const target = activeIdRaw ? cur.planets[activeIdRaw] : undefined;
-    if (!target) {
-      console.warn(`[OgameX] ships extracted but no matching planet id="${activeIdRaw}" — skipping write`);
-      return;
-    }
+    if (!target) return;
     const updatedPlanet = { ...target, ships: { ...(target.ships ?? {}), ...out } };
     store.setPartial({ planets: { ...cur.planets, [activeIdRaw]: updatedPlanet } });
-    console.log(`[OgameX] ships extracted (planet ${activeIdRaw} ${target.coords?.join(":")}): ${JSON.stringify(out)}`);
   }
   // Run on boot + retries (shipyard page DOM mounts late).
   [600, 2200, 4600].forEach((ms) => setTimeout(harvestShips, ms));
@@ -1451,15 +1445,30 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const pid = String(planet["id"] ?? "");
         if (!pid || !patchPlanets[pid]) continue;
         const ships: Record<string, number> = {};
-        // Flat numeric keys at top level (planet["203"] = N). DON'T also read
-        // planet["ships"] sub-object — that has different (non-owned) counts.
+        // STRICT key match + thousand-separator-aware value parse.
+        // ogame v12 empire returns ship counts as STRINGS with locale-formatted
+        // thousand separator (e.g. "1.500" in German). parseInt("1.500") = 1.
+        // → strip dots/commas before parsing.
         for (const [key, val] of Object.entries(planet)) {
+          if (!/^\d+$/.test(key)) continue;
           const tid = parseInt(key, 10);
           if (!tid || tid < 200 || tid >= 300) continue;
           const name = TECH_ID_TO_NAME[String(tid)];
           if (!name) continue;
-          const n = typeof val === "number" ? val : parseInt(String(val), 10);
+          let n: number;
+          if (typeof val === "number") {
+            n = val;
+          } else {
+            const stripped = String(val).replace(/[.,\s]/g, "");
+            n = parseInt(stripped, 10);
+          }
           if (Number.isFinite(n) && n >= 0) ships[name] = n;
+        }
+        // One-shot dump: show raw value for 203 + parsed result.
+        if (!(env.win as Window & { __ogamexLcKeyDumped?: boolean }).__ogamexLcKeyDumped && (ships.largeCargo ?? 0) > 0) {
+          (env.win as Window & { __ogamexLcKeyDumped?: boolean }).__ogamexLcKeyDumped = true;
+          const raw203 = (planet as Record<string, unknown>)["203"];
+          console.warn(`[empire/raw-203] pid=${pid} raw=${JSON.stringify(raw203)} type=${typeof raw203} parsed-lc=${ships.largeCargo}`);
         }
         if (Object.keys(ships).length > 0) {
           patchPlanets[pid] = { ...patchPlanets[pid], ships: { ...patchPlanets[pid].ships, ...ships } } as typeof patchPlanets[string];
@@ -1468,8 +1477,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       }
       if (updated > 0) {
         store.setPartial({ planets: patchPlanets });
-        // Expose store globally for ad-hoc debugging via console.
         (env.win as Window & { __ogamexStore?: typeof store }).__ogamexStore = store;
+        // RACE-TRACE: log lc per planet at t+0, t+100ms, t+500ms, t+2s.
+        // If t+0 shows 1500 but later shows 1, an async writer is racing.
+        const snap = (): string => Object.entries(store.state.planets ?? {})
+          .map(([k, p]) => `${k}=${(p as { ships?: Record<string, number> }).ships?.largeCargo ?? "?"}`)
+          .join(",");
+        console.warn(`[lc-race] t+0: ${snap()}`);
+        setTimeout(() => console.warn(`[lc-race] t+100ms: ${snap()}`), 100);
+        setTimeout(() => console.warn(`[lc-race] t+500ms: ${snap()}`), 500);
+        setTimeout(() => console.warn(`[lc-race] t+2000ms: ${snap()}`), 2000);
       }
     } catch (e) {
       console.warn(`[OgameX/empire] fetch failed:`, e);
@@ -1563,18 +1580,20 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           return store.state.planets[pid]?.ships ?? {};
         }
         if (isFullPage && !hasAmAny) {
-          // Planet IDs match AND no ship inputs anywhere = truly empty hangar.
-          const zeros: Record<string, number> = {};
-          for (const [name, tid] of Object.entries(TECH_ID_BY_NAME)) {
-            if (String(tid).startsWith("2")) zeros[name] = 0;
+          // No am2XX inputs found. Could mean:
+          //   (a) hangar truly empty (no ships in fleet)
+          //   (b) ogame v12 fleet page renders ship inputs via JS (not in static HTML)
+          // Cannot distinguish reliably. Fall back to empire store value —
+          // if empire shows ships > 0, trust it; let real sendFleet POST decide.
+          const empireShips = store.state.planets[pid]?.ships ?? {};
+          const totalEmpire = Object.values(empireShips).reduce((a, b) => a + (b || 0), 0);
+          if (totalEmpire > 0) {
+            console.warn(`[OgameX/fetchShips] ${pid}: fd has no am2XX inputs but empire shows ships (total=${totalEmpire}). Trusting empire — letting sendFleet decide.`);
+            return empireShips;
           }
-          const cur = store.state;
-          if (cur.planets[pid]) {
-            const p = cur.planets[pid];
-            store.setPartial({ planets: { ...cur.planets, [pid]: { ...p, ships: { ...p.ships, ...zeros } } } });
-          }
-          console.warn(`[OgameX/fetchShips] ${pid}: hangar EMPTY (correct planet, no am2XX in ${html.length}B) — wrote zeros, preflight will abort`);
-          return zeros;
+          // Both fd-no-inputs AND empire=0 → truly empty.
+          console.warn(`[OgameX/fetchShips] ${pid}: hangar EMPTY (both fd + empire show 0) — preflight abort`);
+          return {};
         }
         console.warn(`[OgameX/fetchShips] PARSE failed for ${pid} (${html.length}B); planet matched but no inputs parsed. Falling back to store.`);
         return store.state.planets[pid]?.ships ?? {};
