@@ -106,34 +106,48 @@ function markClicked(win: Window): void {
   } catch { /* */ }
 }
 
-// "Last Play" button selectors — gameforge hub displays a hero "Last Play"
-// CTA that re-enters the most recently played universe. Multiple naming
-// conventions observed across hub versions:
+// gameforge ogame lobby v7.0.2 hub structure (verified 2026-05-22 via DOM dump):
+//   <div id="joinGame">
+//     <a href="/en_GB/accounts"><button class="button button-primary">Play</button></a>
+//     <button class="button button-default">
+//       Last played<span class="serverDetails">Scorpius – Players: 3869</span>
+//     </button>
+//   </div>
+// "Last played" is the second button inside #joinGame — uniquely identified
+// by its .serverDetails child (the universe name + player count).
+//
+// Strategies (most specific first):
 const LAST_PLAY_SELECTORS = [
+  // Strategy 1: button containing .serverDetails — unique to Last Played CTA
+  "#joinGame button:has(.serverDetails)",
+  "button:has(.serverDetails)",
+  // Strategy 2: explicit hub layout — second button in joinGame
+  "#joinGame button.button-default",
+  // Strategy 3: data-attribute heuristics (other ogame skin versions)
   'button[data-action="lastplay"]',
   'a[data-action="lastplay"]',
-  '.lastPlay',
-  '.js-last-play',
-  '.js-lobby-last-play',
-  '.js-last-played',
+  ".lastPlay",
+  ".js-last-play",
+  ".js-lobby-last-play",
+  ".js-last-played",
   '[class*="lastPlay"]',
   '[class*="last-play"]',
   '[class*="lastPlayed"]',
   '[id*="lastPlay"]',
 ];
-// Multi-lang text match for "Last Play" / "Last Played" / 上次遊玩 / ...
+// Multi-lang text — no trailing \b so "Last playedScorpius..." textContent
+// (no space between sibling text + child span) still matches.
 const LAST_PLAY_TEXT_RE =
-  /\b(?:last\s*play(?:ed)?|continuer|continuar|forts(?:e|ä)tzen|上次遊玩|上次游玩|最后游玩|最後遊玩|繼續遊戲|继续游戏)\b/i;
+  /(?:last\s*play(?:ed)?|continuer|continuar|forts(?:e|ä)tzen|上次遊玩|上次游玩|最后游玩|最後遊玩|繼續遊戲|继续游戏)/i;
 
 function findLastPlayButton(doc: Document): HTMLElement | null {
-  // Strategy 1: known last-play class/data attribute selectors.
   for (const sel of LAST_PLAY_SELECTORS) {
     try {
       const el = doc.querySelector<HTMLElement>(sel);
       if (el && isVisible(el)) return el;
-    } catch { /* invalid selector — skip */ }
+    } catch { /* invalid (e.g. :has not supported) — skip */ }
   }
-  // Strategy 2: text-content match across all clickables.
+  // Strategy: text-content match across all clickables.
   const clickables = Array.from(doc.querySelectorAll<HTMLElement>("a, button, [role='button']"));
   for (const c of clickables) {
     const t = (c.textContent ?? "").trim();
