@@ -628,6 +628,71 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     }
   }
 
+  // Track event IDs we've already alerted on, so re-fetching the same
+  // hostile entry doesn't re-trigger the audio/visual alarm every 3s.
+  const alertedIds = new Set<string>();
+
+  // Audio: Web Audio API generates a beep — no asset file shipped.
+  // Different patterns for spy (single tone) vs attack (3 fast tones).
+  function playAlarm(severity: "spy" | "attack"): void {
+    try {
+      const w = doc.defaultView as Window & { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+      const Ctor = w.AudioContext ?? w.webkitAudioContext;
+      if (!Ctor) return;
+      const ctx = new Ctor();
+      const tones = severity === "attack" ? [880, 0, 880, 0, 880] : [660];
+      const stepMs = severity === "attack" ? 130 : 600;
+      let t = ctx.currentTime;
+      for (const freq of tones) {
+        if (freq === 0) { t += stepMs / 1000; continue; }
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "square";
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.35, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + (stepMs - 20) / 1000);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + stepMs / 1000);
+        t += stepMs / 1000;
+      }
+      // Close ctx after a small grace to free audio resources.
+      setTimeout(() => { try { void ctx.close(); } catch { /* */ } }, (stepMs * tones.length) + 500);
+    } catch { /* audio blocked → silently skip */ }
+  }
+
+  // Visual: flash panel border red for severity-keyed duration.
+  let flashTimer: ReturnType<typeof setTimeout> | null = null;
+  function flashPanel(severity: "spy" | "attack"): void {
+    const panel = doc.getElementById("ogamex-goals-panel");
+    if (!panel) return;
+    const color = severity === "attack" ? "#ff2020" : "#ffaa20";
+    const durationMs = severity === "attack" ? 8000 : 4000;
+    panel.style.boxShadow = `0 0 24px 6px ${color}, 0 0 4px 1px ${color} inset`;
+    panel.style.borderColor = color;
+    if (flashTimer !== null) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      panel.style.boxShadow = "";
+      panel.style.borderColor = "";
+      flashTimer = null;
+    }, durationMs);
+  }
+
+  function fireAlertsForNew(em: EmergencyPayload | null): void {
+    if (!em || !Array.isArray(em.hostile)) return;
+    let newAttack = false, newSpy = false;
+    for (const h of em.hostile) {
+      if (alertedIds.has(h.id)) continue;
+      alertedIds.add(h.id);
+      if (h.type === "attack") newAttack = true;
+      else if (h.type === "spy") newSpy = true;
+    }
+    // Attack takes priority — louder/longer.
+    if (newAttack) { playAlarm("attack"); flashPanel("attack"); }
+    else if (newSpy) { playAlarm("spy"); flashPanel("spy"); }
+  }
+
   async function refresh(): Promise<void> {
     // Skip re-render only while pointer is on the panel (so clicks /
     // hovers on tree nodes don't get rebuilt out from under the user).
@@ -641,6 +706,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       lastGoals = goals;
       lastEmergency = emergency;
       lastExpedition = expedition;
+      fireAlertsForNew(emergency);
       if (!skipRender) render(goals);
     } catch (e) {
       if (!skipRender) render([], (e as Error).message);
