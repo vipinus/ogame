@@ -512,7 +512,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.197";
+  const USERSCRIPT_VERSION = "0.0.198";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -816,6 +816,70 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   }
   setTimeout(() => { void harvestSlotsFromMovement(); }, 2000);
   setInterval(() => { if (!userBusy()) void harvestSlotsFromMovement(); }, 30_000);
+
+  // ACTIVE FAST INBOUND-FLEET DETECTOR — primary spy/attack detection.
+  // /movement API returns ALL flying fleets including probes with 0%
+  // detection probability that NEVER appear in #eventContent DOM.
+  // Web client receives push updates with latency; this active poll
+  // closes the gap. Cadence 3s — fast enough to catch intra-system
+  // probes (typical transit 5-30s at universe_speed 8), slow enough
+  // not to hammer ogame.
+  let lastInboundSig = "";
+  async function pollInboundFleets(): Promise<void> {
+    try {
+      const url = "/game/index.php?page=componentOnly&component=movement&ajax=1";
+      const resp = await env.win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      if (!resp.ok) return;
+      const html = await resp.text();
+      const parser = new (env.win as Window & { DOMParser: typeof DOMParser }).DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+      const fleets = extractFleetMovements(doc);
+      // Identify MY planets' coords — used to distinguish own→own (friendly)
+      // from foreign→mine (hostile incoming). Cache once per call.
+      const ownCoordsSet = new Set<string>();
+      for (const p of Object.values(store.state.planets ?? {})) {
+        const c = (p as { coords?: readonly number[] }).coords;
+        if (c && c.length === 3) ownCoordsSet.add(`${c[0]}:${c[1]}:${c[2]}`);
+      }
+      const MISSION_TYPE_MAP: Record<number, "attack" | "spy" | "transport" | "deploy" | "return" | "unknown"> = {
+        1: "attack", 2: "attack", 6: "spy", 3: "transport", 4: "deploy",
+        5: "transport", 7: "transport", 8: "transport", 15: "return",
+      };
+      const incoming = fleets.filter((f) => {
+        const orig = `${f.origin[0]}:${f.origin[1]}:${f.origin[2]}`;
+        return !ownCoordsSet.has(orig); // origin NOT mine → foreign inbound
+      });
+      const events = incoming.map((f) => {
+        const type = MISSION_TYPE_MAP[f.mission] ?? "unknown";
+        return {
+          id: `mv-${f.id}`,
+          type,
+          hostile: type === "attack" || type === "spy",
+          from: f.origin,
+          to: f.dest,
+          arrives_at: f.arrival_at,
+          ships_count: Object.values(f.ships).reduce((a, b) => a + (b || 0), 0) || "?" as const,
+        };
+      });
+      const sig = events.map((e) => `${e.id}:${e.arrives_at}:${e.hostile ? "H" : "N"}`).sort().join(",");
+      if (sig !== lastInboundSig) {
+        lastInboundSig = sig;
+        // MERGE with existing events_incoming (preserve eventList-sourced
+        // events; movement-sourced may have different id prefixes).
+        const cur = store.state.events_incoming ?? [];
+        const fromEventList = cur.filter((e) => !e.id.startsWith("mv-"));
+        const merged = [...fromEventList, ...events];
+        store.setPartial({ events_incoming: merged });
+        const hostileCount = events.filter((e) => e.hostile).length;
+        const spyCount = events.filter((e) => e.type === "spy").length;
+        if (hostileCount > 0 || spyCount > 0) {
+          console.warn(`[OgameX/inbound-fleets] ${events.length} foreign: hostile=${hostileCount} spy=${spyCount}`);
+        }
+      }
+    } catch (e) { void e; }
+  }
+  setTimeout(() => { void pollInboundFleets(); }, 1500);
+  setInterval(() => { void pollInboundFleets(); }, 3_000);
 
   // BACKUP: fetch fleetdispatch page directly for slot caps. That page
   // ALWAYS renders "艦隊:X/Y 遠征艦隊:N/M" regardless of which page operator
