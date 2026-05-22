@@ -372,128 +372,143 @@ export async function startSidecar(
         const p = planets[ref];
         return Array.isArray(p?.coords) ? p.coords.join(":") : ref;
       };
-      // Per-level build/research duration using ogame's standard formula.
-      // building: t = (cost_m + cost_c) / (2500 * (1+robotics) * 2^nanite) * 3600 / universe_speed
-      // research: t = (cost_m + cost_c) / (1000 * (1+research_lab)) * 3600 / research_speed
-      // Returns seconds (>=0). Falls back to a generous default if state lacks numbers.
+      // Unified execution simulator — walks subtree in serial order
+      // (children before self), maintains running resource bank with
+      // accumulation during wait+build, applies storage cap. Returns total
+      // seconds and per-node contribution. Replaces the old per-node
+      // sum-with-no-carryover which over-estimated wait time when prior
+      // levels' waits already accumulated future needs.
       const universeSpeed = stateRef.current?.server?.speed ?? 1;
       const researchSpeed = stateRef.current?.server?.research_speed ?? universeSpeed;
-      const perLevelBuildSec = (cost: { m: number; c: number }, planet: { buildings?: Record<string, number> } | undefined): number => {
+      function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number } {
+        const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
+        // Initial bank — REAL planet resources at this moment.
+        const bank: { m: number; c: number; d: number } = {
+          m: planet?.resources?.m ?? 0,
+          c: planet?.resources?.c ?? 0,
+          d: planet?.resources?.d ?? 0,
+        };
+        const prodPerSec = {
+          m: (planet?.production?.m_h ?? 0) / 3600,
+          c: (planet?.production?.c_h ?? 0) / 3600,
+          d: (planet?.production?.d_h ?? 0) / 3600,
+        };
+        // Storage caps (ogame v12 approximate; conservative — caps growth)
+        const caps = {
+          m: 5000 * Math.pow(2.5, planet?.buildings?.["metalStorage"] ?? 0),
+          c: 5000 * Math.pow(2.5, planet?.buildings?.["crystalStorage"] ?? 0),
+          d: 5000 * Math.pow(2.5, planet?.buildings?.["deuteriumTank"] ?? 0),
+        };
         const robotics = planet?.buildings?.["roboticsFactory"] ?? 0;
         const nanite = planet?.buildings?.["naniteFactory"] ?? 0;
-        const denom = 2500 * (1 + robotics) * Math.pow(2, nanite) * Math.max(1, universeSpeed);
-        if (denom <= 0) return 3600;
-        return ((cost.m + cost.c) / denom) * 3600;
-      };
-      const perLevelResearchSec = (cost: { m: number; c: number }, planet: { buildings?: Record<string, number> } | undefined): number => {
         const lab = planet?.buildings?.["researchLab"] ?? 0;
-        const denom = 1000 * (1 + lab) * Math.max(1, researchSpeed);
-        if (denom <= 0) return 3600;
-        return ((cost.m + cost.c) / denom) * 3600;
-      };
-      // Resource-wait time: how long until planet's production accumulates
-      // enough to afford this cost. Uses planet.production (per-hour rates).
-      const resourceWaitSec = (cost: { m: number; c: number; d?: number }, planet: { resources?: { m?: number; c?: number; d?: number }; production?: { m_h?: number; c_h?: number; d_h?: number } } | undefined): number => {
-        const r = planet?.resources ?? { m: 0, c: 0, d: 0 };
-        const prod = planet?.production ?? { m_h: 0, c_h: 0, d_h: 0 };
-        const shortM = Math.max(0, cost.m - (r.m ?? 0));
-        const shortC = Math.max(0, cost.c - (r.c ?? 0));
-        const shortD = Math.max(0, (cost.d ?? 0) - (r.d ?? 0));
-        const waitM = (prod.m_h ?? 0) > 0 ? shortM / (prod.m_h ?? 1) * 3600 : (shortM > 0 ? 99999 : 0);
-        const waitC = (prod.c_h ?? 0) > 0 ? shortC / (prod.c_h ?? 1) * 3600 : (shortC > 0 ? 99999 : 0);
-        const waitD = (prod.d_h ?? 0) > 0 ? shortD / (prod.d_h ?? 1) * 3600 : (shortD > 0 ? 99999 : 0);
-        return Math.max(waitM, waitC, waitD);
-      };
+        const buildSec = (cost: { m: number; c: number }, nodeKind: string): number => {
+          if (nodeKind === "research") {
+            const denom = 1000 * (1 + lab) * Math.max(1, researchSpeed);
+            return denom > 0 ? ((cost.m + cost.c) / denom) * 3600 : 3600;
+          }
+          const denom = 2500 * (1 + robotics) * Math.pow(2, nanite) * Math.max(1, universeSpeed);
+          return denom > 0 ? ((cost.m + cost.c) / denom) * 3600 : 3600;
+        };
+        const accumulate = (sec: number) => {
+          bank.m = Math.min(bank.m + prodPerSec.m * sec, caps.m);
+          bank.c = Math.min(bank.c + prodPerSec.c * sec, caps.c);
+          bank.d = Math.min(bank.d + prodPerSec.d * sec, caps.d);
+        };
+        const timeToAfford = (cost: { m: number; c: number; d?: number }): number => {
+          const sM = Math.max(0, cost.m - bank.m);
+          const sC = Math.max(0, cost.c - bank.c);
+          const sD = Math.max(0, (cost.d ?? 0) - bank.d);
+          const tM = sM > 0 ? (prodPerSec.m > 0 ? sM / prodPerSec.m : Infinity) : 0;
+          const tC = sC > 0 ? (prodPerSec.c > 0 ? sC / prodPerSec.c : Infinity) : 0;
+          const tD = sD > 0 ? (prodPerSec.d > 0 ? sD / prodPerSec.d : Infinity) : 0;
+          return Math.max(tM, tC, tD, 0);
+        };
+        let total = 0;
+        // Walk and build the tree node objects. Each node gets eta_seconds
+        // = its contribution (wait + build for its own levels), and
+        // subtree_eta_seconds = total time from start through this node.
+        function buildAndSimulate(techName: string, targetLevel: number, kind: "research" | "building"): PrereqTreeNode | null {
+          let tech: { kind?: string; requires?: Record<string, number>; cost_at?: (l: number) => { m: number; c: number; d?: number; e?: number } } | undefined;
+          let current = 0;
+          let costFn: ((l: number) => { m: number; c: number; d?: number; e?: number }) | undefined;
+          if (useTreeBuilder === "lifeform") {
+            const species = ((planet as { lifeform?: { species?: string } } | null)?.lifeform?.species) ?? "humans";
+            const catalog = LIFEFORM_TECH[species as keyof typeof LIFEFORM_TECH];
+            if (!catalog) return null;
+            const entry = catalog.buildings[techName];
+            if (!entry) return null;
+            const lfb = (planet as { lifeform_buildings?: Record<string, number> } | null)?.lifeform_buildings ?? {};
+            current = lfb[techName] ?? 0;
+            costFn = entry.cost_at as typeof costFn;
+            tech = { requires: entry.requires };
+          } else {
+            tech = (TECH_TREE as unknown as Record<string, { kind?: string; requires?: Record<string, number>; cost_at?: (l: number) => { m: number; c: number; d?: number; e?: number } }>)[techName];
+            if (!tech) return null;
+            const techKind = tech.kind ?? "";
+            const research = stateRef.current?.research?.levels ?? {};
+            current = kind === "research" ? (research[techName] ?? 0)
+                    : techKind === "ship" || techKind === "defense" ? ((planet?.ships as Record<string, number> | undefined)?.[techName] ?? 0)
+                    : (planet?.buildings?.[techName] ?? 0);
+            costFn = tech.cost_at as typeof costFn;
+          }
+          const children: PrereqTreeNode[] = [];
+          for (const [req, lvl] of Object.entries(tech?.requires ?? {})) {
+            const subKind = useTreeBuilder === "lifeform"
+              ? "building"
+              : ((TECH_TREE as Record<string, { kind?: string }>)[req]?.kind === "research" ? "research" : "building");
+            const node = buildAndSimulate(req, lvl, subKind);
+            if (node) children.push(node);
+          }
+          // Self: simulate levels current+1..target IN ORDER
+          let selfEta = 0;
+          if (current < targetLevel && typeof costFn === "function") {
+            for (let l = current + 1; l <= targetLevel; l++) {
+              const cost = costFn(l);
+              const wait = timeToAfford(cost);
+              if (!isFinite(wait)) { total = Infinity; break; }
+              accumulate(wait);
+              const build = buildSec(cost, kind);
+              accumulate(build);
+              // Pay cost (subtract; cap-clamped on accumulate)
+              bank.m = Math.max(0, bank.m - cost.m);
+              bank.c = Math.max(0, bank.c - cost.c);
+              bank.d = Math.max(0, bank.d - (cost.d ?? 0));
+              const step = wait + build;
+              selfEta += step;
+              total += step;
+            }
+          }
+          return {
+            tech: techName, targetLevel, currentLevel: current, kind,
+            met: current >= targetLevel,
+            children,
+            eta_seconds: Math.round(selfEta),
+            subtree_eta_seconds: Math.round(total),
+          };
+        }
+        const tree = buildAndSimulate(rootTechName, rootTargetLevel, rootKind);
+        return { tree, total };
+      }
       // Build prereq tree for a goal. Walks TECH_TREE (regular) or
       // LIFEFORM_TECH.<species>.buildings (lifeform). Each node carries
       // current level (from state) + target + met flag + computed ETAs.
-      const buildTree = (
-        techName: string,
-        targetLevel: number,
-        kind: "research" | "building",
-        planetId: string | undefined,
+      const _legacy_unused_buildTree = (
+        _techName: string,
+        _targetLevel: number,
+        _kind: "research" | "building",
+        _planetId: string | undefined,
       ): PrereqTreeNode | null => {
-        // Treat "research" + regular "building" via TECH_TREE; lifeform via catalog.
-        const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
-        const research = stateRef.current?.research?.levels ?? {};
-        const tech = (TECH_TREE as Record<string, { kind?: string; requires?: Record<string, number> }>)[techName];
-        if (!tech) return null;
-        const techKind = tech.kind ?? "";
-        const current = kind === "research"
-          ? (research[techName] ?? 0)
-          : techKind === "ship" || techKind === "defense"
-            ? ((planet?.ships as Record<string, number> | undefined)?.[techName] ?? 0)
-            : (planet?.buildings?.[techName] ?? 0);
-        const children: PrereqTreeNode[] = [];
-        for (const [req, lvl] of Object.entries(tech.requires ?? {})) {
-          const reqEntry = (TECH_TREE as Record<string, { kind?: string }>)[req];
-          if (!reqEntry) continue;
-          const subKind = reqEntry.kind === "research" ? "research" : "building";
-          const node = buildTree(req, lvl, subKind, planetId);
-          if (node) children.push(node);
-        }
-        // Self ETA: per-level build/research duration + resource wait,
-        // summed from currentLevel+1 to targetLevel (each level costs more).
-        const techT = tech as { cost_at?: (l: number) => { m: number; c: number; d?: number; e?: number } };
-        let selfEta = 0;
-        if (current < targetLevel && typeof techT.cost_at === "function" && techKind !== "ship" && techKind !== "defense") {
-          for (let l = current + 1; l <= targetLevel; l++) {
-            const cost = techT.cost_at(l);
-            const build = kind === "research" ? perLevelResearchSec(cost, planet) : perLevelBuildSec(cost, planet);
-            const wait = resourceWaitSec(cost, planet);
-            selfEta += build + wait;
-          }
-        }
-        // Subtree = max(child subtree) + self (serial: prereqs must finish before self)
-        const childMax = children.length > 0 ? Math.max(...children.map((c) => c.subtree_eta_seconds ?? 0)) : 0;
-        return {
-          tech: techName, targetLevel, currentLevel: current, kind,
-          met: current >= targetLevel,
-          children,
-          eta_seconds: Math.round(selfEta),
-          subtree_eta_seconds: Math.round(childMax + selfEta),
-        };
+        // SUPERSEDED by simulate() above. Kept as stub for any stale reference.
+        return null;
       };
-      const buildLifeformTree = (
-        buildingName: string,
-        targetLevel: number,
-        planetId: string | undefined,
-      ): PrereqTreeNode | null => {
-        const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
-        const species = (planet?.lifeform as { species?: string } | null)?.species ?? "humans";
-        const catalog = LIFEFORM_TECH[species as keyof typeof LIFEFORM_TECH];
-        if (!catalog) return null;
-        const entry = catalog.buildings[buildingName];
-        if (!entry) return null;
-        const lfb = (planet as { lifeform_buildings?: Record<string, number> } | undefined)?.lifeform_buildings ?? {};
-        const current = lfb[buildingName] ?? 0;
-        const children: PrereqTreeNode[] = [];
-        for (const [req, lvl] of Object.entries(entry.requires)) {
-          const node = buildLifeformTree(req, lvl, planetId);
-          if (node) children.push(node);
-        }
-        // Self ETA for lifeform: lf catalog has cost_at; duration uses same
-        // building formula (lf builds are slightly faster but approximate).
-        const costFn = entry.cost_at as ((l: number) => { m: number; c: number; d?: number; e?: number }) | undefined;
-        let selfEta = 0;
-        if (current < targetLevel && typeof costFn === "function") {
-          for (let l = current + 1; l <= targetLevel; l++) {
-            const cost = costFn(l);
-            const build = perLevelBuildSec(cost, planet);
-            const wait = resourceWaitSec(cost, planet);
-            selfEta += build + wait;
-          }
-        }
-        const childMax = children.length > 0 ? Math.max(...children.map((c) => c.subtree_eta_seconds ?? 0)) : 0;
-        return {
-          tech: buildingName, targetLevel, currentLevel: current,
-          kind: "building",
-          met: current >= targetLevel,
-          children,
-          eta_seconds: Math.round(selfEta),
-          subtree_eta_seconds: Math.round(childMax + selfEta),
-        };
-      };
+      const _legacy_unused_buildLifeformTree = (
+        _buildingName: string,
+        _targetLevel: number,
+        _planetId: string | undefined,
+      ): PrereqTreeNode | null => null;
+      void _legacy_unused_buildTree;
+      void _legacy_unused_buildLifeformTree;
       // Compute eta_at from ogame's in-flight queue for this goal's planet.
       // STRICT match: ETA returned only when an in-flight queue item's name
       // matches this goal's target OR a building in this goal's prereq tree
@@ -563,15 +578,15 @@ export async function startSidecar(
           }
         }
         if (r.goal.type === "research" && target.tech) {
-          prereq_tree = buildTree(target.tech, lvl, "research", resolvedPlanetId);
+          prereq_tree = simulate(target.tech, lvl, "research", resolvedPlanetId, "regular").tree;
         } else if (r.goal.type === "build" && target.building) {
-          prereq_tree = buildTree(target.building, lvl, "building", resolvedPlanetId);
+          prereq_tree = simulate(target.building, lvl, "building", resolvedPlanetId, "regular").tree;
         } else if (r.goal.type === "lifeform_building" && target.building) {
-          prereq_tree = buildLifeformTree(target.building, lvl, resolvedPlanetId);
+          prereq_tree = simulate(target.building, lvl, "building", resolvedPlanetId, "lifeform").tree;
         } else if (r.goal.type === "build_ships") {
           const shipTarget = r.goal.target as { ship?: string; amount?: number };
           if (shipTarget.ship) {
-            prereq_tree = buildTree(shipTarget.ship, shipTarget.amount ?? 1, "building", resolvedPlanetId);
+            prereq_tree = simulate(shipTarget.ship, shipTarget.amount ?? 1, "building", resolvedPlanetId, "regular").tree;
           }
         }
         return {
