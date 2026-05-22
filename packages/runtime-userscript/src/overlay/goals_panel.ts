@@ -628,13 +628,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     }
   }
 
-  // Track event IDs we've already alerted on, so re-fetching the same
-  // hostile entry doesn't re-trigger the audio/visual alarm every 3s.
+  // Track event IDs already alerted — used only to detect NEW arrivals.
+  // Continuous alarm runs until /v1/emergency reports count=0 (danger cleared).
   const alertedIds = new Set<string>();
 
-  // Audio: Web Audio API generates a beep — no asset file shipped.
-  // Different patterns for spy (single tone) vs attack (3 fast tones).
-  function playAlarm(severity: "spy" | "attack"): void {
+  function playBeep(severity: "spy" | "attack"): void {
     try {
       const w = doc.defaultView as Window & { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
       const Ctor = w.AudioContext ?? w.webkitAudioContext;
@@ -657,40 +655,67 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         osc.stop(t + stepMs / 1000);
         t += stepMs / 1000;
       }
-      // Close ctx after a small grace to free audio resources.
       setTimeout(() => { try { void ctx.close(); } catch { /* */ } }, (stepMs * tones.length) + 500);
-    } catch { /* audio blocked → silently skip */ }
+    } catch { /* */ }
   }
 
-  // Visual: flash panel border red for severity-keyed duration.
-  let flashTimer: ReturnType<typeof setTimeout> | null = null;
-  function flashPanel(severity: "spy" | "attack"): void {
+  // Persistent-alarm loop: while hostile present, replay beep at fixed
+  // interval AND keep panel flashing. Cleared when danger gone.
+  let alarmIntervalId: ReturnType<typeof setInterval> | null = null;
+  let currentAlarmSeverity: "spy" | "attack" | null = null;
+
+  function applyFlash(severity: "spy" | "attack"): void {
     const panel = doc.getElementById("ogamex-goals-panel");
     if (!panel) return;
     const color = severity === "attack" ? "#ff2020" : "#ffaa20";
-    const durationMs = severity === "attack" ? 8000 : 4000;
     panel.style.boxShadow = `0 0 24px 6px ${color}, 0 0 4px 1px ${color} inset`;
     panel.style.borderColor = color;
-    if (flashTimer !== null) clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => {
-      panel.style.boxShadow = "";
-      panel.style.borderColor = "";
-      flashTimer = null;
-    }, durationMs);
+  }
+  function clearFlash(): void {
+    const panel = doc.getElementById("ogamex-goals-panel");
+    if (!panel) return;
+    panel.style.boxShadow = "";
+    panel.style.borderColor = "";
   }
 
-  function fireAlertsForNew(em: EmergencyPayload | null): void {
-    if (!em || !Array.isArray(em.hostile)) return;
-    let newAttack = false, newSpy = false;
-    for (const h of em.hostile) {
-      if (alertedIds.has(h.id)) continue;
-      alertedIds.add(h.id);
-      if (h.type === "attack") newAttack = true;
-      else if (h.type === "spy") newSpy = true;
+  function startAlarm(severity: "spy" | "attack"): void {
+    // If escalating from spy → attack, switch immediately.
+    if (alarmIntervalId !== null && currentAlarmSeverity === severity) return;
+    stopAlarm();
+    currentAlarmSeverity = severity;
+    applyFlash(severity);
+    playBeep(severity);
+    // Re-beep every 3s (attack) / 6s (spy) until cleared.
+    const beepIntervalMs = severity === "attack" ? 3000 : 6000;
+    alarmIntervalId = setInterval(() => {
+      if (currentAlarmSeverity === null) return;
+      applyFlash(currentAlarmSeverity);
+      playBeep(currentAlarmSeverity);
+    }, beepIntervalMs);
+  }
+  function stopAlarm(): void {
+    if (alarmIntervalId !== null) {
+      clearInterval(alarmIntervalId);
+      alarmIntervalId = null;
     }
-    // Attack takes priority — louder/longer.
-    if (newAttack) { playAlarm("attack"); flashPanel("attack"); }
-    else if (newSpy) { playAlarm("spy"); flashPanel("spy"); }
+    currentAlarmSeverity = null;
+    clearFlash();
+  }
+
+  function evaluateAlerts(em: EmergencyPayload | null): void {
+    if (!em || !Array.isArray(em.hostile) || em.hostile.length === 0) {
+      // Danger cleared → silence + clear visuals.
+      if (alarmIntervalId !== null) stopAlarm();
+      return;
+    }
+    // Track-only — detection of NEW IDs is for telemetry; alarm is driven
+    // by CURRENT-tick hostile presence, not by new arrivals.
+    for (const h of em.hostile) alertedIds.add(h.id);
+    // Severity = highest of currently-active. Attack wins.
+    const hasAttack = em.hostile.some((h) => h.type === "attack");
+    const severity: "spy" | "attack" = hasAttack ? "attack" : "spy";
+    // Start (or escalate) alarm. If same severity already running, no-op.
+    if (currentAlarmSeverity !== severity) startAlarm(severity);
   }
 
   async function refresh(): Promise<void> {
@@ -706,7 +731,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       lastGoals = goals;
       lastEmergency = emergency;
       lastExpedition = expedition;
-      fireAlertsForNew(emergency);
+      evaluateAlerts(emergency);
       if (!skipRender) render(goals);
     } catch (e) {
       if (!skipRender) render([], (e as Error).message);
@@ -724,6 +749,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   function stop(): void {
     stopped = true;
     if (timer) clearTimeout(timer);
+    stopAlarm();
     panel?.remove();
   }
 
