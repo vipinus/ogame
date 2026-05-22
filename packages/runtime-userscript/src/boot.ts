@@ -119,10 +119,21 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
   const buildings: Record<string, number> = {};
   const research: Record<string, number> = {};
   const lifeformBuildings: Record<string, number> = {};
+  // Detect species from lifeform tech ID prefix:
+  //   111xx = humans  121xx = rocktal  131xx = mechas  141xx = kaelesh
+  let detectedSpecies: string | null = null;
   for (const [id, lvl] of Object.entries(levels)) {
     const techId = TECH_ID_BY_NAME[id];
     if (techId !== undefined && idKind(techId) === "lifeform_building") {
       lifeformBuildings[id] = lvl;
+      if (lvl > 0 && detectedSpecies === null) {
+        const prefix = Math.floor(techId / 1000);
+        detectedSpecies = prefix === 11 ? "humans"
+          : prefix === 12 ? "rocktal"
+          : prefix === 13 ? "mechas"
+          : prefix === 14 ? "kaelesh"
+          : null;
+      }
       continue;
     }
     const entry = (TECH_TREE as Record<string, { kind: string }>)[id];
@@ -148,10 +159,17 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
       for (const [k, v] of Object.entries(lifeformBuildings)) {
         if (v >= (mergedLf[k] ?? 0)) mergedLf[k] = v;
       }
+      const existingLfMeta = (existing as { lifeform?: { species?: string } | null }).lifeform ?? null;
+      const lifeformPatch = detectedSpecies !== null && (existingLfMeta === null || existingLfMeta.species !== detectedSpecies)
+        ? { lifeform: { ...(existingLfMeta ?? {}), species: detectedSpecies } }
+        : {};
       patch.planets = {
         ...cur.planets,
-        [activeIdRaw]: { ...existing, buildings: mergedB, lifeform_buildings: mergedLf } as typeof existing,
+        [activeIdRaw]: { ...existing, buildings: mergedB, lifeform_buildings: mergedLf, ...lifeformPatch } as typeof existing,
       };
+      if (detectedSpecies !== null) {
+        console.info(`[OgameX/species] planet ${activeIdRaw}: detected species=${detectedSpecies}`);
+      }
     }
   }
   if (Object.keys(research).length > 0) {
@@ -494,7 +512,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.195";
+  const USERSCRIPT_VERSION = "0.0.196";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
