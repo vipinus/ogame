@@ -324,6 +324,18 @@ export class HttpServer {
         this.handleGoalAction(res, id, action! as "cancel" | "pause" | "resume" | "set-main" | "unset-main");
         return;
       }
+      // Event-driven expedition trigger — public (no-auth). The trigger ts
+      // is a low-value flag (just signals daemon to fire its tick); making
+      // it public lets userscript POST without needing bridge token in the
+      // sandboxed page world.
+      if (url === EXPEDITION_TRIGGER_PATH) {
+        this.expeditionTriggerTs = Date.now();
+        this.writeCorsHeaders(res);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ ok: true, ts: this.expeditionTriggerTs }));
+        return;
+      }
     }
 
     if (method !== "POST") {
@@ -356,17 +368,7 @@ export class HttpServer {
       this.handleExpeditionFlag(res, false);
       return;
     }
-    if (url === EXPEDITION_TRIGGER_PATH) {
-      // Event-driven expedition tick: set timestamp; daemon polls this
-      // endpoint via GET to know when to fire next tick (instead of every
-      // 10s setInterval). Operator directive: 改成事件触发.
-      this.expeditionTriggerTs = Date.now();
-      this.writeCorsHeaders(res);
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ ok: true, ts: this.expeditionTriggerTs }));
-      return;
-    }
+    // (EXPEDITION_TRIGGER_PATH handled above — public, no-auth)
 
     this.writeCorsHeaders(res);
     res.statusCode = 404;
