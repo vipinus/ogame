@@ -523,20 +523,39 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     directive: Directive,
     planetId: string,
   ): Promise<{ action: string; clicked: boolean }> {
-    // Fresh empire data BEFORE deciding — daemon's "ships sufficient" gate
-    // is based on state.ships, which may be stale. Trigger an empire refetch
-    // so the next daemon tick (and any consumer reading store) sees truth.
-    // Fire-and-forget: don't block sendFleet on this; the empire result
-    // updates state asynchronously and serves the NEXT decision.
-    const pollEmpire = (this.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire;
-    if (typeof pollEmpire === "function") {
-      void pollEmpire().catch(() => { /* ignore — non-critical */ });
-    }
     const params = directive.params as {
       source_coords?: string;
       ships?: Record<string, number>;
     };
     const ships = params.ships ?? { smallCargo: 1, espionageProbe: 1 };
+    // BLOCKING preflight — owner explicit requirement: "每次远征之前从 api
+    // 拿最新的舰船数量". v0.0.166 had fire-and-forget pollEmpire (data lands
+    // too late). v0.0.167 had fdHtml2 parse (caused 140042). This version
+    // calls a focused helper that does (a) ogame empire API fetch, (b) parses
+    // ship counts per planet, (c) writes them to store, (d) returns this
+    // planet's ships. AWAIT it — block 100-500ms — then compare to template.
+    const fetchPlanetShips = (this.win as Window & {
+      __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>>;
+    }).__ogamexFetchPlanetShips;
+    if (typeof fetchPlanetShips === "function") {
+      try {
+        const liveShips = await fetchPlanetShips(planetId);
+        const shortages: string[] = [];
+        for (const [shipName, n] of Object.entries(ships)) {
+          if (n <= 0) continue;
+          const have = liveShips[shipName] ?? 0;
+          if (have < n) shortages.push(`${shipName} have=${have} need=${n}`);
+        }
+        if (shortages.length > 0) {
+          throw new Error(`expedition aborted (preflight): ${shortages.join("; ")} on ${planetId} — empire fetched ${Date.now()}`);
+        }
+      } catch (e) {
+        // Re-throw preflight aborts (they're informative); swallow only
+        // fetch errors so we don't block on transient ogame hiccups.
+        if (e instanceof Error && e.message.startsWith("expedition aborted (preflight)")) throw e;
+        console.warn(`[ApiExec] preflight fetch failed, proceeding with daemon's state:`, e);
+      }
+    }
     const [gStr, sStr] = (params.source_coords ?? "").split(":");
     const galaxy = parseInt(gStr ?? "0", 10);
     const system = parseInt(sStr ?? "0", 10);
@@ -628,11 +647,20 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     }
     token = stage2.token;
 
-    // Stage 3: mission + send. Re-anchor session-cp by re-fetching the
-    // planet's fdUrl right before sendFleet — other pollers (esp. the
-    // cross-planet fetchResources rotation) can change the session cookie
-    // mid-flow → sendFleet hits wrong planet → "可用艦船不足" 140054.
-    await this.fetchFn(`/game/index.php?page=ingame&component=fleetdispatch&cp=${planetId}`, { credentials: "same-origin" });
+    // Stage 3 — NO re-anchor fetch of fdUrl. v0.0.167 had one (with preflight
+    // ship verification) but it caused ogame to reset the fleet form between
+    // stage2 (checkTarget) and stage3 (sendFleet) → 140042 "沒有選擇艦船"
+    // even when body had am203=1500 etc. Stage2's token stayed valid but the
+    // server-side form lost the ship-selection context.
+    //
+    // Preflight ship verification moved EARLIER (before stage1) — uses local
+    // boot store state which is refreshed every 5s via pollEmpire. Race window
+    // ≤ 5-10s, much smaller than the v0.0.167-induced 100% failure mode.
+    //
+    // Pollers that could change session-cp during the chain: pollEmpire uses
+    // page=standalone (separate namespace) — does NOT change session-cp.
+    // fetchResources rotation was disabled (current-planet only) in boot.ts.
+    // So no concurrent fetch should break stage2→stage3 atomicity.
     const stage3Body = new URLSearchParams({
       token,
       mission: "15",

@@ -495,7 +495,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.165";
+  const USERSCRIPT_VERSION = "0.0.170";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   console.log(`[OgameX] meta probes: speed=${ogame_meta.universe_speed} fleet_p=${metaSpeedFleetP} fleet_w=${metaSpeedFleetW} fleet_h=${metaSpeedFleetH}`);
   const _prod = extractProduction(env.doc);
@@ -1440,8 +1440,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // navigation needed. Most importantly, doesn't set session cp= cookie
   // (separate "standalone" viewport), so ApiExec session stays intact.
   // Used to populate state.planets[].ships across the entire empire.
-  async function pollEmpire(): Promise<void> {
-    if (userBusy()) return;
+  async function pollEmpire(opts: { force?: boolean } = {}): Promise<void> {
+    // ApiExec preflight needs fresh data even when user is busy (otherwise
+    // launching fleets relies on stale data the whole time user browses).
+    // Periodic state-push poller passes no force=true so it still defers
+    // to user activity for politeness; ApiExec helper passes force=true.
+    if (!opts.force && userBusy()) return;
     try {
       // Note: planet=0, mode=0 selects ALL planets in v12 empire endpoint.
       const url = `/game/index.php?page=standalone&component=empire&planetType=0`;
@@ -1495,6 +1499,46 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   setTimeout(pollEmpire, 12_000);
   // Expose globally so ApiExec can request a refresh on demand.
   (env.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire = pollEmpire;
+  // Also expose a focused helper: refresh empire then return THIS planet's
+  // ship counts. ApiExec calls this RIGHT BEFORE each expedition so the
+  // launch decision is based on data fetched microseconds ago. Owner's
+  // explicit requirement: "每次远征之前从 api 拿最新的舰船数量".
+  (env.win as Window & { __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>> })
+    .__ogamexFetchPlanetShips = async (pid: string): Promise<Record<string, number>> => {
+    // GROUND TRUTH = fleetdispatch page. /empire endpoint includes in-transit
+    // ships (reports total owned-per-planet including departed fleets).
+    // fleetdispatch page's <input data-max-amount=N> reflects what's
+    // LAUNCHABLE right now = hangar only.
+    //
+    // Owner observation: state showed 1500 largeCargo on a planet that
+    // "实际没有船" — fleet was already in transit, empire returned the
+    // committed count not the available count.
+    try {
+      const url = `/game/index.php?page=ingame&component=fleetdispatch&cp=${pid}`;
+      const r = await env.win.fetch(url, { credentials: "same-origin" });
+      if (!r.ok) return store.state.planets[pid]?.ships ?? {};
+      const html = await r.text();
+      const ships: Record<string, number> = {};
+      // ogame v12 ship inputs: <li data-technology="2XX"...> + <input data-max-amount="N" name="am2XX">
+      const liMatches = html.matchAll(/<li[^>]*data-technology="(\d+)"[\s\S]*?data-max-amount="(\d+)"/g);
+      for (const m of liMatches) {
+        const tid = String(m[1] ?? "");
+        const max = parseInt(m[2] ?? "0", 10);
+        const name = TECH_ID_TO_NAME[tid];
+        if (name) ships[name] = max;
+      }
+      // Mirror hangar truth into store for any concurrent reader.
+      const cur = store.state;
+      if (cur.planets[pid] && Object.keys(ships).length > 0) {
+        const p = cur.planets[pid];
+        store.update({ planets: { ...cur.planets, [pid]: { ...p, ships: { ...p.ships, ...ships } } } });
+      }
+      return ships;
+    } catch (e) {
+      console.warn(`[OgameX/fetchShips] fd fetch failed for ${pid}:`, e);
+      return store.state.planets[pid]?.ships ?? {};
+    }
+  };
 
   // One-shot prereq discovery — fetch technologyDetails for every lifeform
   // building on boot and dump real requirements to console. Operator
