@@ -16,6 +16,7 @@ import type { BootHandle } from "./boot.js";
 import type { BridgeClient } from "./bridge/ws_client.js";
 import type { ExpeditionConfig } from "@ogamex/shared";
 import { startEmergencySave } from "./emergency/save_orchestrator.js";
+import { startSpyDetector } from "./emergency/spy_detector.js";
 import { emergencyGate } from "./emergency/priority_gate.js";
 import { startDailyExpeditionLoop } from "./daily/expedition/loop.js";
 import { ExpeditionStore } from "./store/expedition_store.js";
@@ -80,6 +81,10 @@ export function wireRuntime(
     saveWindowMinutes: 30,
     safetyMarginMinutes: 5,
   });
+  // Spy detector — informational only (no fleet save). Emits emergency.spy
+  // bus event when an inbound espionage probe is detected. Bridge forwards
+  // to Discord so operator can see "[spy] X is probing Y".
+  const offSpyDetector = startSpyDetector(boot.bus, stateRef);
 
   // Forward gate transitions onto the bus so other subsystems can react.
   const offGate = emergencyGate.onChange((active) => {
@@ -153,6 +158,11 @@ export function wireRuntime(
         emergency.stop();
       } catch (e) {
         console.warn("[wireRuntime] emergency.stop failed", e);
+      }
+      try {
+        offSpyDetector();
+      } catch (e) {
+        console.warn("[wireRuntime] spy_detector.stop failed", e);
       }
       try {
         daily.stop();

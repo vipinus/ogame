@@ -494,7 +494,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.189";
+  const USERSCRIPT_VERSION = "0.0.190";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -851,26 +851,52 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   setTimeout(() => { void harvestSlotsFromFleetdispatch(); }, 3500);
   setInterval(() => { if (!userBusy()) void harvestSlotsFromFleetdispatch(); }, 30_000);
 
-  // POLL ogame's eventList JSON API — sniffer captured this endpoint.
-  // Likely returns event box content + slot summary. Per "不要猜" memory,
-  // log full JSON keys first to see what's actually in there before using.
-  async function pollEventBox(): Promise<void> {
+  // ACTIVE eventList HTML poll — primary detection path for inbound
+  // attacks AND spy probes. Web client is push-based (passive) so DOM
+  // mutation has latency; active API poll closes that gap.
+  //
+  // Endpoint returns same HTML fragment as #eventContent, so we reuse
+  // the production-verified extractIncomingEvents() parser. No new
+  // parser, no guessing JSON shape.
+  //
+  // Cadence: 8s — fast enough to detect within attack save-window
+  // (typically 5-30 min for ogame realm fleets), slow enough to avoid
+  // rate-limit. DOM mutation observer remains as fallback.
+  let lastEventSig = "";
+  async function pollEventList(): Promise<void> {
     try {
-      const url = "/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1";
+      const url = "/game/index.php?page=componentOnly&component=eventList&ajax=1";
       const resp = await env.win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
       if (!resp.ok) return;
-      const txt = await resp.text();
-      try {
-        const j = JSON.parse(txt) as Record<string, unknown>;
-        if (!(window as Window & { __ogamexDumpedEB?: boolean }).__ogamexDumpedEB) {
-          (window as Window & { __ogamexDumpedEB?: boolean }).__ogamexDumpedEB = true;
-          // (eventbox keys-dump silenced)
+      const html = await resp.text();
+      // ogame returns either a full doc with #eventContent OR a bare
+      // <tr.eventFleet>...</tr> fragment. Wrap fragment in synthetic
+      // #eventContent so the existing extractor's selector hits.
+      const parser = new (env.win as Window & { DOMParser: typeof DOMParser }).DOMParser();
+      let doc = parser.parseFromString(html, "text/html");
+      if (!doc.querySelector("#eventContent")) {
+        doc = parser.parseFromString(
+          `<table id="eventContent"><tbody>${html}</tbody></table>`,
+          "text/html",
+        );
+      }
+      const events = extractIncomingEvents(doc);
+      // De-duplicate writes — only setPartial when events actually changed.
+      // Empty == empty doesn't need to spam state.updated bus events.
+      const sig = events.map(e => `${e.id}:${e.arrives_at}:${e.hostile?"H":"N"}`).sort().join(",");
+      if (sig !== lastEventSig) {
+        lastEventSig = sig;
+        store.setPartial({ events_incoming: events });
+        const hostileCount = events.filter(e => e.hostile).length;
+        const spyCount = events.filter(e => e.type === "spy").length;
+        if (hostileCount > 0 || spyCount > 0) {
+          console.warn(`[OgameX/event-poll] ${events.length} events: hostile=${hostileCount} spy=${spyCount}`);
         }
-      } catch (_) { void _; }
+      }
     } catch (e) { void e; }
   }
-  setTimeout(() => { void pollEventBox(); }, 4000);
-  setInterval(() => { if (!userBusy()) void pollEventBox(); }, 30_000);
+  setTimeout(() => { void pollEventList(); }, 2000);
+  setInterval(() => { void pollEventList(); }, 8_000);
 
   // FALLBACK: scrape from current page DOM (less reliable):
   // Extract BOTH used & max because ogame's `floor(sqrt)` formula misses

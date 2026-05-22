@@ -138,7 +138,12 @@ export async function wireBridge(
       to?: unknown;
       arrives_at?: number;
     };
-    const md = `🚨 **Attack detected** event=${p.event_id ?? "?"} arrives=${p.arrives_at ?? "?"}`;
+    const fromStr = Array.isArray(p.from) ? `[${p.from.join(":")}]` : "?";
+    const toStr = Array.isArray(p.to) ? `[${p.to.join(":")}]` : "?";
+    const eta = typeof p.arrives_at === "number"
+      ? new Date(p.arrives_at * 1000).toISOString().slice(11, 19)
+      : "?";
+    const md = `🚨 **ATTACK** ${fromStr} → ${toStr} arrival=${eta} (event=${p.event_id ?? "?"})`;
     try {
       client.send({
         type: "event.emergency",
@@ -147,8 +152,31 @@ export async function wireBridge(
         markdown_report: md,
       });
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn("[wireBridge] emergency forward failed", e);
+      console.warn("[wireBridge] attack forward failed", e);
+    }
+  });
+  const offSpy = boot.bus.on("emergency.spy", (payload: unknown) => {
+    const p = (payload ?? {}) as {
+      event_id?: string;
+      from?: unknown;
+      to?: unknown;
+      arrives_at?: number;
+    };
+    const fromStr = Array.isArray(p.from) ? `[${p.from.join(":")}]` : "?";
+    const toStr = Array.isArray(p.to) ? `[${p.to.join(":")}]` : "?";
+    const eta = typeof p.arrives_at === "number"
+      ? new Date(p.arrives_at * 1000).toISOString().slice(11, 19)
+      : "?";
+    const md = `🛰️ **SPY PROBE** ${fromStr} → ${toStr} arrival=${eta} (event=${p.event_id ?? "?"})`;
+    try {
+      client.send({
+        type: "event.emergency",
+        subtype: "spy",
+        data: payload,
+        markdown_report: md,
+      });
+    } catch (e) {
+      console.warn("[wireBridge] spy forward failed", e);
     }
   });
 
@@ -161,6 +189,7 @@ export async function wireBridge(
         timer = null;
       }
       offEmergency();
+      offSpy();
     },
   };
 }
