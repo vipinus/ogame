@@ -319,6 +319,82 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
   };
   win.document.addEventListener("visibilitychange", visHandler);
 
+  // --- #attack_alert observer ---
+  // ogame's overview renders a div#attack_alert that's class="tooltip noAttack"
+  // when peaceful. When ANY threat (including 0%-detection spy POST-arrival
+  // notification) is active, the class changes (typically drops "noAttack"
+  // and gains an attack indicator class). The flashing triangle the operator
+  // sees IS this element. Direct watch = catches every state ogame surfaces.
+  let lastAttackAlertClass = "";
+  function attackAlertEl(): HTMLElement | null {
+    return win.document.getElementById("attack_alert");
+  }
+  function checkAttackAlertState(): void {
+    const el = attackAlertEl();
+    if (!el) return;
+    const cls = el.className || "";
+    if (cls === lastAttackAlertClass) return;
+    const wasNo = /\bnoAttack\b/.test(lastAttackAlertClass);
+    const isNo = /\bnoAttack\b/.test(cls);
+    lastAttackAlertClass = cls;
+    // Transition: noAttack → something else (threat appeared)
+    if (wasNo && !isNo) {
+      const title = el.getAttribute("title") || "";
+      console.warn(`[OgameX/attack_alert] TRIANGLE FLASHED — class="${cls}" title="${title.slice(0, 200)}"`);
+      // Inject a synthetic event so spy_detector / attack_detector / panel
+      // alarm all fire. Use class-based heuristic: contains "spy/espion" →
+      // spy; otherwise default attack (safer to escalate).
+      const isSpy = /\b(?:spy|spying|espion|probe)\b/i.test(cls + " " + title);
+      const id = `attack-alert-${Date.now()}`;
+      const synthetic = {
+        id,
+        type: isSpy ? "spy" : "attack" as "spy" | "attack",
+        hostile: !isSpy, // attack triggers full alarm; spy logs only (matches reference design)
+        from: [0, 0, 0] as readonly [number, number, number],
+        to: [0, 0, 0] as readonly [number, number, number],
+        arrives_at: Math.floor(Date.now() / 1000),
+        ships_count: "?" as const,
+      };
+      const cur = store.state.events_incoming ?? [];
+      // Dedup: don't add if we already have an event with same id-prefix
+      const otherSourced = cur.filter((e) => !e.id.startsWith("attack-alert-"));
+      store.setPartial({ events_incoming: [...otherSourced, synthetic] });
+    }
+    // Transition: anything → noAttack (cleared)
+    if (!wasNo && isNo) {
+      console.info(`[OgameX/attack_alert] cleared`);
+      // Remove any synthetic attack-alert events.
+      const cur = store.state.events_incoming ?? [];
+      const filtered = cur.filter((e) => !e.id.startsWith("attack-alert-"));
+      if (filtered.length !== cur.length) {
+        store.setPartial({ events_incoming: filtered });
+      }
+    }
+  }
+  // Initial snapshot + MutationObserver to react to class changes immediately.
+  // Element may not exist at install time (overview not yet rendered) — retry.
+  let mo: MutationObserver | null = null;
+  function installAttackAlertObserver(): void {
+    const el = attackAlertEl();
+    if (!el) return;
+    lastAttackAlertClass = el.className || "";
+    mo = new (win as Window & { MutationObserver: typeof MutationObserver }).MutationObserver(() => checkAttackAlertState());
+    mo.observe(el, { attributes: true, attributeFilter: ["class", "title"] });
+    console.info(`[OgameX/attack_alert] observer installed, initial class="${lastAttackAlertClass}"`);
+  }
+  // Try install now; if element absent, retry every 1s until found.
+  let installTries = 0;
+  const installRetry = setInterval(() => {
+    installTries += 1;
+    if (attackAlertEl()) {
+      installAttackAlertObserver();
+      clearInterval(installRetry);
+    } else if (installTries > 30) {
+      clearInterval(installRetry);
+    }
+  }, 1000);
+  installAttackAlertObserver();
+
   // Cold-start seed — kick off one fetch so the hook starts seeing data.
   setTimeout(() => { void selfFetch(); }, 1500);
 
@@ -326,6 +402,8 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     stop(): void {
       stopped = true;
       clearInterval(watchdogId);
+      clearInterval(installRetry);
+      if (mo) { mo.disconnect(); mo = null; }
       win.document.removeEventListener("visibilitychange", visHandler);
       // Prototype patches intentionally not reverted (best-effort).
     },
