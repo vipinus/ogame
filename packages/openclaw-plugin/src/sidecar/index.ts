@@ -940,6 +940,21 @@ export async function startSidecar(
   });
 
   ws.on("event.emergency", (msg) => {
+    // Always log on receipt — journalctl is the audit trail for natural
+    // attack/spy events (success path was previously silent, making it
+    // impossible to grep history). Failure log already exists below.
+    const data = (msg.data ?? {}) as {
+      event_id?: string;
+      from?: unknown;
+      to?: unknown;
+      arrives_at?: number;
+    };
+    const fromStr = Array.isArray(data.from) ? data.from.join(":") : "?";
+    const toStr = Array.isArray(data.to) ? data.to.join(":") : "?";
+    const arr = data.arrives_at ? new Date(data.arrives_at * 1000).toISOString() : "?";
+    console.info(
+      `[sidecar/emergency] subtype=${msg.subtype} event_id=${data.event_id ?? "?"} from=${fromStr} to=${toStr} arrives_at=${arr}`,
+    );
     if (reporter === null) return;
     // Emergency push throws on failure (reporter contract). Swallow here so
     // a temporarily flaky Discord doesn't crash the relay — operator sees
