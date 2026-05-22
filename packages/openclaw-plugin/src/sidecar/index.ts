@@ -721,23 +721,46 @@ export async function startSidecar(
       debug.recordEvent(m);
       if (m.type === "event.directive_completed") {
         debug.recordComplete(m.directive_id, m.result);
-        // Propagate FAILED acks only — let planner detect "completed" via
-        // state (next tick sees building/research at target). Marking goals
-        // "completed" from ack:success was a bug: ApiExec acks success when
-        // ogame ACCEPTS THE POST, but the goal's true target may need a
-        // prereq sub-directive first, OR multiple level steps. Marking the
-        // root goal completed on first ack lost the user's higher target.
         const goalId = directiveToGoal.get(m.directive_id);
         if (goalId) {
           directiveToGoal.delete(m.directive_id);
           const result = m.result as { success?: boolean; error?: string } | undefined;
           if (result?.success === false) {
             const reason = String(result?.error ?? "ApiExec failed (no reason)").slice(0, 400);
-            goalsStore.updateStatus(goalId, "blocked", reason);
+            // ATOMIC failure → CANCEL (not blocked). Atomic actions (expedition/
+            // colonize/deploy/transport) are one-shot: ApiExec rejection means
+            // the fleet didn't launch — no retry path. Daemon will create a
+            // fresh goal when conditions allow (ships available, slots free).
+            // Without cancel, merger flips goal blocked→active each cooldown
+            // and re-dispatches → ogame anti-bot trip ("服务器无响应").
+            // For BUILD/RESEARCH: blocked is fine (resource shortage recovers).
+            const row = goalsStore.list().find((r) => r.goal.id === goalId);
+            const type = row?.goal.type;
+            if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport") {
+              goalsStore.updateStatus(goalId, "cancelled", reason);
+            } else {
+              goalsStore.updateStatus(goalId, "blocked", reason);
+            }
+          } else if (result?.success === true) {
+            // ATOMIC actions (expedition / colonize / deploy / transport):
+            // ApiExec's success means the fleet launched. Goal is terminal —
+            // mark completed immediately. Without this, expedition goals
+            // accumulate in store ("active" forever), daemon's activeExpInQueue
+            // counter inflates, freeSlots drops to 0, no new exp launches.
+            //
+            // Building/research/build_ships are NOT atomic — ApiExec success
+            // means ogame accepted the POST for ONE level; planner re-runs
+            // next tick and either dispatches the next level or detects
+            // terminal via state ("already at or above target"). Don't auto-
+            // complete those — would lose the higher target.
+            const row = goalsStore.list().find((r) => r.goal.id === goalId);
+            const type = row?.goal.type;
+            if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport") {
+              goalsStore.updateStatus(goalId, "completed");
+            }
+            // build / research / build_ships / lifeform_building → no-op,
+            // planner detects terminal next tick.
           }
-          // success:true → no status change; next merger tick re-plans, and
-          // planner's terminal check ("already at or above target") will
-          // mark completed when actual state catches up.
         }
       }
       for (const h of set) {
