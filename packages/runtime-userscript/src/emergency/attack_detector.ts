@@ -36,6 +36,10 @@ export function startAttackDetector(
     const windowSec = opts.saveWindowMinutes * 60;
     for (const ev of ref.current.events_incoming) {
       if (!ev.hostile) continue;
+      // Spy probes are surfaced via spy_detector → emergency.spy. Without
+      // this gate, attack_detector ALSO fired emergency.attack for them
+      // (operator's sidecar journal showed both subtypes for one evrow-N id).
+      if (ev.type === "spy") continue;
       if (seen.has(ev.id)) continue;
       const remaining = ev.arrives_at - nowSec;
       if (remaining <= 0 || remaining > windowSec) continue;

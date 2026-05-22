@@ -657,11 +657,15 @@ export async function startSidecar(
       // orchestration lives userscript-side; this endpoint is just a read.
       const ev = stateRef.current?.events_incoming ?? [];
       const now = Date.now();
+      const nowSec = Math.floor(now / 1000);
       const hostile = ev.filter((e) => e.hostile === true).map((e) => ({
         id: e.id ?? "",
         type: e.type ?? "attack",
         arrives_at: e.arrives_at ?? 0,
-        eta_in_seconds: Math.max(0, Math.floor(((e.arrives_at ?? 0) - now) / 1000)),
+        // arrives_at is in UNIX SECONDS (from eventContent observer + reporter).
+        // Previously computed eta as (arrives_at - now_MS)/1000 which mixed
+        // units → huge negative → Math.max(0,...) → always 0.
+        eta_in_seconds: Math.max(0, (e.arrives_at ?? 0) - nowSec),
         from: Array.isArray(e.from) ? e.from.join(":") : null,
         to: Array.isArray(e.to) ? e.to.join(":") : null,
         ships_count: typeof e.ships_count === "number" ? e.ships_count : "?",

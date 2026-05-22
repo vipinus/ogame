@@ -431,10 +431,25 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     if (hostileEntries.length > 0) {
       console.warn(`[OgameX/eventcontent] ${hostileEntries.length} hostile row(s) detected: ${hostileEntries.map(e => `${e.type}@${e.from.join(":")}→${e.to.join(":")}`).join(", ")}`);
     }
-    // Merge with existing events_incoming, keeping non-eventrow-sourced entries.
+    // Merge — KEEP existing evrow-* entries whose arrives_at is still in
+    // the future (event hasn't materialized yet). DON'T wipe based on a
+    // single scan: ogame's DOM mutations during countdown ticks can briefly
+    // hide the hostile class while re-rendering, causing false "row gone"
+    // → instant wipe → panel alarm never had hostile in /v1/emergency feed
+    // (operator observed: console logged spy detection but no sound).
     const cur = store.state.events_incoming ?? [];
     const fromOther = cur.filter((e) => !e.id.startsWith("evrow-"));
-    const merged = [...fromOther, ...hostileEntries];
+    const nowSec = Math.floor(Date.now() / 1000);
+    const stillPending = cur.filter((e) =>
+      e.id.startsWith("evrow-") && e.arrives_at > nowSec
+    );
+    // New scan entries replace any existing-same-id; entries we don't see
+    // this scan but still in future remain via stillPending union.
+    const byId = new Map<string, typeof stillPending[number]>();
+    for (const e of stillPending) byId.set(e.id, e);
+    for (const e of hostileEntries) byId.set(e.id, e);
+    const evrowMerged = Array.from(byId.values());
+    const merged = [...fromOther, ...evrowMerged];
     if (JSON.stringify(merged.map((e) => e.id).sort()) !== JSON.stringify(cur.map((e) => e.id).sort())) {
       store.setPartial({ events_incoming: merged });
     }
