@@ -513,7 +513,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.217";
+  const USERSCRIPT_VERSION = "0.0.218";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -784,6 +784,67 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (suspicious) {
         console.warn(`[OgameX/movement] suspicious drop ${prevUsed}→0 (html=${html.length}B). Skipping write — preserving last-known value.`);
         return;
+      }
+      // FOREIGN HOSTILE detection on /movement HTML — operator sees red
+      // enemy fleet row on movement page. ogame v12 marks these with class
+      // "fleetDetails hostile" (or similar). Extract them and inject into
+      // events_incoming so spy_detector/attack_detector fire emergency
+      // events → panel sound alarm.
+      const hostileEntries: Array<{
+        id: string; type: "attack" | "spy" | "unknown";
+        from: readonly [number, number, number];
+        to: readonly [number, number, number];
+        arrives_at: number;
+      }> = [];
+      const hostileBlockRe = /<(?:li|div)[^>]+class="fleetDetails[^"]*hostile[^"]*"[^>]*data-mission-type="(\d+)"[^>]*>([\s\S]*?)(?=<(?:li|div)[^>]+class="fleetDetails|<\/(?:tbody|ul|table)>)/g;
+      for (const m of html.matchAll(hostileBlockRe)) {
+        const mission = parseInt(m[1]!, 10);
+        const inner = m[2] ?? "";
+        const coordsList = Array.from(inner.matchAll(/\[(\d+):(\d+):(\d+)\]/g)).map((cm) =>
+          [parseInt(cm[1]!, 10), parseInt(cm[2]!, 10), parseInt(cm[3]!, 10)] as [number, number, number]
+        );
+        const fIdMatch = m[0].match(/data-fleet-id="(\d+)"/);
+        const idMatch = fIdMatch?.[1] ?? `mv-h-${mission}-${coordsList[0]?.join(":") ?? "?"}-${Date.now()}`;
+        let arrives = 0;
+        const titleMatch = inner.match(/<span\s+class="timer[^"]*"\s+title="(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{1,2}):(\d{1,2})"/i);
+        if (titleMatch) {
+          const [, dd, mm, yyyy, hh, mi, ss] = titleMatch;
+          const SERVER_TZ_OFFSET_MS = 1 * 3600 * 1000;
+          arrives = Math.floor((Date.UTC(parseInt(yyyy!, 10), parseInt(mm!, 10) - 1, parseInt(dd!, 10),
+            parseInt(hh!, 10), parseInt(mi!, 10), parseInt(ss!, 10)) - SERVER_TZ_OFFSET_MS) / 1000);
+        }
+        const type: "attack" | "spy" | "unknown" =
+          mission === 6 ? "spy" :
+          (mission === 1 || mission === 2 || mission === 9 || mission === 10) ? "attack" :
+          "unknown";
+        if (type === "unknown") continue;
+        hostileEntries.push({
+          id: `mv-hostile-${idMatch}`,
+          type,
+          from: (coordsList[0] ?? [0,0,0]) as [number, number, number],
+          to: (coordsList[coordsList.length - 1] ?? [0,0,0]) as [number, number, number],
+          arrives_at: arrives,
+        });
+      }
+      if (hostileEntries.length > 0) {
+        console.warn(`[OgameX/movement-hostile] ${hostileEntries.length} foreign hostile fleet(s) on /movement: ${hostileEntries.map(h => `${h.type}@${h.from.join(":")}→${h.to.join(":")}`).join(", ")}`);
+      }
+      // Merge hostile entries into events_incoming, keeping non-movement-sourced ones.
+      {
+        const curEv = store.state.events_incoming ?? [];
+        const fromOtherSources = curEv.filter((e) => !e.id.startsWith("mv-hostile-"));
+        const merged = [...fromOtherSources, ...hostileEntries.map((h) => ({
+          id: h.id,
+          type: h.type as "attack" | "spy" | "transport" | "deploy" | "return" | "unknown",
+          hostile: true, // foreign incoming attack OR spy — both alarm-worthy
+          from: h.from,
+          to: h.to,
+          arrives_at: h.arrives_at,
+          ships_count: "?" as const,
+        }))];
+        if (JSON.stringify(merged.map(e=>e.id).sort()) !== JSON.stringify(curEv.map(e=>e.id).sort())) {
+          store.setPartial({ events_incoming: merged });
+        }
       }
       // (movement summary silenced — slots are tracked, no repeated log needed)
       // Synthesize fleets_outbound entries from parsedFleets (has origin+dest).

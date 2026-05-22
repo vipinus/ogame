@@ -490,6 +490,91 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
   }, 1000);
   installAttackAlertObserver();
 
+  // ─── #eventContent direct DOM observer ────────────────────────────────
+  // Operator pasted live eventbox HTML. Structure (verified 2026-05-22):
+  //   <tr class="eventFleet" id="eventRow-N" data-mission-type="M"
+  //       data-arrival-time="ts" data-return-flight="false|true">
+  //     <td class="countDown">
+  //       <span class="friendly|hostile|neutral textBeefy">...</span>
+  //     ...
+  //   </tr>
+  // ogame periodically refreshes the rows via getAjaxEventbox() (5s). When a
+  // foreign hostile spy probe (mission=6) or attack (1/2/9/10) appears, the
+  // tr gets data-mission-type=N AND the countDown span gets class="hostile".
+  // The fetchEventBox JSON we hook is only counts (181B) — the actual row
+  // data lives in this DOM. MutationObserver on #eventContent reads truth.
+  let evMo: MutationObserver | null = null;
+  let lastEventSig = "";
+  function scanEventContent(): void {
+    const tbody = win.document.querySelector("#eventContent tbody");
+    if (!tbody) return;
+    const rows = Array.from(tbody.querySelectorAll<HTMLElement>("tr.eventFleet"));
+    const hostileEntries: IncomingEvent[] = [];
+    const seen: string[] = [];
+    for (const tr of rows) {
+      const mt = parseInt(tr.getAttribute("data-mission-type") ?? "0", 10);
+      const evId = tr.getAttribute("id")?.replace(/^eventRow-/, "") ?? "";
+      const cd = tr.querySelector(".countDown span");
+      const cls = (cd?.className ?? "").toLowerCase();
+      const isHostile = /\bhostile\b/.test(cls);
+      seen.push(`${evId}:${mt}:${cls.slice(0, 16)}`);
+      if (!isHostile) continue;
+      // Only flag threat missions (skip ACS defense / transport).
+      const isThreat = mt === 1 || mt === 2 || mt === 9 || mt === 10;
+      const isSpy = mt === 6;
+      if (!isThreat && !isSpy) continue;
+      // Coords: originFleet → originCoords; destFleet → destCoords.
+      const orCoords = tr.querySelector(".coordsOrigin")?.textContent?.trim() ?? "";
+      const dsCoords = tr.querySelector(".destCoords")?.textContent?.trim() ?? "";
+      const parse3 = (s: string): readonly [number, number, number] => {
+        const m = s.match(/\[(\d+):(\d+):(\d+)\]/);
+        return m ? [parseInt(m[1]!, 10), parseInt(m[2]!, 10), parseInt(m[3]!, 10)] as const : [0, 0, 0] as const;
+      };
+      const arr = parseInt(tr.getAttribute("data-arrival-time") ?? "0", 10);
+      hostileEntries.push({
+        id: `evrow-${evId}`,
+        type: isSpy ? "spy" : "attack",
+        hostile: true,
+        from: parse3(orCoords),
+        to: parse3(dsCoords),
+        arrives_at: arr,
+        ships_count: "?",
+      });
+    }
+    const sig = seen.sort().join("|");
+    if (sig === lastEventSig) return;
+    lastEventSig = sig;
+    if (hostileEntries.length > 0) {
+      console.warn(`[OgameX/eventcontent] ${hostileEntries.length} hostile row(s) detected: ${hostileEntries.map(e => `${e.type}@${e.from.join(":")}→${e.to.join(":")}`).join(", ")}`);
+    }
+    // Merge with existing events_incoming, keeping non-eventrow-sourced entries.
+    const cur = store.state.events_incoming ?? [];
+    const fromOther = cur.filter((e) => !e.id.startsWith("evrow-"));
+    const merged = [...fromOther, ...hostileEntries];
+    if (JSON.stringify(merged.map((e) => e.id).sort()) !== JSON.stringify(cur.map((e) => e.id).sort())) {
+      store.setPartial({ events_incoming: merged });
+    }
+  }
+  function installEventContentObserver(): void {
+    const el = win.document.getElementById("eventContent");
+    if (!el) return;
+    evMo = new (win as Window & { MutationObserver: typeof MutationObserver }).MutationObserver(() => scanEventContent());
+    evMo.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "data-mission-type", "data-arrival-time"] });
+    scanEventContent(); // initial pass
+    console.info(`[OgameX/eventcontent] DOM observer installed`);
+  }
+  let evInstallTries = 0;
+  const evInstallRetry = setInterval(() => {
+    evInstallTries += 1;
+    if (win.document.getElementById("eventContent")) {
+      installEventContentObserver();
+      clearInterval(evInstallRetry);
+    } else if (evInstallTries > 30) {
+      clearInterval(evInstallRetry);
+    }
+  }, 1000);
+  installEventContentObserver();
+
   // Cold-start seed — kick off one fetch so the hook starts seeing data.
   setTimeout(() => { void selfFetch(); }, 1500);
 
@@ -498,7 +583,9 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       stopped = true;
       clearInterval(watchdogId);
       clearInterval(installRetry);
+      clearInterval(evInstallRetry);
       if (mo) { mo.disconnect(); mo = null; }
+      if (evMo) { evMo.disconnect(); evMo = null; }
       win.document.removeEventListener("visibilitychange", visHandler);
       // Prototype patches intentionally not reverted (best-effort).
     },
