@@ -25,7 +25,6 @@
 
 const LAST_GAME_HOST_KEY = "OGAMEX_LAST_GAME_HOST";
 const DISABLE_KEY = "OGAMEX_AUTO_LOGIN_DISABLED";
-const ARMED_KEY = "OGAMEX_AUTO_LOGIN_ARMED";
 const SELECTOR_KEY = "OGAMEX_AUTO_LOGIN_SELECTOR";
 const CLICKED_KEY = "OGAMEX_AUTO_LOGIN_CLICKED_AT";
 const COUNT_KEY = "OGAMEX_AUTO_LOGIN_CLICK_COUNT";
@@ -63,18 +62,12 @@ export function maybeAutoLoginFromHub(win: Window): boolean {
     console.info(`[OgameX/auto-login] cooldown active (last click ${ageS}s ago). To force, clear ${CLICKED_KEY}.`);
     return false;
   }
-  // Mode select: ARMED requires explicit operator opt-in + saved selector.
-  let armed = false;
+  // Operator directive: "直接点 last play". Always look for the
+  // "Last Play" button by class/text fallbacks. Override only via custom
+  // selector key if operator sets one explicitly.
   let savedSelector = "";
-  try {
-    armed = win.localStorage.getItem(ARMED_KEY) === "1";
-    savedSelector = win.localStorage.getItem(SELECTOR_KEY) ?? "";
-  } catch { /* */ }
-  if (armed && savedSelector) {
-    runArmedClicker(win, savedSelector);
-  } else {
-    runDiagnostic(win);
-  }
+  try { savedSelector = win.localStorage.getItem(SELECTOR_KEY) ?? ""; } catch { /* */ }
+  runLastPlayClicker(win, savedSelector);
   return true;
 }
 
@@ -113,51 +106,70 @@ function markClicked(win: Window): void {
   } catch { /* */ }
 }
 
-function runDiagnostic(win: Window): void {
-  console.info("[OgameX/auto-login] DIAGNOSTIC mode — will dump hub clickables (NO click). " +
-    "Paste output to maintainer + arm: " +
-    `localStorage.setItem("${SELECTOR_KEY}", "<correct css selector>"); ` +
-    `localStorage.setItem("${ARMED_KEY}", "1");`);
-  const startedAt = Date.now();
-  let dumped = false;
-  const tick = (): void => {
-    if (dumped || Date.now() - startedAt > TIMEOUT_MS) return;
-    const doc = win.document;
-    const clickables = Array.from(doc.querySelectorAll<HTMLElement>("a, button"));
-    // Wait for non-trivial DOM (React renders async).
-    if (clickables.length < 3) {
-      win.setTimeout(tick, POLL_MS);
-      return;
-    }
-    dumped = true;
-    const summary = clickables.slice(0, 50).map((el) => ({
-      tag: el.tagName.toLowerCase(),
-      cls: (el.className ?? "").toString().slice(0, 80),
-      id: el.id || undefined,
-      text: (el.textContent ?? "").trim().slice(0, 60),
-      href: (el as HTMLAnchorElement).href || undefined,
-      visible: isVisible(el),
-    }));
-    console.warn(`[OgameX/auto-login] DOM dump (${clickables.length} clickables, showing first 50):`);
-    console.warn(JSON.stringify(summary, null, 2));
-    // Also expose for operator console queries.
-    (win as Window & { __ogamexHubClickables?: HTMLElement[] }).__ogamexHubClickables = clickables;
-    console.info("[OgameX/auto-login] saved as window.__ogamexHubClickables for hand inspection.");
-  };
-  tick();
+// "Last Play" button selectors — gameforge hub displays a hero "Last Play"
+// CTA that re-enters the most recently played universe. Multiple naming
+// conventions observed across hub versions:
+const LAST_PLAY_SELECTORS = [
+  'button[data-action="lastplay"]',
+  'a[data-action="lastplay"]',
+  '.lastPlay',
+  '.js-last-play',
+  '.js-lobby-last-play',
+  '.js-last-played',
+  '[class*="lastPlay"]',
+  '[class*="last-play"]',
+  '[class*="lastPlayed"]',
+  '[id*="lastPlay"]',
+];
+// Multi-lang text match for "Last Play" / "Last Played" / 上次遊玩 / ...
+const LAST_PLAY_TEXT_RE =
+  /\b(?:last\s*play(?:ed)?|continuer|continuar|forts(?:e|ä)tzen|上次遊玩|上次游玩|最后游玩|最後遊玩|繼續遊戲|继续游戏)\b/i;
+
+function findLastPlayButton(doc: Document): HTMLElement | null {
+  // Strategy 1: known last-play class/data attribute selectors.
+  for (const sel of LAST_PLAY_SELECTORS) {
+    try {
+      const el = doc.querySelector<HTMLElement>(sel);
+      if (el && isVisible(el)) return el;
+    } catch { /* invalid selector — skip */ }
+  }
+  // Strategy 2: text-content match across all clickables.
+  const clickables = Array.from(doc.querySelectorAll<HTMLElement>("a, button, [role='button']"));
+  for (const c of clickables) {
+    const t = (c.textContent ?? "").trim();
+    if (LAST_PLAY_TEXT_RE.test(t) && isVisible(c)) return c;
+  }
+  return null;
 }
 
-function runArmedClicker(win: Window, selector: string): void {
-  console.info(`[OgameX/auto-login] ARMED mode — looking for "${selector}"`);
+function runLastPlayClicker(win: Window, customSelector: string): void {
+  const label = customSelector ? `custom selector "${customSelector}"` : "Last Play button";
+  console.info(`[OgameX/auto-login] looking for ${label}...`);
   const startedAt = Date.now();
   const tick = (): void => {
     if (Date.now() - startedAt > TIMEOUT_MS) {
-      console.warn("[OgameX/auto-login] gave up — selector not found in time");
+      console.warn("[OgameX/auto-login] gave up — Last Play button not found. " +
+        "Run: window.__ogamexHubClickables (saved at boot) to inspect DOM. " +
+        `If your hub uses a different selector, set localStorage["${SELECTOR_KEY}"] to it.`);
+      // Dump clickables on giveup for diagnostic.
+      const clickables = Array.from(win.document.querySelectorAll<HTMLElement>("a, button"));
+      (win as Window & { __ogamexHubClickables?: HTMLElement[] }).__ogamexHubClickables = clickables;
+      console.warn(`[OgameX/auto-login] ${clickables.length} clickables present at giveup time. ` +
+                   "Sample:", JSON.stringify(clickables.slice(0, 15).map((el) => ({
+        tag: el.tagName.toLowerCase(),
+        cls: (el.className ?? "").toString().slice(0, 60),
+        text: (el.textContent ?? "").trim().slice(0, 40),
+        href: (el as HTMLAnchorElement).href || undefined,
+      })), null, 2));
       return;
     }
     let target: HTMLElement | null = null;
-    try { target = win.document.querySelector<HTMLElement>(selector); } catch { /* invalid selector */ }
-    if (target && isVisible(target)) {
+    if (customSelector) {
+      try { target = win.document.querySelector<HTMLElement>(customSelector); } catch { /* */ }
+      if (target && !isVisible(target)) target = null;
+    }
+    if (!target) target = findLastPlayButton(win.document);
+    if (target) {
       console.info(`[OgameX/auto-login] clicking: ${describe(target)}`);
       markClicked(win); // mark BEFORE click
       try { target.click(); } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
