@@ -320,11 +320,14 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     };
   }
 
-  // --- Active self-fetch (FAST PATH) ---
-  // ogame's own JS polls fetchEventBox every 5s. To beat that latency (the
-  // operator pointed out: "网页不刷新时延时大"), we ALSO self-fetch every
-  // 3s independently. The fetch hook intercepts BOTH our own self-fetches
-  // AND ogame's native polls, so detection runs at ~3s effective cadence.
+  // --- Parasitic-only mode ---
+  // 3s active self-fetch (v0.0.211) caused server unresponsiveness: stacked
+  // 20 req/min on top of ogame's own 12 req/min on the SAME URL → WAF/
+  // load issue. Reverted to PARASITIC-ONLY — we ride ogame's native 5s poll.
+  // Detection latency ≤ 5s (acceptable; reference attack-alarm v2.9 same).
+  // Watchdog below still self-fetches if ogame's poll stalls > 10s
+  // (backgrounded tab). MutationObserver on #attack_alert covers DOM-side
+  // signal when ogame updates UI off our hook path.
   let pendingSelfFetch = false;
   async function selfFetch(): Promise<void> {
     if (pendingSelfFetch || stopped) return;
@@ -341,16 +344,8 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     } catch (e) { console.warn("[OgameX/eventbox-hook] selfFetch failed", e); }
     finally { pendingSelfFetch = false; }
   }
-  // Fast active poll: 3s — gives <3s detection latency for triangle/spy
-  // events. Cost: 20 req/min vs ogame's own 12 req/min = ~32 total. Below
-  // ogame WAF tolerance for ajax endpoints.
-  const activeId = setInterval(() => {
-    if (stopped) return;
-    void selfFetch();
-  }, 3000);
-  // Watchdog kept as defensive backup — fires extra self-fetch only if
-  // ogame's own poll has STALLED beyond the gap (tab backgrounded → both
-  // active poll and ogame's poll throttle).
+  // Watchdog only — fires self-fetch when ogame's own poll has stalled
+  // beyond gap (backgrounded tab → ogame throttles its own poll).
   const watchdogId = setInterval(() => {
     if (stopped) return;
     const gap = Date.now() - lastNativeHit;
@@ -451,7 +446,6 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     stop(): void {
       stopped = true;
       clearInterval(watchdogId);
-      clearInterval(activeId);
       clearInterval(installRetry);
       if (mo) { mo.disconnect(); mo = null; }
       win.document.removeEventListener("visibilitychange", visHandler);
