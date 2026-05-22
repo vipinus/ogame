@@ -83,17 +83,11 @@ export async function wireBridge(
   // and the goal_runner serializes execution. The 2s delay gives boot
   // time to populate planets/resources/production via the retry harvest.
   const pushOnce = (): void => {
-    // Before each push, refresh cross-planet ship counts via ogame's empire
-    // endpoint — daemon decisions (e.g. "ships sufficient for expedition?")
-    // depend on accurate ship state. Owner observation: "准备起飞以前没有
-    // 通过 api 拿新数据". Empire endpoint is single GET, doesn't touch
-    // session-cp cookie. fire-and-forget; if it lands AFTER this push,
-    // the next push has the data. Daemon's expeditionTick runs every 10s
-    // and bridge's pushInterval is 5s, so within 2 pushes the data is fresh.
-    const pollEmpire = (window as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire;
-    if (typeof pollEmpire === "function") {
-      void pollEmpire().catch(() => { /* ignore */ });
-    }
+    // Empire fetch DECOUPLED from push (operator: "ogame 的改成事件触发").
+    // Calling pollEmpire here meant every 5s push triggered an empire fetch
+    // → 12 req/min of /empire even when nothing changed. Now empire is
+    // event-driven from ApiExec (pre-dispatch + post-success) + a single
+    // boot seed. Pushes carry whatever state currently is in the store.
     try {
       client.send({
         type: "state.snapshot",

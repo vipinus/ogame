@@ -513,7 +513,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.212";
+  const USERSCRIPT_VERSION = "0.0.213";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1138,8 +1138,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       void e;
     }
   }
+  // Boot seed + 30s safety net (was 5s — 12 req/min). 30s = 2/min, light.
+  // ogame's own client polls /fetchResources every 5s for its resource bar;
+  // we COULD parasite via eventbox_hook (isFetchResourcesURL filter wired)
+  // — but the parser is tightly coupled to the fetch here. Lighter to just
+  // slow our own poll than refactor parser into a callable. Operator
+  // directive "改成事件触发": event-driven via DOM mutation observers
+  // already updates resources when user navigates; this 30s is just for
+  // background-tab cases where mutations don't fire.
   setTimeout(() => { void pollFetchResources(); }, 1500);
-  setInterval(() => { if (!userBusy()) void pollFetchResources(); }, 5000);
+  setInterval(() => { if (!userBusy()) void pollFetchResources(); }, 30_000);
 
   // Expedition mail poller — DISABLED per operator. Function kept for
   // re-enable if needed; the schedule calls below are commented out.
@@ -1650,10 +1658,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
     // (lf-prereq discovery-complete silenced — one-shot boot diagnostic, done)
   }, 15_000);
-  setInterval(() => {
-    if (userBusy()) return;
-    void refreshOnePage();
-  }, 10_000);
+  // refreshOnePage periodic timer REMOVED (operator: "ogame 的改成事件触发").
+  // The function is still called from DOM mutation handler when ogame's
+  // ajaxNavigation actually loads a research/supplies/etc page — which
+  // means data refreshes when it CAN change (operator visits page) rather
+  // than 6 req/min unconditionally. Was 6/min, now event-driven (≈0 idle).
 
   // 7. Persist on every state.updated, debounced loosely
   let persistTimer: ReturnType<typeof setTimeout> | null = null;

@@ -251,6 +251,13 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     return url.includes("eventList") || url.includes("fetchEventBox") ||
            url.includes("component=eventList") || url.includes("checkEvents");
   }
+  // ogame's resource bar polls /game/index.php?page=fetchResources&ajax=1
+  // every ~5s. Parasitize that — fire the boot.ts pollFetchResources callback
+  // (exposed on window) with the same response data instead of duplicating
+  // the GET ourselves.
+  function isFetchResourcesURL(url: string): boolean {
+    return url.includes("page=fetchResources");
+  }
   // DIAGNOSTIC URL CAPTURE — enabled when localStorage["OGAMEX_LOG_XHR"]="1".
   // Logs EVERY /game/index.php XHR/fetch URL so operator can identify which
   // endpoint flashes the spy-alert triangle (0%-detect probes don't hit
@@ -290,6 +297,13 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
           applyResponse(this.responseText);
         } catch (e) { console.warn("[OgameX/eventbox-hook] xhr inspect error", e); }
       });
+    } else if (isFetchResourcesURL(url)) {
+      this.addEventListener("load", () => {
+        try {
+          const cb = (win as Window & { __ogamexApplyFetchResources?: (txt: string) => void }).__ogamexApplyFetchResources;
+          if (typeof cb === "function") cb(this.responseText);
+        } catch (e) { console.warn("[OgameX/eventbox-hook] fetchResources inspect error", e); }
+      });
     }
     return origSend.apply(this, args as Parameters<typeof origSend>);
   } as typeof proto.send;
@@ -313,6 +327,12 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
           clone.text().then((t) => {
             lastNativeHit = Date.now();
             applyResponse(t);
+          }).catch(() => { /* */ });
+        } else if (isFetchResourcesURL(url)) {
+          const clone = res.clone();
+          clone.text().then((t) => {
+            const cb = (win as Window & { __ogamexApplyFetchResources?: (txt: string) => void }).__ogamexApplyFetchResources;
+            if (typeof cb === "function") cb(t);
           }).catch(() => { /* */ });
         }
       } catch { /* */ }
