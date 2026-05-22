@@ -512,7 +512,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.200";
+  const USERSCRIPT_VERSION = "0.0.201";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -841,13 +841,25 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const c = (p as { coords?: readonly number[] }).coords;
         if (c && c.length === 3) ownCoordsSet.add(`${c[0]}:${c[1]}:${c[2]}`);
       }
+      // Mission codes per ogame v12:
+      //   1 = 普通攻击 (regular attack)
+      //   2 = 联合攻击 ACS (allied combat attack)
+      //   6 = 间谍 (spy probe — including 0%-detection probes that NEVER
+      //       show in #eventContent DOM)
+      // Other codes (transport/deploy/return) are NOT danger types — they
+      // surface in events_incoming with hostile=false so the panel can show
+      // them informationally without triggering alarm.
       const MISSION_TYPE_MAP: Record<number, "attack" | "spy" | "transport" | "deploy" | "return" | "unknown"> = {
         1: "attack", 2: "attack", 6: "spy", 3: "transport", 4: "deploy",
         5: "transport", 7: "transport", 8: "transport", 15: "return",
       };
+      // INBOUND filter: origin coords NOT in MY planets/moons set.
+      // Operator rule: "我侦察和攻击别人不要报警" — when I send out spy or
+      // attack fleets, origin = my planet → excluded here → alarm cannot fire.
+      // Same logic protects my own deploys/transports between my colonies.
       const incoming = fleets.filter((f) => {
         const orig = `${f.origin[0]}:${f.origin[1]}:${f.origin[2]}`;
-        return !ownCoordsSet.has(orig); // origin NOT mine → foreign inbound
+        return !ownCoordsSet.has(orig);
       });
       const events = incoming.map((f) => {
         const type = MISSION_TYPE_MAP[f.mission] ?? "unknown";
