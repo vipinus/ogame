@@ -494,7 +494,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.190";
+  const USERSCRIPT_VERSION = "0.0.191";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1471,7 +1471,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       }
       if (updated > 0) {
         store.setPartial({ planets: patchPlanets });
+        // Expose to BOTH sandboxed window AND page's real window (unsafeWindow)
+        // so devtools console eval can read/write the store directly.
+        // Tampermonkey @grant GM_* enables sandbox; without unsafeWindow
+        // bridge the page-side `__ogamexStore` reference would be undefined.
         (env.win as Window & { __ogamexStore?: typeof store }).__ogamexStore = store;
+        const pw = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & { __ogamexStore?: typeof store };
+        pw.__ogamexStore = store;
       }
     } catch (e) {
       console.warn(`[OgameX/empire] fetch failed:`, e);

@@ -5,11 +5,12 @@ import commonjs from "@rollup/plugin-commonjs";
 const banner = `// ==UserScript==
 // @name         OgameX Runtime
 // @namespace    https://github.com/ddxs/ogamex
-// @version      0.0.190
+// @version      0.0.191
 // @match        *://*.ogame.org/*
 // @match        *://*.ogame.gameforge.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        unsafeWindow
 // @run-at       document-end
 // @connect      127.0.0.1
 // @connect      192.168.2.100
