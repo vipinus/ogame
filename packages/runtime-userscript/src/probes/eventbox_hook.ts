@@ -74,123 +74,24 @@ function parseCoordsStr(s: unknown): readonly [number, number, number] | null {
   return [parseInt(m[1]!, 10), parseInt(m[2]!, 10), parseInt(m[3]!, 10)] as const;
 }
 
-function parseEventBoxResponse(text: string, ownPlayerId: number | null): IncomingEvent[] {
-  if (!text || typeof text !== "string") return [];
-  let data: { events?: OgameEventLike[]; event?: OgameEventLike[]; html?: string; eventBox?: string; eventbox?: string; content?: string; hostile?: number | string; neutral?: number | string; friendly?: number | string; [k: string]: unknown } | null = null;
-  try { data = JSON.parse(text); } catch { /* HTML path */ }
-  const out: IncomingEvent[] = [];
-
-  // PATH 0: top-level hostile/neutral counts — these drive ogame's own
-  // triangle-alert flashing. When present, they reflect the actual UI
-  // signal independent of per-event details. If hostile > 0 we ALWAYS
-  // raise an alert even if events[] is empty (which can happen for 0%-
-  // detection spy probes whose detection is post-arrival).
-  if (data && (data.hostile !== undefined || data.neutral !== undefined)) {
-    const hostileN = parseInt(String(data.hostile ?? 0), 10) || 0;
-    const neutralN = parseInt(String(data.neutral ?? 0), 10) || 0;
-    if (hostileN > 0) {
-      out.push({
-        id: `evbox-counts-hostile`,
-        type: "attack",
-        hostile: true,
-        from: [0, 0, 0] as const,
-        to: [0, 0, 0] as const,
-        arrives_at: Math.floor(Date.now() / 1000),
-        ships_count: "?",
-      });
-    }
-    if (neutralN > 0) {
-      // Neutrals are typically incoming fleets we can't classify yet
-      // (e.g. unidentified probes). Surface as spy entry — no alarm,
-      // but visible in events_incoming + sidecar /v1/emergency feed.
-      out.push({
-        id: `evbox-counts-neutral`,
-        type: "spy",
-        hostile: false,
-        from: [0, 0, 0] as const,
-        to: [0, 0, 0] as const,
-        arrives_at: Math.floor(Date.now() / 1000),
-        ships_count: "?",
-      });
-    }
-  }
-
-  // PATH 1: structured events array
-  let events: OgameEventLike[] | null = null;
-  if (data) {
-    if (Array.isArray(data.events)) events = data.events;
-    else if (Array.isArray(data.event)) events = data.event;
-    else if (data.events && typeof data.events === "object" && Array.isArray((data.events as { list?: OgameEventLike[] }).list)) {
-      events = (data.events as { list: OgameEventLike[] }).list;
-    }
-  }
-  if (events) {
-    for (const ev of events) {
-      const m = parseInt(String(ev.mission ?? ev.missionType ?? ev.type ?? 0), 10);
-      if (!Number.isFinite(m)) continue;
-      // Skip own returning fleets.
-      if (ev.return || ev.isReturn || ev.returnFleet) continue;
-      // Skip own fleets by playerId.
-      const ownerId = parseInt(String(ev.playerId ?? ev.ownerId ?? ev.owner ?? ev.fromPlayerId ?? 0), 10);
-      if (ownPlayerId && ownerId === ownPlayerId) continue;
-      // Skip explicitly friendly/neutral/own.
-      if (ev.friendly === true || ev.isFriendly === true || ev.own === true) continue;
-      const evType = String(ev.type || ev.relation || ev.kind || "").toLowerCase();
-      if (evType === "friendly" || evType === "neutral" || evType === "own") continue;
-      // Include only threats + spy.
-      const isThreat = THREAT_MISSIONS.has(m);
-      const isSpy = m === SPY_MISSION;
-      if (!isThreat && !isSpy) continue;
-      const from = parseCoordsStr(ev.coordsOrigin ?? ev.origin) ?? [0, 0, 0] as const;
-      const to = parseCoordsStr(ev.coordsDest ?? ev.dest ?? ev.to) ?? [0, 0, 0] as const;
-      const arrives = parseInt(String(ev.arrivalTime ?? ev.arrival_time ?? ev.arrives_at ?? 0), 10);
-      const id = String(ev.id ?? `evbox-${m}-${arrives}-${from.join(":")}`);
-      out.push({
-        id,
-        type: MISSION_TYPE_MAP[m] ?? "unknown",
-        hostile: isThreat,  // spy → false (no alarm; per reference design)
-        from, to,
-        arrives_at: arrives,
-        ships_count: "?",
-      });
-    }
-  }
-
-  // PATH 2: HTML payload — same parser shape as DOM extractor.
-  const html = (data && (data.html || data.eventBox || data.eventbox || data.content)) || text;
-  if (typeof html === "string" && out.length === 0) {
-    const rowRe = /<(?:li|tr|div)\b[^>]*\bdata-mission-type=["']?(\d+)["']?[^>]*>/gi;
-    let m: RegExpExecArray | null;
-    while ((m = rowRe.exec(html)) !== null) {
-      const mt = parseInt(m[1]!, 10);
-      const isThreat = THREAT_MISSIONS.has(mt);
-      const isSpy = mt === SPY_MISSION;
-      if (!isThreat && !isSpy) continue;
-      const tag = m[0];
-      if (/\b(?:return|backFleet|countDown)\b/i.test(tag)) continue;
-      // For threats, REQUIRE explicit "hostile" class — neutrals/friendlies skip.
-      if (isThreat && !/\bhostile\b/i.test(tag)) continue;
-      // Pull data-event-id + data-arrival-time + coord attrs if present.
-      const idMatch = tag.match(/data-event-id=["']?(\d+)["']?/);
-      const arrMatch = tag.match(/data-arrival-time=["']?(\d+)["']?/);
-      const fromMatch = tag.match(/data-coords-origin=["']?([\d:]+)["']?/);
-      const toMatch = tag.match(/data-coords-dest=["']?([\d:]+)["']?/);
-      const from = parseCoordsStr(fromMatch?.[1]) ?? [0, 0, 0] as const;
-      const to = parseCoordsStr(toMatch?.[1]) ?? [0, 0, 0] as const;
-      const arrives = arrMatch ? parseInt(arrMatch[1]!, 10) : 0;
-      out.push({
-        id: idMatch?.[1] ?? `htmlrow-${mt}-${arrives}-${from.join(":")}`,
-        type: MISSION_TYPE_MAP[mt] ?? "unknown",
-        hostile: isThreat,
-        from, to,
-        arrives_at: arrives,
-        ships_count: "?",
-      });
-    }
-  }
-
-  return out;
-}
+// parseEventBoxResponse REMOVED (v0.0.219).
+//
+// Previous strategy (v0.0.211-218): parse fetchEventBox JSON for hostile/
+// neutral/friendly counts + events array + HTML rows. Outcomes:
+//   - PATH 0 (counts → synthetic event): faulty signal — counts only ≠
+//     row-level hostile, fired false positives, conflicting IDs with
+//     evrow-* sourced from real DOM observer.
+//   - PATH 1 (events array): never populated by ogame v12 fetchEventBox.
+//   - PATH 2 (HTML regex): duplicated #eventContent DOM observer (v0.0.218)
+//     which reads truth directly.
+//
+// All hostile/spy detection now goes through:
+//   1. #eventContent MutationObserver (boot.ts → eventbox_hook installer)
+//   2. #attack_alert MutationObserver (defensive fallback)
+//
+// The XHR/fetch hook still tracks lastNativeHit (for the watchdog) and
+// surface checkOwnFleetCountDelta (friendly count change → /movement
+// refresh trigger). No event injection from JSON anymore.
 
 export interface EventBoxHookHandle {
   /** Stop intervals + restore XHR/fetch. Best-effort — hook callbacks remain
@@ -256,26 +157,9 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
 
   function applyResponse(text: string): void {
     if (stopped) return;
-    // Side-channel: detect own-fleet count change to keep fleets_outbound fresh.
+    // Only side-channel kept: friendly count change → trigger /movement refresh.
+    // Event detection itself moved to #eventContent DOM observer.
     checkOwnFleetCountDelta(text);
-    const events = parseEventBoxResponse(text, ownPlayerId());
-    // Only update if we recognized something (avoid wiping live events_incoming
-    // with empty on every non-eventList response that slipped through filter).
-    if (events.length === 0) return;
-    const sig = events.map((e) => `${e.id}:${e.arrives_at}:${e.hostile ? "H" : "S"}`).sort().join(",");
-    if (sig === lastSig) return;
-    lastSig = sig;
-    // MERGE with existing — keep entries from other sources (e.g. mail-poller)
-    // by id prefix. Hook-sourced events have stable ogame IDs; mail-poller (when
-    // added) should prefix with "mail-".
-    const cur = store.state.events_incoming ?? [];
-    const otherSourced = cur.filter((e) => e.id.startsWith("mail-") || e.id.startsWith("drill-"));
-    store.setPartial({ events_incoming: [...otherSourced, ...events] });
-    const hostileCount = events.filter((e) => e.hostile).length;
-    const spyCount = events.filter((e) => e.type === "spy").length;
-    if (hostileCount > 0 || spyCount > 0) {
-      console.warn(`[OgameX/eventbox-hook] ${events.length} events: hostile=${hostileCount} spy=${spyCount}`);
-    }
   }
 
   function isEventBoxURL(url: string): boolean {
