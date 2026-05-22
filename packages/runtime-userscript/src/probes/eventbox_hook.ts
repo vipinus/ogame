@@ -229,11 +229,19 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
   // When it changes, force harvestSlotsFromMovement → rebuild
   // state.fleets_outbound. Catches fleet-return events that slip past the
   // 10s harvest interval.
+  //
+  // CRITICAL: only react when the JSON actually contains a `friendly` field
+  // (fetchEventBox shape). Other URL-matched endpoints (checkEvents) return
+  // different shapes without `friendly` → treating undefined as 0 caused
+  // 0↔6 flapping that hammered /movement.
   let lastOwnFleetCount = -1;
   function checkOwnFleetCountDelta(text: string): void {
     try {
       const j = JSON.parse(text) as { friendly?: number | string };
-      const n = parseInt(String(j.friendly ?? 0), 10);
+      // Skip responses that lack the field — checkEvents returns minimal
+      // payload (just newAjaxToken), should not feed our delta detector.
+      if (j === null || typeof j !== "object" || j.friendly === undefined) return;
+      const n = parseInt(String(j.friendly), 10);
       if (!Number.isFinite(n)) return;
       if (lastOwnFleetCount === -1) { lastOwnFleetCount = n; return; }
       if (n !== lastOwnFleetCount) {
