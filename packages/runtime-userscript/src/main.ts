@@ -85,7 +85,7 @@ if (_inIframe) {
 
     // Wire bridge if a token is configured (GM_getValue OR window.localStorage)
     const bridgeUrl = readConfig("OGAMEX_BRIDGE_URL", DEFAULT_BRIDGE_URL);
-    const bridgeToken = readConfig("OGAMEX_BRIDGE_TOKEN", "");
+    const bridgeToken = readConfig("OGAMEX_BRIDGE_TOKEN", "smoke-test-token");
     let wired: Awaited<ReturnType<typeof wireBridge>> | null = null;
     if (bridgeToken) {
       try {

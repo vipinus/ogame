@@ -495,7 +495,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.170";
+  const USERSCRIPT_VERSION = "0.0.180";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   console.log(`[OgameX] meta probes: speed=${ogame_meta.universe_speed} fleet_p=${metaSpeedFleetP} fleet_w=${metaSpeedFleetW} fleet_h=${metaSpeedFleetH}`);
   const _prod = extractProduction(env.doc);
@@ -1292,42 +1292,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (Object.keys(patch).length > 0) store.setPartial(patch);
       }
 
-      // 1.5) Ship counts — when fetching shipyard/fleetdispatch page, parse
-      // li.technology[data-technology=20x] (ship IDs 202..219) to get real
-      // ship inventory for the planet we just fetched (cp=planetId). Without
-      // this, ships are only extracted at boot (3 fixed timers) and stay
-      // stale forever — daemon sees sc=0 even when ogame has 80.
-      if (page === "shipyard" || page === "fleetdispatch") {
-        const ships: Record<string, number> = {};
-        const shipLis = parsedDoc.querySelectorAll<HTMLElement>('li.technology[data-technology]');
-        for (const li of shipLis) {
-          const tidStr = li.getAttribute("data-technology") ?? "";
-          const tid = parseInt(tidStr, 10);
-          if (!tid || tid < 200 || tid >= 300) continue; // ship range only
-          const name = TECH_ID_TO_NAME[tidStr];
-          if (!name) continue;
-          // Ship counts live in `.amount` (input value) or class="amount".
-          const amountEl = li.querySelector<HTMLInputElement>('input.amount, .amount, .level');
-          let v = 0;
-          if (amountEl && (amountEl as HTMLInputElement).value) {
-            v = parseInt((amountEl as HTMLInputElement).value, 10) || 0;
-          } else if (amountEl) {
-            v = parseInt((amountEl.textContent ?? "").replace(/[^\d]/g, ""), 10) || 0;
-          }
-          if (v >= 0) ships[name] = v;
-        }
-        const cur2 = store.state;
-        const targetP = planetId ? cur2.planets[planetId] : undefined;
-        if (targetP && planetId && Object.keys(ships).length > 0) {
-          store.setPartial({
-            planets: {
-              ...cur2.planets,
-              [planetId]: { ...targetP, ships: { ...(targetP.ships ?? {}), ...ships } },
-            },
-          });
-          console.log(`[OgameX/refresh] ships from ${page} for ${planetId}: ${JSON.stringify(ships)}`);
-        }
-      }
+      // 1.5) DISABLED — was parsing li.technology[data-technology=20X] from
+      // shipyard/fleetdispatch HTML using `.amount, .level` selectors. But
+      // those selectors hit WRONG elements (build-queue input, or level=1
+      // tooltip), overwriting the CORRECT ship counts written by pollEmpire.
+      //
+      // Symptom: empire dumped lc=1500 for [2:279:8], but sidecar /state
+      // showed lc=1. The refresh path overwrote 1500 with garbage 1.
+      //
+      // Empire endpoint is the single source of truth for ship inventory.
+      // If shipyard/fleetdispatch DOM extraction is ever needed again, use
+      // [data-amount="N"] attribute, NOT .amount/.level innerText.
 
       // 2) Active queue from this page (research_q / build_q / shipyard_q).
       //    Looking for li.technology[data-status="active"].
@@ -1452,23 +1427,60 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const r = await env.win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
       if (!r.ok) return;
       const html = await r.text();
-      // ogame embeds the empire data as JS literal: `var planets = [{...},{...}];`
-      // OR returns rendered HTML with data-attributes. Try JS literal first.
-      const m = html.match(/var\s+planets\s*=\s*(\[[\s\S]*?\]);/);
-      if (!m) {
-        console.warn(`[OgameX/empire] no 'var planets' literal found in response (${html.length}B)`);
+      // ogame v12 empire format candidates — try until one parses.
+      let data: Array<Record<string, unknown>> | null = null;
+      let usedPattern = "";
+      const tryPatterns: Array<[string, RegExp]> = [
+        ["A:var planets",     /var\s+planets\s*=\s*(\[[\s\S]*?\]);/],
+        ["B:var planetsData", /var\s+planetsData\s*=\s*(\[[\s\S]*?\]);/],
+        ["C:Empire planets",  /Empire\.[\w]*planet[\w]*\s*=\s*(\[[\s\S]*?\]);/],
+        ["D:data-planets",    /data-planets\s*=\s*"([^"]+)"/],
+        ["E:planets json",    /"planets"\s*:\s*(\[[\s\S]*?\}\s*\])/],
+      ];
+      for (const [name, re] of tryPatterns) {
+        const m = html.match(re);
+        if (!m) continue;
+        try {
+          let raw = m[1]!;
+          if (name.startsWith("D")) raw = raw.replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            data = parsed;
+            usedPattern = name;
+            break;
+          }
+        } catch { /* try next */ }
+      }
+      if (!data) {
+        // Dump 'planet' context for operator to teach the real format.
+        console.warn(`[OgameX/empire] all 5 parse patterns failed (${html.length}B). Dumping 'planet' contexts:`);
+        let pos = 0;
+        for (let i = 0; i < 3; i++) {
+          const idx = html.indexOf("planet", pos);
+          if (idx < 0) break;
+          console.warn(`  @${idx}:`, html.slice(Math.max(0, idx - 40), idx + 250));
+          pos = idx + 1;
+        }
         return;
       }
-      let data: Array<Record<string, unknown>>;
-      try { data = JSON.parse(m[1]!); } catch (e) { console.warn(`[OgameX/empire] parse JSON failed:`, e); return; }
+      console.info(`[OgameX/empire] parsed via pattern ${usedPattern}, ${data.length} planets`);
       const cur = store.state;
       const patchPlanets: Record<string, typeof cur.planets[string]> = { ...cur.planets };
       let updated = 0;
+      // DUMP ALL 9 planets' ship counts so operator can verify against ogame UI.
+      console.warn(`[OgameX/empire/all-planets-dump] ${data.length} planets, ship counts per pid:`);
+      for (const planet of data) {
+        const pid = String(planet["id"] ?? "");
+        const name = String((planet as Record<string, unknown>)["name"] ?? "");
+        const coords = (planet as Record<string, unknown>)["coordinates"];
+        const get = (k: string): unknown => (planet as Record<string, unknown>)[k];
+        console.warn(`  pid=${pid} name=${name} coords=${JSON.stringify(coords)} | sc=${get("202")} lc=${get("203")} pr=${get("210")} ds=${get("213")} ex=${get("219")} bs=${get("207")} bc=${get("215")} hf=${get("205")} cr=${get("206")}`);
+      }
       for (const planet of data) {
         const pid = String(planet["id"] ?? "");
         if (!pid || !patchPlanets[pid]) continue;
         const ships: Record<string, number> = {};
-        // ogame empire JSON has ship counts keyed by numeric tech id (202, 203, ...).
+        // Path 1: flat numeric keys at top level (planet["203"] = N)
         for (const [key, val] of Object.entries(planet)) {
           const tid = parseInt(key, 10);
           if (!tid || tid < 200 || tid >= 300) continue;
@@ -1477,13 +1489,36 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           const n = typeof val === "number" ? val : parseInt(String(val), 10);
           if (Number.isFinite(n) && n >= 0) ships[name] = n;
         }
+        // Path 2: nested under "ships" sub-object — newer ogame v12 layout
+        const nested = (planet as Record<string, unknown>)["ships"];
+        if (nested && typeof nested === "object") {
+          for (const [key, val] of Object.entries(nested as Record<string, unknown>)) {
+            const tid = parseInt(key, 10);
+            if (!tid || tid < 200 || tid >= 300) continue;
+            const name = TECH_ID_TO_NAME[String(tid)];
+            if (!name) continue;
+            const n = typeof val === "number" ? val : parseInt(String(val), 10);
+            if (Number.isFinite(n) && n >= 0) ships[name] = n;
+          }
+        }
         if (Object.keys(ships).length > 0) {
+          // Dump WHAT we're writing for one planet — debug "lc=1 vs 1500" mystery.
+          if (updated === 0) {
+            console.warn(`[OgameX/empire/write] writing for pid=${pid}: ships=${JSON.stringify(ships)}`);
+            console.warn(`  pre-merge existing.ships=${JSON.stringify(patchPlanets[pid]?.ships ?? {})}`);
+          }
           patchPlanets[pid] = { ...patchPlanets[pid], ships: { ...patchPlanets[pid].ships, ...ships } } as typeof patchPlanets[string];
+          if (updated === 0) {
+            console.warn(`  post-merge ships=${JSON.stringify(patchPlanets[pid].ships)}`);
+          }
           updated += 1;
         }
       }
       if (updated > 0) {
         store.setPartial({ planets: patchPlanets });
+        // Read back to verify.
+        const verifyPlanet = store.state.planets[String(data[0]?.["id"] ?? "")];
+        console.warn(`[OgameX/empire/verify] after setPartial, planet[0].ships=${JSON.stringify(verifyPlanet?.ships ?? {})}`);
         console.log(`[OgameX/empire] updated ships for ${updated} planet(s)`);
       } else {
         console.log(`[OgameX/empire] response parsed but no ship data extracted (${data.length} planets in response)`);
@@ -1516,22 +1551,92 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     try {
       const url = `/game/index.php?page=ingame&component=fleetdispatch&cp=${pid}`;
       const r = await env.win.fetch(url, { credentials: "same-origin" });
-      if (!r.ok) return store.state.planets[pid]?.ships ?? {};
+      if (!r.ok) {
+        console.warn(`[OgameX/fetchShips] fd HTTP ${r.status} for ${pid}`);
+        return store.state.planets[pid]?.ships ?? {};
+      }
       const html = await r.text();
       const ships: Record<string, number> = {};
-      // ogame v12 ship inputs: <li data-technology="2XX"...> + <input data-max-amount="N" name="am2XX">
-      const liMatches = html.matchAll(/<li[^>]*data-technology="(\d+)"[\s\S]*?data-max-amount="(\d+)"/g);
-      for (const m of liMatches) {
-        const tid = String(m[1] ?? "");
-        const max = parseInt(m[2] ?? "0", 10);
+      // Multi-pattern parse — ogame v12 ship HTML varies. Try each:
+      // A: name="am2XX" ... data-max-amount="N"
+      // B: data-max-amount="N" ... name="am2XX" (attribute order reversed)
+      // C: data-amount="N" data-technology="2XX" (span/div variant)
+      const patternA = /name="am(\d+)"[^>]*data-max-amount="(\d+)"/g;
+      for (const m of html.matchAll(patternA)) {
+        const tid = String(m[1] ?? ""); const max = parseInt(m[2] ?? "0", 10);
         const name = TECH_ID_TO_NAME[tid];
-        if (name) ships[name] = max;
+        if (name && tid.startsWith("2")) ships[name] = max;
       }
-      // Mirror hangar truth into store for any concurrent reader.
+      if (Object.keys(ships).length === 0) {
+        const patternB = /data-max-amount="(\d+)"[^>]*name="am(\d+)"/g;
+        for (const m of html.matchAll(patternB)) {
+          const max = parseInt(m[1] ?? "0", 10); const tid = String(m[2] ?? "");
+          const name = TECH_ID_TO_NAME[tid];
+          if (name && tid.startsWith("2")) ships[name] = max;
+        }
+      }
+      if (Object.keys(ships).length === 0) {
+        const patternC = /data-amount="(\d+)"[^>]*data-technology="(2\d+)"/g;
+        for (const m of html.matchAll(patternC)) {
+          const max = parseInt(m[1] ?? "0", 10); const tid = String(m[2] ?? "");
+          const name = TECH_ID_TO_NAME[tid];
+          if (name) ships[name] = max;
+        }
+      }
+      // Last resort: parse the lifeform-style amount spans, e.g.
+      //   <span class="amount" data-value="N" ...> within technology2XX
+      if (Object.keys(ships).length === 0) {
+        const patternD = /technology[^"]*?(2\d{2})[^>]*>[\s\S]{0,500}?data-value="(\d+)"/g;
+        for (const m of html.matchAll(patternD)) {
+          const tid = String(m[1] ?? ""); const max = parseInt(m[2] ?? "0", 10);
+          const name = TECH_ID_TO_NAME[tid];
+          if (name) ships[name] = max;
+        }
+      }
+      // If empty parse — disambiguate:
+      //   - Full ogame page (>10KB) with NO am2XX strings anywhere = planet
+      //     truly has 0 ships. Write zeros to store (override stale empire
+      //     data) so daemon stops queuing. Return zeros so preflight aborts.
+      //   - Small response or fetch failed = unknown, fall back to store.
+      if (Object.keys(ships).length === 0) {
+        // CRITICAL: verify fdHtml is actually for the requested planet.
+        // ogame's session-cp cookie controls which planet's data renders.
+        // GET /...?cp=PID may or may not switch session — depends on whether
+        // ogame treats cp= as session-switch (varies by build).
+        // If returned page is for a DIFFERENT planet, we can't trust 0
+        // ships found = "hangar truly empty". Fall back to store.
+        const planetMetaMatch = html.match(/<meta\s+name="ogame-planet-id"\s+content="(\d+)"/);
+        const returnedPlanetId = planetMetaMatch?.[1];
+        const planetMatches = returnedPlanetId === pid;
+        const isFullPage = html.length > 10000;
+        const hasAmAny = /\bam20\d\b|\bam21\d\b|\bam22\d\b/.test(html);
+        if (!planetMatches) {
+          console.warn(`[OgameX/fetchShips] ${pid}: fdHtml returned for DIFFERENT planet (got ${returnedPlanetId}). Session-cp didn't switch. Falling back to store.`);
+          return store.state.planets[pid]?.ships ?? {};
+        }
+        if (isFullPage && !hasAmAny) {
+          // Planet IDs match AND no ship inputs anywhere = truly empty hangar.
+          const zeros: Record<string, number> = {};
+          for (const [name, tid] of Object.entries(TECH_ID_BY_NAME)) {
+            if (String(tid).startsWith("2")) zeros[name] = 0;
+          }
+          const cur = store.state;
+          if (cur.planets[pid]) {
+            const p = cur.planets[pid];
+            store.setPartial({ planets: { ...cur.planets, [pid]: { ...p, ships: { ...p.ships, ...zeros } } } });
+          }
+          console.warn(`[OgameX/fetchShips] ${pid}: hangar EMPTY (correct planet, no am2XX in ${html.length}B) — wrote zeros, preflight will abort`);
+          return zeros;
+        }
+        console.warn(`[OgameX/fetchShips] PARSE failed for ${pid} (${html.length}B); planet matched but no inputs parsed. Falling back to store.`);
+        return store.state.planets[pid]?.ships ?? {};
+      }
+      console.info(`[OgameX/fetchShips] ${pid}: ${JSON.stringify(ships)}`);
+      // Mirror hangar truth into store.
       const cur = store.state;
-      if (cur.planets[pid] && Object.keys(ships).length > 0) {
+      if (cur.planets[pid]) {
         const p = cur.planets[pid];
-        store.update({ planets: { ...cur.planets, [pid]: { ...p, ships: { ...p.ships, ...ships } } } });
+        store.setPartial({ planets: { ...cur.planets, [pid]: { ...p, ships: { ...p.ships, ...ships } } } });
       }
       return ships;
     } catch (e) {
