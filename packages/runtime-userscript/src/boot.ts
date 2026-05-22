@@ -494,7 +494,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.191";
+  const USERSCRIPT_VERSION = "0.0.192";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -918,7 +918,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const txt = slotsEl.textContent ?? "";
       // Look for two "N/M" pairs in order.
       const pairs = Array.from(txt.matchAll(/(\d+)\s*\/\s*(\d+)/g)).map((m) => [parseInt(m[1]!, 10), parseInt(m[2]!, 10)] as const);
-      console.info(`[OgameX/slots] container "${slotsEl.id || slotsEl.className}" pairs=${JSON.stringify(pairs)} text="${txt.replace(/\s+/g, " ").slice(0, 100)}"`);
+      // (slots-container diagnostic silenced — extractor stable)
       if (pairs.length >= 1) { used_fleet = pairs[0]![0]; max_fleet = pairs[0]![1]; }
       if (pairs.length >= 2) { used_expedition = pairs[1]![0]; max_expedition = pairs[1]![1]; }
     }
@@ -938,7 +938,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         ...(max_fleet > 0 ? { max_fleet_slots: max_fleet, used_fleet_slots: used_fleet } : {}),
       } as typeof cur.server,
     });
-    console.log(`[OgameX] slots extracted: fleet=${used_fleet}/${max_fleet} expedition=${used_expedition}/${max_expedition}`);
+    // (slots-extracted log silenced — running every 5-8s, no diagnostic value
+    //  in steady state. Resurfaces via server.{max,used}_*_slots in /v1/state.)
   }
   // Boot retries + continuous 30s interval so max never gets stuck stale
   // if the user navigated to a page without expedition text on boot.
@@ -1226,7 +1227,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           lvl_dv: li.querySelector(".level")?.getAttribute("data-value"),
           lvl_txt: (li.querySelector(".level")?.textContent ?? "").trim().slice(0, 20),
         }));
-        console.log(`[OgameX/lf-dump] cp=${planetId} found ${lis.length} [data-technology] elements. Sample: ${JSON.stringify(sample)}`);
+        // (lf-dump silenced — extractor working, sample only useful for new lf tech debug)
+        void sample;
       }
       // 1) Tech levels (research/supplies/facilities → regular; lfbuildings → lifeform)
       const techMap = (await import("./probes/extractors/buildings.js")).extractTechLevels(parsedDoc);
@@ -1641,7 +1643,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       }
       await new Promise((r) => setTimeout(r, 1500));
     }
-    console.info(`[OgameX/lf-prereq] discovery dump complete — see lines above for raw response data`);
+    // (lf-prereq discovery-complete silenced — one-shot boot diagnostic, done)
   }, 15_000);
   setInterval(() => {
     if (userBusy()) return;
@@ -1669,6 +1671,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     token_present: token !== null,
     ogame_meta,
   };
+
+  // Expose store EARLY (at boot return) so devtools console eval works
+  // immediately — operator's emergency drills inject events_incoming via
+  // __ogamexStore.setPartial({...}), no need to wait for first empire poll.
+  (env.win as Window & { __ogamexStore?: typeof store }).__ogamexStore = store;
+  try {
+    const pw = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & { __ogamexStore?: typeof store };
+    pw.__ogamexStore = store;
+  } catch { /* unsafeWindow may be undefined in non-Tampermonkey contexts (tests) */ }
 
   return {
     bus,
