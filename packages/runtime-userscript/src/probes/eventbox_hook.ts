@@ -216,6 +216,19 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     return url.includes("eventList") || url.includes("fetchEventBox") ||
            url.includes("component=eventList") || url.includes("checkEvents");
   }
+  // DIAGNOSTIC URL CAPTURE — enabled when localStorage["OGAMEX_LOG_XHR"]="1".
+  // Logs EVERY /game/index.php XHR/fetch URL so operator can identify which
+  // endpoint flashes the spy-alert triangle (0%-detect probes don't hit
+  // eventList — they trigger via a separate notification endpoint we
+  // haven't identified yet). Toggle on, reload, wait for triangle to
+  // flash, paste console URLs. Toggle off to silence.
+  function isOgameAjaxURL(url: string): boolean {
+    return url.includes("/game/index.php?") || url.includes("/game/index.php&");
+  }
+  function shouldLogUrl(): boolean {
+    try { return win.localStorage.getItem("OGAMEX_LOG_XHR") === "1"; } catch { return false; }
+  }
+  const seenLogged = new Set<string>(); // dedupe — only log new URLs
 
   // --- XHR hook ---
   const proto = (win as Window & { XMLHttpRequest: typeof XMLHttpRequest }).XMLHttpRequest.prototype;
@@ -228,6 +241,13 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
   } as typeof proto.open;
   proto.send = function (this: PatchedXHR, ...args: unknown[]): void {
     const url = this.__ogamexAlarmUrl ?? "";
+    if (shouldLogUrl() && isOgameAjaxURL(url)) {
+      const key = url.replace(/[?&]ajax=1|[?&]asJson=1|[?&]_=\d+/g, ""); // collapse cache-buster
+      if (!seenLogged.has(key)) {
+        seenLogged.add(key);
+        console.info(`[OgameX/xhr-log] new XHR url: ${url.slice(0, 200)}`);
+      }
+    }
     if (isEventBoxURL(url)) {
       this.addEventListener("load", () => {
         try {
@@ -246,6 +266,13 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       const res = await origFetch.call(win, input as RequestInfo, init);
       try {
         const url = typeof input === "string" ? input : (input as Request).url ?? "";
+        if (shouldLogUrl() && isOgameAjaxURL(url)) {
+          const key = url.replace(/[?&]ajax=1|[?&]asJson=1|[?&]_=\d+/g, "");
+          if (!seenLogged.has(key)) {
+            seenLogged.add(key);
+            console.info(`[OgameX/xhr-log] new fetch url: ${url.slice(0, 200)}`);
+          }
+        }
         if (isEventBoxURL(url)) {
           const clone = res.clone();
           clone.text().then((t) => {
