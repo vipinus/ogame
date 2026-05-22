@@ -337,9 +337,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                 console.log("  url=", c.url);
                 console.log("  body=", c.body);
               }
-            } else {
-              console.log("[OgameX/captures] no real ogame upgrade captures yet. To teach, click any upgrade button once in ogame UI.");
             }
+            // (no-captures message silenced — was once-per-boot but still noise)
           } catch (_) {}
         }, 3000);
         // Hydrate from localStorage on every boot so captures survive reload.
@@ -495,7 +494,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.180";
+  const USERSCRIPT_VERSION = "0.0.183";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   console.log(`[OgameX] meta probes: speed=${ogame_meta.universe_speed} fleet_p=${metaSpeedFleetP} fleet_w=${metaSpeedFleetW} fleet_h=${metaSpeedFleetH}`);
   const _prod = extractProduction(env.doc);
@@ -722,8 +721,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // can see actual ogame v12 HTML format for arrival_at / coords.
       if (!(env.win as Window & { __ogamexMovDump?: boolean }).__ogamexMovDump) {
         (env.win as Window & { __ogamexMovDump?: boolean }).__ogamexMovDump = true;
-        const first = Array.from(html.matchAll(fleetBlockRe))[0];
-        if (first) console.log(`[OgameX/movement-dump] fleet[0] inner (first 500B): ${(first[1] ?? "").replace(/\s+/g, " ").slice(0, 500)}`);
+        // (movement-dump silenced — was useful only for first-extractor verify)
       }
       const parsedFleets = Array.from(html.matchAll(fleetBlockRe)).map((m) => {
         const block = m[0] ?? "";
@@ -789,7 +787,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         console.warn(`[OgameX/movement] suspicious drop ${prevUsed}→0 (html=${html.length}B). Skipping write — preserving last-known value.`);
         return;
       }
-      console.info(`[OgameX/movement] fleets=${usedFleet} expedition_fleets=${usedExp}  caps: fleet/${maxFleet} exp/${maxExp}`);
+      // (movement summary silenced — slots are tracked, no repeated log needed)
       // Synthesize fleets_outbound entries from parsedFleets (has origin+dest).
       // Fall back to allFleetEls count if parser missed entries.
       const sourceList = parsedFleets.length === allFleetEls.length ? parsedFleets : allFleetEls.map((m) => ({
@@ -843,10 +841,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // so we can see actual ogame HTML format. Run once per session.
       if (!(env.win as Window & { __ogamexDumpedFd?: boolean }).__ogamexDumpedFd) {
         (env.win as Window & { __ogamexDumpedFd?: boolean }).__ogamexDumpedFd = true;
-        const m1 = html.match(/.{0,40}(?:遠征|远征|expedit).{0,80}/i);
-        if (m1) console.log(`[OgameX/fd-dump] exp context: "${m1[0].replace(/\s+/g," ").slice(0,200)}"`);
-        const m2 = html.match(/.{0,40}(?:艦隊|舰队|fleet).{0,80}/i);
-        if (m2) console.log(`[OgameX/fd-dump] fleet context: "${m2[0].replace(/\s+/g," ").slice(0,200)}"`);
+        // (fd-dump silenced — slot extraction works)
+        void html;
       }
       const pairs: Array<readonly [number, number]> = [];
       if (fleetLabel) pairs.push([parseInt(fleetLabel[1]!, 10), parseInt(fleetLabel[2]!, 10)]);
@@ -889,12 +885,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const j = JSON.parse(txt) as Record<string, unknown>;
         if (!(window as Window & { __ogamexDumpedEB?: boolean }).__ogamexDumpedEB) {
           (window as Window & { __ogamexDumpedEB?: boolean }).__ogamexDumpedEB = true;
-          console.log(`[OgameX/eventbox] top-level keys: ${Object.keys(j).join(",")}`);
-          for (const k of Object.keys(j)) {
-            if (/slot|fleet|exped|expedit/i.test(k) || typeof j[k] === "object") {
-              console.log(`[OgameX/eventbox]  ${k} = ${JSON.stringify(j[k]).slice(0, 300)}`);
-            }
-          }
+          // (eventbox keys-dump silenced)
         }
       } catch (_) { void _; }
     } catch (e) { void e; }
@@ -1160,7 +1151,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       }
       if (Object.keys(patch).length > 0) {
         store.setPartial(patch);
-        console.log(`[OgameX/api-poll] state synced from fetchResources`);
+        // (silenced — happens every 5s, expected steady-state)
       }
     } catch (e) {
       void e;
@@ -1184,21 +1175,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       });
       if (!resp.ok) return;
       const txt = await resp.text();
-      // Stage 1 diagnostic: log shape + first 600 chars
       try {
         const j = JSON.parse(txt) as { status?: string; messages?: unknown; messagesContent?: unknown; components?: unknown };
-        const keys = Object.keys(j);
-        console.log(`[OgameX/mail-poll] resp JSON keys: ${keys.join(",")}`);
-        // Dump first message's keys + content snippet so we see real shape
+        // (diagnostic key-dumps removed — parser stable)
         const msgs = (j as { messages?: unknown[] }).messages;
-        if (Array.isArray(msgs) && msgs[0]) {
-          const m0 = msgs[0] as Record<string, unknown>;
-          console.log(`[OgameX/mail-poll] msg[0] keys: ${Object.keys(m0).join(",")}`);
-          // Show subject/content fields if they exist
-          for (const k of ["subject", "content", "body", "text", "summary", "messageText"]) {
-            if (typeof m0[k] === "string") console.log(`[OgameX/mail-poll] msg[0].${k} = ${(m0[k] as string).slice(0, 200)}`);
-          }
-        }
         // Stage 2: pattern-classify using user-provided keywords
         const SAFE_RE = /未被探索|第一批|未探索|virgin|unexplored/i;
         const DANGER_RE = /遇到其他人|已經先來過|已经先来过|有人.*先到|pirate|hostile|encountered/i;
@@ -1463,24 +1443,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }
         return;
       }
-      console.info(`[OgameX/empire] parsed via pattern ${usedPattern}, ${data.length} planets`);
+      void usedPattern; // (silenced — happens every 5s, expected steady-state)
       const cur = store.state;
       const patchPlanets: Record<string, typeof cur.planets[string]> = { ...cur.planets };
       let updated = 0;
-      // DUMP ALL 9 planets' ship counts so operator can verify against ogame UI.
-      console.warn(`[OgameX/empire/all-planets-dump] ${data.length} planets, ship counts per pid:`);
-      for (const planet of data) {
-        const pid = String(planet["id"] ?? "");
-        const name = String((planet as Record<string, unknown>)["name"] ?? "");
-        const coords = (planet as Record<string, unknown>)["coordinates"];
-        const get = (k: string): unknown => (planet as Record<string, unknown>)[k];
-        console.warn(`  pid=${pid} name=${name} coords=${JSON.stringify(coords)} | sc=${get("202")} lc=${get("203")} pr=${get("210")} ds=${get("213")} ex=${get("219")} bs=${get("207")} bc=${get("215")} hf=${get("205")} cr=${get("206")}`);
-      }
       for (const planet of data) {
         const pid = String(planet["id"] ?? "");
         if (!pid || !patchPlanets[pid]) continue;
         const ships: Record<string, number> = {};
-        // Path 1: flat numeric keys at top level (planet["203"] = N)
+        // Flat numeric keys at top level (planet["203"] = N). DON'T also read
+        // planet["ships"] sub-object — that has different (non-owned) counts.
         for (const [key, val] of Object.entries(planet)) {
           const tid = parseInt(key, 10);
           if (!tid || tid < 200 || tid >= 300) continue;
@@ -1489,39 +1461,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           const n = typeof val === "number" ? val : parseInt(String(val), 10);
           if (Number.isFinite(n) && n >= 0) ships[name] = n;
         }
-        // Path 2: nested under "ships" sub-object — newer ogame v12 layout
-        const nested = (planet as Record<string, unknown>)["ships"];
-        if (nested && typeof nested === "object") {
-          for (const [key, val] of Object.entries(nested as Record<string, unknown>)) {
-            const tid = parseInt(key, 10);
-            if (!tid || tid < 200 || tid >= 300) continue;
-            const name = TECH_ID_TO_NAME[String(tid)];
-            if (!name) continue;
-            const n = typeof val === "number" ? val : parseInt(String(val), 10);
-            if (Number.isFinite(n) && n >= 0) ships[name] = n;
-          }
-        }
         if (Object.keys(ships).length > 0) {
-          // Dump WHAT we're writing for one planet — debug "lc=1 vs 1500" mystery.
-          if (updated === 0) {
-            console.warn(`[OgameX/empire/write] writing for pid=${pid}: ships=${JSON.stringify(ships)}`);
-            console.warn(`  pre-merge existing.ships=${JSON.stringify(patchPlanets[pid]?.ships ?? {})}`);
-          }
           patchPlanets[pid] = { ...patchPlanets[pid], ships: { ...patchPlanets[pid].ships, ...ships } } as typeof patchPlanets[string];
-          if (updated === 0) {
-            console.warn(`  post-merge ships=${JSON.stringify(patchPlanets[pid].ships)}`);
-          }
           updated += 1;
         }
       }
       if (updated > 0) {
         store.setPartial({ planets: patchPlanets });
-        // Read back to verify.
-        const verifyPlanet = store.state.planets[String(data[0]?.["id"] ?? "")];
-        console.warn(`[OgameX/empire/verify] after setPartial, planet[0].ships=${JSON.stringify(verifyPlanet?.ships ?? {})}`);
-        console.log(`[OgameX/empire] updated ships for ${updated} planet(s)`);
-      } else {
-        console.log(`[OgameX/empire] response parsed but no ship data extracted (${data.length} planets in response)`);
+        // Expose store globally for ad-hoc debugging via console.
+        (env.win as Window & { __ogamexStore?: typeof store }).__ogamexStore = store;
       }
     } catch (e) {
       console.warn(`[OgameX/empire] fetch failed:`, e);
@@ -1676,9 +1624,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         });
         if (!r.ok) { console.warn(`[OgameX/lf-prereq] tid=${tid} HTTP ${r.status}`); continue; }
         const txt = await r.text();
-        // Dump first 1000 chars of body — operator sees raw response to
-        // determine real prereq structure. ogame may return JSON or HTML.
-        console.info(`[OgameX/lf-prereq] tid=${tid} body[0:1000]=${txt.slice(0, 1000)}`);
+        // (silent — body content already used for prereq table; no spam)
+        void txt;
       } catch (e) {
         console.warn(`[OgameX/lf-prereq] tid=${tid} fetch failed`, e);
       }
