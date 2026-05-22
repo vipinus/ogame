@@ -117,16 +117,16 @@ export function wireRuntime(
   // 5. UI executor + GoalRunner (only when a bridge is provided).
   let runner: ReturnType<typeof startGoalRunner> | null = null;
   if (opts.bridge) {
-    // API executor (POST to ogame AJAX) is primary. UI executor (iframe
-    // click) kept as fallback for any action API doesn't handle. The
-    // runaway-shipyard incident was the iframe path's compounding clicks,
-    // NOT api executor — fixed by adding planner build_q in-flight check.
+    // API executor is the ONLY executor (v0.0.222 — operator "装 A 全 API
+    // 化"). UiDirectiveExecutor (DOM click + iframe path) DROPPED from
+    // registration. ApiExec covers all actions (build, research,
+    // build_ships, expedition, colonize, deploy, transport) as a superset
+    // of UiExec's set. No DOM click during operator's active session.
     const apiExecutor = new ApiDirectiveExecutor({ win: opts.win, doc: opts.doc });
-    const uiExecutor = new UiDirectiveExecutor({ win: opts.win, doc: opts.doc });
     runner = startGoalRunner({
       client: opts.bridge,
       gate: emergencyGate,
-      executors: [apiExecutor, uiExecutor],
+      executors: [apiExecutor],
     });
   }
 

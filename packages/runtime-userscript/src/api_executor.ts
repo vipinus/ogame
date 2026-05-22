@@ -166,144 +166,16 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     throw new Error(`api: unsupported ${directive.action}`);
   }
 
-  /**
-   * Live-DOM click: when the user happens to be on the target component
-   * page, find the upgrade button in document and click it. ogame's own
-   * onclick handler fires — that handler knows the exact endpoint, token
-   * chain, modus, etc. Returns null if not applicable.
-   */
-  /** Click ogame's left-nav menu button to SPA-navigate to a component
-   *  without full page reload. Returns true if a nav was kicked off.
-   *
-   *  Operator gate: if userBusy is active, refuse to nav — operator is
-   *  manually using a page and the click would yank them off it. The
-   *  caller treats false as "couldn't prepare page, defer the directive". */
-  private kickMenuNav(component: string): boolean {
-    const busyUntil = (this.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0;
-    if (busyUntil > Date.now()) {
-      console.info(`[ApiExec/nav] refused -> ${component} (operator active, +${Math.round((busyUntil - Date.now()) / 1000)}s)`);
-      return false;
-    }
-    const link = this.doc.querySelector<HTMLAnchorElement>(
-      `a.menubutton[href*="component=${component}"]`,
-    );
-    if (!link) return false;
-    console.info(`[ApiExec/nav] clicking menubutton -> ${component}`);
-    link.click();
-    return true;
-  }
-
-  /** Wait up to `ms` for window.location.href to contain the component param. */
-  private async waitForUrl(component: string, ms: number): Promise<boolean> {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) {
-      const href = this.win.location?.href ?? "";
-      if (href.includes(`component=${component}`)) {
-        // Give ogame's content-swap a moment to render the upgrade buttons.
-        await new Promise((r) => setTimeout(r, 1200));
-        return true;
-      }
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    return false;
-  }
-
-  private async tryLivePageClickAsync(directive: Directive): Promise<{ action: string; clicked: boolean } | null> {
-    const sync = this.tryLivePageClick(directive);
-    if (sync) return sync;
-    // Not on right page. Decide if auto-nav is permitted.
-    const NAV_COOLDOWN_MS = 10_000;
-    const IDLE_MS = 10_000;
-    const userBusy = Date.now() - this.lastUserActivityTs < IDLE_MS;
-    const navCooldown = Date.now() - this.lastNavTs < NAV_COOLDOWN_MS;
-    if (userBusy || navCooldown) {
-      console.info(`[ApiExec/nav] skip auto-nav (userBusy=${userBusy} cooldown=${navCooldown})`);
-      return null;
-    }
-    let component = "";
-    if (directive.action === "research") component = "research";
-    else if (directive.action === "build_ships") component = "shipyard";
-    else if (directive.action === "build") {
-      const b = (directive.params as { building?: string }).building ?? "";
-      const FAC = new Set(["shipyard", "researchLab", "roboticsFactory", "naniteFactory", "allianceDepot", "missileSilo"]);
-      component = FAC.has(b) ? "facilities" : "supplies";
-    }
-    if (!component) return null;
-    if (!this.kickMenuNav(component)) return null;
-    this.lastNavTs = Date.now();
-    const arrived = await this.waitForUrl(component, 6000);
-    if (!arrived) {
-      console.warn(`[ApiExec/nav] component=${component} not loaded in time`);
-      return null;
-    }
-    // Retry live click after SPA settle.
-    return this.tryLivePageClick(directive);
-  }
-
-  private tryLivePageClick(directive: Directive): { action: string; clicked: boolean } | null {
-    const href = this.win.location?.href ?? "";
-    let component = "";
-    let numericId = 0;
-    if (directive.action === "research") {
-      component = "research";
-      const tech = (directive.params as { tech?: string }).tech ?? "";
-      numericId = OGAME_NUMERIC_ID[tech] ?? 0;
-    } else if (directive.action === "build_ships") {
-      component = "shipyard";
-      const ship = (directive.params as { ship?: string }).ship ?? "";
-      numericId = OGAME_NUMERIC_ID[ship] ?? 0;
-    } else if (directive.action === "build") {
-      const building = (directive.params as { building?: string }).building ?? "";
-      const FAC = new Set(["shipyard", "researchLab", "roboticsFactory", "naniteFactory", "allianceDepot", "missileSilo"]);
-      component = FAC.has(building) ? "facilities" : "supplies";
-      numericId = OGAME_NUMERIC_ID[building] ?? 0;
-    }
-    if (!component || !numericId) return null;
-    if (!href.includes(`component=${component}`)) return null;
-    const sels = [
-      `li.technology[data-technology="${numericId}"] button.upgrade`,
-      `li.technology[data-technology="${numericId}"] a.upgrade`,
-      `li.technology[data-technology="${numericId}"] .upgrade`,
-      `li.technology[data-technology="${numericId}"] button[type="submit"]`,
-      `li.technology[data-technology="${numericId}"]`,
-      `button.upgrade[data-technology="${numericId}"]`,
-      `a.upgrade[data-technology="${numericId}"]`,
-    ];
-    let hit: HTMLElement | null = null;
-    let matched = "";
-    for (const s of sels) {
-      const e = this.doc.querySelector<HTMLElement>(s);
-      if (e) { hit = e; matched = s; break; }
-    }
-    if (!hit) {
-      console.info(`[ApiExec/live] no button in live DOM for ${component}:${numericId}`);
-      return null;
-    }
-    if (directive.action === "build_ships") {
-      const amount = ((): number => {
-        const a = (directive.params as { amount?: unknown }).amount;
-        return typeof a === "number" && a > 0 ? Math.floor(a) : 1;
-      })();
-      const amtSels = [
-        `li.technology[data-technology="${numericId}"] input[name="menge[${numericId}]"]`,
-        `li.technology[data-technology="${numericId}"] input[name="menge"]`,
-        `li.technology[data-technology="${numericId}"] input[type="number"]`,
-        `input.maxbuildable`,
-      ];
-      for (const s of amtSels) {
-        const inp = this.doc.querySelector<HTMLInputElement>(s);
-        if (inp) {
-          inp.value = String(amount);
-          inp.dispatchEvent(new Event("input", { bubbles: true }));
-          inp.dispatchEvent(new Event("change", { bubbles: true }));
-          break;
-        }
-      }
-    }
-    console.info(`[ApiExec/live] CLICK ${matched} for ${directive.action}:${numericId}`);
-    hit.click();
-    return { action: directive.action, clicked: true };
-  }
+  // Live-DOM click + menu nav + URL wait paths REMOVED (v0.0.222).
+  // Operator directive: 装 A — full API化, 删 DOM 点击 fallback.
+  // Audit found these methods (tryLivePageClick / tryLivePageClickAsync /
+  // kickMenuNav / waitForUrl) were never called by execute() — execute()
+  // already uses captures-replay (TIER 1) or fetchTokenAndStatus-based
+  // execSimpleUpgrade/execShipBuild (TIER 2), both pure HTTP. Dead code.
+  //
+  // For fresh CSRF token without a SPA nav, fetchTokenAndStatus does a
+  // background GET /game/index.php?page=ingame&component=X&cp=PID and
+  // extracts the token from response HTML. No page change.
 
   /** Fetch a fresh CSRF token + check ogame status for the target tech. */
   private async fetchTokenAndStatus(

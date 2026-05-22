@@ -109,18 +109,14 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       });
       return;
     }
-    // Defer ALL autonomous POSTs while operator is actively using ogame UI.
-    // Without this, sidecar's per-tick directives keep firing into the same
-    // session ogame is processing user clicks for → "server not responding"
-    // anti-bot trip. Boot.ts sets window.__ogamexUserBusyUntil on mousedown
-    // / keydown. Defer the directive (NACK with a retry-soon signal).
-    const busyUntil = (globalThis as { window?: { __ogamexUserBusyUntil?: number } }).window?.__ogamexUserBusyUntil ?? 0;
-    if (busyUntil > Date.now()) {
-      const waitMs = Math.min(busyUntil - Date.now(), 60_000);
-      console.log(`[GoalRunner] DEFER ${directive.action} — operator active, retry in ${(waitMs / 1000).toFixed(0)}s`);
-      ack(directive.id, { success: false, error: `deferred: operator active, retry after ${waitMs}ms` });
-      return;
-    }
+    // userBusy blanket DEFER REMOVED (v0.0.222 — operator "装 A 全 API 化").
+    // ApiExec is now the only executor and does pure background POSTs
+    // (scheduleEntry / fleetdispatch) — they don't touch the foreground
+    // DOM, don't trigger SPA nav, don't click. Safe to fire even during
+    // operator activity. Session.cp coherence is handled by per-request
+    // cp=PID params (no implicit session mutation).
+    // If anti-bot rate limit becomes an issue again, throttle here, not
+    // defer entirely.
     // eslint-disable-next-line no-console
     console.log(`[GoalRunner] executing ${directive.action} via ${chosen.constructor.name}`);
     try {
