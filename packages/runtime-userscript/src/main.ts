@@ -65,6 +65,10 @@ function defaultExpeditionConfig(): ExpeditionConfig {
 // runs inside those frames too, each frame becomes a NEW bridge client
 // pushing its own state.snapshot every 60s, dispatching its own directives,
 // and spawning more iframes. That's the recursive loop the user was seeing.
+// EARLY hello — fires on EVERY page where @match injects. Confirms TM is
+// actually running the script (no log = @match miss / TM disabled / wrong
+// version). Diagnostic invariant — always-on by design.
+console.info(`[OgameX] script-entry url=${window.location.href}`);
 const _inIframe = window.self !== window.top;
 const _isGamePage = !!document.querySelector('meta[name="ogame-universe-speed"]');
 const _isLobby = /lobby\.ogame\.gameforge\.com/i.test(window.location.href);
