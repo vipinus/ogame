@@ -1,136 +1,171 @@
 /**
  * Auto-login from gameforge lobby/hub back into the game universe.
  *
- * After ogame's nightly server reset (~21:00 daily) the session expires
- * and any open game tab gets redirected to:
- *   https://lobby.ogame.gameforge.com/en_GB/hub
- * Operator request: "服务器reset 自动登录回游戏" — automate the click.
+ * Operator request: "服务器reset 自动登录回游戏". After ogame's nightly
+ * reset the tab lands at lobby.ogame.gameforge.com/en_GB/hub.
  *
- * Approach:
- *   1. Detect lobby/hub URL on script entry.
- *   2. Poll DOM up to 60s for the "play" CTA (React app renders async).
- *   3. Match the universe by host substring (e.g. "s274") if available
- *      from saved last-game URL; else click the first play button found.
- *   4. Single .click() — ogame's own SPA navigates back into the game.
- *      Our userscript will boot again on the new URL via @match.
+ * Earlier versions (v0.0.203/204) failed because the play-button selector
+ * was guessed without inspecting real DOM. Per project rule "verify don't
+ * guess", THIS version operates in two modes:
  *
- * Configurable via localStorage:
- *   OGAMEX_AUTO_LOGIN_DISABLED = "1"  → skip auto-login (manual mode)
- *   OGAMEX_LAST_GAME_HOST     = "s274-en"  → universe filter (set
- *                                            automatically on game boot)
+ *   1. DIAGNOSTIC MODE (default first run) — DUMPS the hub's clickable
+ *      elements (a/button) to console as JSON. Does NOT click. Operator
+ *      pastes log back, we add the precise selector.
+ *   2. ARMED MODE — once localStorage[OGAMEX_AUTO_LOGIN_ARMED] = "1",
+ *      look for the exact selector pattern stored under
+ *      OGAMEX_AUTO_LOGIN_SELECTOR and click it.
+ *
+ *   3. EXPLICIT KILL — localStorage[OGAMEX_AUTO_LOGIN_DISABLED] = "1"
+ *      skips everything (operator's manual override).
+ *
+ * Hard safety: max 1 click per 5min cooldown; max 3 clicks per 5min
+ * window → permanent kill until operator clears flags. Prevents the
+ * "infinite click loop" reported on v0.0.203/204.
  */
 
 const LAST_GAME_HOST_KEY = "OGAMEX_LAST_GAME_HOST";
 const DISABLE_KEY = "OGAMEX_AUTO_LOGIN_DISABLED";
+const ARMED_KEY = "OGAMEX_AUTO_LOGIN_ARMED";
+const SELECTOR_KEY = "OGAMEX_AUTO_LOGIN_SELECTOR";
+const CLICKED_KEY = "OGAMEX_AUTO_LOGIN_CLICKED_AT";
+const COUNT_KEY = "OGAMEX_AUTO_LOGIN_CLICK_COUNT";
 const POLL_MS = 1000;
 const TIMEOUT_MS = 60_000;
+const COOLDOWN_MS = 5 * 60_000;
+const MAX_CLICKS_IN_WINDOW = 3;
+const ABORT_WINDOW_MS = 5 * 60_000;
 
-/** Called from main.ts on EVERY script load. No-op unless we're on lobby. */
 export function maybeAutoLoginFromHub(win: Window): boolean {
-  // Stash current host so next time we land on hub we can match the right
-  // universe card.
   if (/\.ogame\.gameforge\.com\/game\//.test(win.location.href)) {
     try {
-      const host = win.location.hostname.split(".")[0]; // e.g. "s274-en"
+      const host = win.location.hostname.split(".")[0];
       if (host) win.localStorage.setItem(LAST_GAME_HOST_KEY, host);
     } catch { /* */ }
-    return false; // in-game; nothing to do
+    return false;
   }
-  // Recognize lobby/hub URLs.
-  const isLobby = /lobby\.ogame\.gameforge\.com\/[a-z_]+\/hub/i.test(win.location.href)
-               || /lobby\.ogame\.gameforge\.com\/?$/i.test(win.location.href);
+  const isLobby = /lobby\.ogame\.gameforge\.com/i.test(win.location.href);
   if (!isLobby) return false;
   try {
     if (win.localStorage.getItem(DISABLE_KEY) === "1") {
-      console.info("[OgameX/auto-login] disabled via OGAMEX_AUTO_LOGIN_DISABLED");
+      console.info("[OgameX/auto-login] DISABLED via OGAMEX_AUTO_LOGIN_DISABLED");
       return false;
     }
   } catch { /* */ }
-  startHubLoginLoop(win);
+  // Cooldown / kill-switch — checked BEFORE diagnostic too, so we don't
+  // spam dumps on every reload during a loop.
+  if (clickCountTooMany(win)) {
+    console.warn("[OgameX/auto-login] kill-switch active. Run in console: " +
+      `localStorage.removeItem("${COUNT_KEY}"); localStorage.removeItem("${CLICKED_KEY}")`);
+    return false;
+  }
+  if (alreadyClickedRecently(win)) {
+    const ageS = Math.round((Date.now() - readNum(win, CLICKED_KEY)) / 1000);
+    console.info(`[OgameX/auto-login] cooldown active (last click ${ageS}s ago). To force, clear ${CLICKED_KEY}.`);
+    return false;
+  }
+  // Mode select: ARMED requires explicit operator opt-in + saved selector.
+  let armed = false;
+  let savedSelector = "";
+  try {
+    armed = win.localStorage.getItem(ARMED_KEY) === "1";
+    savedSelector = win.localStorage.getItem(SELECTOR_KEY) ?? "";
+  } catch { /* */ }
+  if (armed && savedSelector) {
+    runArmedClicker(win, savedSelector);
+  } else {
+    runDiagnostic(win);
+  }
   return true;
 }
 
-// Per-tab guard: sessionStorage survives page navigations within a tab,
-// cleared on tab close. Prevents infinite click-loop when hub navigates
-// internally (e.g. /hub → /hub/play → /hub/configure) — each internal
-// page-load would otherwise re-fire findPlayTarget + click.
-const CLICKED_KEY = "OGAMEX_AUTO_LOGIN_CLICKED_AT";
-const REARM_AFTER_MS = 30_000; // re-arm after 30s in case first click failed
-
-function alreadyClickedRecently(win: Window): boolean {
+function readNum(win: Window, key: string): number {
   try {
-    const raw = win.sessionStorage.getItem(CLICKED_KEY);
+    const raw = win.localStorage.getItem(key);
+    const n = raw ? parseInt(raw, 10) : 0;
+    return Number.isFinite(n) ? n : 0;
+  } catch { return 0; }
+}
+function alreadyClickedRecently(win: Window): boolean {
+  const ts = readNum(win, CLICKED_KEY);
+  return ts > 0 && (Date.now() - ts) < COOLDOWN_MS;
+}
+function clickCountTooMany(win: Window): boolean {
+  try {
+    const raw = win.localStorage.getItem(COUNT_KEY);
     if (!raw) return false;
-    const ts = parseInt(raw, 10);
-    if (!Number.isFinite(ts)) return false;
-    return (Date.now() - ts) < REARM_AFTER_MS;
+    const p = JSON.parse(raw) as { since: number; count: number };
+    if (!p.since || (Date.now() - p.since) > ABORT_WINDOW_MS) return false;
+    return p.count >= MAX_CLICKS_IN_WINDOW;
   } catch { return false; }
 }
 function markClicked(win: Window): void {
-  try { win.sessionStorage.setItem(CLICKED_KEY, String(Date.now())); } catch { /* */ }
+  try {
+    win.localStorage.setItem(CLICKED_KEY, String(Date.now()));
+    const raw = win.localStorage.getItem(COUNT_KEY);
+    let p: { since: number; count: number } | null = null;
+    try { p = raw ? JSON.parse(raw) as { since: number; count: number } : null; } catch { /* */ }
+    if (!p || (Date.now() - p.since) > ABORT_WINDOW_MS) {
+      p = { since: Date.now(), count: 1 };
+    } else {
+      p.count += 1;
+    }
+    win.localStorage.setItem(COUNT_KEY, JSON.stringify(p));
+  } catch { /* */ }
 }
 
-function startHubLoginLoop(win: Window): void {
-  if (alreadyClickedRecently(win)) {
-    console.info("[OgameX/auto-login] already clicked play recently this tab — waiting for navigation, not re-clicking");
-    return;
-  }
-  console.info("[OgameX/auto-login] on lobby/hub — looking for universe play button...");
-  let lastHost = "";
-  try { lastHost = win.localStorage.getItem(LAST_GAME_HOST_KEY) ?? ""; } catch { /* */ }
+function runDiagnostic(win: Window): void {
+  console.info("[OgameX/auto-login] DIAGNOSTIC mode — will dump hub clickables (NO click). " +
+    "Paste output to maintainer + arm: " +
+    `localStorage.setItem("${SELECTOR_KEY}", "<correct css selector>"); ` +
+    `localStorage.setItem("${ARMED_KEY}", "1");`);
+  const startedAt = Date.now();
+  let dumped = false;
+  const tick = (): void => {
+    if (dumped || Date.now() - startedAt > TIMEOUT_MS) return;
+    const doc = win.document;
+    const clickables = Array.from(doc.querySelectorAll<HTMLElement>("a, button"));
+    // Wait for non-trivial DOM (React renders async).
+    if (clickables.length < 3) {
+      win.setTimeout(tick, POLL_MS);
+      return;
+    }
+    dumped = true;
+    const summary = clickables.slice(0, 50).map((el) => ({
+      tag: el.tagName.toLowerCase(),
+      cls: (el.className ?? "").toString().slice(0, 80),
+      id: el.id || undefined,
+      text: (el.textContent ?? "").trim().slice(0, 60),
+      href: (el as HTMLAnchorElement).href || undefined,
+      visible: isVisible(el),
+    }));
+    console.warn(`[OgameX/auto-login] DOM dump (${clickables.length} clickables, showing first 50):`);
+    console.warn(JSON.stringify(summary, null, 2));
+    // Also expose for operator console queries.
+    (win as Window & { __ogamexHubClickables?: HTMLElement[] }).__ogamexHubClickables = clickables;
+    console.info("[OgameX/auto-login] saved as window.__ogamexHubClickables for hand inspection.");
+  };
+  tick();
+}
+
+function runArmedClicker(win: Window, selector: string): void {
+  console.info(`[OgameX/auto-login] ARMED mode — looking for "${selector}"`);
   const startedAt = Date.now();
   const tick = (): void => {
     if (Date.now() - startedAt > TIMEOUT_MS) {
-      console.warn(`[OgameX/auto-login] gave up after ${TIMEOUT_MS / 1000}s — no play button found`);
+      console.warn("[OgameX/auto-login] gave up — selector not found in time");
       return;
     }
-    const target = findPlayTarget(win.document, lastHost);
-    if (target) {
-      console.info(`[OgameX/auto-login] clicking play target: ${describe(target)}`);
-      markClicked(win); // mark BEFORE click — prevents race if click triggers
-                       // a sync re-execution of this script.
-      try {
-        target.click();
-      } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
-      // Single-shot. No retry. If click didn't navigate within REARM_AFTER_MS,
-      // a future page-load will re-arm and try again with a fresh target.
+    let target: HTMLElement | null = null;
+    try { target = win.document.querySelector<HTMLElement>(selector); } catch { /* invalid selector */ }
+    if (target && isVisible(target)) {
+      console.info(`[OgameX/auto-login] clicking: ${describe(target)}`);
+      markClicked(win); // mark BEFORE click
+      try { target.click(); } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
       return;
     }
     win.setTimeout(tick, POLL_MS);
   };
   tick();
-}
-
-function findPlayTarget(doc: Document, lastHost: string): HTMLElement | null {
-  // Strategy 1 — anchor whose href targets the last-known game universe.
-  if (lastHost) {
-    const hostMatch = doc.querySelector<HTMLAnchorElement>(`a[href*="${lastHost}.ogame.gameforge.com"]`);
-    if (hostMatch) return hostMatch;
-  }
-  // Strategy 2 — any anchor whose href targets *.ogame.gameforge.com/game/
-  //   (i.e. an actual in-game entry link).
-  const anyGameLink = doc.querySelector<HTMLAnchorElement>('a[href*=".ogame.gameforge.com/game/"]');
-  if (anyGameLink) return anyGameLink;
-  // Strategy 3 — known gameforge hub CTA selectors.
-  const sel3 = [
-    "a.button.btn-primary",
-    "button.button.btn-primary",
-    ".js-play-button",
-    ".play-button",
-    '[data-action="play"]',
-  ];
-  for (const s of sel3) {
-    const el = doc.querySelector<HTMLElement>(s);
-    if (el && isVisible(el)) return el;
-  }
-  // Strategy 4 — text match (multi-lang). Last-resort; matches any clickable.
-  const textRe = /^\s*(play|jouer|spielen|jugar|进入|進入|играть|spela|giocare|遊ぶ)\s*$/i;
-  const clickables = Array.from(doc.querySelectorAll<HTMLElement>("a, button"));
-  for (const c of clickables) {
-    const t = (c.textContent ?? "").trim();
-    if (textRe.test(t) && isVisible(c)) return c;
-  }
-  return null;
 }
 
 function isVisible(el: HTMLElement): boolean {
