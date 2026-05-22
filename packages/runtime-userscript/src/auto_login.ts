@@ -50,7 +50,31 @@ export function maybeAutoLoginFromHub(win: Window): boolean {
   return true;
 }
 
+// Per-tab guard: sessionStorage survives page navigations within a tab,
+// cleared on tab close. Prevents infinite click-loop when hub navigates
+// internally (e.g. /hub → /hub/play → /hub/configure) — each internal
+// page-load would otherwise re-fire findPlayTarget + click.
+const CLICKED_KEY = "OGAMEX_AUTO_LOGIN_CLICKED_AT";
+const REARM_AFTER_MS = 30_000; // re-arm after 30s in case first click failed
+
+function alreadyClickedRecently(win: Window): boolean {
+  try {
+    const raw = win.sessionStorage.getItem(CLICKED_KEY);
+    if (!raw) return false;
+    const ts = parseInt(raw, 10);
+    if (!Number.isFinite(ts)) return false;
+    return (Date.now() - ts) < REARM_AFTER_MS;
+  } catch { return false; }
+}
+function markClicked(win: Window): void {
+  try { win.sessionStorage.setItem(CLICKED_KEY, String(Date.now())); } catch { /* */ }
+}
+
 function startHubLoginLoop(win: Window): void {
+  if (alreadyClickedRecently(win)) {
+    console.info("[OgameX/auto-login] already clicked play recently this tab — waiting for navigation, not re-clicking");
+    return;
+  }
   console.info("[OgameX/auto-login] on lobby/hub — looking for universe play button...");
   let lastHost = "";
   try { lastHost = win.localStorage.getItem(LAST_GAME_HOST_KEY) ?? ""; } catch { /* */ }
@@ -63,18 +87,13 @@ function startHubLoginLoop(win: Window): void {
     const target = findPlayTarget(win.document, lastHost);
     if (target) {
       console.info(`[OgameX/auto-login] clicking play target: ${describe(target)}`);
+      markClicked(win); // mark BEFORE click — prevents race if click triggers
+                       // a sync re-execution of this script.
       try {
         target.click();
-        // Some hub buttons trigger a form submit / location change async;
-        // if URL didn't change after 5s, retry once.
-        setTimeout(() => {
-          if (Date.now() - startedAt < TIMEOUT_MS &&
-              /lobby\.ogame\.gameforge\.com/.test(win.location.href)) {
-            console.info("[OgameX/auto-login] URL didn't change — retrying click chain");
-            startHubLoginLoop(win); // recurse: rebind for next render frame
-          }
-        }, 5000);
       } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
+      // Single-shot. No retry. If click didn't navigate within REARM_AFTER_MS,
+      // a future page-load will re-arm and try again with a fresh target.
       return;
     }
     win.setTimeout(tick, POLL_MS);
