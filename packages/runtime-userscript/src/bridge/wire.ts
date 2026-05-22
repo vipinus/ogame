@@ -125,6 +125,37 @@ export async function wireBridge(
   // burned through dispatch budget without helping when executor itself
   // can't navigate. Re-enable once SPA nav has a working primitive.
 
+  // data.refresh — sidecar asks userscript to actively re-scrape ogame for
+  // fleets/resources, then push fresh state. Used by event-driven decision
+  // flow (Plan A): daemon expedition trigger → sidecar enqueues data.refresh
+  // → userscript runs harvests → fresh state.snapshot pushed → daemon reads
+  // fresh state → decides.
+  const offRefresh = client.on("data.refresh", (msg) => {
+    const m = msg as { scope?: string; reason?: string };
+    const scope = m.scope ?? "all";
+    console.info(`[wireBridge] data.refresh recv scope=${scope} reason=${m.reason ?? ""}`);
+    const w = window as Window & {
+      __ogamexHarvestMovement?: () => Promise<void>;
+      __ogamexPollEmpire?: () => Promise<void>;
+      __ogamexPushNow?: () => void;
+    };
+    // Run harvests in parallel; their setPartial calls fan-out via store
+    // and trigger state.updated bus events. After harvests complete, force
+    // an immediate state push so sidecar/daemon see fresh data ASAP.
+    void (async (): Promise<void> => {
+      const jobs: Promise<unknown>[] = [];
+      if (scope === "all" || scope === "fleets") {
+        if (typeof w.__ogamexHarvestMovement === "function") jobs.push(w.__ogamexHarvestMovement());
+        if (typeof w.__ogamexPollEmpire === "function") jobs.push(w.__ogamexPollEmpire());
+      }
+      if (scope === "all" || scope === "resources") {
+        if (typeof w.__ogamexPollEmpire === "function" && scope !== "fleets") jobs.push(w.__ogamexPollEmpire());
+      }
+      try { await Promise.allSettled(jobs); } catch { /* */ }
+      if (typeof w.__ogamexPushNow === "function") w.__ogamexPushNow();
+    })();
+  });
+
   const offEmergency = boot.bus.on("emergency.attack", (payload: unknown) => {
     const p = (payload ?? {}) as {
       event_id?: string;
@@ -194,6 +225,7 @@ export async function wireBridge(
       }
       offEmergency();
       offSpy();
+      offRefresh();
     },
   };
 }

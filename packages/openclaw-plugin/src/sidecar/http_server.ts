@@ -328,8 +328,12 @@ export class HttpServer {
       // is a low-value flag (just signals daemon to fire its tick); making
       // it public lets userscript POST without needing bridge token in the
       // sandboxed page world.
+      // Also queue a data.refresh downstream → userscript actively re-scrapes
+      // fleets/resources/empire before the next state push. Daemon waits ~2s
+      // after seeing trigger_ts change before reading /v1/state → fresh data.
       if (url === EXPEDITION_TRIGGER_PATH) {
         this.expeditionTriggerTs = Date.now();
+        this.queueDownstream({ type: "data.refresh", scope: "all", reason: "expedition.trigger" });
         this.writeCorsHeaders(res);
         res.statusCode = 200;
         res.setHeader("Content-Type", "application/json");

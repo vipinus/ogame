@@ -322,6 +322,10 @@ export type DownstreamMsg =
   | { type: "strategy.update"; version: number; patch: Record<string, unknown>; reason: string }
   | { type: "directive.dispatch"; directive: Directive }
   | { type: "directive.cancel"; id: string; reason: string }
+  /** Sidecar asks userscript to refresh given scope of data and push back.
+   *  Used by event-driven decision flow: daemon sends refresh request,
+   *  waits ~2s, then reads /v1/state confident it's fresh. */
+  | { type: "data.refresh"; scope: "fleets" | "resources" | "all"; reason?: string }
   | { type: "config.set"; key: string; value: unknown }
   | { type: "ping"; ts: number };
 
