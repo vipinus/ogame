@@ -15,6 +15,7 @@ import { extractPlanets } from "./probes/extractors/planets.js";
 import { extractTechLevels } from "./probes/extractors/buildings.js";
 import { TECH_TREE, TECH_NAME_BY_ID, TECH_ID_BY_NAME, idKind } from "@ogamex/shared";
 import { extractFleetMovements } from "./probes/extractors/fleet.js";
+import { installEventBoxHook } from "./probes/eventbox_hook.js";
 import { extractToken, type OgameWindow } from "./probes/extractors/token.js";
 
 export interface BootEnv {
@@ -512,7 +513,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.201";
+  const USERSCRIPT_VERSION = "0.0.202";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -817,81 +818,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   setTimeout(() => { void harvestSlotsFromMovement(); }, 2000);
   setInterval(() => { if (!userBusy()) void harvestSlotsFromMovement(); }, 30_000);
 
-  // ACTIVE FAST INBOUND-FLEET DETECTOR — primary spy/attack detection.
-  // /movement API returns ALL flying fleets including probes with 0%
-  // detection probability that NEVER appear in #eventContent DOM.
-  // Web client receives push updates with latency; this active poll
-  // closes the gap. Cadence 3s — fast enough to catch intra-system
-  // probes (typical transit 5-30s at universe_speed 8), slow enough
-  // not to hammer ogame.
-  let lastInboundSig = "";
-  async function pollInboundFleets(): Promise<void> {
-    try {
-      const url = "/game/index.php?page=componentOnly&component=movement&ajax=1";
-      const resp = await env.win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
-      if (!resp.ok) return;
-      const html = await resp.text();
-      const parser = new (env.win as Window & { DOMParser: typeof DOMParser }).DOMParser();
-      const doc = parser.parseFromString(html, "text/html");
-      const fleets = extractFleetMovements(doc);
-      // Identify MY planets' coords — used to distinguish own→own (friendly)
-      // from foreign→mine (hostile incoming). Cache once per call.
-      const ownCoordsSet = new Set<string>();
-      for (const p of Object.values(store.state.planets ?? {})) {
-        const c = (p as { coords?: readonly number[] }).coords;
-        if (c && c.length === 3) ownCoordsSet.add(`${c[0]}:${c[1]}:${c[2]}`);
-      }
-      // Mission codes per ogame v12:
-      //   1 = 普通攻击 (regular attack)
-      //   2 = 联合攻击 ACS (allied combat attack)
-      //   6 = 间谍 (spy probe — including 0%-detection probes that NEVER
-      //       show in #eventContent DOM)
-      // Other codes (transport/deploy/return) are NOT danger types — they
-      // surface in events_incoming with hostile=false so the panel can show
-      // them informationally without triggering alarm.
-      const MISSION_TYPE_MAP: Record<number, "attack" | "spy" | "transport" | "deploy" | "return" | "unknown"> = {
-        1: "attack", 2: "attack", 6: "spy", 3: "transport", 4: "deploy",
-        5: "transport", 7: "transport", 8: "transport", 15: "return",
-      };
-      // INBOUND filter: origin coords NOT in MY planets/moons set.
-      // Operator rule: "我侦察和攻击别人不要报警" — when I send out spy or
-      // attack fleets, origin = my planet → excluded here → alarm cannot fire.
-      // Same logic protects my own deploys/transports between my colonies.
-      const incoming = fleets.filter((f) => {
-        const orig = `${f.origin[0]}:${f.origin[1]}:${f.origin[2]}`;
-        return !ownCoordsSet.has(orig);
-      });
-      const events = incoming.map((f) => {
-        const type = MISSION_TYPE_MAP[f.mission] ?? "unknown";
-        return {
-          id: `mv-${f.id}`,
-          type,
-          hostile: type === "attack" || type === "spy",
-          from: f.origin,
-          to: f.dest,
-          arrives_at: f.arrival_at,
-          ships_count: Object.values(f.ships).reduce((a, b) => a + (b || 0), 0) || "?" as const,
-        };
-      });
-      const sig = events.map((e) => `${e.id}:${e.arrives_at}:${e.hostile ? "H" : "N"}`).sort().join(",");
-      if (sig !== lastInboundSig) {
-        lastInboundSig = sig;
-        // MERGE with existing events_incoming (preserve eventList-sourced
-        // events; movement-sourced may have different id prefixes).
-        const cur = store.state.events_incoming ?? [];
-        const fromEventList = cur.filter((e) => !e.id.startsWith("mv-"));
-        const merged = [...fromEventList, ...events];
-        store.setPartial({ events_incoming: merged });
-        const hostileCount = events.filter((e) => e.hostile).length;
-        const spyCount = events.filter((e) => e.type === "spy").length;
-        if (hostileCount > 0 || spyCount > 0) {
-          console.warn(`[OgameX/inbound-fleets] ${events.length} foreign: hostile=${hostileCount} spy=${spyCount}`);
-        }
-      }
-    } catch (e) { void e; }
-  }
-  setTimeout(() => { void pollInboundFleets(); }, 1500);
-  setInterval(() => { void pollInboundFleets(); }, 3_000);
+  // PARASITIC EVENTBOX HOOK — replaces failed /movement-based pollInboundFleets.
+  // Rationale (corrected from earlier design): /movement endpoint returns ONLY
+  // MY OWN outgoing fleets, NEVER foreign incoming. Incoming attack/spy events
+  // live in ogame's eventList endpoint, which the native client polls every 5s.
+  // We hook XHR + fetch to PARASITIZE that poll — zero extra requests, perfect
+  // sync with what ogame's UI itself sees. Watchdog self-fetches if ogame's
+  // own poll stalls (tab backgrounded). See probes/eventbox_hook.ts.
+  const eventboxHook = installEventBoxHook({ store, win: env.win });
+  void eventboxHook; // handle kept alive via closure; .stop() if we add teardown
 
   // BACKUP: fetch fleetdispatch page directly for slot caps. That page
   // ALWAYS renders "艦隊:X/Y 遠征艦隊:N/M" regardless of which page operator
@@ -945,52 +880,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   setTimeout(() => { void harvestSlotsFromFleetdispatch(); }, 3500);
   setInterval(() => { if (!userBusy()) void harvestSlotsFromFleetdispatch(); }, 30_000);
 
-  // ACTIVE eventList HTML poll — primary detection path for inbound
-  // attacks AND spy probes. Web client is push-based (passive) so DOM
-  // mutation has latency; active API poll closes that gap.
-  //
-  // Endpoint returns same HTML fragment as #eventContent, so we reuse
-  // the production-verified extractIncomingEvents() parser. No new
-  // parser, no guessing JSON shape.
-  //
-  // Cadence: 8s — fast enough to detect within attack save-window
-  // (typically 5-30 min for ogame realm fleets), slow enough to avoid
-  // rate-limit. DOM mutation observer remains as fallback.
-  let lastEventSig = "";
-  async function pollEventList(): Promise<void> {
-    try {
-      const url = "/game/index.php?page=componentOnly&component=eventList&ajax=1";
-      const resp = await env.win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
-      if (!resp.ok) return;
-      const html = await resp.text();
-      // ogame returns either a full doc with #eventContent OR a bare
-      // <tr.eventFleet>...</tr> fragment. Wrap fragment in synthetic
-      // #eventContent so the existing extractor's selector hits.
-      const parser = new (env.win as Window & { DOMParser: typeof DOMParser }).DOMParser();
-      let doc = parser.parseFromString(html, "text/html");
-      if (!doc.querySelector("#eventContent")) {
-        doc = parser.parseFromString(
-          `<table id="eventContent"><tbody>${html}</tbody></table>`,
-          "text/html",
-        );
-      }
-      const events = extractIncomingEvents(doc);
-      // De-duplicate writes — only setPartial when events actually changed.
-      // Empty == empty doesn't need to spam state.updated bus events.
-      const sig = events.map(e => `${e.id}:${e.arrives_at}:${e.hostile?"H":"N"}`).sort().join(",");
-      if (sig !== lastEventSig) {
-        lastEventSig = sig;
-        store.setPartial({ events_incoming: events });
-        const hostileCount = events.filter(e => e.hostile).length;
-        const spyCount = events.filter(e => e.type === "spy").length;
-        if (hostileCount > 0 || spyCount > 0) {
-          console.warn(`[OgameX/event-poll] ${events.length} events: hostile=${hostileCount} spy=${spyCount}`);
-        }
-      }
-    } catch (e) { void e; }
-  }
-  setTimeout(() => { void pollEventList(); }, 2000);
-  setInterval(() => { void pollEventList(); }, 8_000);
+  // (pollEventList REMOVED — parasitic eventbox_hook now handles eventList
+  //  intercept via ogame's own native 5s poll. Self-fetch watchdog inside
+  //  the hook covers the gap when ogame's poll stalls.)
 
   // FALLBACK: scrape from current page DOM (less reliable):
   // Extract BOTH used & max because ogame's `floor(sqrt)` formula misses
