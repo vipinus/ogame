@@ -513,7 +513,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.213";
+  const USERSCRIPT_VERSION = "0.0.214";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1666,7 +1666,31 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
 
   // 7. Persist on every state.updated, debounced loosely
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  // Event-driven expedition trigger — when fleets_outbound drops (a fleet
+  // returned), force sidecar to fire its expedition tick immediately
+  // instead of waiting for the daemon's safety-net periodic tick. Sidecar
+  // ALSO does this on its end (state.snapshot handler), but firing from
+  // userscript shortcuts the round-trip — sidecar might receive a state
+  // push with delta only every 5s. Combined: detection ≤ 1s end-to-end.
+  let lastFleetCount = Array.isArray(store.state.fleets_outbound) ? store.state.fleets_outbound.length : 0;
+  function maybeFireExpeditionTrigger(): void {
+    const cur = store.state.fleets_outbound;
+    const n = Array.isArray(cur) ? cur.length : 0;
+    if (n < lastFleetCount) {
+      try {
+        const bridgeBase = (env.win.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com");
+        void env.win.fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/expedition/trigger`, {
+          method: "POST",
+          credentials: "omit",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        }).catch(() => { /* sidecar may be down; safety net catches */ });
+      } catch { /* */ }
+    }
+    lastFleetCount = n;
+  }
   const offState = bus.on("state.updated", () => {
+    maybeFireExpeditionTrigger();
     if (persistTimer) return;
     persistTimer = setTimeout(() => {
       persistTimer = null;

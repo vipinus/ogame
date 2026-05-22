@@ -868,6 +868,20 @@ export async function startSidecar(
     stateRef.current = msg.snapshot;
     lastSeen.at = Date.now();
 
+    // Event-driven expedition trigger: when fleet count drops between two
+    // snapshots (fleet returned), bump trigger ts so discord-bridge daemon
+    // fires expeditionTick immediately instead of waiting next 10s tick.
+    // Operator directive: "ogame 的改成事件触发".
+    if (prev !== null) {
+      const prevCount = Array.isArray(prev.fleets_outbound) ? prev.fleets_outbound.length : 0;
+      const newCount = Array.isArray(msg.snapshot.fleets_outbound) ? msg.snapshot.fleets_outbound.length : 0;
+      if (newCount < prevCount) {
+        try {
+          (http as unknown as { bumpExpeditionTrigger?: () => void }).bumpExpeditionTrigger?.();
+        } catch { /* */ }
+      }
+    }
+
     // Ship-build progress watcher — when a planet's ship count rises between
     // snapshots, decrement the matching build_ships goal's `amount` by the
     // delta. When amount drops to <= 0, the goal is completed.

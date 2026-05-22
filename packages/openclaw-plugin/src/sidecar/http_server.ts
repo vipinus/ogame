@@ -81,6 +81,7 @@ const HEALTH_PATH = "/ogamex/v1/health";
 const DEBUG_PATH = "/ogamex/v1/debug";
 const EXPEDITION_PAUSE_PATH = "/ogamex/v1/expedition/pause";
 const EXPEDITION_RESUME_PATH = "/ogamex/v1/expedition/resume";
+const EXPEDITION_TRIGGER_PATH = "/ogamex/v1/expedition/trigger";
 const ALLOWED_ORIGIN = "https://*.ogame.org";
 
 /**
@@ -113,6 +114,14 @@ export class HttpServer {
   private readonly queue: QueueEntry[] = [];
   private readonly waiters: Array<(entries: QueueEntry[]) => void> = [];
   private server: http.Server | null = null;
+  /** Event-driven expedition trigger timestamp. Bumped on POST trigger; read
+   *  via GET poll by the discord-bridge daemon to know when to fire tick. */
+  private expeditionTriggerTs = 0;
+  /** External API — sidecar/index.ts state.snapshot delta detector can call
+   *  this on fleet-return detection to bump trigger ts. */
+  public bumpExpeditionTrigger(): void {
+    this.expeditionTriggerTs = Date.now();
+  }
 
   constructor(opts: HttpServerOptions) {
     this.opts = {
@@ -288,6 +297,15 @@ export class HttpServer {
       this.handleProviderGet(res, this.opts.emergencyProvider);
       return;
     }
+    if (method === "GET" && url === EXPEDITION_TRIGGER_PATH) {
+      // Tiny endpoint — daemon polls this every 1s instead of running
+      // a 10s setInterval expeditionTick. Body is ~30 bytes.
+      this.writeCorsHeaders(res);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ trigger_ts: this.expeditionTriggerTs }));
+      return;
+    }
     // Serve userscript file for tampermonkey installation. Path is fixed —
     // operator drops the built .user.js at /tmp/ogame-runtime.user.js. No
     // auth (public install link). Cache-bust headers to avoid CDN sticking
@@ -336,6 +354,17 @@ export class HttpServer {
     }
     if (url === EXPEDITION_RESUME_PATH) {
       this.handleExpeditionFlag(res, false);
+      return;
+    }
+    if (url === EXPEDITION_TRIGGER_PATH) {
+      // Event-driven expedition tick: set timestamp; daemon polls this
+      // endpoint via GET to know when to fire next tick (instead of every
+      // 10s setInterval). Operator directive: 改成事件触发.
+      this.expeditionTriggerTs = Date.now();
+      this.writeCorsHeaders(res);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: true, ts: this.expeditionTriggerTs }));
       return;
     }
 
