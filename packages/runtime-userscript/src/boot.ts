@@ -513,7 +513,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.214";
+  const USERSCRIPT_VERSION = "0.0.215";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -816,7 +816,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
   }
   setTimeout(() => { void harvestSlotsFromMovement(); }, 2000);
-  setInterval(() => { if (!userBusy()) void harvestSlotsFromMovement(); }, 30_000);
+  // 30s → 10s. Operator observed state.fleets_outbound stale by 1 fleet
+  // after return (ogame /movement showed 5, state showed 6). 30s window
+  // missed the return; 10s catches faster. Cost: ~6 req/min extra to
+  // /movement endpoint (acceptable, was pollFetchResources's old rate).
+  setInterval(() => { if (!userBusy()) void harvestSlotsFromMovement(); }, 10_000);
+  // Expose so eventbox hook can fire it on fleet-count delta detection.
+  (env.win as Window & { __ogamexHarvestMovement?: () => Promise<void> }).__ogamexHarvestMovement = harvestSlotsFromMovement;
 
   // PARASITIC EVENTBOX HOOK — replaces failed /movement-based pollInboundFleets.
   // Rationale (corrected from earlier design): /movement endpoint returns ONLY

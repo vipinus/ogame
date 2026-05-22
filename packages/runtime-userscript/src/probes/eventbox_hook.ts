@@ -225,8 +225,31 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     return Number.isFinite(n) && n > 0 ? n : null;
   }
 
+  // Track ogame's own outbound (friendly) fleet count from eventbox JSON.
+  // When it changes, force harvestSlotsFromMovement → rebuild
+  // state.fleets_outbound. Catches fleet-return events that slip past the
+  // 10s harvest interval.
+  let lastOwnFleetCount = -1;
+  function checkOwnFleetCountDelta(text: string): void {
+    try {
+      const j = JSON.parse(text) as { friendly?: number | string };
+      const n = parseInt(String(j.friendly ?? 0), 10);
+      if (!Number.isFinite(n)) return;
+      if (lastOwnFleetCount === -1) { lastOwnFleetCount = n; return; }
+      if (n !== lastOwnFleetCount) {
+        const before = lastOwnFleetCount;
+        lastOwnFleetCount = n;
+        console.info(`[OgameX/eventbox-hook] friendly fleet count ${before}→${n}, forcing /movement refresh`);
+        const harvest = (win as Window & { __ogamexHarvestMovement?: () => Promise<void> }).__ogamexHarvestMovement;
+        if (typeof harvest === "function") void harvest().catch(() => { /* */ });
+      }
+    } catch { /* HTML response — skip */ }
+  }
+
   function applyResponse(text: string): void {
     if (stopped) return;
+    // Side-channel: detect own-fleet count change to keep fleets_outbound fresh.
+    checkOwnFleetCountDelta(text);
     const events = parseEventBoxResponse(text, ownPlayerId());
     // Only update if we recognized something (avoid wiping live events_incoming
     // with empty on every non-eventList response that slipped through filter).
