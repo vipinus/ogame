@@ -494,35 +494,20 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.188";
+  const USERSCRIPT_VERSION = "0.0.189";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
-  console.log(`[OgameX] meta probes: speed=${ogame_meta.universe_speed} fleet_p=${metaSpeedFleetP} fleet_w=${metaSpeedFleetW} fleet_h=${metaSpeedFleetH}`);
-  const _prod = extractProduction(env.doc);
-  console.log(`[OgameX] initial extractProduction:`, _prod);
-  // Dump raw box titles + production JSON from reloadResources so we can
-  // see EXACTLY which input the extractor receives on this page.
-  for (const id of ["metal_box", "crystal_box", "deuterium_box"]) {
-    const t = env.doc.getElementById(id)?.getAttribute("title") ?? "(missing)";
-    console.log(`[OgameX] ${id}.title (first 300 chars):`, t.slice(0, 300));
-  }
-  // Some ogame pages expose production via window.production or as a JSON
-  // payload inside an inline reloadResources(...) call. Try both.
+  // (meta-probes / extractProduction / box-title / window.production /
+  //  reloadResources extractor traces silenced — extractor stable, schema
+  //  stable. Errors still surface from parse-error path below.)
+  void extractProduction(env.doc);
   const winAny = env.win;
-  const winProd = (winAny.production || winAny.productionRates || winAny.resourcesData) ?? null;
-  console.log(`[OgameX] window.production fallback:`, winProd);
-  // Regex-scan inline scripts for `reloadResources({...})` argument.
+  void (winAny.production || winAny.productionRates || winAny.resourcesData);
   for (const s of Array.from(env.doc.querySelectorAll("script"))) {
     const txt = s.textContent ?? "";
     const m = txt.match(/reloadResources\(\s*(\{[\s\S]*?"resources"[\s\S]*?\})\s*\)/);
     if (m) {
-      try {
-        const j = JSON.parse(m[1]);
-        const r = j.resources ?? {};
-        console.log(`[OgameX] reloadResources prod (per-second):`, {
-          m: r.metal?.production, c: r.crystal?.production, d: r.deuterium?.production,
-        });
-      } catch (e) {
-        console.log(`[OgameX] reloadResources parse error:`, (e as Error).message);
+      try { JSON.parse(m[1]); } catch (e) {
+        console.warn(`[OgameX] reloadResources parse error:`, (e as Error).message);
       }
       break;
     }
@@ -1047,18 +1032,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         researchqueue?: Array<{ technologyId?: number; level?: number; endTime?: number; name?: string }>;
         shipyardqueue?: Array<{ technologyId?: number; count?: number; endTime?: number; name?: string }>;
       };
-      // Diagnostic: dump top-level keys so we can see if slots are in here.
-      // Logged once per boot — gated to avoid log spam.
-      if (!(window as Window & { __ogamexDumpedFR?: boolean }).__ogamexDumpedFR) {
-        (window as Window & { __ogamexDumpedFR?: boolean }).__ogamexDumpedFR = true;
-        console.log(`[OgameX/api-poll] fetchResources top-level keys: ${Object.keys(j).join(",")}`);
-        // Look for any slot/fleet/expedition keys
-        for (const k of Object.keys(j)) {
-          if (/slot|fleet|exped|movement/i.test(k)) {
-            console.log(`[OgameX/api-poll]  ${k} = ${JSON.stringify(j[k]).slice(0, 200)}`);
-          }
-        }
-      }
+      // (fetchResources top-level key dump silenced — schema stable.)
       const cur = store.state;
       const patch: Partial<typeof cur> = {};
       // Resources — route to ACTIVE planet (per-planet, like buildings/ships).
@@ -1464,12 +1438,6 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           }
           if (Number.isFinite(n) && n >= 0) ships[name] = n;
         }
-        // One-shot dump: show raw value for 203 + parsed result.
-        if (!(env.win as Window & { __ogamexLcKeyDumped?: boolean }).__ogamexLcKeyDumped && (ships.largeCargo ?? 0) > 0) {
-          (env.win as Window & { __ogamexLcKeyDumped?: boolean }).__ogamexLcKeyDumped = true;
-          const raw203 = (planet as Record<string, unknown>)["203"];
-          console.warn(`[empire/raw-203] pid=${pid} raw=${JSON.stringify(raw203)} type=${typeof raw203} parsed-lc=${ships.largeCargo}`);
-        }
         if (Object.keys(ships).length > 0) {
           patchPlanets[pid] = { ...patchPlanets[pid], ships: { ...patchPlanets[pid].ships, ...ships } } as typeof patchPlanets[string];
           updated += 1;
@@ -1478,15 +1446,6 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (updated > 0) {
         store.setPartial({ planets: patchPlanets });
         (env.win as Window & { __ogamexStore?: typeof store }).__ogamexStore = store;
-        // RACE-TRACE: log lc per planet at t+0, t+100ms, t+500ms, t+2s.
-        // If t+0 shows 1500 but later shows 1, an async writer is racing.
-        const snap = (): string => Object.entries(store.state.planets ?? {})
-          .map(([k, p]) => `${k}=${(p as { ships?: Record<string, number> }).ships?.largeCargo ?? "?"}`)
-          .join(",");
-        console.warn(`[lc-race] t+0: ${snap()}`);
-        setTimeout(() => console.warn(`[lc-race] t+100ms: ${snap()}`), 100);
-        setTimeout(() => console.warn(`[lc-race] t+500ms: ${snap()}`), 500);
-        setTimeout(() => console.warn(`[lc-race] t+2000ms: ${snap()}`), 2000);
       }
     } catch (e) {
       console.warn(`[OgameX/empire] fetch failed:`, e);
