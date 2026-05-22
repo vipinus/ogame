@@ -41,6 +41,108 @@ const ENERGY_GATED_BUILDINGS: ReadonlySet<string> = new Set([
  * ("33657770") or canonical coord string ("1:190:6"). Falls back to undefined
  * if neither lookup matches — callers must handle that.
  */
+
+// ─── Resource strategy: wait vs mine upgrade ─────────────────────────────
+// When resources are insufficient for a build/research/ship, the planner
+// can either (A) wait for production to accumulate, or (B) upgrade the
+// bottleneck mine to a higher level first (more production, but mine
+// itself costs resources + build time). This helper computes BOTH options'
+// total seconds and returns the cheaper path. Used by planBuild,
+// planBuildShipsGoal, planLifeformBuildingGoal.
+//
+// Returns:
+//   { action: "wait" }                       — direct wait is faster (or equal)
+//   { action: "upgrade_mine", mine: <name> } — upgrade this mine first
+function pickResourceStrategy(
+  planet: Planet,
+  cost: { m: number; c: number; d: number; e: number },
+  universeSpeed: number,
+): { action: "wait" } | { action: "upgrade_mine"; mine: string } {
+  const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
+  const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
+  // (A) Direct wait time = max across short resources
+  const waitTime = (short: { m: number; c: number; d: number }) => {
+    const tM = (prod.m_h ?? 0) > 0 ? short.m / (prod.m_h ?? 1) * 3600 : (short.m > 0 ? Infinity : 0);
+    const tC = (prod.c_h ?? 0) > 0 ? short.c / (prod.c_h ?? 1) * 3600 : (short.c > 0 ? Infinity : 0);
+    const tD = (prod.d_h ?? 0) > 0 ? short.d / (prod.d_h ?? 1) * 3600 : (short.d > 0 ? Infinity : 0);
+    return Math.max(tM, tC, tD, 0);
+  };
+  const shortDirect = {
+    m: Math.max(0, cost.m - r.m),
+    c: Math.max(0, cost.c - r.c),
+    d: Math.max(0, cost.d - r.d),
+  };
+  const waitA = waitTime(shortDirect);
+  if (waitA === 0) return { action: "wait" }; // already affordable
+  // Per-level build duration formula (uses robotics + nanite factors).
+  const robotics = planet.buildings?.["roboticsFactory"] ?? 0;
+  const nanite = planet.buildings?.["naniteFactory"] ?? 0;
+  const buildSec = (c: { m: number; c: number }) => {
+    const denom = 2500 * (1 + robotics) * Math.pow(2, nanite) * Math.max(1, universeSpeed);
+    return denom > 0 ? ((c.m + c.c) / denom) * 3600 : 3600;
+  };
+  // Mine production at level L (ogame standard, ignoring temperature for D).
+  const mineProdAt = (mine: string, lvl: number): number => {
+    if (lvl <= 0) return 0;
+    if (mine === "metalMine") return 30 * lvl * Math.pow(1.1, lvl) * universeSpeed;
+    if (mine === "crystalMine") return 20 * lvl * Math.pow(1.1, lvl) * universeSpeed;
+    if (mine === "deuteriumSynth") return 10 * lvl * Math.pow(1.1, lvl) * universeSpeed;
+    return 0;
+  };
+  // (B) For each candidate mine, compute total = upgrade time + remainder wait.
+  const candidates: Array<{ mine: string; total: number }> = [];
+  for (const mine of ["metalMine", "crystalMine", "deuteriumSynth"]) {
+    // Skip if this mine doesn't fix the bottleneck. Pick by which resource
+    // is short relative to cost.
+    const currLvl = planet.buildings?.[mine] ?? 0;
+    if (currLvl >= 35) continue; // upgrade cost gets pathological at high levels
+    const tech = TECH_TREE[mine];
+    if (!tech || typeof tech.cost_at !== "function") continue;
+    const mineCost = tech.cost_at(currLvl + 1);
+    const mineCostMC = { m: mineCost.m, c: mineCost.c, d: mineCost.d };
+    // Time to afford the mine upgrade (we don't have it yet either)
+    const mineShort = {
+      m: Math.max(0, mineCostMC.m - r.m),
+      c: Math.max(0, mineCostMC.c - r.c),
+      d: Math.max(0, mineCostMC.d - r.d),
+    };
+    const mineWait = waitTime(mineShort);
+    if (!Number.isFinite(mineWait)) continue;
+    const mineBuild = buildSec(mineCost);
+    const mineUpgradeTotal = mineWait + mineBuild;
+    // Resources accumulated during the upgrade + remaining after paying mine cost.
+    const resAfter = {
+      m: r.m + (prod.m_h ?? 0) * mineUpgradeTotal / 3600 - mineCostMC.m,
+      c: r.c + (prod.c_h ?? 0) * mineUpgradeTotal / 3600 - mineCostMC.c,
+      d: r.d + (prod.d_h ?? 0) * mineUpgradeTotal / 3600 - mineCostMC.d,
+    };
+    // New production rates (only the upgraded mine increases; others unchanged).
+    const newProd = {
+      m_h: mine === "metalMine" ? mineProdAt(mine, currLvl + 1) : (prod.m_h ?? 0),
+      c_h: mine === "crystalMine" ? mineProdAt(mine, currLvl + 1) : (prod.c_h ?? 0),
+      d_h: mine === "deuteriumSynth" ? mineProdAt(mine, currLvl + 1) : (prod.d_h ?? 0),
+    };
+    const shortAfter = {
+      m: Math.max(0, cost.m - resAfter.m),
+      c: Math.max(0, cost.c - resAfter.c),
+      d: Math.max(0, cost.d - resAfter.d),
+    };
+    const waitAfter = ((): number => {
+      const tM = newProd.m_h > 0 ? shortAfter.m / newProd.m_h * 3600 : (shortAfter.m > 0 ? Infinity : 0);
+      const tC = newProd.c_h > 0 ? shortAfter.c / newProd.c_h * 3600 : (shortAfter.c > 0 ? Infinity : 0);
+      const tD = newProd.d_h > 0 ? shortAfter.d / newProd.d_h * 3600 : (shortAfter.d > 0 ? Infinity : 0);
+      return Math.max(tM, tC, tD, 0);
+    })();
+    if (!Number.isFinite(waitAfter)) continue;
+    candidates.push({ mine, total: mineUpgradeTotal + waitAfter });
+  }
+  const best = candidates.sort((a, b) => a.total - b.total)[0];
+  if (best && best.total < waitA) {
+    return { action: "upgrade_mine", mine: best.mine };
+  }
+  return { action: "wait" };
+}
+
 export function resolvePlanet(ref: string | undefined, state: WorldState): Planet | undefined {
   if (!ref) return undefined;
   const direct = state.planets?.[ref];
@@ -153,11 +255,32 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
     }
   }
 
-  // No auto-recurse to mine upgrades for lifeform goals: next-level mine
-  // usually costs MORE than the lf we want, leading to a worse deadlock
-  // (home build slot claimed by impossible mine, lf queue never moves).
-  // Operator policy: trust the lf goal — emit directly. ogame returns
-  // "資源不足" until crystal accumulates; lf queue stays clear meanwhile.
+  // Resource strategy — cost-aware comparator (wait vs upgrade mine).
+  // Executes optimal path deterministically (block on wait, no doomed POST).
+  const costFnLf = entry.cost_at as ((l: number) => { m: number; c: number; d?: number; e?: number }) | undefined;
+  if (costFnLf) {
+    const rawCost = costFnLf(current + 1);
+    const lfCost = { m: rawCost.m, c: rawCost.c, d: rawCost.d ?? 0, e: rawCost.e ?? 0 };
+    const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
+    const affordable = r.m >= lfCost.m && r.c >= lfCost.c && r.d >= lfCost.d;
+    if (!affordable) {
+      const universeSpeed = state.server?.speed ?? 1;
+      const strategy = pickResourceStrategy(planet, lfCost, universeSpeed);
+      if (strategy.action === "upgrade_mine") {
+        const currentLvl = (planet.buildings as Record<string, number>)[strategy.mine] ?? 0;
+        const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;
+        const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id };
+        return planBuild(strategy.mine, currentLvl + 1, planet.id, ctx);
+      }
+      const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
+      const sM = Math.max(0, lfCost.m - r.m), sC = Math.max(0, lfCost.c - r.c), sD = Math.max(0, lfCost.d - r.d);
+      const tM = (prod.m_h ?? 0) > 0 ? sM / (prod.m_h ?? 1) * 3600 : (sM > 0 ? 999999 : 0);
+      const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
+      const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
+      const wait = Math.round(Math.max(tM, tC, tD));
+      return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
+    }
+  }
 
   // Emit directive — reuse "build" action (ApiExec routes scheduleEntry).
   const techId = nameToId(building);
@@ -368,6 +491,32 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
     }
   }
 
+  // Resource strategy — same wait-vs-upgrade-mine comparison as for ships/lf.
+  // For mine builds themselves the inner check is degenerate (the mine
+  // would need to upgrade itself), pickResourceStrategy excludes that.
+  const costFn = entry.cost_at as ((l: number) => { m: number; c: number; d?: number; e?: number }) | undefined;
+  if (costFn && !["metalMine", "crystalMine", "deuteriumSynth"].includes(building)) {
+    const rawCost = costFn(nextLevel);
+    const buildCost = { m: rawCost.m, c: rawCost.c, d: rawCost.d ?? 0, e: rawCost.e ?? 0 };
+    const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
+    const affordable = r.m >= buildCost.m && r.c >= buildCost.c && r.d >= buildCost.d;
+    if (!affordable) {
+      const universeSpeed = ctx.state.server?.speed ?? 1;
+      const strategy = pickResourceStrategy(planet, buildCost, universeSpeed);
+      if (strategy.action === "upgrade_mine") {
+        const currentLvl = planet.buildings?.[strategy.mine] ?? 0;
+        return planBuild(strategy.mine, currentLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
+      }
+      const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
+      const sM = Math.max(0, buildCost.m - r.m), sC = Math.max(0, buildCost.c - r.c), sD = Math.max(0, buildCost.d - r.d);
+      const tM = (prod.m_h ?? 0) > 0 ? sM / (prod.m_h ?? 1) * 3600 : (sM > 0 ? 999999 : 0);
+      const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
+      const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
+      const wait = Math.round(Math.max(tM, tC, tD));
+      return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
+    }
+  }
+
   return makeBuildDirective(building, nextLevel, planetId, ctx);
 }
 
@@ -422,23 +571,30 @@ function planBuildShipsGoal(goal: Goal, state: WorldState): PlanResult {
   const shipEntry = TECH_TREE[ship];
   const cost = shipEntry?.cost_at ? shipEntry.cost_at(1) : null;
   if (cost) {
-    const totalCost = { m: cost.m * amount, c: cost.c * amount, d: cost.d * amount };
+    const totalCost = { m: cost.m * amount, c: cost.c * amount, d: cost.d * amount, e: cost.e * amount };
     const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
-    const shortM = totalCost.m - r.m;
-    const shortC = totalCost.c - r.c;
-    const shortD = totalCost.d - r.d;
-    // Only trigger when SIGNIFICANTLY short (> 30% of cost) — accumulation
-    // handles small shortfalls. Pick the worst-shortfall resource.
-    const worst = [
-      { name: "metalMine", short: shortM, cost: totalCost.m },
-      { name: "crystalMine", short: shortC, cost: totalCost.c },
-      { name: "deuteriumSynth", short: shortD, cost: totalCost.d },
-    ].filter((x) => x.cost > 0 && x.short > x.cost * 0.3).sort((a, b) => b.short - a.short)[0];
-    if (worst) {
-      const currentLvl = (planet.buildings as Record<string, number>)[worst.name] ?? 0;
-      const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;
-      const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id };
-      return planBuild(worst.name, currentLvl + 1, planet.id, ctx);
+    const affordable = r.m >= totalCost.m && r.c >= totalCost.c && r.d >= totalCost.d;
+    if (!affordable) {
+      // Resource-bound. pickResourceStrategy compares (wait) vs (upgrade-mine-then-wait)
+      // and returns the faster path. Execute it deterministically:
+      //   upgrade_mine → recurse into mine build
+      //   wait         → block (don't emit a doomed POST), include eta in reason
+      const universeSpeed = state.server?.speed ?? 1;
+      const strategy = pickResourceStrategy(planet, totalCost, universeSpeed);
+      if (strategy.action === "upgrade_mine") {
+        const currentLvl = (planet.buildings as Record<string, number>)[strategy.mine] ?? 0;
+        const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;
+        const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id };
+        return planBuild(strategy.mine, currentLvl + 1, planet.id, ctx);
+      }
+      // wait path → block. Compute remaining wait seconds for the reason.
+      const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
+      const sM = Math.max(0, totalCost.m - r.m), sC = Math.max(0, totalCost.c - r.c), sD = Math.max(0, totalCost.d - r.d);
+      const tM = (prod.m_h ?? 0) > 0 ? sM / (prod.m_h ?? 1) * 3600 : (sM > 0 ? 999999 : 0);
+      const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
+      const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
+      const wait = Math.round(Math.max(tM, tC, tD));
+      return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
     }
   }
 

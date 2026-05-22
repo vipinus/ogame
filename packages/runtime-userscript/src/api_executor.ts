@@ -523,6 +523,15 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     directive: Directive,
     planetId: string,
   ): Promise<{ action: string; clicked: boolean }> {
+    // Fresh empire data BEFORE deciding — daemon's "ships sufficient" gate
+    // is based on state.ships, which may be stale. Trigger an empire refetch
+    // so the next daemon tick (and any consumer reading store) sees truth.
+    // Fire-and-forget: don't block sendFleet on this; the empire result
+    // updates state asynchronously and serves the NEXT decision.
+    const pollEmpire = (this.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire;
+    if (typeof pollEmpire === "function") {
+      void pollEmpire().catch(() => { /* ignore — non-critical */ });
+    }
     const params = directive.params as {
       source_coords?: string;
       ships?: Record<string, number>;

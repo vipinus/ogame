@@ -495,7 +495,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.160";
+  const USERSCRIPT_VERSION = "0.0.165";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   console.log(`[OgameX] meta probes: speed=${ogame_meta.universe_speed} fleet_p=${metaSpeedFleetP} fleet_w=${metaSpeedFleetW} fleet_h=${metaSpeedFleetH}`);
   const _prod = extractProduction(env.doc);
@@ -1292,6 +1292,43 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (Object.keys(patch).length > 0) store.setPartial(patch);
       }
 
+      // 1.5) Ship counts — when fetching shipyard/fleetdispatch page, parse
+      // li.technology[data-technology=20x] (ship IDs 202..219) to get real
+      // ship inventory for the planet we just fetched (cp=planetId). Without
+      // this, ships are only extracted at boot (3 fixed timers) and stay
+      // stale forever — daemon sees sc=0 even when ogame has 80.
+      if (page === "shipyard" || page === "fleetdispatch") {
+        const ships: Record<string, number> = {};
+        const shipLis = parsedDoc.querySelectorAll<HTMLElement>('li.technology[data-technology]');
+        for (const li of shipLis) {
+          const tidStr = li.getAttribute("data-technology") ?? "";
+          const tid = parseInt(tidStr, 10);
+          if (!tid || tid < 200 || tid >= 300) continue; // ship range only
+          const name = TECH_ID_TO_NAME[tidStr];
+          if (!name) continue;
+          // Ship counts live in `.amount` (input value) or class="amount".
+          const amountEl = li.querySelector<HTMLInputElement>('input.amount, .amount, .level');
+          let v = 0;
+          if (amountEl && (amountEl as HTMLInputElement).value) {
+            v = parseInt((amountEl as HTMLInputElement).value, 10) || 0;
+          } else if (amountEl) {
+            v = parseInt((amountEl.textContent ?? "").replace(/[^\d]/g, ""), 10) || 0;
+          }
+          if (v >= 0) ships[name] = v;
+        }
+        const cur2 = store.state;
+        const targetP = planetId ? cur2.planets[planetId] : undefined;
+        if (targetP && planetId && Object.keys(ships).length > 0) {
+          store.setPartial({
+            planets: {
+              ...cur2.planets,
+              [planetId]: { ...targetP, ships: { ...(targetP.ships ?? {}), ...ships } },
+            },
+          });
+          console.log(`[OgameX/refresh] ships from ${page} for ${planetId}: ${JSON.stringify(ships)}`);
+        }
+      }
+
       // 2) Active queue from this page (research_q / build_q / shipyard_q).
       //    Looking for li.technology[data-status="active"].
       const actives = parsedDoc.querySelectorAll<HTMLElement>('li.technology[data-status="active"]');
@@ -1329,6 +1366,20 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             store.setPartial({ planets: { ...cur2.planets, [planetId]: updatedPlanet } });
             console.log(`[OgameX/bg] shipyard queue refreshed (planet ${planetId}): ${name}`);
           }
+        } else if (kind2 === "lifeform_building") {
+          // Lifeform queue on the page's planet — ogame's lf queue is
+          // independent of the supplies/facilities queue, so we track it
+          // in a separate field. Without this, lifeform_building goals
+          // never have an ETA.
+          const cur2 = store.state;
+          const target = planetId ? cur2.planets[planetId] : undefined;
+          if (target && planetId) {
+            const lfBldg = (target as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {};
+            const target_level = (lfBldg[name] ?? 0) + 1;
+            const updatedPlanet = { ...target, lf_build_q: { building: name, technology_id, level: target_level, ends_at } } as typeof target & { lf_build_q: unknown };
+            store.setPartial({ planets: { ...cur2.planets, [planetId]: updatedPlanet } });
+            console.log(`[OgameX/bg] lf queue refreshed (planet ${planetId}): ${name} L${target_level}`);
+          }
         } else {
           // building queue on the page's planet (cp=planetId)
           const cur2 = store.state;
@@ -1341,10 +1392,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           }
         }
       }
-      // 3) If this page is research/supplies/facilities and NO active li,
-      //    clear stale queue. Stale build_q blocks dispatch indefinitely
-      //    after operator cancels in ogame UI.
-      if (!foundActive && (page === "research" || page === "supplies" || page === "facilities")) {
+      // 3) If this page is research/supplies/facilities/lfbuildings and NO
+      //    active li, clear stale queue. Stale q blocks dispatch
+      //    indefinitely after operator cancels in ogame UI.
+      if (!foundActive && (page === "research" || page === "supplies" || page === "facilities" || page === "lfbuildings")) {
         if (page === "research" && store.state.research?.queue) {
           const cur2 = store.state.research;
           store.setPartial({ research: { ...cur2, queue: null } });
@@ -1356,6 +1407,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           if (target && target.build_q) {
             store.setPartial({ planets: { ...cur2.planets, [planetId]: { ...target, build_q: null } } });
             console.log(`[OgameX/bg] build queue CLEARED (planet ${planetId}, page=${page}, no active)`);
+          }
+        }
+        if (page === "lfbuildings" && planetId) {
+          const cur2 = store.state;
+          const target = cur2.planets[planetId] as (typeof cur2.planets[string] & { lf_build_q?: unknown }) | undefined;
+          if (target && target.lf_build_q) {
+            store.setPartial({ planets: { ...cur2.planets, [planetId]: { ...target, lf_build_q: null } as typeof target } });
+            console.log(`[OgameX/bg] lf queue CLEARED (planet ${planetId}, page=${page}, no active)`);
           }
         }
       }
@@ -1375,6 +1434,67 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // guard (60s window after any user click/key) so background refresh
   // doesn't compete with operator's own ogame POSTs.
   setTimeout(refreshOnePage, 8000);
+
+  // Empire view poller — direct ogame standalone empire endpoint.
+  // Returns ALL planets ships + buildings in a single fetch. No per-planet
+  // navigation needed. Most importantly, doesn't set session cp= cookie
+  // (separate "standalone" viewport), so ApiExec session stays intact.
+  // Used to populate state.planets[].ships across the entire empire.
+  async function pollEmpire(): Promise<void> {
+    if (userBusy()) return;
+    try {
+      // Note: planet=0, mode=0 selects ALL planets in v12 empire endpoint.
+      const url = `/game/index.php?page=standalone&component=empire&planetType=0`;
+      const r = await env.win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      if (!r.ok) return;
+      const html = await r.text();
+      // ogame embeds the empire data as JS literal: `var planets = [{...},{...}];`
+      // OR returns rendered HTML with data-attributes. Try JS literal first.
+      const m = html.match(/var\s+planets\s*=\s*(\[[\s\S]*?\]);/);
+      if (!m) {
+        console.warn(`[OgameX/empire] no 'var planets' literal found in response (${html.length}B)`);
+        return;
+      }
+      let data: Array<Record<string, unknown>>;
+      try { data = JSON.parse(m[1]!); } catch (e) { console.warn(`[OgameX/empire] parse JSON failed:`, e); return; }
+      const cur = store.state;
+      const patchPlanets: Record<string, typeof cur.planets[string]> = { ...cur.planets };
+      let updated = 0;
+      for (const planet of data) {
+        const pid = String(planet["id"] ?? "");
+        if (!pid || !patchPlanets[pid]) continue;
+        const ships: Record<string, number> = {};
+        // ogame empire JSON has ship counts keyed by numeric tech id (202, 203, ...).
+        for (const [key, val] of Object.entries(planet)) {
+          const tid = parseInt(key, 10);
+          if (!tid || tid < 200 || tid >= 300) continue;
+          const name = TECH_ID_TO_NAME[String(tid)];
+          if (!name) continue;
+          const n = typeof val === "number" ? val : parseInt(String(val), 10);
+          if (Number.isFinite(n) && n >= 0) ships[name] = n;
+        }
+        if (Object.keys(ships).length > 0) {
+          patchPlanets[pid] = { ...patchPlanets[pid], ships: { ...patchPlanets[pid].ships, ...ships } } as typeof patchPlanets[string];
+          updated += 1;
+        }
+      }
+      if (updated > 0) {
+        store.setPartial({ planets: patchPlanets });
+        console.log(`[OgameX/empire] updated ships for ${updated} planet(s)`);
+      } else {
+        console.log(`[OgameX/empire] response parsed but no ship data extracted (${data.length} planets in response)`);
+      }
+    } catch (e) {
+      console.warn(`[OgameX/empire] fetch failed:`, e);
+    }
+  }
+  // Empire fetch: seed once at +12s. After that, NO periodic polling —
+  // refreshes are event-driven from ApiExec (before sendFleet, after
+  // successful scheduleEntry) so we only hit ogame when state ACTUALLY
+  // needs to change. Idle sessions stay quiet.
+  setTimeout(pollEmpire, 12_000);
+  // Expose globally so ApiExec can request a refresh on demand.
+  (env.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire = pollEmpire;
 
   // One-shot prereq discovery — fetch technologyDetails for every lifeform
   // building on boot and dump real requirements to console. Operator

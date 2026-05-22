@@ -42,6 +42,8 @@ export interface GoalRowFromHttp {
   planet?: string;
   created_at: number;
   updated_at: number;
+  is_main_goal?: boolean;
+  eta_at?: number | null;
 }
 
 export interface GoalsPanelOptions {
@@ -374,10 +376,16 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             </div>`;
           })()
         : "";
+      // ETA from in-flight queue — sidecar computes from build_q /
+      // shipyard_q / lf_build_q / research.queue. Renders "ETA ~X min" if
+      // an ogame queue is actively building for this goal's planet.
+      const etaAtBadge = (typeof g.eta_at === "number" && g.eta_at > Date.now())
+        ? `<span style="color:#ffd700; font-size:10px; margin-left:6px;" title="next step finishes at ${new Date(g.eta_at).toLocaleTimeString()}">⏱ ${fmtSeconds(Math.floor((g.eta_at - Date.now()) / 1000))}</span>`
+        : "";
       return `
         <div style="${mainBg}border-top: 1px solid #2a3a52; padding: 6px 0;">
           <div style="display:flex; align-items:center; gap:6px; justify-content:space-between;">
-            <span>${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span></span>
+            <span>${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${etaAtBadge}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
             <span style="display:flex; gap:4px; flex-wrap:wrap;">${mainBtn}${pauseOrResume}${cancelBtn}</span>
           </div>

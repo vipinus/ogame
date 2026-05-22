@@ -372,10 +372,41 @@ export async function startSidecar(
         const p = planets[ref];
         return Array.isArray(p?.coords) ? p.coords.join(":") : ref;
       };
+      // Per-level build/research duration using ogame's standard formula.
+      // building: t = (cost_m + cost_c) / (2500 * (1+robotics) * 2^nanite) * 3600 / universe_speed
+      // research: t = (cost_m + cost_c) / (1000 * (1+research_lab)) * 3600 / research_speed
+      // Returns seconds (>=0). Falls back to a generous default if state lacks numbers.
+      const universeSpeed = stateRef.current?.server?.speed ?? 1;
+      const researchSpeed = stateRef.current?.server?.research_speed ?? universeSpeed;
+      const perLevelBuildSec = (cost: { m: number; c: number }, planet: { buildings?: Record<string, number> } | undefined): number => {
+        const robotics = planet?.buildings?.["roboticsFactory"] ?? 0;
+        const nanite = planet?.buildings?.["naniteFactory"] ?? 0;
+        const denom = 2500 * (1 + robotics) * Math.pow(2, nanite) * Math.max(1, universeSpeed);
+        if (denom <= 0) return 3600;
+        return ((cost.m + cost.c) / denom) * 3600;
+      };
+      const perLevelResearchSec = (cost: { m: number; c: number }, planet: { buildings?: Record<string, number> } | undefined): number => {
+        const lab = planet?.buildings?.["researchLab"] ?? 0;
+        const denom = 1000 * (1 + lab) * Math.max(1, researchSpeed);
+        if (denom <= 0) return 3600;
+        return ((cost.m + cost.c) / denom) * 3600;
+      };
+      // Resource-wait time: how long until planet's production accumulates
+      // enough to afford this cost. Uses planet.production (per-hour rates).
+      const resourceWaitSec = (cost: { m: number; c: number; d?: number }, planet: { resources?: { m?: number; c?: number; d?: number }; production?: { m_h?: number; c_h?: number; d_h?: number } } | undefined): number => {
+        const r = planet?.resources ?? { m: 0, c: 0, d: 0 };
+        const prod = planet?.production ?? { m_h: 0, c_h: 0, d_h: 0 };
+        const shortM = Math.max(0, cost.m - (r.m ?? 0));
+        const shortC = Math.max(0, cost.c - (r.c ?? 0));
+        const shortD = Math.max(0, (cost.d ?? 0) - (r.d ?? 0));
+        const waitM = (prod.m_h ?? 0) > 0 ? shortM / (prod.m_h ?? 1) * 3600 : (shortM > 0 ? 99999 : 0);
+        const waitC = (prod.c_h ?? 0) > 0 ? shortC / (prod.c_h ?? 1) * 3600 : (shortC > 0 ? 99999 : 0);
+        const waitD = (prod.d_h ?? 0) > 0 ? shortD / (prod.d_h ?? 1) * 3600 : (shortD > 0 ? 99999 : 0);
+        return Math.max(waitM, waitC, waitD);
+      };
       // Build prereq tree for a goal. Walks TECH_TREE (regular) or
       // LIFEFORM_TECH.<species>.buildings (lifeform). Each node carries
-      // current level (from state) + target + met flag. ETA fields stay
-      // null for now — proper computation needs cost/speed integration.
+      // current level (from state) + target + met flag + computed ETAs.
       const buildTree = (
         techName: string,
         targetLevel: number,
@@ -401,12 +432,26 @@ export async function startSidecar(
           const node = buildTree(req, lvl, subKind, planetId);
           if (node) children.push(node);
         }
+        // Self ETA: per-level build/research duration + resource wait,
+        // summed from currentLevel+1 to targetLevel (each level costs more).
+        const techT = tech as { cost_at?: (l: number) => { m: number; c: number; d?: number; e?: number } };
+        let selfEta = 0;
+        if (current < targetLevel && typeof techT.cost_at === "function" && techKind !== "ship" && techKind !== "defense") {
+          for (let l = current + 1; l <= targetLevel; l++) {
+            const cost = techT.cost_at(l);
+            const build = kind === "research" ? perLevelResearchSec(cost, planet) : perLevelBuildSec(cost, planet);
+            const wait = resourceWaitSec(cost, planet);
+            selfEta += build + wait;
+          }
+        }
+        // Subtree = max(child subtree) + self (serial: prereqs must finish before self)
+        const childMax = children.length > 0 ? Math.max(...children.map((c) => c.subtree_eta_seconds ?? 0)) : 0;
         return {
           tech: techName, targetLevel, currentLevel: current, kind,
           met: current >= targetLevel,
           children,
-          eta_seconds: null,
-          subtree_eta_seconds: 0,
+          eta_seconds: Math.round(selfEta),
+          subtree_eta_seconds: Math.round(childMax + selfEta),
         };
       };
       const buildLifeformTree = (
@@ -427,14 +472,81 @@ export async function startSidecar(
           const node = buildLifeformTree(req, lvl, planetId);
           if (node) children.push(node);
         }
+        // Self ETA for lifeform: lf catalog has cost_at; duration uses same
+        // building formula (lf builds are slightly faster but approximate).
+        const costFn = entry.cost_at as ((l: number) => { m: number; c: number; d?: number; e?: number }) | undefined;
+        let selfEta = 0;
+        if (current < targetLevel && typeof costFn === "function") {
+          for (let l = current + 1; l <= targetLevel; l++) {
+            const cost = costFn(l);
+            const build = perLevelBuildSec(cost, planet);
+            const wait = resourceWaitSec(cost, planet);
+            selfEta += build + wait;
+          }
+        }
+        const childMax = children.length > 0 ? Math.max(...children.map((c) => c.subtree_eta_seconds ?? 0)) : 0;
         return {
           tech: buildingName, targetLevel, currentLevel: current,
           kind: "building",
           met: current >= targetLevel,
           children,
-          eta_seconds: null,
-          subtree_eta_seconds: 0,
+          eta_seconds: Math.round(selfEta),
+          subtree_eta_seconds: Math.round(childMax + selfEta),
         };
+      };
+      // Compute eta_at from ogame's in-flight queue for this goal's planet.
+      // STRICT match: ETA returned only when an in-flight queue item's name
+      // matches this goal's target OR a building in this goal's prereq tree
+      // (planner may dispatch a prereq directive on any queue). Multiple
+      // goals on the same planet now show distinct, accurate ETAs instead of
+      // all displaying the same unrelated queue end.
+      const computeEta = (
+        goal: { type: string; target: unknown; planet?: unknown },
+        prereqNames: Set<string>,
+      ): number | null => {
+        const planetId = (() => {
+          const ref = typeof goal.planet === "string" ? goal.planet : undefined;
+          if (!ref) return undefined;
+          if (/^\d+:\d+:\d+$/.test(ref)) {
+            for (const [id, p] of Object.entries(planets)) {
+              const c = (p as { coords?: readonly number[] } | undefined)?.coords;
+              if (Array.isArray(c) && c.join(":") === ref) return id;
+            }
+            return undefined;
+          }
+          return ref;
+        })();
+        const p = planetId ? planets[planetId] as { build_q?: { ends_at?: number; building?: string }; shipyard_q?: { ends_at?: number; ship?: string }; lf_build_q?: { ends_at?: number; building?: string } } | undefined : undefined;
+        const tgt = goal.target as { building?: string; ship?: string; tech?: string };
+        const now = Date.now();
+        if (goal.type === "build" || goal.type === "lifeform_building") {
+          if (p?.build_q?.building && (p.build_q.building === tgt.building || prereqNames.has(p.build_q.building)) && p.build_q.ends_at && p.build_q.ends_at > now) {
+            return p.build_q.ends_at;
+          }
+          if (p?.lf_build_q?.building && (p.lf_build_q.building === tgt.building || prereqNames.has(p.lf_build_q.building)) && p.lf_build_q.ends_at && p.lf_build_q.ends_at > now) {
+            return p.lf_build_q.ends_at;
+          }
+        }
+        if (goal.type === "build_ships") {
+          const sq = p?.shipyard_q;
+          if (sq && sq.ship === tgt.ship && sq.ends_at && sq.ends_at > now) {
+            return sq.ends_at;
+          }
+          const bq2 = p?.build_q;
+          if (bq2 && bq2.building && prereqNames.has(bq2.building) && bq2.ends_at && bq2.ends_at > now) {
+            return bq2.ends_at;
+          }
+        }
+        if (goal.type === "research") {
+          const rq = stateRef.current?.research?.queue as { ends_at?: number; tech?: string } | undefined;
+          if (rq && rq.tech === tgt.tech && rq.ends_at && rq.ends_at > now) return rq.ends_at;
+        }
+        return null;
+      };
+      const collectPrereqNames = (node: PrereqTreeNode | null, out: Set<string>): void => {
+        if (!node) return;
+        if (!node.met) out.add(node.tech);
+        for (const c of node.children) collectPrereqNames(c, out);
       };
       return goalsStore.list().map((r) => {
         const target = r.goal.target as { tech?: string; building?: string; level?: number; target_level?: number };
@@ -473,6 +585,11 @@ export async function startSidecar(
           is_main_goal: r.goal.is_main_goal === true,
           created_at: r.created_at,
           updated_at: r.updated_at,
+          eta_at: (() => {
+            const names = new Set<string>();
+            collectPrereqNames(prereq_tree, names);
+            return computeEta(r.goal as { type: string; target: unknown; planet?: unknown }, names);
+          })(),
           prereq_tree,
         };
       });
@@ -589,20 +706,23 @@ export async function startSidecar(
       debug.recordEvent(m);
       if (m.type === "event.directive_completed") {
         debug.recordComplete(m.directive_id, m.result);
-        // Propagate ack to goalsStore — without this, failed ApiExec POSTs
-        // leave goals "active" forever, sidecar merger re-dispatches each
-        // cooldown cycle, and ogame anti-bot eventually trips. Map directive
-        // ID back to its goal and update status.
+        // Propagate FAILED acks only — let planner detect "completed" via
+        // state (next tick sees building/research at target). Marking goals
+        // "completed" from ack:success was a bug: ApiExec acks success when
+        // ogame ACCEPTS THE POST, but the goal's true target may need a
+        // prereq sub-directive first, OR multiple level steps. Marking the
+        // root goal completed on first ack lost the user's higher target.
         const goalId = directiveToGoal.get(m.directive_id);
         if (goalId) {
           directiveToGoal.delete(m.directive_id);
           const result = m.result as { success?: boolean; error?: string } | undefined;
-          if (result?.success === true) {
-            goalsStore.updateStatus(goalId, "completed");
-          } else if (result?.success === false) {
+          if (result?.success === false) {
             const reason = String(result?.error ?? "ApiExec failed (no reason)").slice(0, 400);
             goalsStore.updateStatus(goalId, "blocked", reason);
           }
+          // success:true → no status change; next merger tick re-plans, and
+          // planner's terminal check ("already at or above target") will
+          // mark completed when actual state catches up.
         }
       }
       for (const h of set) {
