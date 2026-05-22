@@ -494,7 +494,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.194";
+  const USERSCRIPT_VERSION = "0.0.195";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1236,10 +1236,21 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const buildings: Record<string, number> = {};
         const research: Record<string, number> = {};
         const lifeform_buildings: Record<string, number> = {};
+        // Detect species from lifeform tech ID prefix:
+        //   111xx = humans  121xx = rocktal  131xx = mechas  141xx = kaelesh
+        let detectedSpecies: string | null = null;
         for (const [id, lvl] of Object.entries(techMap)) {
           const techId = TECH_ID_BY_NAME[id];
           if (techId !== undefined && idKind(techId) === "lifeform_building") {
             lifeform_buildings[id] = lvl;
+            if (lvl > 0 && detectedSpecies === null) {
+              const prefix = Math.floor(techId / 1000);
+              detectedSpecies = prefix === 11 ? "humans"
+                : prefix === 12 ? "rocktal"
+                : prefix === 13 ? "mechas"
+                : prefix === 14 ? "kaelesh"
+                : null;
+            }
             continue;
           }
           const entry = (TECH_TREE as Record<string, { kind: string }>)[id];
@@ -1251,6 +1262,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const patch: Partial<typeof cur> = {};
         const targetPlanet = planetId ? cur.planets[planetId] : undefined;
         if (targetPlanet && planetId && (Object.keys(buildings).length > 0 || Object.keys(lifeform_buildings).length > 0)) {
+          const existingLf = (targetPlanet as { lifeform?: { species?: string } | null }).lifeform ?? null;
+          const lifeformPatch = detectedSpecies !== null && (existingLf === null || existingLf.species !== detectedSpecies)
+            ? { lifeform: { ...(existingLf ?? {}), species: detectedSpecies } }
+            : {};
           patch.planets = {
             ...cur.planets,
             [planetId]: {
@@ -1259,8 +1274,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               ...(Object.keys(lifeform_buildings).length > 0 ? {
                 lifeform_buildings: { ...((targetPlanet as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {}), ...lifeform_buildings }
               } : {}),
+              ...lifeformPatch,
             } as typeof targetPlanet,
           };
+          if (detectedSpecies !== null) {
+            console.info(`[OgameX/species] planet ${planetId}: detected species=${detectedSpecies}`);
+          }
         }
         if (Object.keys(research).length > 0) {
           patch.research = { ...cur.research, levels: { ...(cur.research?.levels ?? {}), ...research } };
