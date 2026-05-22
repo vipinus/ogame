@@ -76,9 +76,44 @@ function parseCoordsStr(s: unknown): readonly [number, number, number] | null {
 
 function parseEventBoxResponse(text: string, ownPlayerId: number | null): IncomingEvent[] {
   if (!text || typeof text !== "string") return [];
-  let data: { events?: OgameEventLike[]; event?: OgameEventLike[]; html?: string; eventBox?: string; eventbox?: string; content?: string; [k: string]: unknown } | null = null;
+  let data: { events?: OgameEventLike[]; event?: OgameEventLike[]; html?: string; eventBox?: string; eventbox?: string; content?: string; hostile?: number | string; neutral?: number | string; friendly?: number | string; [k: string]: unknown } | null = null;
   try { data = JSON.parse(text); } catch { /* HTML path */ }
   const out: IncomingEvent[] = [];
+
+  // PATH 0: top-level hostile/neutral counts — these drive ogame's own
+  // triangle-alert flashing. When present, they reflect the actual UI
+  // signal independent of per-event details. If hostile > 0 we ALWAYS
+  // raise an alert even if events[] is empty (which can happen for 0%-
+  // detection spy probes whose detection is post-arrival).
+  if (data && (data.hostile !== undefined || data.neutral !== undefined)) {
+    const hostileN = parseInt(String(data.hostile ?? 0), 10) || 0;
+    const neutralN = parseInt(String(data.neutral ?? 0), 10) || 0;
+    if (hostileN > 0) {
+      out.push({
+        id: `evbox-counts-hostile`,
+        type: "attack",
+        hostile: true,
+        from: [0, 0, 0] as const,
+        to: [0, 0, 0] as const,
+        arrives_at: Math.floor(Date.now() / 1000),
+        ships_count: "?",
+      });
+    }
+    if (neutralN > 0) {
+      // Neutrals are typically incoming fleets we can't classify yet
+      // (e.g. unidentified probes). Surface as spy entry — no alarm,
+      // but visible in events_incoming + sidecar /v1/emergency feed.
+      out.push({
+        id: `evbox-counts-neutral`,
+        type: "spy",
+        hostile: false,
+        from: [0, 0, 0] as const,
+        to: [0, 0, 0] as const,
+        arrives_at: Math.floor(Date.now() / 1000),
+        ships_count: "?",
+      });
+    }
+  }
 
   // PATH 1: structured events array
   let events: OgameEventLike[] | null = null;
@@ -285,7 +320,11 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     };
   }
 
-  // --- watchdog: self-fetch when ogame poll stalls ---
+  // --- Active self-fetch (FAST PATH) ---
+  // ogame's own JS polls fetchEventBox every 5s. To beat that latency (the
+  // operator pointed out: "网页不刷新时延时大"), we ALSO self-fetch every
+  // 3s independently. The fetch hook intercepts BOTH our own self-fetches
+  // AND ogame's native polls, so detection runs at ~3s effective cadence.
   let pendingSelfFetch = false;
   async function selfFetch(): Promise<void> {
     if (pendingSelfFetch || stopped) return;
@@ -302,6 +341,16 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     } catch (e) { console.warn("[OgameX/eventbox-hook] selfFetch failed", e); }
     finally { pendingSelfFetch = false; }
   }
+  // Fast active poll: 3s — gives <3s detection latency for triangle/spy
+  // events. Cost: 20 req/min vs ogame's own 12 req/min = ~32 total. Below
+  // ogame WAF tolerance for ajax endpoints.
+  const activeId = setInterval(() => {
+    if (stopped) return;
+    void selfFetch();
+  }, 3000);
+  // Watchdog kept as defensive backup — fires extra self-fetch only if
+  // ogame's own poll has STALLED beyond the gap (tab backgrounded → both
+  // active poll and ogame's poll throttle).
   const watchdogId = setInterval(() => {
     if (stopped) return;
     const gap = Date.now() - lastNativeHit;
@@ -402,6 +451,7 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     stop(): void {
       stopped = true;
       clearInterval(watchdogId);
+      clearInterval(activeId);
       clearInterval(installRetry);
       if (mo) { mo.disconnect(); mo = null; }
       win.document.removeEventListener("visibilitychange", visHandler);
