@@ -145,14 +145,18 @@ export async function wireBridge(
       : "?";
     const md = `🚨 **ATTACK** ${fromStr} → ${toStr} arrival=${eta} (event=${p.event_id ?? "?"})`;
     try {
-      client.send({
+      const ret = client.send({
         type: "event.emergency",
         subtype: "attack",
         data: payload,
         markdown_report: md,
       });
+      if (ret && typeof (ret as Promise<unknown>).then === "function") {
+        (ret as Promise<unknown>)
+          .catch((e: unknown) => console.warn(`[wireBridge] attack push FAILED`, e));
+      }
     } catch (e) {
-      console.warn("[wireBridge] attack forward failed", e);
+      console.warn("[wireBridge] attack forward threw", e);
     }
   });
   const offSpy = boot.bus.on("emergency.spy", (payload: unknown) => {
@@ -169,14 +173,20 @@ export async function wireBridge(
       : "?";
     const md = `🛰️ **SPY PROBE** ${fromStr} → ${toStr} arrival=${eta} (event=${p.event_id ?? "?"})`;
     try {
-      client.send({
+      const ret = client.send({
         type: "event.emergency",
         subtype: "spy",
         data: payload,
         markdown_report: md,
       });
+      // client.send returns Promise; surface failures so operator notices
+      // (success path is silent — Discord arrival is the success signal).
+      if (ret && typeof (ret as Promise<unknown>).then === "function") {
+        (ret as Promise<unknown>)
+          .catch((e: unknown) => console.warn(`[wireBridge] spy push FAILED`, e));
+      }
     } catch (e) {
-      console.warn("[wireBridge] spy forward failed", e);
+      console.warn("[wireBridge] spy forward threw", e);
     }
   });
 
