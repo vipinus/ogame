@@ -512,7 +512,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.196";
+  const USERSCRIPT_VERSION = "0.0.197";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1173,11 +1173,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   setTimeout(() => { void pollFetchResources(); }, 1500);
   setInterval(() => { if (!userBusy()) void pollFetchResources(); }, 5000);
 
-  // Expedition mail poller — fetch subtab 22 (expedition reports),
-  // classify outcomes, push stats so daemon can throttle on danger.
-  // Per "不要猜" feedback: log RAW response first time so we see real
-  // JSON shape before writing the parser.
-  async function pollExpeditionMails(): Promise<void> {
+  // Expedition mail poller — DISABLED per operator. Function kept for
+  // re-enable if needed; the schedule calls below are commented out.
+  // Rationale: stats were classified but never consumed by anything
+  // critical (just localStorage write), so the every-5min fetch + log
+  // wasn't load-bearing. If a danger-rate throttle is wanted later,
+  // re-enable by uncommenting the setTimeout+setInterval.
+  /* eslint-disable @typescript-eslint/no-unused-vars */
+  async function _pollExpeditionMails_DISABLED(): Promise<void> {
     try {
       const url = `/game/index.php?page=componentOnly&component=messages&asJson=1&action=getMessagesList`;
       const resp = await env.win.fetch(url, {
@@ -1190,9 +1193,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const txt = await resp.text();
       try {
         const j = JSON.parse(txt) as { status?: string; messages?: unknown; messagesContent?: unknown; components?: unknown };
-        // (diagnostic key-dumps removed — parser stable)
         const msgs = (j as { messages?: unknown[] }).messages;
-        // Stage 2: pattern-classify using user-provided keywords
         const SAFE_RE = /未被探索|第一批|未探索|virgin|unexplored/i;
         const DANGER_RE = /遇到其他人|已經先來過|已经先来过|有人.*先到|pirate|hostile|encountered/i;
         let safe = 0, danger = 0, total = 0;
@@ -1204,17 +1205,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (Array.isArray(msgs)) for (const m of msgs) scan(JSON.stringify(m));
         const rate = total > 0 ? danger / total : 0;
         console.log(`[OgameX/mail-poll] outcomes: safe=${safe} danger=${danger} total=${total} danger_rate=${(rate*100).toFixed(0)}%`);
-        // Persist to localStorage for sidecar / daemon visibility
-        try {
-          localStorage.setItem("OGAMEX_EXP_STATS", JSON.stringify({ safe, danger, total, rate, ts: Date.now() }));
-        } catch (_) { void _; }
+        try { localStorage.setItem("OGAMEX_EXP_STATS", JSON.stringify({ safe, danger, total, rate, ts: Date.now() })); } catch (_) { void _; }
       } catch (_) {
         console.log(`[OgameX/mail-poll] non-JSON resp[0:200]=${txt.slice(0,200)}`);
       }
     } catch (e) { void e; }
   }
-  setTimeout(() => { void pollExpeditionMails(); }, 5000);
-  setInterval(() => { if (!userBusy()) void pollExpeditionMails(); }, 5 * 60 * 1000);
+  /* eslint-enable @typescript-eslint/no-unused-vars */
+  void _pollExpeditionMails_DISABLED;
+  // setTimeout(() => { void _pollExpeditionMails_DISABLED(); }, 5000);
+  // setInterval(() => { if (!userBusy()) void _pollExpeditionMails_DISABLED(); }, 5 * 60 * 1000);
 
   const REFRESH_PAGES = ["research", "supplies", "facilities", "shipyard", "fleetdispatch", "lfbuildings"];
   let refreshIdx = 0;
