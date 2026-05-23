@@ -843,20 +843,41 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     });
     if (!r.ok) throw new Error(`discover: HTTP ${r.status}`);
     const respText = await r.text();
-    let parsed: { success?: boolean; status?: string; errors?: Array<{ message?: string; error?: number }>; newAjaxToken?: string; message?: string } | null = null;
+    // ogame v12 sendDiscoveryFleet response shape (verified from real POST):
+    //   { "response": { "success": boolean, "message": "..." },
+    //     "components": [], "newAjaxToken": "..." }
+    // success is NESTED inside "response", NOT at top level.
+    let parsed: {
+      response?: { success?: boolean; message?: string };
+      success?: boolean; status?: string; // top-level fallback
+      errors?: Array<{ message?: string; error?: number }>;
+      newAjaxToken?: string;
+      message?: string;
+    } | null = null;
     try { parsed = JSON.parse(respText); } catch { /* HTML */ }
     console.info(`[ApiExec/discover] resp HTTP ${r.status} body[0:200]=${respText.slice(0, 200).replace(/\s+/g, " ")}`);
     if (parsed?.newAjaxToken) {
       (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed.newAjaxToken;
       try { this.win.localStorage.setItem("OGAMEX_TOKEN", parsed.newAjaxToken); } catch { /* */ }
     }
-    if (parsed && (parsed.success === false || parsed.status === "failure")) {
-      const msg = parsed.errors?.[0]?.message ?? parsed.message ?? "unknown";
+    // Check BOTH nested + top-level (defensive).
+    const innerSuccess = parsed?.response?.success;
+    const outerSuccess = parsed?.success;
+    const failed = innerSuccess === false || outerSuccess === false || parsed?.status === "failure";
+    if (failed) {
+      const msg = parsed?.response?.message ?? parsed?.errors?.[0]?.message ?? parsed?.message ?? "unknown";
+      // Cooldown rejection (system-level rate limit OR per-coord 7d):
+      // ogame text contains "再次搜索" / "再次搜索生命形式" / "next" / 等待 / cooldown.
+      // Treat as "this coord attempted" — append to completed[] via the
+      // standard success path so planner moves to next coord. Throwing
+      // here flips goal to blocked which stops progress entirely.
+      const isCooldown = /再次搜索|再次搜尋|next.*search|cooldown|wait|#time#/i.test(msg);
+      if (isCooldown) {
+        console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} COOLDOWN — marking attempted, moving to next`);
+        return { action: directive.action, clicked: true };
+      }
       throw new Error(`discover ${galaxy}:${system}:${position} rejected: ${msg}`);
     }
-    // Record success on the goal's completed[] via window callback to sidecar.
-    // We piggyback on the directive_completed result — sidecar will mark
-    // goal target.completed accordingly through a new handler (added next).
     return { action: directive.action, clicked: true };
   }
 }

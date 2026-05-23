@@ -797,19 +797,13 @@ export async function startSidecar(
             if (type === "species_discovery" && row) {
               const tgt = row.goal.target as { galaxy?: number; system?: number; position?: number; completed?: string[]; range?: number };
               const completed = Array.isArray(tgt.completed) ? [...tgt.completed] : [];
-              // ApiExec embeds galaxy/system/position in params, not target.
-              // Pull from m.result.params if available, else from directive
-              // by looking it up — easier path: store coord on the goal at
-              // dispatch time. As a shortcut, increment a coord_count.
-              // Simpler: planner already orders coords; the next tick's
-              // planSpeciesDiscoveryGoal will see goal.target.completed
-              // grow only via this branch — we must capture the LAST
-              // dispatched coord. We do that via directive params snapshot
-              // saved when planner emitted (added to row metadata below).
-              const lastDispatched = (row as { last_discover_coord?: string }).last_discover_coord;
+              // Pull dispatched coord from in-memory map (stashed at dispatch).
+              const lastDispatched = directiveToDiscoverCoord.get(m.directive_id);
+              directiveToDiscoverCoord.delete(m.directive_id);
               if (lastDispatched && !completed.includes(lastDispatched)) {
                 completed.push(lastDispatched);
                 goalsStore.updateTarget(goalId, { ...tgt, completed } as Record<string, unknown>);
+                console.log(`[discovery] goal ${goalId} progress: ${completed.length}/${((tgt.range ?? 10) * 2 + 1) * 15} (added ${lastDispatched})`);
               }
             }
             // build / research / build_ships / lifeform_building → no-op,
@@ -878,12 +872,12 @@ export async function startSidecar(
         // forever and merger keeps re-dispatching every cooldown cycle.
         const d = msg.directive as { id: string; goal_id?: string; action?: string; params?: { galaxy?: number; system?: number; position?: number } };
         if (d.id && d.goal_id) directiveToGoal.set(d.id, d.goal_id);
-        // species_discovery: stamp the dispatched coord onto the goal row so
-        // directive_completed handler can append to target.completed[].
+        // species_discovery: stash dispatched coord by directive_id (NOT on
+        // the goal row — goalsStore.list returns SQL copies, mutations
+        // wouldn't persist). directive_completed handler reads from this map.
         if (d.action === "discover" && d.goal_id && d.params) {
           const coord = `${d.params.galaxy}:${d.params.system}:${d.params.position}`;
-          const row = goalsStore.list().find((r) => r.goal.id === d.goal_id);
-          if (row) (row as { last_discover_coord?: string }).last_discover_coord = coord;
+          directiveToDiscoverCoord.set(d.id, coord);
         }
       }
       ws.send(msg);
@@ -894,6 +888,9 @@ export async function startSidecar(
   });
   // Directive → goal mapping (in-memory). Trimmed when ack arrives.
   const directiveToGoal = new Map<string, string>();
+  // species_discovery: stamp dispatched coord per directive_id (NOT on row,
+  // because goalsStore.list() returns SQL copies — mutating one is discarded).
+  const directiveToDiscoverCoord = new Map<string, string>();
 
   // --- FailureAggregator ---------------------------------------------------
   const failureAggregator = createFailureAggregator({
