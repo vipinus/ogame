@@ -453,7 +453,11 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       appendEvLog({ ts: Date.now(), total: rows.length, rows: detail });
     }
     if (hostileEntries.length > 0) {
-      console.warn(`[OgameX/eventcontent] ${hostileEntries.length} hostile row(s) detected: ${hostileEntries.map(e => `${e.type}@${e.from.join(":")}→${e.to.join(":")}`).join(", ")}`);
+      const nowSec = Math.floor(Date.now() / 1000);
+      console.warn(`[OgameX/eventcontent] ${hostileEntries.length} hostile row(s) detected: ${hostileEntries.map(e => {
+        const eta = e.arrives_at - nowSec;
+        return `${e.type}@${e.from.join(":")}→${e.to.join(":")} ETA=${eta}s ${eta > 0 ? "(IN-PROGRESS)" : "(ARRIVED)"}`;
+      }).join(", ")}`);
     }
     // Merge — KEEP existing evrow-* entries whose arrives_at is still in
     // the future (event hasn't materialized yet). DON'T wipe based on a

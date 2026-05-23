@@ -23,15 +23,21 @@ export function startSpyDetector(bus: EventBus, ref: StateRef): () => void {
     const nowSec = Math.floor(Date.now() / 1000);
     for (const ev of ref.current.events_incoming) {
       if (ev.type !== "spy") continue;
-      if (seen.has(ev.id)) continue;
-      // Operator: "有新的侦察但是没有警报". Spy probes are informational
-      // and ogame probe travel time is short (often <5s from neighbors),
-      // so by the time we see the row in DOM the arrival is often in
-      // the past. Previous code required remaining > 0 → silently
-      // skipped already-arrived probes. Alarm should fire ON DETECTION.
-      // Filter only ANCIENT entries (>1h old) to suppress stale-row spam.
+      // Operator clarification: "已发生不用报警, 正在发生报警".
+      //   in-progress (arrives_at > now) → fire emergency.spy
+      //   already arrived (arrives_at ≤ now) → don't alarm (info-only)
+      // The remaining > 0 gate below is CORRECT for this semantic.
+      // BUT log every scanned spy event (even skipped) so we can verify
+      // observer caught the row and dedupe state.
       const remaining = ev.arrives_at - nowSec;
-      if (remaining < -3600) continue;
+      if (seen.has(ev.id)) continue;
+      if (remaining <= 0) {
+        // Mark as seen so we don't keep re-logging on every state.updated.
+        seen.add(ev.id);
+        console.info(`[spy_detector] ${ev.id} ARRIVED ${-remaining}s ago — info-only, no alarm`);
+        continue;
+      }
+      console.warn(`[spy_detector] ${ev.id} IN-PROGRESS (${remaining}s ETA) — firing emergency.spy`);
       seen.add(ev.id);
       const payload: EmergencySpyPayload = {
         event_id: ev.id,
