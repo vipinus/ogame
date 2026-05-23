@@ -24,8 +24,14 @@ export function startSpyDetector(bus: EventBus, ref: StateRef): () => void {
     for (const ev of ref.current.events_incoming) {
       if (ev.type !== "spy") continue;
       if (seen.has(ev.id)) continue;
+      // Operator: "有新的侦察但是没有警报". Spy probes are informational
+      // and ogame probe travel time is short (often <5s from neighbors),
+      // so by the time we see the row in DOM the arrival is often in
+      // the past. Previous code required remaining > 0 → silently
+      // skipped already-arrived probes. Alarm should fire ON DETECTION.
+      // Filter only ANCIENT entries (>1h old) to suppress stale-row spam.
       const remaining = ev.arrives_at - nowSec;
-      if (remaining <= 0) continue;
+      if (remaining < -3600) continue;
       seen.add(ev.id);
       const payload: EmergencySpyPayload = {
         event_id: ev.id,
