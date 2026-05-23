@@ -259,6 +259,22 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
   if (current >= level) {
     return { blocked: `already at or above target — ${building} L${current} ≥ ${level}` };
   }
+  // Is this building already in ogame's build queue? lifeform builds use
+  // lf_build_q; regular ones use build_q. Either occupies the planet's
+  // single queue slot — block to prevent stacking duplicate directives.
+  // Operator: "sanctuary 已经到达目标了 还在继续建造" — without this gate,
+  // the planner kept firing directives while ogame already had a sanctuary
+  // upgrade running (ours invisible because we matched only buildQ.item==
+  // sanctuary, not lf_build_q.building==sanctuary).
+  const lfBuildQ = (planet as { lf_build_q?: { building?: string; ends_at?: number } }).lf_build_q;
+  const buildQ2 = (planet as { build_q?: { building?: string; ends_at?: number } }).build_q;
+  if (lfBuildQ && lfBuildQ.building === building && (lfBuildQ.ends_at ?? 0) > Date.now()) {
+    return { blocked: `${building} already in lf_build_q (ends ${new Date(lfBuildQ.ends_at!).toISOString()})` };
+  }
+  if (buildQ2 && (buildQ2.ends_at ?? 0) > Date.now()) {
+    // Any other queued item also blocks (ogame allows 1 build at a time).
+    return { blocked: `another build active in queue (${buildQ2.building}, ends ${new Date(buildQ2.ends_at!).toISOString()})` };
+  }
 
   // Population/Food balance — auto-build food when housing grows. Without
   // this, owner ends up with overcrowded planets → workers starve → mines

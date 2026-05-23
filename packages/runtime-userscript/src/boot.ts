@@ -517,7 +517,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.225";
+  const USERSCRIPT_VERSION = "0.0.226";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1515,11 +1515,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       console.warn(`[OgameX/empire] fetch failed:`, e);
     }
   }
-  // Empire fetch: seed once at +12s. After that, NO periodic polling —
-  // refreshes are event-driven from ApiExec (before sendFleet, after
-  // successful scheduleEntry) so we only hit ogame when state ACTUALLY
-  // needs to change. Idle sessions stay quiet.
+  // Empire fetch: seed once at +12s, then SLOW periodic safety net every
+  // 5 min. Pure event-driven left building levels (lifeform_buildings,
+  // research, regular buildings) STALE forever because nothing periodically
+  // refreshed them. Operator observed: "sanctuary 已经到达目标了 但还在
+  // 继续建造" — state stuck at L37 while ogame at L42 → planner kept
+  // queuing builds. 5 min cadence catches build completions without
+  // hammering ogame (1 req/5min = 0.2/min). pollEmpire endpoint has no
+  // cp= so doesn't pollute session.
   setTimeout(pollEmpire, 12_000);
+  setInterval(() => { void pollEmpire(); }, 5 * 60_000);
   // Expose globally so ApiExec can request a refresh on demand.
   (env.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire = pollEmpire;
   // Also expose a focused helper: refresh empire then return THIS planet's
