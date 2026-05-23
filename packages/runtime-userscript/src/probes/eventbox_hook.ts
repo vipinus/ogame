@@ -502,6 +502,90 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
   }, 1000);
   installEventContentObserver();
 
+  // ─── API poll: /eventList endpoint ───────────────────────────────────────
+  // Operator: "改成 api 轮询方式". DOM observer depends on the eventbox
+  // dropdown being expanded + ogame's render timing; misses some short
+  // probe-flight windows. The /eventList endpoint always returns the full
+  // HTML of every event regardless of UI state — same source ogame uses.
+  // Active 3s poll catches in-progress probes reliably.
+  let lastApiEventSig = "";
+  function parseEventListHTMLAndInject(html: string): void {
+    // Parse via DOMParser into detached doc so we don't perturb the page.
+    const parser = new (win as Window & { DOMParser: typeof DOMParser }).DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const rows = Array.from(doc.querySelectorAll<HTMLElement>("tr.eventFleet"));
+    const hostileEntries: IncomingEvent[] = [];
+    const seen: string[] = [];
+    const nowSec = Math.floor(Date.now() / 1000);
+    for (const tr of rows) {
+      const mt = parseInt(tr.getAttribute("data-mission-type") ?? "0", 10);
+      const evId = tr.getAttribute("id")?.replace(/^eventRow-/, "") ?? "";
+      const cd = tr.querySelector(".countDown span");
+      const cls = (cd?.className ?? "").toLowerCase();
+      const isHostile = /\bhostile\b/.test(cls);
+      seen.push(`${evId}:${mt}:${cls.slice(0, 16)}`);
+      if (!isHostile) continue;
+      const isThreat = mt === 1 || mt === 2 || mt === 9 || mt === 10;
+      const isSpy = mt === 6;
+      if (!isThreat && !isSpy) continue;
+      const orCoords = tr.querySelector(".coordsOrigin")?.textContent?.trim() ?? "";
+      const dsCoords = tr.querySelector(".destCoords")?.textContent?.trim() ?? "";
+      const parse3 = (s: string): readonly [number, number, number] => {
+        const m = s.match(/\[(\d+):(\d+):(\d+)\]/);
+        return m ? [parseInt(m[1]!, 10), parseInt(m[2]!, 10), parseInt(m[3]!, 10)] as const : [0, 0, 0] as const;
+      };
+      const arr = parseInt(tr.getAttribute("data-arrival-time") ?? "0", 10);
+      hostileEntries.push({
+        id: `evrow-${evId}`,
+        type: isSpy ? "spy" : "attack",
+        hostile: true,
+        from: parse3(orCoords),
+        to: parse3(dsCoords),
+        arrives_at: arr,
+        ships_count: "?",
+      });
+    }
+    const sig = seen.sort().join("|");
+    if (sig === lastApiEventSig) return;
+    lastApiEventSig = sig;
+    if (hostileEntries.length > 0) {
+      console.warn(`[OgameX/eventlist-api] ${hostileEntries.length} hostile row(s): ${hostileEntries.map(e => {
+        const eta = e.arrives_at - nowSec;
+        return `${e.type}@${e.from.join(":")}→${e.to.join(":")} ETA=${eta}s ${eta > 0 ? "(IN-PROGRESS)" : "(ARRIVED)"}`;
+      }).join(", ")}`);
+    }
+    // Merge into events_incoming — same logic as DOM observer.
+    const cur = store.state.events_incoming ?? [];
+    const fromOther = cur.filter((e) => !e.id.startsWith("evrow-"));
+    const stillPending = cur.filter((e) =>
+      e.id.startsWith("evrow-") && e.arrives_at > nowSec
+    );
+    const byId = new Map<string, typeof stillPending[number]>();
+    for (const e of stillPending) byId.set(e.id, e);
+    for (const e of hostileEntries) byId.set(e.id, e);
+    const merged = [...fromOther, ...Array.from(byId.values())];
+    if (JSON.stringify(merged.map((e) => e.id).sort()) !== JSON.stringify(cur.map((e) => e.id).sort())) {
+      store.setPartial({ events_incoming: merged });
+    }
+  }
+  async function pollEventListAPI(): Promise<void> {
+    try {
+      const url = "/game/index.php?page=componentOnly&component=eventList&ajax=1";
+      const r = await win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      if (!r.ok) return;
+      const html = await r.text();
+      parseEventListHTMLAndInject(html);
+    } catch (e) {
+      console.warn(`[OgameX/eventlist-api] poll failed:`, e);
+    }
+  }
+  // 3s active poll — catches probes during their typical 5-30s in-flight
+  // window. ogame's own native fetchEventBox poll is 5s; using a separate
+  // endpoint (eventList vs fetchEventBox) so we don't pile requests on the
+  // same URL that WAF watches.
+  setTimeout(() => { void pollEventListAPI(); }, 800); // boot seed
+  const apiPollId = setInterval(() => { void pollEventListAPI(); }, 3000);
+
   // Cold-start seed — kick off one fetch so the hook starts seeing data.
   setTimeout(() => { void selfFetch(); }, 1500);
 
@@ -511,6 +595,7 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       clearInterval(watchdogId);
       clearInterval(installRetry);
       clearInterval(evInstallRetry);
+      clearInterval(apiPollId);
       if (mo) { mo.disconnect(); mo = null; }
       if (evMo) { evMo.disconnect(); evMo = null; }
       win.document.removeEventListener("visibilitychange", visHandler);
