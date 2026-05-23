@@ -831,18 +831,47 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
           },
         );
         const galTxt = await galResp.text();
-        // Response is JSON; HTML chunks per position carry the
-        // planetDiscoverIcons class block. The "available" class is
-        // planetDiscoverDefault (verified from operator's earlier DOM paste).
-        // Any other planetDiscover* class = cooldown / in-progress / done.
-        // We scan position N → class lookup.
+        // Response is JSON with HTML chunks. ogame embeds the planet
+        // discovery icon as <a class="planetDiscover positionN ...">.
+        // Switch from regex to DOMParser which handles arbitrary inner
+        // attributes + JSON escape sequences in the wrapping payload.
         const states = new Map<number, string>();
-        const blockRe = /class="planetDiscoverIcons\s+(planetDiscover[A-Za-z]+)[^"]*"[\s\S]{0,1500}?position(\d{1,2})/g;
-        let m: RegExpExecArray | null;
-        while ((m = blockRe.exec(galTxt)) !== null) {
-          const cls = m[1] ?? "";
-          const pos = parseInt(m[2] ?? "0", 10);
-          if (pos >= 1 && pos <= 15) states.set(pos, cls);
+        // First try parsing as JSON (ogame v12 returns {galaxyContent:"<html...>"} or similar).
+        let htmlForParse = galTxt;
+        try {
+          const j = JSON.parse(galTxt);
+          // Common envelopes seen in ogame v12.
+          htmlForParse = (j.galaxyContent ?? j.galaxy ?? j.content ?? j.html ?? galTxt) as string;
+        } catch { /* not JSON or unwrapped */ }
+        const parser = new (this.win as Window & { DOMParser: typeof DOMParser }).DOMParser();
+        const doc = parser.parseFromString(htmlForParse, "text/html");
+        // Each row's discovery anchor: <a class="...planetDiscover positionN...">
+        // Class may include planetDiscoverDefault / planetDiscoverCooldown / etc.
+        for (const a of Array.from(doc.querySelectorAll<HTMLAnchorElement>("a.planetDiscover"))) {
+          const cls = a.className ?? "";
+          const posMatch = cls.match(/position(\d{1,2})/);
+          if (!posMatch) continue;
+          const pos = parseInt(posMatch[1]!, 10);
+          // State = whichever planetDiscover<X> class is present
+          // (Default / Cooldown / InProgress / Discovered / Locked / etc.)
+          const stateMatch = cls.match(/planetDiscover(Default|Cooldown|InProgress|Discovered|Locked|[A-Z][A-Za-z]*)/);
+          const state = stateMatch ? `planetDiscover${stateMatch[1]}` : "unknown";
+          states.set(pos, state);
+        }
+        // Fallback: also check parent div if anchor pattern missed
+        if (states.size === 0) {
+          for (const d of Array.from(doc.querySelectorAll<HTMLElement>("div.planetDiscoverIcons, [class*='planetDiscover']"))) {
+            const cls = d.className ?? "";
+            const posMatch = cls.match(/position(\d{1,2})/) || d.querySelector("[class*='position']")?.className.match(/position(\d{1,2})/);
+            if (!posMatch) continue;
+            const pos = parseInt(posMatch[1]!, 10);
+            const stateMatch = cls.match(/planetDiscover(Default|Cooldown|InProgress|Discovered|Locked|[A-Z][A-Za-z]*)/);
+            states.set(pos, stateMatch ? `planetDiscover${stateMatch[1]}` : "unknown");
+          }
+        }
+        // Diagnostic: when zero, log raw sample so operator can paste back.
+        if (states.size === 0) {
+          console.warn(`[ApiExec/discover] galaxy[${cacheKey}] parse FOUND 0 positions. Resp len=${galTxt.length}. First 500 chars:`, galTxt.slice(0, 500));
         }
         cache = { ts: Date.now(), states };
         cacheStore.set(cacheKey, cache);
