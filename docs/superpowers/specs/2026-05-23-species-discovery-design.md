@@ -114,8 +114,11 @@ New section `🧬 Discovery` between Expedition and Goals:
 - **No active discovery**: planet dropdown (planets from
   `window.__ogamexStore.state.planets`, sorted by `[g,s,p]` ascending) +
   range numeric input (default 10) + "Start Discovery" button.
-- **Active discovery**: shows `[galaxy:base_system] ±range from <planet>` +
-  `N/total done` + "Stop" button (cancels the goal).
+- **Active discovery**: shows `[G:S:P] ±range N/total` + "Stop" button
+  (cancels the goal). The source planet is rendered as its **coordinate
+  triple resolved from `__ogamexStore.state.planets[pid].coords`**, NOT
+  the raw `source_planet` PID. See main design §6.4 "Coordinates over
+  IDs" for the general rule — never leak PIDs into operator-facing UI.
 
 Button click handlers POST to `/ogamex/v1/discovery/create` and
 `/ogamex/v1/goals/<id>/cancel`. Panel auto-refreshes after each click.

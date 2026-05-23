@@ -512,9 +512,14 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           const tgt = ((activeDisc as { target?: Record<string, unknown> }).target ?? {}) as { galaxy?: number; base_system?: number; range?: number; completed?: string[]; source_planet?: string };
           const done = Array.isArray(tgt.completed) ? tgt.completed.length : 0;
           const total = ((tgt.range ?? 10) * 2 + 1) * 15;
+          // Resolve source_planet (PID) → coords for display. Operator
+          // 2026-05-23: "改成 星球坐标 ±10 235/315 不要用星球id". PID is
+          // an opaque internal handle; humans navigate by [G:S:P].
+          const srcPlanet = tgt.source_planet ? planetEntries.find((p) => p.id === tgt.source_planet) : undefined;
+          const srcCoords = srcPlanet ? `[${srcPlanet.coords.join(":")}]` : "[?:?:?]";
           return `
 <div style="padding:6px 10px; color:#c0d0e0; font-size:12px;">
-  Active: [${tgt.galaxy}:${tgt.base_system}] ±${tgt.range} from <code>${tgt.source_planet}</code> · ${done}/${total} done
+  ${srcCoords} ±${tgt.range} ${done}/${total}
   <button data-action="discovery-stop" data-goal-id="${(activeDisc as { id: string }).id}" style="margin-left:10px; ${btnStyle("#5a2020", "#8a4040")}">Stop</button>
 </div>`;
         })()

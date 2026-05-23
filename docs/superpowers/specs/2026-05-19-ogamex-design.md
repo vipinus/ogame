@@ -937,6 +937,35 @@ response: JSON { success: bool, message: string, ... }
   - sidecar: uptime, last_strategy_version, active_goals_count
   - llm: last_call_ts, monthly_cost_estimate
 
+### 6.4 UI 显示规范
+
+#### Coordinates over IDs
+
+**规则**：任何展示给 operator 的 UI（floating panel、Discord、log）**不显示星球 ID** (PID 形如 `33637366`)。一律解析成 `[G:S:P]` 坐标格式（形如 `[2:75:8]`）。
+
+**理由**：
+- PID 是 ogame 内部不透明 handle，operator 无法用它在 ogame 内导航
+- `[G:S:P]` 是 ogame 自身的星球寻址语言，operator 一眼能在 galaxy view 跳过去
+- 显示 PID = 把 raw 数据库列直接灌给人，工程味，反 owner 体验
+
+**实现**：在渲染前用 `__ogamexStore.state.planets[pid].coords` 反查。如果反查失败（store 还没同步），fallback 显示 `[?:?:?]`，而不是 leak PID。
+
+**适用范围**：
+- ✅ Panel: 任何 goal target 引用的星球（discovery `source_planet`, expedition `source_planet`, build/research `planet_id`）
+- ✅ Discord 消息: 同上
+- ✅ Log（人读取向的 `console.info` / `console.warn`），调试用的 `console.debug` 可保留 PID
+- ❌ 内部消息 / API payload / state 持久化 — 还用 PID（PID 仍是 store 的主键，唯一稳定）
+
+**反例**（已修，留作参考）：
+> v0.0.245 panel `Active: [2:75] ±10 from 33637366 · 235/315 done` — `from 33637366` 是裸 PID, 不对。
+> 改后：`[2:75:8] ±10 235/315` — `2:75:8` 由 PID 反查 store.planets[PID].coords 得到。
+
+#### Compact 格式
+
+Panel 空间紧, 文字精简到必要颗粒度:
+- 不写 "Active:" / "from" / "done" 等英文助词 — 状态由按钮颜色 + 区域位置传达
+- 完成进度直接 `N/total`, 不重复单位
+
 ---
 
 ## 7. 反检测
