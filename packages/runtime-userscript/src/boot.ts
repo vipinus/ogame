@@ -517,7 +517,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.224";
+  const USERSCRIPT_VERSION = "0.0.225";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1607,20 +1607,35 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           return {};
         }
         if (isFullPage && !hasAmAny) {
-          // No am2XX inputs in a full fd page. Operator: "发了缺船的远征".
-          // The previous "trust empire" fallback caused this exact bug —
-          // empire shows committed (incl. in-transit) ships, NOT launchable.
-          // Returned them, preflight passed, sendFleet POST got 140054
-          // 可用艦船不足. NOW: ABORT conservatively — return {} so preflight
-          // sees zero of everything, throws "expedition aborted (preflight)".
-          // Daemon picks another planet, no false launch.
-          console.warn(`[OgameX/fetchShips] ${pid}: full fd page (${html.length}B) but 0 am2XX inputs — CONSERVATIVE ABORT (no empire trust)`);
-          return {};
+          // 0 am2XX inputs in full fd page (ogame v12 may render via JS).
+          // Fallback: use empire data (just refreshed by ApiExec's pre-
+          // preflight pollEmpire) MINUS in-transit ships from fleets_outbound
+          // = true launchable count.
+          const empireShips = store.state.planets[pid]?.ships ?? {};
+          const p = store.state.planets[pid];
+          const coordStr = p?.coords ? p.coords.join(":") : "";
+          const inTransit: Record<string, number> = {};
+          for (const f of store.state.fleets_outbound ?? []) {
+            const fOrig = Array.isArray(f.origin) ? f.origin.join(":") : "";
+            if (fOrig !== coordStr || !coordStr) continue;
+            const fs = (f as { ships?: Record<string, number> }).ships ?? {};
+            for (const [s, n] of Object.entries(fs)) {
+              if (typeof n !== "number") continue;
+              inTransit[s] = (inTransit[s] ?? 0) + n;
+            }
+          }
+          const launchable: Record<string, number> = {};
+          for (const [s, n] of Object.entries(empireShips)) {
+            if (typeof n !== "number") continue;
+            launchable[s] = Math.max(0, n - (inTransit[s] ?? 0));
+          }
+          console.warn(`[OgameX/fetchShips] ${pid}: fd no am2XX, fallback empire-minus-transit: launchable=${JSON.stringify(launchable)} inTransit=${JSON.stringify(inTransit)}`);
+          return launchable;
         }
-        // Partial response / parse failure. Same conservative stance — abort
-        // rather than risk a stale-data launch.
-        console.warn(`[OgameX/fetchShips] PARSE failed for ${pid} (${html.length}B); planet matched but no inputs parsed — CONSERVATIVE ABORT`);
-        return {};
+        // Parse failure on a smaller/partial response — also fall back to
+        // fresh-store-minus-transit (same approach).
+        console.warn(`[OgameX/fetchShips] PARSE failed for ${pid} (${html.length}B); using fresh store ships`);
+        return store.state.planets[pid]?.ships ?? {};
       }
       console.info(`[OgameX/fetchShips] ${pid}: ${JSON.stringify(ships)}`);
       // Mirror hangar truth into store.

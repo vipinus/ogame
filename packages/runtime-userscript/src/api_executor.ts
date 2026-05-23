@@ -415,6 +415,17 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // calls a focused helper that does (a) ogame empire API fetch, (b) parses
     // ship counts per planet, (c) writes them to store, (d) returns this
     // planet's ships. AWAIT it — block 100-500ms — then compare to template.
+    // Step 0: force fresh empire pull BEFORE preflight. operator:
+    // "远征出发之前又没有同步最新的舰船列表吧". This refreshes store with
+    // current ogame ship counts for ALL planets. fetchPlanetShips can then
+    // fall back to store.ships safely (was stale data before).
+    const pollEmpireFn = (this.win as Window & {
+      __ogamexPollEmpire?: (opts?: { force?: boolean }) => Promise<void>;
+    }).__ogamexPollEmpire;
+    if (typeof pollEmpireFn === "function") {
+      try { await pollEmpireFn({ force: true }); }
+      catch (e) { console.warn(`[ApiExec] pre-expedition empire refresh failed:`, e); }
+    }
     const fetchPlanetShips = (this.win as Window & {
       __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>>;
     }).__ogamexFetchPlanetShips;
