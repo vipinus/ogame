@@ -37,12 +37,45 @@ export function startEmergencySave(
 
   const stopDetector = startAttackDetector(bus, stateRef, { saveWindowMinutes: opts.saveWindowMinutes });
 
+  const findTargetPlanet = (to: readonly [number, number, number]): string | null => {
+    const t = Object.values(stateRef.current.planets ?? {}).find(pl =>
+      pl.coords[0] === to[0] && pl.coords[1] === to[1] && pl.coords[2] === to[2]);
+    return t?.id ?? null;
+  };
+
   const offAttack = bus.on("emergency.attack", (p: any) => {
-    // pick source: planet whose coords match the attack's destination
-    const target = Object.values(stateRef.current.planets ?? {}).find(pl =>
-      pl.coords[0] === p.to[0] && pl.coords[1] === p.to[1] && pl.coords[2] === p.to[2]);
-    if (!target) return;
-    void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: target.id, arrivesAt: p.arrives_at });
+    const sourceId = findTargetPlanet(p.to);
+    if (!sourceId) return;
+    void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
+  });
+
+  // Spy-as-test trigger. Operator 2026-05-23: "可以把侦察也当作威胁测试紧急
+  // 起飞，下次侦察来的时候自动测试了". Spy events normally don't justify a
+  // real fleet save (probe arrives in seconds — no save can outrun it),
+  // but they make a good live-fire test of the entire emergency chain
+  // (detect → case_decide → sendFleet → IN_FLIGHT → recall on all-clear).
+  //
+  // Single-shot mode by default: fires once, then auto-disarms. To re-arm
+  // in DevTools console: `window.__ogamexSpyTestArmed = true`. Default-on
+  // so the next inbound probe automatically runs the test end-to-end —
+  // no operator action needed for the first verification.
+  const winRef = (typeof window !== "undefined" ? window : globalThis) as Window & {
+    __ogamexSpyTestArmed?: boolean;
+  };
+  if (winRef.__ogamexSpyTestArmed === undefined) winRef.__ogamexSpyTestArmed = true;
+  const offSpy = bus.on("emergency.spy", (p: any) => {
+    if (!winRef.__ogamexSpyTestArmed) {
+      console.info(`[emergency/spy-test] spy ${p.event_id} ignored — disarmed. Re-arm: window.__ogamexSpyTestArmed = true`);
+      return;
+    }
+    const sourceId = findTargetPlanet(p.to);
+    if (!sourceId) {
+      console.warn(`[emergency/spy-test] no planet at spy target ${p.to.join(":")} — cannot run test`);
+      return;
+    }
+    console.warn(`[emergency/spy-test] 🚨 FIRING full emergency save chain on spy ${p.event_id} → ${p.to.join(":")} (single-shot test). Auto-disarming after this run.`);
+    winRef.__ogamexSpyTestArmed = false;
+    void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
   });
 
   // when state updates, check if all known hostiles for target planet have cleared
@@ -56,6 +89,6 @@ export function startEmergencySave(
 
   return {
     snapshot: () => fsm.snapshot(),
-    stop: () => { clearInterval(ticker); offAttack(); offState(); stopDetector(); },
+    stop: () => { clearInterval(ticker); offAttack(); offSpy(); offState(); stopDetector(); },
   };
 }
