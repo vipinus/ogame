@@ -831,47 +831,40 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
           },
         );
         const galTxt = await galResp.text();
-        // Response is JSON with HTML chunks. ogame embeds the planet
-        // discovery icon as <a class="planetDiscover positionN ...">.
-        // Switch from regex to DOMParser which handles arbitrary inner
-        // attributes + JSON escape sequences in the wrapping payload.
+        // Response is JSON. Verified shape from operator sniff:
+        //   { reservedPositions, token, filterSettings,
+        //     system: {
+        //       availableProbes, ...
+        //       galaxyContent: [
+        //         { galaxy, system, position, planets, player,
+        //           availableMissions: [{missionType, ...}, ...] },
+        //         ...
+        //       ]
+        //     } }
+        // missionType=18 = sendDiscoveryFleet (per page const "discover":18).
+        // If missionType 18 IS in availableMissions → position can be
+        // discovered NOW. If not present → cooldown OR not-discoverable.
         const states = new Map<number, string>();
-        // First try parsing as JSON (ogame v12 returns {galaxyContent:"<html...>"} or similar).
-        let htmlForParse = galTxt;
         try {
-          const j = JSON.parse(galTxt);
-          // Common envelopes seen in ogame v12.
-          htmlForParse = (j.galaxyContent ?? j.galaxy ?? j.content ?? j.html ?? galTxt) as string;
-        } catch { /* not JSON or unwrapped */ }
-        const parser = new (this.win as Window & { DOMParser: typeof DOMParser }).DOMParser();
-        const doc = parser.parseFromString(htmlForParse, "text/html");
-        // Each row's discovery anchor: <a class="...planetDiscover positionN...">
-        // Class may include planetDiscoverDefault / planetDiscoverCooldown / etc.
-        for (const a of Array.from(doc.querySelectorAll<HTMLAnchorElement>("a.planetDiscover"))) {
-          const cls = a.className ?? "";
-          const posMatch = cls.match(/position(\d{1,2})/);
-          if (!posMatch) continue;
-          const pos = parseInt(posMatch[1]!, 10);
-          // State = whichever planetDiscover<X> class is present
-          // (Default / Cooldown / InProgress / Discovered / Locked / etc.)
-          const stateMatch = cls.match(/planetDiscover(Default|Cooldown|InProgress|Discovered|Locked|[A-Z][A-Za-z]*)/);
-          const state = stateMatch ? `planetDiscover${stateMatch[1]}` : "unknown";
-          states.set(pos, state);
-        }
-        // Fallback: also check parent div if anchor pattern missed
-        if (states.size === 0) {
-          for (const d of Array.from(doc.querySelectorAll<HTMLElement>("div.planetDiscoverIcons, [class*='planetDiscover']"))) {
-            const cls = d.className ?? "";
-            const posMatch = cls.match(/position(\d{1,2})/) || d.querySelector("[class*='position']")?.className.match(/position(\d{1,2})/);
-            if (!posMatch) continue;
-            const pos = parseInt(posMatch[1]!, 10);
-            const stateMatch = cls.match(/planetDiscover(Default|Cooldown|InProgress|Discovered|Locked|[A-Z][A-Za-z]*)/);
-            states.set(pos, stateMatch ? `planetDiscover${stateMatch[1]}` : "unknown");
+          const j = JSON.parse(galTxt) as {
+            system?: { galaxyContent?: Array<{
+              position?: number;
+              availableMissions?: Array<{ missionType?: number }>;
+            }> };
+          };
+          const content = j.system?.galaxyContent ?? [];
+          for (const row of content) {
+            const pos = row.position ?? 0;
+            if (pos < 1 || pos > 15) continue;
+            const missions = Array.isArray(row.availableMissions) ? row.availableMissions : [];
+            const canDiscover = missions.some((m) => m.missionType === 18);
+            states.set(pos, canDiscover ? "available" : "unavailable");
           }
+        } catch (e) {
+          console.warn(`[ApiExec/discover] galaxy[${cacheKey}] JSON parse failed:`, e);
         }
-        // Diagnostic: when zero, log raw sample so operator can paste back.
         if (states.size === 0) {
-          console.warn(`[ApiExec/discover] galaxy[${cacheKey}] parse FOUND 0 positions. Resp len=${galTxt.length}. First 500 chars:`, galTxt.slice(0, 500));
+          console.warn(`[ApiExec/discover] galaxy[${cacheKey}] 0 positions parsed. Resp len=${galTxt.length}. First 400 chars:`, galTxt.slice(0, 400));
         }
         cache = { ts: Date.now(), states };
         cacheStore.set(cacheKey, cache);
@@ -881,8 +874,11 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
     }
     const positionState = cache?.states.get(position) ?? "";
-    if (positionState && positionState !== "planetDiscoverDefault") {
-      console.info(`[ApiExec/discover] ${galaxy}:${system}:${position} pre-check SKIP (state=${positionState}) — no POST`);
+    // "available" = missionType=18 was in this position's availableMissions.
+    // Anything else (unavailable, missing, unknown) = skip POST.
+    // If states map is EMPTY (cache fetch failed), allow POST as fallback.
+    if (cache && cache.states.size > 0 && positionState !== "available") {
+      console.info(`[ApiExec/discover] ${galaxy}:${system}:${position} pre-check SKIP (state=${positionState || "unknown"}) — no POST`);
       return { action: directive.action, clicked: true };
     }
 
