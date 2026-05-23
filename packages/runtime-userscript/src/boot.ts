@@ -517,7 +517,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.226";
+  const USERSCRIPT_VERSION = "0.0.227";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1478,13 +1478,18 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (!pid || !patchPlanets[pid]) continue;
         const ships: Record<string, number> = {};
         // STRICT key match + thousand-separator-aware value parse.
-        // ogame v12 empire returns ship counts as STRINGS with locale-formatted
-        // thousand separator (e.g. "1.500" in German). parseInt("1.500") = 1.
-        // → strip dots/commas before parsing.
+        // Parse 3 tid ranges from empire response:
+        //   < 200   → regular buildings (metalMine=1, crystalMine=2, ...)
+        //   200-300 → ships (smallCargo=202, ...)
+        //   11000-15000 → lifeform buildings (residentialSector=11101, sanctuary=14101, ...)
+        // Operator: "已经 42 级了, 为啥你的数据是 37 级" — empire was only
+        // refreshing ships, so building/lifeform_building levels stayed stale
+        // forever. Planner kept thinking sanctuary L37, kept queuing builds.
+        const buildings: Record<string, number> = {};
+        const lifeform_buildings: Record<string, number> = {};
         for (const [key, val] of Object.entries(planet)) {
           if (!/^\d+$/.test(key)) continue;
           const tid = parseInt(key, 10);
-          if (!tid || tid < 200 || tid >= 300) continue;
           const name = TECH_ID_TO_NAME[String(tid)];
           if (!name) continue;
           let n: number;
@@ -1494,10 +1499,25 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             const stripped = String(val).replace(/[.,\s]/g, "");
             n = parseInt(stripped, 10);
           }
-          if (Number.isFinite(n) && n >= 0) ships[name] = n;
+          if (!Number.isFinite(n) || n < 0) continue;
+          if (tid >= 200 && tid < 300) ships[name] = n;
+          else if (tid >= 11000 && tid < 15000) lifeform_buildings[name] = n;
+          else if (tid > 0 && tid < 200) buildings[name] = n;
         }
-        if (Object.keys(ships).length > 0) {
-          patchPlanets[pid] = { ...patchPlanets[pid], ships: { ...patchPlanets[pid].ships, ...ships } } as typeof patchPlanets[string];
+        const hasAny = Object.keys(ships).length > 0 || Object.keys(buildings).length > 0 || Object.keys(lifeform_buildings).length > 0;
+        if (hasAny) {
+          const cur = patchPlanets[pid];
+          const merged = {
+            ...cur,
+            ships: { ...((cur as { ships?: Record<string, number> }).ships ?? {}), ...ships },
+            ...(Object.keys(buildings).length > 0 ? {
+              buildings: { ...((cur as { buildings?: Record<string, number> }).buildings ?? {}), ...buildings },
+            } : {}),
+            ...(Object.keys(lifeform_buildings).length > 0 ? {
+              lifeform_buildings: { ...((cur as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {}), ...lifeform_buildings },
+            } : {}),
+          };
+          patchPlanets[pid] = merged as typeof patchPlanets[string];
           updated += 1;
         }
       }
