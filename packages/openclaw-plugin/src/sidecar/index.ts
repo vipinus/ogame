@@ -875,9 +875,24 @@ export async function startSidecar(
         // species_discovery: stash dispatched coord by directive_id (NOT on
         // the goal row — goalsStore.list returns SQL copies, mutations
         // wouldn't persist). directive_completed handler reads from this map.
+        // ALSO append coord to target.completed[] OPTIMISTICALLY at dispatch
+        // — planner's next tick must see this coord as "attempted" so it
+        // picks the NEXT coord. Without this, merger fires planner every
+        // 500ms while ack hasn't returned → same coord queued 50+ times
+        // (operator observed in log dump). If ApiExec fails, coord still
+        // counts as attempted (cooldown reset is 7d anyway).
         if (d.action === "discover" && d.goal_id && d.params) {
           const coord = `${d.params.galaxy}:${d.params.system}:${d.params.position}`;
           directiveToDiscoverCoord.set(d.id, coord);
+          const row = goalsStore.list().find((r) => r.goal.id === d.goal_id);
+          if (row && row.goal.type === "species_discovery") {
+            const tgt = row.goal.target as { completed?: string[] };
+            const completed = Array.isArray(tgt.completed) ? [...tgt.completed] : [];
+            if (!completed.includes(coord)) {
+              completed.push(coord);
+              goalsStore.updateTarget(d.goal_id, { ...row.goal.target, completed } as Record<string, unknown>);
+            }
+          }
         }
       }
       ws.send(msg);
