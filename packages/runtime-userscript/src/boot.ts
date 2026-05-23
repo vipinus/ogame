@@ -517,7 +517,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.235";
+  const USERSCRIPT_VERSION = "0.0.236";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1547,6 +1547,25 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   setInterval(() => { void pollEmpire(); }, 5 * 60_000);
   // Expose globally so ApiExec can request a refresh on demand.
   (env.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire = pollEmpire;
+  // Diagnostic helper — operator calls __ogamexDebugGalaxy(g,s) to sniff
+  // fetchGalaxyContent response without typing long fetch+headers in console
+  // (DevTools paste was breaking the body on linewrap).
+  (env.win as Window & { __ogamexDebugGalaxy?: (g: number, s: number) => Promise<string> })
+    .__ogamexDebugGalaxy = async (g: number, s: number): Promise<string> => {
+      const url = `/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1`;
+      const body = new URLSearchParams({ galaxy: String(g), system: String(s) }).toString();
+      const r = await env.win.fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+        body,
+      });
+      const t = await r.text();
+      console.info(`[__ogamexDebugGalaxy] ${g}:${s} HTTP ${r.status} len=${t.length}`);
+      console.info(`[__ogamexDebugGalaxy] resp[0:2000]=`, t.slice(0, 2000));
+      try { void navigator.clipboard?.writeText(t); } catch { /* */ }
+      return t;
+    };
   // Also expose a focused helper: refresh empire then return THIS planet's
   // ship counts. ApiExec calls this RIGHT BEFORE each expedition so the
   // launch decision is based on data fetched microseconds ago. Owner's
