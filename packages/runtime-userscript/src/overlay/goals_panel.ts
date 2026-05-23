@@ -414,9 +414,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const bodyDisplay = collapsed ? "none" : "block";
 
     // Section helpers — collapsible per section with persistent state.
-    const sectionHeader = (name: string, label: string, count: number, accentColor: string): string => {
+    // `extraButton` accepts arbitrary action-button HTML (already styled).
+    // Convention: section-scope actions (pause daemon, stop discovery) sit
+    // in the header right slot — operator can hit them without expanding.
+    const sectionHeader = (name: string, label: string, count: number, accentColor: string, extraButton = ""): string => {
       const c = sectionCollapsed[name];
-      // Optional pause toggle button (only emergency/expedition).
       const pauseable = name === "emergency" || name === "expedition";
       const paused = pauseable ? loadJSON<boolean>(`ogamex.${name}.paused`, false) : false;
       const pauseBtn = pauseable
@@ -426,7 +428,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         <span style="color:#8090a8; width:12px;">${c ? "▸" : "▾"}</span>
         <strong style="color:${accentColor}; font-size:11px; flex:1;">${escapeHtml(label)}</strong>
         <span style="color:#8090a8; font-size:10px;">${count}</span>
-        ${pauseBtn}
+        ${pauseBtn}${extraButton}
       </div>`;
     };
 
@@ -507,20 +509,23 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const planetOpts = planetEntries.map((p) =>
       `<option value="${p.id}" data-galaxy="${p.coords[0]}" data-system="${p.coords[1]}">[${p.coords.join(":")}] ${p.name}</option>`
     ).join("");
+    // Resolve activeDisc target → display strings + a header Stop button.
+    // Operator 2026-05-23: "发现的 stop 按钮放上一层 位置类似于远征" —
+    // section-scope actions live in the header right slot, same as the
+    // pause-daemon button in Expedition / Emergency headers. Keeps the
+    // body row purely informational (coords + progress).
+    let discHeaderBtn = "";
     const discBody = activeDisc
       ? (() => {
           const tgt = ((activeDisc as { target?: Record<string, unknown> }).target ?? {}) as { galaxy?: number; base_system?: number; range?: number; completed?: string[]; source_planet?: string };
           const done = Array.isArray(tgt.completed) ? tgt.completed.length : 0;
           const total = ((tgt.range ?? 10) * 2 + 1) * 15;
-          // Resolve source_planet (PID) → coords for display. Operator
-          // 2026-05-23: "改成 星球坐标 ±10 235/315 不要用星球id". PID is
-          // an opaque internal handle; humans navigate by [G:S:P].
           const srcPlanet = tgt.source_planet ? planetEntries.find((p) => p.id === tgt.source_planet) : undefined;
           const srcCoords = srcPlanet ? `[${srcPlanet.coords.join(":")}]` : "[?:?:?]";
+          discHeaderBtn = `<button data-action="discovery-stop" data-goal-id="${escapeHtml((activeDisc as { id: string }).id)}" style="${btnStyle("#5a2020", "#8a4040")}" title="Stop discovery">Stop</button>`;
           return `
 <div style="padding:6px 10px; color:#c0d0e0; font-size:12px;">
   ${srcCoords} ±${tgt.range} ${done}/${total}
-  <button data-action="discovery-stop" data-goal-id="${(activeDisc as { id: string }).id}" style="margin-left:10px; ${btnStyle("#5a2020", "#8a4040")}">Stop</button>
 </div>`;
         })()
       : `
@@ -530,7 +535,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   range: <input data-action="discovery-range" type="number" min="1" max="20" value="10" style="width:50px; background:#1a2330; color:#c0d0e0; border:1px solid #354050;">
   <button data-action="discovery-start" style="margin-left:10px; ${btnStyle("#205a20", "#408a40")}">Start Discovery</button>
 </div>`;
-    const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff")}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
+    const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff", discHeaderBtn)}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
 
     const body = `<div data-ogamex-body="1" style="display:${bodyDisplay};">${emergencySection}${expeditionSection}${discSection}${goalsSection}</div>`;
     panel.innerHTML = header + body;
@@ -565,10 +570,13 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         }
       });
     }
-    // Wire discovery Stop = cancel the active goal.
+    // Wire discovery Stop = cancel the active goal. Lives in the section
+    // header now — stopPropagation prevents click bubbling to the
+    // section-toggle collapse handler.
     const stopBtn = panel.querySelector<HTMLElement>("[data-action=\"discovery-stop\"]");
     if (stopBtn) {
-      stopBtn.addEventListener("click", async () => {
+      stopBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
         const gid = stopBtn.getAttribute("data-goal-id") ?? "";
         if (!gid) return;
         await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(gid)}/cancel`, { method: "POST" });
@@ -590,8 +598,10 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // Wire section collapse toggles.
     for (const el of panel.querySelectorAll<HTMLElement>("[data-section-toggle]")) {
       el.addEventListener("click", (e) => {
-        // Don't toggle collapse if click landed on the pause button.
-        if ((e.target as HTMLElement).closest("[data-pause-daemon]")) return;
+        // Don't toggle collapse if click landed on an action button
+        // hosted inside the header (pause-daemon, discovery-stop, etc).
+        const t = e.target as HTMLElement;
+        if (t.closest("[data-pause-daemon]") || t.closest("[data-action]")) return;
         const name = el.getAttribute("data-section-toggle");
         if (!name) return;
         setSectionCollapsed(name, !sectionCollapsed[name]);
