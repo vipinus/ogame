@@ -202,32 +202,35 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   //     Class appears in topbar / player-info widget on every page.
   function detectPlayerClass(): "discoverer" | "collector" | "general" | "unknown" {
     try {
-      // Most reliable: ogame's character class icon uses dedicated CSS:
-      //   <div class="characterClassDiscoverer ..."> or <i class="characterclass discoverer">
-      // Also has meta tags / global JS vars in some skins.
+      // Match ONLY ogame's dedicated character-class CSS classes.
+      // Operator 2026-05-23 incident: previous loose regex `class=.discoverer`
+      // (single-char wildcard) matched any element with words like
+      // "general"/"collector" in its class attribute (e.g. class="planet-general"),
+      // misclassified discoverer→general, AND overwrote localStorage —
+      // permanently poisoning the value across reloads. Expedition max
+      // dropped from 6 → 4 (lost +2 discoverer bonus).
       const html = env.doc.documentElement?.outerHTML ?? "";
-      // CSS-class based detection (covers most skins)
-      if (/character[Cc]lass[A-Za-z]*[Dd]iscoverer|characterclass.*discoverer|class=.discoverer/.test(html)) return "discoverer";
-      if (/character[Cc]lass[A-Za-z]*[Cc]ollector|characterclass.*collector|class=.collector/.test(html)) return "collector";
-      if (/character[Cc]lass[A-Za-z]*[Gg]eneral|characterclass.*general|class=.general/.test(html)) return "general";
-      // Text-based fallback
-      const body = env.doc.body?.textContent ?? "";
-      if (/探險家|探险家|[Dd]iscoverer/i.test(body)) return "discoverer";
-      if (/收藏家|收集家|[Cc]ollector/i.test(body)) return "collector";
-      if (/將軍|将军|[Gg]eneral/i.test(body)) return "general";
+      // Strict: only ogame's own characterClassDiscoverer/Collector/General
+      // CSS class. No fallback regex — those are too loose for v12 DOM.
+      if (/characterClassDiscoverer\b/.test(html)) return "discoverer";
+      if (/characterClassCollector\b/.test(html)) return "collector";
+      if (/characterClassGeneral\b/.test(html)) return "general";
       return "unknown";
     } catch { return "unknown"; }
   }
-  let playerClass = detectPlayerClass();
-  // Hydrate from localStorage if DOM detection on this page didn't find
-  // class text (class info isn't on every ogame page).
+  // localStorage TRUMPS DOM detection — once a class is confirmed
+  // (either by a previous reliable detection or by the operator manually
+  // setting OGAMEX_CLASS), never let a noisier page overwrite it.
+  let playerClass: "discoverer" | "collector" | "general" | "unknown" = "unknown";
+  try {
+    const stored = env.win.localStorage.getItem("OGAMEX_CLASS");
+    if (stored === "discoverer" || stored === "collector" || stored === "general") {
+      playerClass = stored;
+    }
+  } catch { /* */ }
+  // Only run DOM detection if localStorage has no value yet.
   if (playerClass === "unknown") {
-    try {
-      const stored = env.win.localStorage.getItem("OGAMEX_CLASS");
-      if (stored === "discoverer" || stored === "collector" || stored === "general") {
-        playerClass = stored;
-      }
-    } catch { /* */ }
+    playerClass = detectPlayerClass();
   }
   if (playerClass !== "unknown") {
     try { env.win.localStorage.setItem("OGAMEX_CLASS", playerClass); } catch { /* */ }
@@ -547,7 +550,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.242";
+  const USERSCRIPT_VERSION = "0.0.243";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
