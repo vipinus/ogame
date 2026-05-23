@@ -517,7 +517,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.238";
+  const USERSCRIPT_VERSION = "0.0.239";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1567,8 +1567,30 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   };
   (env.win as Window & { __ogamexDebugGalaxy?: typeof debugGalaxyFn }).__ogamexDebugGalaxy = debugGalaxyFn;
   // Page-world expose for DevTools console access (cross-sandbox bridge).
-  const pageWinForDbg = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & { __ogamexDebugGalaxy?: typeof debugGalaxyFn };
+  const pageWinForDbg = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & {
+    __ogamexDebugGalaxy?: typeof debugGalaxyFn;
+    __ogamexDbgMis?: (g: number, s: number, p: number) => Promise<unknown>;
+  };
   pageWinForDbg.__ogamexDebugGalaxy = debugGalaxyFn;
+  // Ultra-short helper: __ogamexDbgMis(1,484,5) returns position's full
+  // data + logs availableMissions array. Operator's DevTools wraps long
+  // chained .then() — separate helper avoids that.
+  const debugMissionsFn = async (g: number, s: number, p: number): Promise<unknown> => {
+    const t = await debugGalaxyFn(g, s);
+    try {
+      const j = JSON.parse(t) as { system?: { galaxyContent?: Array<{ position?: number; availableMissions?: unknown[] }> } };
+      const row = j.system?.galaxyContent?.find((c) => c.position === p);
+      if (!row) { console.warn(`[__ogamexDbgMis] no position=${p} in ${g}:${s}`); return null; }
+      console.info(`[__ogamexDbgMis] ${g}:${s}:${p} availableMissions:`, JSON.stringify(row.availableMissions, null, 2));
+      console.info(`[__ogamexDbgMis] ${g}:${s}:${p} full:`, JSON.stringify(row, null, 2));
+      return row;
+    } catch (e) {
+      console.warn(`[__ogamexDbgMis] JSON parse failed`, e);
+      return null;
+    }
+  };
+  (env.win as Window & { __ogamexDbgMis?: typeof debugMissionsFn }).__ogamexDbgMis = debugMissionsFn;
+  pageWinForDbg.__ogamexDbgMis = debugMissionsFn;
   // Also expose a focused helper: refresh empire then return THIS planet's
   // ship counts. ApiExec calls this RIGHT BEFORE each expedition so the
   // launch decision is based on data fetched microseconds ago. Owner's
