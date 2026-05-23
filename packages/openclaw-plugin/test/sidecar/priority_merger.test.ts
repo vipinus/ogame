@@ -199,6 +199,27 @@ describe("PriorityMerger", () => {
     expect(row!.status).toBe("completed");
   });
 
+  it("species_discovery 'goal complete' blocked text → status=completed (not blocked)", () => {
+    // Operator 2026-05-23: discovery goal finished all 315 coords but UI
+    // showed "block" because planner returned blocked-reason "all 315 coords
+    // attempted — goal complete" which did not match ALREADY_AT_TARGET_RE.
+    // Adding "goal complete" to the regex makes any planner emitting that
+    // hint resolve to status=completed correctly.
+    store.add(makeGoal({ id: "g-disc-done", priority: 50 }));
+    const planGoal = vi
+      .fn()
+      .mockReturnValue({ blocked: "species_discovery: all 315 coords attempted — goal complete" });
+    const send = vi.fn<(msg: DownstreamMsg) => void>();
+
+    const merger = new PriorityMerger({ store, planGoal, send });
+    const result = merger.dispatch(makeState());
+
+    expect(result.skipped_terminal).toBe(1);
+    expect(result.blocked).toEqual([]);
+    const row = store.get("g-disc-done");
+    expect(row!.status).toBe("completed");
+  });
+
   it("mixed batch handles dispatch + blocked + already-at-target correctly", () => {
     let now = 1_000;
     const clock = (): number => now;

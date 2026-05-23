@@ -43,7 +43,7 @@ export interface DispatchResult {
  *   - "… production started"                   (shipyard_q has the ship)
  */
 const ALREADY_AT_TARGET_RE =
-  /already at or above target|already upgrading in ogame queue|in flight|production started/i;
+  /already at or above target|already upgrading in ogame queue|in flight|production started|goal complete/i;
 
 function isBlocked(r: Directive | { blocked: string }): r is { blocked: string } {
   return typeof (r as { blocked?: unknown }).blocked === "string";
