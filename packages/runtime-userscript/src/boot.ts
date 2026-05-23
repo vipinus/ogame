@@ -517,7 +517,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.223";
+  const USERSCRIPT_VERSION = "0.0.224";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1540,8 +1540,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const url = `/game/index.php?page=ingame&component=fleetdispatch&cp=${pid}`;
       const r = await env.win.fetch(url, { credentials: "same-origin" });
       if (!r.ok) {
-        console.warn(`[OgameX/fetchShips] fd HTTP ${r.status} for ${pid}`);
-        return store.state.planets[pid]?.ships ?? {};
+        // CONSERVATIVE ABORT (was: stale store fallback). Operator:
+        // "发了缺船的远征" — don't risk launching on stale data.
+        console.warn(`[OgameX/fetchShips] fd HTTP ${r.status} for ${pid} → ABORT preflight`);
+        return {};
       }
       const html = await r.text();
       const ships: Record<string, number> = {};
@@ -1599,27 +1601,26 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const isFullPage = html.length > 10000;
         const hasAmAny = /\bam20\d\b|\bam21\d\b|\bam22\d\b/.test(html);
         if (!planetMatches) {
-          console.warn(`[OgameX/fetchShips] ${pid}: fdHtml returned for DIFFERENT planet (got ${returnedPlanetId}). Session-cp didn't switch. Falling back to store.`);
-          return store.state.planets[pid]?.ships ?? {};
-        }
-        if (isFullPage && !hasAmAny) {
-          // No am2XX inputs found. Could mean:
-          //   (a) hangar truly empty (no ships in fleet)
-          //   (b) ogame v12 fleet page renders ship inputs via JS (not in static HTML)
-          // Cannot distinguish reliably. Fall back to empire store value —
-          // if empire shows ships > 0, trust it; let real sendFleet POST decide.
-          const empireShips = store.state.planets[pid]?.ships ?? {};
-          const totalEmpire = Object.values(empireShips).reduce((a, b) => a + (b || 0), 0);
-          if (totalEmpire > 0) {
-            console.warn(`[OgameX/fetchShips] ${pid}: fd has no am2XX inputs but empire shows ships (total=${totalEmpire}). Trusting empire — letting sendFleet decide.`);
-            return empireShips;
-          }
-          // Both fd-no-inputs AND empire=0 → truly empty.
-          console.warn(`[OgameX/fetchShips] ${pid}: hangar EMPTY (both fd + empire show 0) — preflight abort`);
+          // Session-cp didn't switch → can't trust this response. ABORT
+          // conservatively rather than risk stale-store launch.
+          console.warn(`[OgameX/fetchShips] ${pid}: fdHtml returned for DIFFERENT planet (got ${returnedPlanetId}) → ABORT preflight`);
           return {};
         }
-        console.warn(`[OgameX/fetchShips] PARSE failed for ${pid} (${html.length}B); planet matched but no inputs parsed. Falling back to store.`);
-        return store.state.planets[pid]?.ships ?? {};
+        if (isFullPage && !hasAmAny) {
+          // No am2XX inputs in a full fd page. Operator: "发了缺船的远征".
+          // The previous "trust empire" fallback caused this exact bug —
+          // empire shows committed (incl. in-transit) ships, NOT launchable.
+          // Returned them, preflight passed, sendFleet POST got 140054
+          // 可用艦船不足. NOW: ABORT conservatively — return {} so preflight
+          // sees zero of everything, throws "expedition aborted (preflight)".
+          // Daemon picks another planet, no false launch.
+          console.warn(`[OgameX/fetchShips] ${pid}: full fd page (${html.length}B) but 0 am2XX inputs — CONSERVATIVE ABORT (no empire trust)`);
+          return {};
+        }
+        // Partial response / parse failure. Same conservative stance — abort
+        // rather than risk a stale-data launch.
+        console.warn(`[OgameX/fetchShips] PARSE failed for ${pid} (${html.length}B); planet matched but no inputs parsed — CONSERVATIVE ABORT`);
+        return {};
       }
       console.info(`[OgameX/fetchShips] ${pid}: ${JSON.stringify(ships)}`);
       // Mirror hangar truth into store.
@@ -1630,8 +1631,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       }
       return ships;
     } catch (e) {
-      console.warn(`[OgameX/fetchShips] fd fetch failed for ${pid}:`, e);
-      return store.state.planets[pid]?.ships ?? {};
+      // Network error → CONSERVATIVE ABORT (was: return store stale data which
+      // led to "发了缺船的远征"). Daemon retries next tick.
+      console.warn(`[OgameX/fetchShips] fd fetch failed for ${pid} → ABORT preflight:`, e);
+      return {};
     }
   };
 
