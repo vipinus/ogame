@@ -475,8 +475,93 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const goalsBody = !goalsCollapsed ? `${empty}${rows}` : "";
     const goalsSection = `${sectionHeader("goals", "🪐 Goals", filtered.length, "#e0e8f0")}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody}</div>`;
 
-    const body = `<div data-ogamex-body="1" style="display:${bodyDisplay};">${emergencySection}${expeditionSection}${goalsSection}</div>`;
+    // Species Discovery section — operator's new task type (Galaxy view DNA).
+    const discCollapsed = sectionCollapsed.discovery ?? false;
+    // Active discovery goal (if any).
+    const activeDisc = goals.find((g) => (g as { type?: string }).type === "species_discovery" && !["completed", "cancelled"].includes(g.status));
+    // Build planet dropdown sorted by coords (G:S:P ascending). Read from
+    // current state.planets via window.__ogamexStore.
+    const planetEntries: Array<{ id: string; coords: number[]; name: string }> = [];
+    try {
+      const st = (window as Window & { __ogamexStore?: { state: { planets?: Record<string, { coords?: number[]; name?: string }> } } }).__ogamexStore;
+      const planets = st?.state?.planets ?? {};
+      for (const [pid, p] of Object.entries(planets)) {
+        if (Array.isArray(p.coords) && p.coords.length === 3) {
+          planetEntries.push({ id: pid, coords: p.coords as number[], name: p.name ?? "?" });
+        }
+      }
+      planetEntries.sort((a, b) =>
+        a.coords[0]! - b.coords[0]! || a.coords[1]! - b.coords[1]! || a.coords[2]! - b.coords[2]!
+      );
+    } catch { /* no store yet */ }
+    const planetOpts = planetEntries.map((p) =>
+      `<option value="${p.id}" data-galaxy="${p.coords[0]}" data-system="${p.coords[1]}">[${p.coords.join(":")}] ${p.name}</option>`
+    ).join("");
+    const discBody = activeDisc
+      ? (() => {
+          const tgt = ((activeDisc as { target?: Record<string, unknown> }).target ?? {}) as { galaxy?: number; base_system?: number; range?: number; completed?: string[]; source_planet?: string };
+          const done = Array.isArray(tgt.completed) ? tgt.completed.length : 0;
+          const total = ((tgt.range ?? 10) * 2 + 1) * 15;
+          return `
+<div style="padding:6px 10px; color:#c0d0e0; font-size:12px;">
+  Active: [${tgt.galaxy}:${tgt.base_system}] ±${tgt.range} from <code>${tgt.source_planet}</code> · ${done}/${total} done
+  <button data-action="discovery-stop" data-goal-id="${(activeDisc as { id: string }).id}"
+          style="margin-left:10px; background:#403030; color:#ffa080; border:1px solid #604040; cursor:pointer; padding:2px 8px;">Stop</button>
+</div>`;
+        })()
+      : `
+<div style="padding:6px 10px; color:#c0d0e0; font-size:12px;">
+  Start from:
+  <select data-action="discovery-planet" style="background:#1a2330; color:#c0d0e0; border:1px solid #354050;">${planetOpts}</select>
+  range: <input data-action="discovery-range" type="number" min="1" max="20" value="10" style="width:50px; background:#1a2330; color:#c0d0e0; border:1px solid #354050;">
+  <button data-action="discovery-start"
+          style="margin-left:10px; background:#303d50; color:#c0e0ff; border:1px solid #506580; cursor:pointer; padding:2px 8px;">Start Discovery</button>
+</div>`;
+    const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff")}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
+
+    const body = `<div data-ogamex-body="1" style="display:${bodyDisplay};">${emergencySection}${expeditionSection}${discSection}${goalsSection}</div>`;
     panel.innerHTML = header + body;
+    // Wire discovery Start button.
+    const startBtn = panel.querySelector<HTMLElement>("[data-action=\"discovery-start\"]");
+    if (startBtn) {
+      startBtn.addEventListener("click", async () => {
+        const sel = panel!.querySelector<HTMLSelectElement>("[data-action=\"discovery-planet\"]");
+        const rng = panel!.querySelector<HTMLInputElement>("[data-action=\"discovery-range\"]");
+        if (!sel?.value) return;
+        const opt = sel.options[sel.selectedIndex];
+        const galaxy = parseInt(opt?.getAttribute("data-galaxy") ?? "0", 10);
+        const system = parseInt(opt?.getAttribute("data-system") ?? "0", 10);
+        const range = parseInt(rng?.value ?? "10", 10);
+        startBtn.textContent = "Creating...";
+        try {
+          const r = await fetchFn(`${baseUrl}/ogamex/v1/discovery/create`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source_planet: sel.value, galaxy, base_system: system, range }),
+          });
+          const j = await r.json() as { ok?: boolean; goal_id?: string; reason?: string };
+          if (!j.ok) {
+            console.warn("[panel/discovery] create failed:", j.reason);
+            startBtn.textContent = `Failed: ${j.reason}`;
+            setTimeout(() => { startBtn.textContent = "Start Discovery"; }, 3000);
+            return;
+          }
+          await refresh();
+        } catch (e) {
+          console.warn("[panel/discovery] fetch error:", e);
+          startBtn.textContent = "Network error";
+        }
+      });
+    }
+    // Wire discovery Stop = cancel the active goal.
+    const stopBtn = panel.querySelector<HTMLElement>("[data-action=\"discovery-stop\"]");
+    if (stopBtn) {
+      stopBtn.addEventListener("click", async () => {
+        const gid = stopBtn.getAttribute("data-goal-id") ?? "";
+        if (!gid) return;
+        await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(gid)}/cancel`, { method: "POST" });
+        await refresh();
+      });
+    }
     // Wire section collapse toggles.
     for (const el of panel.querySelectorAll<HTMLElement>("[data-section-toggle]")) {
       el.addEventListener("click", (e) => {

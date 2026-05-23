@@ -63,6 +63,10 @@ export interface HttpServerOptions {
   resumeGoal?: (id: string) => { ok: boolean; reason?: string };
   setMainGoal?: (id: string) => { ok: boolean; reason?: string };
   unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
+  /** Create a species_discovery goal — POST /ogamex/v1/discovery/create. */
+  createDiscoveryGoal?: (body: {
+    source_planet: string; galaxy: number; base_system: number; range?: number;
+  }) => { ok: boolean; goal_id?: string; reason?: string };
 }
 
 interface QueueEntry {
@@ -106,6 +110,10 @@ interface ResolvedHttpServerOptions {
   resumeGoal?: (id: string) => { ok: boolean; reason?: string };
   setMainGoal?: (id: string) => { ok: boolean; reason?: string };
   unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
+  /** Create a species_discovery goal — POST /ogamex/v1/discovery/create. */
+  createDiscoveryGoal?: (body: {
+    source_planet: string; galaxy: number; base_system: number; range?: number;
+  }) => { ok: boolean; goal_id?: string; reason?: string };
 }
 
 export class HttpServer {
@@ -139,6 +147,7 @@ export class HttpServer {
       ...(opts.resumeGoal !== undefined ? { resumeGoal: opts.resumeGoal } : {}),
       ...(opts.setMainGoal !== undefined ? { setMainGoal: opts.setMainGoal } : {}),
       ...(opts.unsetMainGoal !== undefined ? { unsetMainGoal: opts.unsetMainGoal } : {}),
+      ...(opts.createDiscoveryGoal !== undefined ? { createDiscoveryGoal: opts.createDiscoveryGoal } : {}),
     };
   }
 
@@ -340,6 +349,13 @@ export class HttpServer {
         res.end(JSON.stringify({ ok: true, ts: this.expeditionTriggerTs }));
         return;
       }
+      // Species discovery — create goal. Public no-auth (panel button click,
+      // operator-only LAN). Body: JSON {source_planet, galaxy, base_system,
+      // range}. Returns {ok, goal_id}.
+      if (url === "/ogamex/v1/discovery/create") {
+        void this.handleDiscoveryCreate(req, res);
+        return;
+      }
     }
 
     if (method !== "POST") {
@@ -421,6 +437,35 @@ export class HttpServer {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ ok: false, reason: (e as Error).message }));
     }
+  }
+
+  /** POST /v1/discovery/create — body JSON parsed → callback to sidecar/index. */
+  private async handleDiscoveryCreate(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    this.writeCorsHeaders(res);
+    if (!this.opts.createDiscoveryGoal) {
+      res.statusCode = 501;
+      res.end(JSON.stringify({ ok: false, reason: "createDiscoveryGoal not wired" }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    let body: { source_planet?: string; galaxy?: number; base_system?: number; range?: number };
+    try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+    catch { res.statusCode = 400; res.end(JSON.stringify({ ok: false, reason: "bad json" })); return; }
+    if (!body.source_planet || !body.galaxy || !body.base_system) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, reason: "need source_planet+galaxy+base_system" }));
+      return;
+    }
+    const out = this.opts.createDiscoveryGoal({
+      source_planet: body.source_planet,
+      galaxy: body.galaxy,
+      base_system: body.base_system,
+      range: body.range ?? 10,
+    });
+    res.statusCode = out.ok ? 200 : 400;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(out));
   }
 
   /**

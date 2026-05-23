@@ -57,7 +57,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   }
 
   canHandle(d: Directive): boolean {
-    return d.method === "ui" && ["build", "research", "build_ships", "expedition", "colonize", "deploy", "transport"].includes(d.action);
+    return d.method === "ui" && ["build", "research", "build_ships", "expedition", "colonize", "deploy", "transport", "discover"].includes(d.action);
   }
 
   /** Read persisted ogame API captures from sniffer (cross-context via
@@ -111,6 +111,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (directive.action === "deploy" || directive.action === "transport") {
       return this.execFleetSend(directive, planetId);
     }
+    if (directive.action === "discover") return this.execDiscover(directive, planetId);
 
     // TIER 1 — replay sniffer-captured ogame URL if seen. ogame's own
     // click triggers the REAL endpoint with EXACT format; we just copy.
@@ -790,6 +791,72 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       const msg = parsed.errors?.[0]?.message ?? "unknown";
       throw new Error(`${directive.action} rejected: ${msg}`);
     }
+    return { action: directive.action, clicked: true };
+  }
+
+  /** Species discovery — Galaxy view DNA icon → sendDiscoveryFleet POST.
+   *  Endpoint (verified from operator's DOM paste 2026-05-23):
+   *    POST /game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1
+   *    body: galaxy=N&system=N&position=N&token=...
+   *  Cost: Metal 5000 / Crystal 1000 / Deuterium 500 per shot, 7-day per-coord cooldown.
+   *  Uses 1 fleet slot until exploration fleet returns. */
+  private async execDiscover(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
+    const p = directive.params as { galaxy?: number; system?: number; position?: number; goal_id?: string };
+    const galaxy = p.galaxy ?? 0;
+    const system = p.system ?? 0;
+    const position = p.position ?? 0;
+    if (!galaxy || !system || !position) {
+      throw new Error(`discover: missing galaxy/system/position (got ${galaxy}:${system}:${position})`);
+    }
+
+    // Get fresh CSRF token via galaxy page fetch (background, no SPA nav).
+    const tokenPageUrl = `/game/index.php?page=ingame&component=galaxy&cp=${planetId}`;
+    const tokenResp = await this.fetchFn(tokenPageUrl, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
+    const tokenHtml = await tokenResp.text();
+    const tokenMatch =
+      tokenHtml.match(/var\s+token\s*=\s*['"]([a-zA-Z0-9]{16,})['"]/)
+      ?? tokenHtml.match(/<input[^>]*name="token"[^>]*value="([a-zA-Z0-9]{16,})"/)
+      ?? tokenHtml.match(/<meta[^>]*name="ogame-token"[^>]*content="([a-zA-Z0-9]{16,})"/);
+    if (!tokenMatch) {
+      // Last resort: cached token from previous POST (dataset).
+      const cached = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"];
+      if (!cached) throw new Error("discover: no token in galaxy page nor cache");
+      console.warn(`[ApiExec/discover] galaxy page had no token, using cached`);
+      var token = cached;
+    } else {
+      var token = tokenMatch[1]!;
+    }
+
+    const postUrl = `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1&cp=${planetId}`;
+    const body = new URLSearchParams({
+      galaxy: String(galaxy),
+      system: String(system),
+      position: String(position),
+      token,
+    });
+    console.info(`[ApiExec/discover] POST ${galaxy}:${system}:${position} from planet ${planetId}`);
+    const r = await this.fetchFn(postUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+      body,
+    });
+    if (!r.ok) throw new Error(`discover: HTTP ${r.status}`);
+    const respText = await r.text();
+    let parsed: { success?: boolean; status?: string; errors?: Array<{ message?: string; error?: number }>; newAjaxToken?: string; message?: string } | null = null;
+    try { parsed = JSON.parse(respText); } catch { /* HTML */ }
+    console.info(`[ApiExec/discover] resp HTTP ${r.status} body[0:200]=${respText.slice(0, 200).replace(/\s+/g, " ")}`);
+    if (parsed?.newAjaxToken) {
+      (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed.newAjaxToken;
+      try { this.win.localStorage.setItem("OGAMEX_TOKEN", parsed.newAjaxToken); } catch { /* */ }
+    }
+    if (parsed && (parsed.success === false || parsed.status === "failure")) {
+      const msg = parsed.errors?.[0]?.message ?? parsed.message ?? "unknown";
+      throw new Error(`discover ${galaxy}:${system}:${position} rejected: ${msg}`);
+    }
+    // Record success on the goal's completed[] via window callback to sidecar.
+    // We piggyback on the directive_completed result — sidecar will mark
+    // goal target.completed accordingly through a new handler (added next).
     return { action: directive.action, clicked: true };
   }
 }

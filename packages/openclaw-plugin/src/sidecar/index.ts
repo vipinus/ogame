@@ -701,6 +701,33 @@ export async function startSidecar(
       goalsStore.setMainGoal(null);
       return { ok: true };
     },
+    createDiscoveryGoal: (body) => {
+      const planet = stateRef.current?.planets?.[body.source_planet];
+      if (!planet) return { ok: false, reason: `unknown planet ${body.source_planet}` };
+      // Block second active discovery for same planet (operator panel UX).
+      const existing = goalsStore.list().find((r) =>
+        r.goal.type === "species_discovery" &&
+        !["completed", "cancelled"].includes(r.status) &&
+        (r.goal.target as { source_planet?: string }).source_planet === body.source_planet
+      );
+      if (existing) return { ok: false, reason: `discovery already active on ${body.source_planet} (goal ${existing.goal.id})` };
+      const id = `disc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      goalsStore.add({
+        id, type: "species_discovery",
+        target: {
+          source_planet: body.source_planet,
+          galaxy: body.galaxy,
+          base_system: body.base_system,
+          range: body.range ?? 10,
+          completed: [],
+        },
+        planet: body.source_planet, priority: 5, is_main_goal: false,
+        status: "pending", created_at: Date.now(),
+        progress_pct: 0, current_step: "queued", eta_at: null,
+      });
+      console.log(`[discovery] created goal ${id} from planet ${body.source_planet} galaxy=${body.galaxy} base=${body.base_system} range=${body.range ?? 10}`);
+      return { ok: true, goal_id: id };
+    },
   });
   const http = httpServerCtor();
   await Promise.all([ws.start(), http.start()]);
@@ -761,6 +788,29 @@ export async function startSidecar(
             const type = row?.goal.type;
             if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport") {
               goalsStore.updateStatus(goalId, "completed");
+            }
+            // species_discovery: ApiExec success = ONE coord done. Append to
+            // target.completed[] so planner picks next coord on next tick.
+            // Goal stays "active" until all coords attempted (planner emits
+            // "all coords attempted — goal complete" blocked → consumer can
+            // mark cancelled, or we auto-complete here once range filled).
+            if (type === "species_discovery" && row) {
+              const tgt = row.goal.target as { galaxy?: number; system?: number; position?: number; completed?: string[]; range?: number };
+              const completed = Array.isArray(tgt.completed) ? [...tgt.completed] : [];
+              // ApiExec embeds galaxy/system/position in params, not target.
+              // Pull from m.result.params if available, else from directive
+              // by looking it up — easier path: store coord on the goal at
+              // dispatch time. As a shortcut, increment a coord_count.
+              // Simpler: planner already orders coords; the next tick's
+              // planSpeciesDiscoveryGoal will see goal.target.completed
+              // grow only via this branch — we must capture the LAST
+              // dispatched coord. We do that via directive params snapshot
+              // saved when planner emitted (added to row metadata below).
+              const lastDispatched = (row as { last_discover_coord?: string }).last_discover_coord;
+              if (lastDispatched && !completed.includes(lastDispatched)) {
+                completed.push(lastDispatched);
+                goalsStore.updateTarget(goalId, { ...tgt, completed } as Record<string, unknown>);
+              }
             }
             // build / research / build_ships / lifeform_building → no-op,
             // planner detects terminal next tick.
@@ -826,8 +876,15 @@ export async function startSidecar(
         // when the ack returns with success:false. Without this, ApiExec
         // failures (e.g., expedition 140054) leave the goal "active"
         // forever and merger keeps re-dispatching every cooldown cycle.
-        const d = msg.directive as { id: string; goal_id?: string };
+        const d = msg.directive as { id: string; goal_id?: string; action?: string; params?: { galaxy?: number; system?: number; position?: number } };
         if (d.id && d.goal_id) directiveToGoal.set(d.id, d.goal_id);
+        // species_discovery: stamp the dispatched coord onto the goal row so
+        // directive_completed handler can append to target.completed[].
+        if (d.action === "discover" && d.goal_id && d.params) {
+          const coord = `${d.params.galaxy}:${d.params.system}:${d.params.position}`;
+          const row = goalsStore.list().find((r) => r.goal.id === d.goal_id);
+          if (row) (row as { last_discover_coord?: string }).last_discover_coord = coord;
+        }
       }
       ws.send(msg);
       // HTTP-side consumers (long-poll) also need the directive — queue it

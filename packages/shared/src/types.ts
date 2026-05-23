@@ -167,7 +167,10 @@ export type GoalType =
   | "pick_lifeform"
   | "lifeform_level_to"
   | "lifeform_research"
-  | "lifeform_building";
+  | "lifeform_building"
+  // 种族发现 (Galaxy view 紫色 DNA → 派遣探索飛船)
+  // POST .../action=sendDiscoveryFleet body=galaxy/system/position/token
+  | "species_discovery";
 
 export type GoalStatus = "pending" | "active" | "blocked" | "completed" | "cancelled" | "pending_confirm";
 

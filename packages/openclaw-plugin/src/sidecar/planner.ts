@@ -188,9 +188,101 @@ export function planGoal(goal: Goal, state: WorldState): PlanResult {
       return planFleetSendGoal(goal, state);
     case "lifeform_building":
       return planLifeformBuildingGoal(goal, state);
+    case "species_discovery":
+      return planSpeciesDiscoveryGoal(goal, state);
     default:
       return { blocked: `goal type ${goal.type} not implemented` };
   }
+}
+
+/**
+ * planSpeciesDiscoveryGoal — drive Galaxy-view DNA discovery missions.
+ *
+ * target: {
+ *   source_planet: string;   // planet id (cp=PID)
+ *   galaxy: number;
+ *   base_system: number;
+ *   range: number;           // ±N systems around base_system
+ *   completed?: string[];    // "G:S:P" coords already dispatched THIS goal
+ * }
+ *
+ * Iteration order: base_system, base-1, base+1, base-2, base+2, ... (radial).
+ * Each system: positions 1..15. One directive per coord per tick.
+ *
+ * Slot management: keep 1 fleet slot empty
+ *  (used_fleet_slots + 1 <= max_fleet_slots - 1).
+ *
+ * Goal completes when (range*2 + 1) * 15 coords all attempted.
+ */
+function planSpeciesDiscoveryGoal(goal: Goal, state: WorldState): PlanResult {
+  const t = goal.target as {
+    source_planet?: string;
+    galaxy?: number;
+    base_system?: number;
+    range?: number;
+    completed?: string[];
+  };
+  const planetId = t.source_planet ?? "";
+  const galaxy = t.galaxy ?? 0;
+  const baseSystem = t.base_system ?? 0;
+  const range = t.range ?? 10;
+  if (!planetId) return { blocked: "species_discovery: missing source_planet" };
+  if (!galaxy || !baseSystem) return { blocked: "species_discovery: missing galaxy/base_system" };
+  const planet = state.planets[planetId];
+  if (!planet) return { blocked: `species_discovery: planet ${planetId} not in state` };
+
+  // Slot capacity check — keep 1 slot empty. server.used_fleet_slots /
+  // max_fleet_slots written at runtime; not in strict WorldState.server
+  // type, so cast.
+  const server = (state.server ?? {}) as { used_fleet_slots?: number; max_fleet_slots?: number };
+  const used = server.used_fleet_slots ?? 0;
+  const max = server.max_fleet_slots ?? 0;
+  if (max > 0 && used >= max - 1) {
+    return { blocked: `species_discovery: keep 1 fleet slot empty (used=${used} max=${max})` };
+  }
+
+  // Build radial iteration order and find next coord not in completed[].
+  const completed = new Set(t.completed ?? []);
+  const orderedSystems: number[] = [baseSystem];
+  for (let d = 1; d <= range; d++) {
+    orderedSystems.push(baseSystem - d);
+    orderedSystems.push(baseSystem + d);
+  }
+  let nextSystem = -1;
+  let nextPosition = -1;
+  outer: for (const sys of orderedSystems) {
+    if (sys < 1) continue; // ogame systems start at 1
+    for (let pos = 1; pos <= 15; pos++) {
+      const key = `${galaxy}:${sys}:${pos}`;
+      if (!completed.has(key)) {
+        nextSystem = sys;
+        nextPosition = pos;
+        break outer;
+      }
+    }
+  }
+  if (nextSystem < 0) {
+    return { blocked: `species_discovery: all ${(range * 2 + 1) * 15} coords attempted — goal complete` };
+  }
+
+  const directive: Directive = {
+    id: `dir-${randomUUID()}`,
+    source: "goal",
+    method: "ui",
+    priority: goal.priority,
+    action: "discover",
+    params: {
+      planet_id: planetId,
+      galaxy,
+      system: nextSystem,
+      position: nextPosition,
+      goal_id: goal.id, // so directive_completed handler can write back
+    },
+    preconds: [],
+    expires_at: Date.now() + DIRECTIVE_TTL_MS,
+    reason: `species_discovery ${galaxy}:${nextSystem}:${nextPosition}`,
+  };
+  return directive;
 }
 
 /**
