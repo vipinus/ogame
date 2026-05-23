@@ -849,7 +849,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
           const j = JSON.parse(galTxt) as {
             system?: { galaxyContent?: Array<{
               position?: number;
-              availableMissions?: Array<{ missionType?: number }>;
+              availableMissions?: Array<{ missionType?: number; canSend?: string }>;
             }> };
           };
           const content = j.system?.galaxyContent ?? [];
@@ -857,8 +857,21 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
             const pos = row.position ?? 0;
             if (pos < 1 || pos > 15) continue;
             const missions = Array.isArray(row.availableMissions) ? row.availableMissions : [];
-            const canDiscover = missions.some((m) => m.missionType === 18);
-            states.set(pos, canDiscover ? "available" : "unavailable");
+            const m18 = missions.find((m) => m.missionType === 18);
+            // ogame canSend semantic (verified from operator sniff 2026-05-23):
+            //   missionType 18 entry present in availableMissions → discovery
+            //     mechanically possible for this coord (planet+lifeform tech).
+            //   canSend non-empty string → THIS coord on cooldown / blocked
+            //     (message like "您可以在 1日 7時 之後再次搜索生命形式").
+            //   canSend empty/undefined → free to send.
+            const canSendMsg = (m18?.canSend ?? "").trim();
+            if (!m18) {
+              states.set(pos, "unavailable");
+            } else if (canSendMsg.length > 0) {
+              states.set(pos, "cooldown");
+            } else {
+              states.set(pos, "available");
+            }
           }
         } catch (e) {
           console.warn(`[ApiExec/discover] galaxy[${cacheKey}] JSON parse failed:`, e);
