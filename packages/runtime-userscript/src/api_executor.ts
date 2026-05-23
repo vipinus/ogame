@@ -847,11 +847,28 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         const states = new Map<number, string>();
         try {
           const j = JSON.parse(galTxt) as {
-            system?: { galaxyContent?: Array<{
-              position?: number;
-              availableMissions?: Array<{ missionType?: number; canSend?: unknown }>;
-            }> };
+            system?: {
+              usedFleetSlots?: number;
+              maximumFleetSlots?: number;
+              galaxyContent?: Array<{
+                position?: number;
+                availableMissions?: Array<{ missionType?: number; canSend?: unknown }>;
+              }>;
+            };
           };
+          // Authoritative slot data from ogame — push immediately so planner
+          // doesn't rely on 10s /movement harvest. Operator: "你的舰队槽的数量
+          // 是不是又是猜的？" — answer is now no, we read it from ogame's own
+          // response on every galaxy fetch.
+          const usedFs = j.system?.usedFleetSlots;
+          const maxFs = j.system?.maximumFleetSlots;
+          if (typeof usedFs === "number" && typeof maxFs === "number" && maxFs > 0) {
+            const updateFn = (this.win as Window & { __ogamexUpdateSlots?: (u: number, m: number) => void }).__ogamexUpdateSlots;
+            if (updateFn) {
+              updateFn(usedFs, maxFs);
+              console.info(`[ApiExec/discover] galaxy[${cacheKey}] slots from ogame: ${usedFs}/${maxFs} → pushed to store`);
+            }
+          }
           const content = j.system?.galaxyContent ?? [];
           for (const row of content) {
             const pos = row.position ?? 0;
@@ -902,6 +919,23 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       console.info(`[ApiExec/discover] ${galaxy}:${system}:${position} pre-check SKIP (state=${positionState || "unknown"}) — no POST`);
       return { action: directive.action, clicked: true };
     }
+
+    // Slot-gate defense in depth. Galaxy fetch above wrote authoritative
+    // usedFleetSlots/maximumFleetSlots into the store. Read them back here
+    // — if used >= max - 1 (would consume the last empty slot), refuse POST.
+    // Planner has the same gate, but it operates on snapshots and may be
+    // stale within a burst of dispatches; this is the actual point of no
+    // return. Operator 2026-05-23: "艦隊:16/16 不要满 保留一槽".
+    try {
+      const storeRef = (this.win as Window & { __ogamexStore?: { state: { server?: { used_fleet_slots?: number; max_fleet_slots?: number } } } }).__ogamexStore;
+      const srv = storeRef?.state.server;
+      const usedNow = srv?.used_fleet_slots ?? -1;
+      const maxNow = srv?.max_fleet_slots ?? -1;
+      if (usedNow >= 0 && maxNow > 0 && usedNow >= maxNow - 1) {
+        console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} SLOT GATE — would overshoot keep-1-empty (used=${usedNow} max=${maxNow}), no POST`);
+        return { action: directive.action, clicked: true };
+      }
+    } catch (e) { void e; /* missing store = skip the gate, fall through */ }
 
     // Get fresh CSRF token via galaxy page fetch (background, no SPA nav).
     const tokenPageUrl = `/game/index.php?page=ingame&component=galaxy&cp=${planetId}`;
@@ -972,6 +1006,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
       throw new Error(`discover ${galaxy}:${system}:${position} rejected: ${msg}`);
     }
+    // Optimistic local slot increment — the new fleet is in flight. Next
+    // planner tick will re-read this and gate correctly even before the
+    // next galaxy fetch refreshes the authoritative count. The 10s
+    // /movement harvest will overwrite this with truth.
+    try {
+      const incFn = (this.win as Window & { __ogamexIncrementUsedSlot?: () => void }).__ogamexIncrementUsedSlot;
+      if (incFn) incFn();
+    } catch (e) { void e; }
     return { action: directive.action, clicked: true };
   }
 }

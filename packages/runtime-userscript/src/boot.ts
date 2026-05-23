@@ -260,6 +260,36 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
   } catch (_) { void _; }
 
+  // 1b'. Slot-data write helpers exposed to ApiExec.
+  // Operator 2026-05-23: "你的舰队槽的数量是不是又是猜的？" / "艦隊:16/16 不要满 保留一槽".
+  // Previously slot counts came only from 10s /movement DOM harvest — discoveries
+  // burst-dispatched between ticks would all fire before harvester caught up,
+  // overshooting the "keep 1 slot empty" rule. Galaxy POST already returns
+  // authoritative `usedFleetSlots`/`maximumFleetSlots` on every request; expose
+  // a setter so ApiExec writes them post-fetch. Also expose an optimistic
+  // increment helper for post-dispatch local bookkeeping.
+  const updateSlotsFn = (used: number, max: number): void => {
+    if (max <= 0) return;
+    const cur = store.state;
+    store.setPartial({
+      server: { ...(cur.server ?? {}), used_fleet_slots: used, max_fleet_slots: max } as typeof cur.server,
+    });
+    try { env.win.localStorage.setItem("OGAMEX_MAX_FLEET", String(max)); } catch { /* */ }
+  };
+  const incrementUsedSlotFn = (): void => {
+    const cur = store.state;
+    const used = ((cur.server as { used_fleet_slots?: number } | undefined)?.used_fleet_slots ?? 0) + 1;
+    store.setPartial({ server: { ...(cur.server ?? {}), used_fleet_slots: used } as typeof cur.server });
+  };
+  (env.win as Window & {
+    __ogamexUpdateSlots?: typeof updateSlotsFn;
+    __ogamexIncrementUsedSlot?: typeof incrementUsedSlotFn;
+  }).__ogamexUpdateSlots = updateSlotsFn;
+  (env.win as Window & {
+    __ogamexUpdateSlots?: typeof updateSlotsFn;
+    __ogamexIncrementUsedSlot?: typeof incrementUsedSlotFn;
+  }).__ogamexIncrementUsedSlot = incrementUsedSlotFn;
+
   // 1c. Global user-activity tracker — when operator is clicking/typing
   // in ogame UI, PAUSE all autonomous pollers + POSTs for IDLE_GUARD_MS
   // to avoid triggering ogame's anti-bot rate limit ("server not responding").
@@ -517,7 +547,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.241";
+  const USERSCRIPT_VERSION = "0.0.242";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
