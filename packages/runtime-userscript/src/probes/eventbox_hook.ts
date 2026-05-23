@@ -374,140 +374,12 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
   }, 1000);
   installAttackAlertObserver();
 
-  // ─── #eventContent direct DOM observer ────────────────────────────────
-  // Operator pasted live eventbox HTML. Structure (verified 2026-05-22):
-  //   <tr class="eventFleet" id="eventRow-N" data-mission-type="M"
-  //       data-arrival-time="ts" data-return-flight="false|true">
-  //     <td class="countDown">
-  //       <span class="friendly|hostile|neutral textBeefy">...</span>
-  //     ...
-  //   </tr>
-  // ogame periodically refreshes the rows via getAjaxEventbox() (5s). When a
-  // foreign hostile spy probe (mission=6) or attack (1/2/9/10) appears, the
-  // tr gets data-mission-type=N AND the countDown span gets class="hostile".
-  // The fetchEventBox JSON we hook is only counts (181B) — the actual row
-  // data lives in this DOM. MutationObserver on #eventContent reads truth.
-  let evMo: MutationObserver | null = null;
-  let lastEventSig = "";
-  // Persistent diagnostic log — every row class snapshot kept on window for
-  // operator forensics. Tells us whether "red spy" was ever in DOM at all.
-  type EvLogEntry = { ts: number; total: number; rows: Array<{ id: string; mt: string | null; cls: string; tt: string }> };
-  const evLogRing: EvLogEntry[] = [];
-  function appendEvLog(entry: EvLogEntry): void {
-    evLogRing.push(entry);
-    if (evLogRing.length > 50) evLogRing.shift();
-    (win as Window & { __ogamexEventLog?: EvLogEntry[] }).__ogamexEventLog = evLogRing;
-  }
-  function scanEventContent(): void {
-    const tbody = win.document.querySelector("#eventContent tbody");
-    if (!tbody) return;
-    const rows = Array.from(tbody.querySelectorAll<HTMLElement>("tr.eventFleet"));
-    const hostileEntries: IncomingEvent[] = [];
-    const seen: string[] = [];
-    for (const tr of rows) {
-      const mt = parseInt(tr.getAttribute("data-mission-type") ?? "0", 10);
-      const evId = tr.getAttribute("id")?.replace(/^eventRow-/, "") ?? "";
-      const cd = tr.querySelector(".countDown span");
-      const cls = (cd?.className ?? "").toLowerCase();
-      const isHostile = /\bhostile\b/.test(cls);
-      seen.push(`${evId}:${mt}:${cls.slice(0, 16)}`);
-      if (!isHostile) continue;
-      // Only flag threat missions (skip ACS defense / transport).
-      const isThreat = mt === 1 || mt === 2 || mt === 9 || mt === 10;
-      const isSpy = mt === 6;
-      if (!isThreat && !isSpy) continue;
-      // Coords: originFleet → originCoords; destFleet → destCoords.
-      const orCoords = tr.querySelector(".coordsOrigin")?.textContent?.trim() ?? "";
-      const dsCoords = tr.querySelector(".destCoords")?.textContent?.trim() ?? "";
-      const parse3 = (s: string): readonly [number, number, number] => {
-        const m = s.match(/\[(\d+):(\d+):(\d+)\]/);
-        return m ? [parseInt(m[1]!, 10), parseInt(m[2]!, 10), parseInt(m[3]!, 10)] as const : [0, 0, 0] as const;
-      };
-      const arr = parseInt(tr.getAttribute("data-arrival-time") ?? "0", 10);
-      hostileEntries.push({
-        id: `evrow-${evId}`,
-        type: isSpy ? "spy" : "attack",
-        hostile: true,
-        from: parse3(orCoords),
-        to: parse3(dsCoords),
-        arrives_at: arr,
-        ships_count: "?",
-      });
-    }
-    const sig = seen.sort().join("|");
-    if (sig === lastEventSig) return;
-    lastEventSig = sig;
-    // Persistent diagnostic — log every row's class + tooltip on every change.
-    // Available later via console.log(window.__ogamexEventLog).
-    {
-      const detail = rows.map((tr) => {
-        const cd = tr.querySelector(".countDown span");
-        const img = tr.querySelector(".missionFleet img");
-        return {
-          id: tr.getAttribute("id") ?? "",
-          mt: tr.getAttribute("data-mission-type"),
-          cls: cd?.className ?? "",
-          tt: img?.getAttribute("data-tooltip-title") ?? "",
-        };
-      });
-      appendEvLog({ ts: Date.now(), total: rows.length, rows: detail });
-    }
-    if (hostileEntries.length > 0) {
-      const nowSec = Math.floor(Date.now() / 1000);
-      console.warn(`[OgameX/eventcontent] ${hostileEntries.length} hostile row(s) detected: ${hostileEntries.map(e => {
-        const eta = e.arrives_at - nowSec;
-        return `${e.type}@${e.from.join(":")}→${e.to.join(":")} ETA=${eta}s ${eta > 0 ? "(IN-PROGRESS)" : "(ARRIVED)"}`;
-      }).join(", ")}`);
-    }
-    // Merge — KEEP existing evrow-* entries whose arrives_at is still in
-    // the future (event hasn't materialized yet). DON'T wipe based on a
-    // single scan: ogame's DOM mutations during countdown ticks can briefly
-    // hide the hostile class while re-rendering, causing false "row gone"
-    // → instant wipe → panel alarm never had hostile in /v1/emergency feed
-    // (operator observed: console logged spy detection but no sound).
-    const cur = store.state.events_incoming ?? [];
-    const fromOther = cur.filter((e) => !e.id.startsWith("evrow-"));
-    const nowSec = Math.floor(Date.now() / 1000);
-    const stillPending = cur.filter((e) =>
-      e.id.startsWith("evrow-") && e.arrives_at > nowSec
-    );
-    // New scan entries replace any existing-same-id; entries we don't see
-    // this scan but still in future remain via stillPending union.
-    const byId = new Map<string, typeof stillPending[number]>();
-    for (const e of stillPending) byId.set(e.id, e);
-    for (const e of hostileEntries) byId.set(e.id, e);
-    const evrowMerged = Array.from(byId.values());
-    const merged = [...fromOther, ...evrowMerged];
-    if (JSON.stringify(merged.map((e) => e.id).sort()) !== JSON.stringify(cur.map((e) => e.id).sort())) {
-      store.setPartial({ events_incoming: merged });
-    }
-  }
-  function installEventContentObserver(): void {
-    const el = win.document.getElementById("eventContent");
-    if (!el) return;
-    evMo = new (win as Window & { MutationObserver: typeof MutationObserver }).MutationObserver(() => scanEventContent());
-    evMo.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "data-mission-type", "data-arrival-time"] });
-    scanEventContent(); // initial pass
-    console.info(`[OgameX/eventcontent] DOM observer installed`);
-  }
-  let evInstallTries = 0;
-  const evInstallRetry = setInterval(() => {
-    evInstallTries += 1;
-    if (win.document.getElementById("eventContent")) {
-      installEventContentObserver();
-      clearInterval(evInstallRetry);
-    } else if (evInstallTries > 30) {
-      clearInterval(evInstallRetry);
-    }
-  }, 1000);
-  installEventContentObserver();
-
   // ─── API poll: /eventList endpoint ───────────────────────────────────────
-  // Operator: "改成 api 轮询方式". DOM observer depends on the eventbox
-  // dropdown being expanded + ogame's render timing; misses some short
-  // probe-flight windows. The /eventList endpoint always returns the full
-  // HTML of every event regardless of UI state — same source ogame uses.
-  // Active 3s poll catches in-progress probes reliably.
+  // Operator: "改成 api 轮询方式" + "Layer 2 不用保留". The previous
+  // #eventContent MutationObserver was dropped entirely — API poll is the
+  // only hostile detection source. /eventList?ajax=1 returns full HTML of
+  // every event regardless of UI state. 3s active poll catches in-progress
+  // probes reliably.
   let lastApiEventSig = "";
   function parseEventListHTMLAndInject(html: string): void {
     // Parse via DOMParser into detached doc so we don't perturb the page.
@@ -594,10 +466,8 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       stopped = true;
       clearInterval(watchdogId);
       clearInterval(installRetry);
-      clearInterval(evInstallRetry);
       clearInterval(apiPollId);
       if (mo) { mo.disconnect(); mo = null; }
-      if (evMo) { evMo.disconnect(); evMo = null; }
       win.document.removeEventListener("visibilitychange", visHandler);
       // Prototype patches intentionally not reverted (best-effort).
     },
