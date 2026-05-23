@@ -420,7 +420,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const pauseable = name === "emergency" || name === "expedition";
       const paused = pauseable ? loadJSON<boolean>(`ogamex.${name}.paused`, false) : false;
       const pauseBtn = pauseable
-        ? `<button data-pause-daemon="${escapeHtml(name)}" style="background:transparent; color:${paused ? "#ffaa55" : "#7080a0"}; border:1px solid ${paused ? "#aa6622" : "#3a3a5a"}; border-radius:3px; cursor:pointer; font-size:10px; padding:1px 5px;" title="${paused ? "Resume daemon" : "Pause daemon"}">${paused ? "▶" : "⏸"}</button>`
+        ? `<button data-pause-daemon="${escapeHtml(name)}" style="${paused ? btnStyle("#205a20", "#408a40") : btnStyle("#5a4a20", "#8a7a40")}" title="${paused ? "Resume daemon" : "Pause daemon"}">${paused ? "▶" : "⏸"}</button>`
         : "";
       return `<div data-section-toggle="${escapeHtml(name)}" style="display:flex; align-items:center; gap:6px; cursor:pointer; padding:4px 0; user-select:none; border-top:1px solid #2a3a52;">
         <span style="color:#8090a8; width:12px;">${c ? "▸" : "▾"}</span>
@@ -442,12 +442,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     })();
     const spyToggleRow = `<div style="font-size:11px; padding:4px 0; display:flex; justify-content:space-between; align-items:center; border-top:1px solid #2a2a3a;">
         <span style="color:#a0a8b8;">侦察 → 紧急起飞</span>
-        <button data-spy-save-toggle="1"
-                style="background:${spySaveOn ? "#2d5d3f" : "#5d2d2d"}; color:${spySaveOn ? "#a0ffb0" : "#ffa0a0"};
-                       border:1px solid ${spySaveOn ? "#4d8d5f" : "#8d4d4d"}; cursor:pointer;
-                       padding:2px 10px; font-size:11px; min-width:48px;">
-            ${spySaveOn ? "ON" : "OFF"}
-        </button>
+        <button data-spy-save-toggle="1" style="${spySaveOn ? btnStyle("#205a20", "#408a40") : btnStyle("#5a2020", "#8a4040")}">${spySaveOn ? "ON" : "OFF"}</button>
       </div>`;
     const emRows = !emCollapsed && lastEmergency
       ? (emCount === 0
@@ -520,8 +515,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           return `
 <div style="padding:6px 10px; color:#c0d0e0; font-size:12px;">
   Active: [${tgt.galaxy}:${tgt.base_system}] ±${tgt.range} from <code>${tgt.source_planet}</code> · ${done}/${total} done
-  <button data-action="discovery-stop" data-goal-id="${(activeDisc as { id: string }).id}"
-          style="margin-left:10px; background:#403030; color:#ffa080; border:1px solid #604040; cursor:pointer; padding:2px 8px;">Stop</button>
+  <button data-action="discovery-stop" data-goal-id="${(activeDisc as { id: string }).id}" style="margin-left:10px; ${btnStyle("#5a2020", "#8a4040")}">Stop</button>
 </div>`;
         })()
       : `
@@ -529,8 +523,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   Start from:
   <select data-action="discovery-planet" style="background:#1a2330; color:#c0d0e0; border:1px solid #354050;">${planetOpts}</select>
   range: <input data-action="discovery-range" type="number" min="1" max="20" value="10" style="width:50px; background:#1a2330; color:#c0d0e0; border:1px solid #354050;">
-  <button data-action="discovery-start"
-          style="margin-left:10px; background:#303d50; color:#c0e0ff; border:1px solid #506580; cursor:pointer; padding:2px 8px;">Start Discovery</button>
+  <button data-action="discovery-start" style="margin-left:10px; ${btnStyle("#205a20", "#408a40")}">Start Discovery</button>
 </div>`;
     const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff")}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
 
