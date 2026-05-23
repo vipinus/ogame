@@ -809,6 +809,54 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       throw new Error(`discover: missing galaxy/system/position (got ${galaxy}:${system}:${position})`);
     }
 
+    // Pre-check: fetch galaxy system content + classify position's discovery
+    // state. Operator: "先从 api 拿到星球是否扫过, 没扫过的继续, 扫过的跳过".
+    // Cached 5min per "G:S" so 15 positions in same system reuse one fetch.
+    const cacheKey = `${galaxy}:${system}`;
+    type Cache = { ts: number; states: Map<number, string> };
+    const w = this.win as Window & { __ogamexGalaxyDiscovery?: Map<string, Cache> };
+    if (!w.__ogamexGalaxyDiscovery) w.__ogamexGalaxyDiscovery = new Map();
+    const cacheStore = w.__ogamexGalaxyDiscovery;
+    let cache = cacheStore.get(cacheKey);
+    const CACHE_TTL = 5 * 60 * 1000;
+    if (!cache || Date.now() - cache.ts > CACHE_TTL) {
+      try {
+        const galResp = await this.fetchFn(
+          `/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1&cp=${planetId}`,
+          {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+            body: `galaxy=${galaxy}&system=${system}`,
+          },
+        );
+        const galTxt = await galResp.text();
+        // Response is JSON; HTML chunks per position carry the
+        // planetDiscoverIcons class block. The "available" class is
+        // planetDiscoverDefault (verified from operator's earlier DOM paste).
+        // Any other planetDiscover* class = cooldown / in-progress / done.
+        // We scan position N → class lookup.
+        const states = new Map<number, string>();
+        const blockRe = /class="planetDiscoverIcons\s+(planetDiscover[A-Za-z]+)[^"]*"[\s\S]{0,1500}?position(\d{1,2})/g;
+        let m: RegExpExecArray | null;
+        while ((m = blockRe.exec(galTxt)) !== null) {
+          const cls = m[1] ?? "";
+          const pos = parseInt(m[2] ?? "0", 10);
+          if (pos >= 1 && pos <= 15) states.set(pos, cls);
+        }
+        cache = { ts: Date.now(), states };
+        cacheStore.set(cacheKey, cache);
+        console.info(`[ApiExec/discover] galaxy[${cacheKey}] scanned ${states.size} positions: ${Array.from(states.entries()).map(([p, c]) => `${p}=${c.replace("planetDiscover", "")}`).join(", ")}`);
+      } catch (e) {
+        console.warn(`[ApiExec/discover] galaxy scan failed for ${cacheKey}:`, e);
+      }
+    }
+    const positionState = cache?.states.get(position) ?? "";
+    if (positionState && positionState !== "planetDiscoverDefault") {
+      console.info(`[ApiExec/discover] ${galaxy}:${system}:${position} pre-check SKIP (state=${positionState}) — no POST`);
+      return { action: directive.action, clicked: true };
+    }
+
     // Get fresh CSRF token via galaxy page fetch (background, no SPA nav).
     const tokenPageUrl = `/game/index.php?page=ingame&component=galaxy&cp=${planetId}`;
     const tokenResp = await this.fetchFn(tokenPageUrl, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
