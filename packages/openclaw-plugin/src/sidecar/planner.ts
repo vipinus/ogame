@@ -271,12 +271,16 @@ function planSpeciesDiscoveryGoal(goal: Goal, state: WorldState): PlanResult {
     method: "ui",
     priority: goal.priority,
     action: "discover",
+    // goal_id MUST be at top level (per Directive type + sidecar handlers
+    // that read d.goal_id directly). Earlier version placed it in params
+    // which is silently ignored by directiveToGoal mapping + optimistic
+    // completed[] update → planner kept selecting same coord 50+ times.
+    goal_id: goal.id,
     params: {
       planet_id: planetId,
       galaxy,
       system: nextSystem,
       position: nextPosition,
-      goal_id: goal.id, // so directive_completed handler can write back
     },
     preconds: [],
     expires_at: Date.now() + DIRECTIVE_TTL_MS,
