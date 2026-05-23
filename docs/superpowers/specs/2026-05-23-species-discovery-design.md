@@ -128,18 +128,85 @@ counts as 1 fleet slot. The "keep 1 empty" rule means `used + 1 <= max - 1`
 → planner blocks when `used >= max - 1`. Slot frees when ogame returns the
 exploration fleet (visible in `/movement` page).
 
-## Cooldown handling
+## Cooldown handling (v0.0.240 — implemented)
 
-We don't track ogame's per-coord 7-day cooldown explicitly. Rationale:
-1. Operator's goal is typically a fresh sweep — every coord starts uncooled.
-2. If ogame rejects a coord (cooldown active), the directive completes with
-   `success: false` → goal becomes blocked; operator decides retry vs cancel.
-3. After all 315 coords attempted (success OR cooldown-block), planner ends
-   the goal.
+Per-coord 7-day cooldown is now detected **before** the dispatch POST,
+not after. The original "let ogame reject + mark blocked" design wasted
+one POST per coord per tick (315 POSTs for a full sweep, every minute,
+trips WAF rate limits and pollutes session).
 
-If needed later, the rejection reason from ogame can be parsed for "cooldown"
-hints and `target.cooldown_until[coord] = next_eligible_ts` stored. Out of
-scope for v1.
+### Galaxy state pre-check
+
+`execDiscover` first calls `fetchGalaxyContent` for the target system
+and parses `system.galaxyContent[]`. The result is cached for 5 minutes
+per `(galaxy, system)` key — repeated discovers in the same tick reuse
+the cache.
+
+```
+POST /game/index.php?page=ingame&component=galaxy
+     &action=fetchGalaxyContent&ajax=1&asJson=1
+body: galaxy=N&system=N
+```
+
+Response shape (verified 2026-05-23 from operator's sniff):
+
+```json
+{
+  "system": {
+    "galaxy": 1, "system": 484,
+    "galaxyContent": [
+      {
+        "position": 5,
+        "planets": [...],
+        "availableMissions": [
+          {
+            "missionType": 18,
+            "canSend": "您可以在 1日 7時 之後再次搜索生命形式\n",
+            "discoveryCount": "（1106/2700）",
+            "link": ".../sendDiscoveryFleet..."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### `availableMissions[].canSend` semantics
+
+ogame returns `canSend` as a **union type** across coords (verified via
+two galaxies: 1:484 returned strings, 1:483 returned booleans). The
+parser must handle both:
+
+| `canSend` value | Meaning | Position state |
+|-----------------|---------|----------------|
+| string non-empty (e.g. cooldown countdown) | This coord on 7-day cooldown | `cooldown` — skip POST |
+| string empty `""` | Free to dispatch | `available` |
+| `undefined` | Free to dispatch | `available` |
+| `true` (boolean) | Free to dispatch | `available` |
+| `false` (boolean) | Blocked (cooldown / no planet / no tech) | `cooldown` |
+| missionType=18 entry absent | Mechanically impossible (empty position, no tech) | `unavailable` |
+
+**Type guard required**: an earlier `(canSend ?? "").trim()` form threw
+`TypeError: trim is not a function` when ogame returned boolean — the
+fix is explicit `typeof` branching (see `api_executor.ts` execDiscover
+parser block, lines ~860–880).
+
+### Pre-check flow
+
+```
+execDiscover(galaxy, system, position):
+  states = cached[galaxy:system] or fetchGalaxyContent(galaxy, system)
+  state  = states.get(position) ?? "unknown"
+  if state !== "available":
+    log "pre-check SKIP (state=...)"
+    return {clicked: true}      ← no POST, no token burn
+  POST sendDiscoveryFleet ...
+```
+
+Net effect (measured 2026-05-23): 30 directives dispatched, 27 SKIP
+(cooldown), 3 POST attempts — request rate drops 10× and stays under
+WAF threshold.
 
 ## Why this is fully API
 
@@ -163,15 +230,92 @@ scope for v1.
   preflight pollEmpire + ogame's own validation will block the actual
   POST. Worst case: 1 wasted directive cycle, goal stays blocked.
 
+## Goal completion bookkeeping (v0.0.234 — implemented)
+
+Original design said "directive_completed handler appends to
+`target.completed[]`". In practice the ack arrives **3–10 seconds**
+after dispatch (event-list poll cycle). Within that window the planner
+ticks again, re-reads `target.completed[]`, picks the **same coord** —
+operator saw 50+ POSTs to `1:486:1` before the first ack arrived.
+
+Fix: **optimistic completed[] write at dispatch time**, not at ack time.
+
+```ts
+// sidecar/index.ts on directive.dispatch:
+if (d.action === "discover" && d.goal_id && d.params) {
+  const coord = `${d.params.galaxy}:${d.params.system}:${d.params.position}`;
+  const row = goalsStore.list().find(r => r.goal.id === d.goal_id);
+  if (row?.goal.type === "species_discovery") {
+    const tgt = row.goal.target as { completed?: string[] };
+    const completed = [...(tgt.completed ?? [])];
+    if (!completed.includes(coord)) completed.push(coord);
+    goalsStore.updateTarget(d.goal_id, { ...row.goal.target, completed });
+  }
+}
+```
+
+### Directive shape critical detail (commit b538499)
+
+The first implementation nested `goal_id` inside `params` — sidecar's
+handlers read `d.goal_id` from **top level**. The mismatch silently
+failed every update; `completed[]` stayed empty across hundreds of
+dispatches. The Directive shape is:
+
+```ts
+{
+  id: "dir-xxxx",
+  action: "discover",
+  goal_id: "g-xxxx",          // ← TOP LEVEL, not in params
+  planet_id: "33642996",
+  params: { galaxy, system, position }
+}
+```
+
+Any planner emitting a new action type must put `goal_id` at the top
+level — otherwise sidecar bookkeeping silently no-ops.
+
 ## Open items (out of v1 scope)
 
-- 7-day cooldown awareness (planner currently retries blocked coords next
-  goal).
+- Cost gating — block when planet resources < 5000M/1000C/500D (currently
+  ogame rejects, directive flips success:false, blocked).
 - Multi-planet load balancing (sweep system X from planet A, system X+1
   from planet B for energy spread).
-- Cost gating — block when planet resources < 5000M/1000C/500D.
 - Daemon-side trigger (currently sidecar planner-driven; daemon doesn't know
-  about discovery goals).
+  about discovery goals — fine because slot frees emit `data.refresh`
+  which re-ticks planner).
+- Persisted galaxy cache (current cache is in-memory, blown on reload —
+  acceptable since fetchGalaxyContent is cheap).
+
+## Implementation timeline
+
+| Version | Commit | Change |
+|---------|--------|--------|
+| v0.0.228 | initial | Plan, ApiExec, panel, sidecar HTTP create endpoint. |
+| v0.0.232 | b538499 | **Critical**: moved `goal_id` from `params` to top-level Directive. Before this, completed[] never updated → stuck on first coord. |
+| v0.0.234 | (same day) | Optimistic `completed[]` append at dispatch (ack arrives too late to gate the next planner tick). |
+| v0.0.238 | (debug) | Galaxy state cache (5min) + per-position state map. Initial parser only checked `missionType=18` presence — every position reported "available" but POSTs returned cooldown. |
+| v0.0.240 | 99a2111 | `canSend` string-only parser: empty → available, non-empty → cooldown. Worked on systems where ogame returns strings (1:484). |
+| v0.0.241 | this commit | `canSend` boolean union handling: type guard for `boolean` (1:483 returned `true`/`false` rather than countdown strings). Earlier `(canSend ?? "").trim()` threw `TypeError: trim is not a function`, fall-through left states map empty, all positions defaulted to cooldown. |
+
+## Debug helpers
+
+For investigating new galaxies, two helpers are exposed on both
+`env.win` (sandbox) and `unsafeWindow` (page-world, accessible from
+DevTools console):
+
+```js
+__ogamexDebugGalaxy(galaxy, system)
+  // → POSTs fetchGalaxyContent, logs first 2000 chars of response,
+  //   writes full response to clipboard. Returns response text.
+
+__ogamexDbgMis(galaxy, system, position)
+  // → calls __ogamexDebugGalaxy + extracts one position's
+  //   availableMissions and full row. Use when you need to inspect
+  //   what canSend / availableMissions look like for a specific coord.
+```
+
+If `canSend` ever returns a third shape (object, number, array), add a
+branch to the type guard in `api_executor.ts` execDiscover parser.
 
 ## Files changed
 

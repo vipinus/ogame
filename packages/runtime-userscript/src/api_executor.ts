@@ -849,7 +849,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
           const j = JSON.parse(galTxt) as {
             system?: { galaxyContent?: Array<{
               position?: number;
-              availableMissions?: Array<{ missionType?: number; canSend?: string }>;
+              availableMissions?: Array<{ missionType?: number; canSend?: unknown }>;
             }> };
           };
           const content = j.system?.galaxyContent ?? [];
@@ -861,17 +861,25 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
             // ogame canSend semantic (verified from operator sniff 2026-05-23):
             //   missionType 18 entry present in availableMissions → discovery
             //     mechanically possible for this coord (planet+lifeform tech).
-            //   canSend non-empty string → THIS coord on cooldown / blocked
-            //     (message like "您可以在 1日 7時 之後再次搜索生命形式").
-            //   canSend empty/undefined → free to send.
-            const canSendMsg = (m18?.canSend ?? "").trim();
+            //   canSend is union-typed across galaxies:
+            //     • string non-empty ("您可以在 X 之後再次搜索…") → cooldown
+            //     • string empty / undefined → available
+            //     • boolean true → available
+            //     • boolean false → cooldown / blocked
+            //   Earlier code did `(canSend ?? "").trim()` which threw
+            //   "trim is not a function" when canSend was boolean.
+            const cs: unknown = m18?.canSend;
+            let stateForPos: "available" | "cooldown" | "unavailable";
             if (!m18) {
-              states.set(pos, "unavailable");
-            } else if (canSendMsg.length > 0) {
-              states.set(pos, "cooldown");
+              stateForPos = "unavailable";
+            } else if (typeof cs === "string") {
+              stateForPos = cs.trim().length > 0 ? "cooldown" : "available";
+            } else if (typeof cs === "boolean") {
+              stateForPos = cs ? "available" : "cooldown";
             } else {
-              states.set(pos, "available");
+              stateForPos = "available";
             }
+            states.set(pos, stateForPos);
           }
         } catch (e) {
           console.warn(`[ApiExec/discover] galaxy[${cacheKey}] JSON parse failed:`, e);
