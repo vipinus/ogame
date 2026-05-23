@@ -434,9 +434,24 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const emCollapsed = sectionCollapsed.emergency;
     const emCount = lastEmergency?.count ?? 0;
     const emColor = emCount > 0 ? "#ff6b6b" : "#7080a0";
+    // Spy-triggers-save toggle (operator 2026-05-23). localStorage value of
+    // "off" disables; anything else (or unset) is ON by default.
+    const spySaveOn = (() => {
+      try { return window.localStorage.getItem("OGAMEX_SPY_TRIGGERS_SAVE") !== "off"; }
+      catch { return true; }
+    })();
+    const spyToggleRow = `<div style="font-size:11px; padding:4px 0; display:flex; justify-content:space-between; align-items:center; border-top:1px solid #2a2a3a;">
+        <span style="color:#a0a8b8;">侦察 → 紧急起飞</span>
+        <button data-spy-save-toggle="1"
+                style="background:${spySaveOn ? "#2d5d3f" : "#5d2d2d"}; color:${spySaveOn ? "#a0ffb0" : "#ffa0a0"};
+                       border:1px solid ${spySaveOn ? "#4d8d5f" : "#8d4d4d"}; cursor:pointer;
+                       padding:2px 10px; font-size:11px; min-width:48px;">
+            ${spySaveOn ? "ON" : "OFF"}
+        </button>
+      </div>`;
     const emRows = !emCollapsed && lastEmergency
       ? (emCount === 0
-          ? `<div style="color:#666; font-size:10px; padding:2px 0;">(no hostile incoming)</div>`
+          ? `<div style="color:#666; font-size:10px; padding:2px 0;">(no hostile incoming)</div>${spyToggleRow}`
           : lastEmergency.hostile.map((h) => `
               <div style="font-size:11px; padding:3px 0; border-top:1px solid #2a2a3a;">
                 <div style="display:flex; gap:6px; justify-content:space-between;">
@@ -444,7 +459,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                   <span style="color:#ff9b9b;">${fmtEta(h.eta_in_seconds)}</span>
                 </div>
                 <div style="color:#a0a8b8; font-size:10px;">${escapeHtml(h.from ?? "?")} → ${escapeHtml(h.to ?? "?")} · ships=${escapeHtml(String(h.ships_count))}</div>
-              </div>`).join(""))
+              </div>`).join("") + spyToggleRow)
       : "";
     const emergencySection = `${sectionHeader("emergency", "🚨 Emergency", emCount, emColor)}<div style="display:${emCollapsed ? "none" : "block"};">${emRows}</div>`;
 
@@ -560,6 +575,18 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         if (!gid) return;
         await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(gid)}/cancel`, { method: "POST" });
         await refresh();
+      });
+    }
+    // Wire spy-triggers-save toggle (emergency section).
+    for (const btn of panel.querySelectorAll<HTMLElement>("[data-spy-save-toggle]")) {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        let cur = "on";
+        try { cur = window.localStorage.getItem("OGAMEX_SPY_TRIGGERS_SAVE") ?? "on"; } catch { /* */ }
+        const next = cur === "off" ? "on" : "off";
+        try { window.localStorage.setItem("OGAMEX_SPY_TRIGGERS_SAVE", next); } catch { /* */ }
+        (window as Window & { __ogamexSpyTriggersSave?: boolean }).__ogamexSpyTriggersSave = next === "on";
+        if (lastGoals) render(lastGoals);
       });
     }
     // Wire section collapse toggles.

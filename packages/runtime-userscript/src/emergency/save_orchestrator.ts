@@ -49,32 +49,44 @@ export function startEmergencySave(
     void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
   });
 
-  // Spy-as-test trigger. Operator 2026-05-23: "可以把侦察也当作威胁测试紧急
-  // 起飞，下次侦察来的时候自动测试了". Spy events normally don't justify a
-  // real fleet save (probe arrives in seconds — no save can outrun it),
-  // but they make a good live-fire test of the entire emergency chain
-  // (detect → case_decide → sendFleet → IN_FLIGHT → recall on all-clear).
+  // Spy-as-threat trigger. Operator 2026-05-23: "把侦察也当作威胁测试紧急起飞,
+  // 在面板上设置一个开关". Spy events become threats that drive the same
+  // SaveStateMachine attack uses — gives operator a live-fire test of the
+  // emergency chain (detect → case_decide → sendFleet → IN_FLIGHT → recall).
   //
-  // Single-shot mode by default: fires once, then auto-disarms. To re-arm
-  // in DevTools console: `window.__ogamexSpyTestArmed = true`. Default-on
-  // so the next inbound probe automatically runs the test end-to-end —
-  // no operator action needed for the first verification.
+  // Toggle source of truth: localStorage["OGAMEX_SPY_TRIGGERS_SAVE"].
+  //   "on"  → fire on every spy event
+  //   "off" → ignore spy events (info-only)
+  //   unset → default ON (operator's request was "下次侦察来时自动测试")
+  // Panel renders a button that flips the localStorage value. Re-read on
+  // every spy event so panel changes take effect without reload. Window
+  // mirror exposed for DevTools convenience.
   const winRef = (typeof window !== "undefined" ? window : globalThis) as Window & {
-    __ogamexSpyTestArmed?: boolean;
+    __ogamexSpyTriggersSave?: boolean;
   };
-  if (winRef.__ogamexSpyTestArmed === undefined) winRef.__ogamexSpyTestArmed = true;
+  const isSpyTriggersSaveOn = (): boolean => {
+    try {
+      const v = window.localStorage.getItem("OGAMEX_SPY_TRIGGERS_SAVE");
+      if (v === "on") return true;
+      if (v === "off") return false;
+      return true; // default ON
+    } catch { return true; }
+  };
+  // Initial mirror to window for DevTools introspection.
+  winRef.__ogamexSpyTriggersSave = isSpyTriggersSaveOn();
   const offSpy = bus.on("emergency.spy", (p: any) => {
-    if (!winRef.__ogamexSpyTestArmed) {
-      console.info(`[emergency/spy-test] spy ${p.event_id} ignored — disarmed. Re-arm: window.__ogamexSpyTestArmed = true`);
+    const on = isSpyTriggersSaveOn();
+    winRef.__ogamexSpyTriggersSave = on;  // keep mirror fresh
+    if (!on) {
+      console.info(`[emergency/spy] ${p.event_id} ignored — spy-triggers-save OFF (toggle on panel)`);
       return;
     }
     const sourceId = findTargetPlanet(p.to);
     if (!sourceId) {
-      console.warn(`[emergency/spy-test] no planet at spy target ${p.to.join(":")} — cannot run test`);
+      console.warn(`[emergency/spy] no planet at ${p.to.join(":")} — cannot route to FSM`);
       return;
     }
-    console.warn(`[emergency/spy-test] 🚨 FIRING full emergency save chain on spy ${p.event_id} → ${p.to.join(":")} (single-shot test). Auto-disarming after this run.`);
-    winRef.__ogamexSpyTestArmed = false;
+    console.warn(`[emergency/spy] 🚨 spy ${p.event_id} → ${p.to.join(":")}: routing to full save chain (toggle ON)`);
     void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
   });
 
