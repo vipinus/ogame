@@ -389,6 +389,15 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
   // data lives in this DOM. MutationObserver on #eventContent reads truth.
   let evMo: MutationObserver | null = null;
   let lastEventSig = "";
+  // Persistent diagnostic log — every row class snapshot kept on window for
+  // operator forensics. Tells us whether "red spy" was ever in DOM at all.
+  type EvLogEntry = { ts: number; total: number; rows: Array<{ id: string; mt: string | null; cls: string; tt: string }> };
+  const evLogRing: EvLogEntry[] = [];
+  function appendEvLog(entry: EvLogEntry): void {
+    evLogRing.push(entry);
+    if (evLogRing.length > 50) evLogRing.shift();
+    (win as Window & { __ogamexEventLog?: EvLogEntry[] }).__ogamexEventLog = evLogRing;
+  }
   function scanEventContent(): void {
     const tbody = win.document.querySelector("#eventContent tbody");
     if (!tbody) return;
@@ -428,6 +437,21 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     const sig = seen.sort().join("|");
     if (sig === lastEventSig) return;
     lastEventSig = sig;
+    // Persistent diagnostic — log every row's class + tooltip on every change.
+    // Available later via console.log(window.__ogamexEventLog).
+    {
+      const detail = rows.map((tr) => {
+        const cd = tr.querySelector(".countDown span");
+        const img = tr.querySelector(".missionFleet img");
+        return {
+          id: tr.getAttribute("id") ?? "",
+          mt: tr.getAttribute("data-mission-type"),
+          cls: cd?.className ?? "",
+          tt: img?.getAttribute("data-tooltip-title") ?? "",
+        };
+      });
+      appendEvLog({ ts: Date.now(), total: rows.length, rows: detail });
+    }
     if (hostileEntries.length > 0) {
       console.warn(`[OgameX/eventcontent] ${hostileEntries.length} hostile row(s) detected: ${hostileEntries.map(e => `${e.type}@${e.from.join(":")}→${e.to.join(":")}`).join(", ")}`);
     }
