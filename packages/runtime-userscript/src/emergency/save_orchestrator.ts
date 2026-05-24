@@ -22,18 +22,33 @@ export function startEmergencySave(
   stateRef: StateRef,
   opts: OrchestratorOptions,
 ): OrchestratorHandle {
-  const fsm = new SaveStateMachine(
-    { saveWindowMinutes: opts.saveWindowMinutes, safetyMarginMinutes: opts.safetyMarginMinutes },
-    {
-      decideCase: (sourceId) => decideCase(stateRef.current, sourceId),
-      sendFleet: (decision) => sendFleet({
-        ships: decision.ships, cargo: decision.cargo, coords: decision.destCoords,
-        destType: decision.destType, mission: decision.mission, speed: decision.speed,
-      }, { fetch: opts.fetch, token: opts.tokenManager }),
-      recallFleet: (id) => recallFleet(id, { fetch: opts.fetch, token: opts.tokenManager }),
-      now: () => Math.floor(Date.now() / 1000),
-    },
-  );
+  // Operator 2026-05-24: "4 个星球同时起飞应该没有问题" — switched from a
+  // single FSM (which serialized at one save at a time and silently
+  // dropped concurrent threats on other planets) to a per-planet FSM
+  // map. Each target planet gets its own state machine so parallel
+  // saves run independently. API takeoff is fast enough (POST returns
+  // in <500ms) that 4-way concurrency is no bottleneck.
+  const fsmByPlanet = new Map<string, SaveStateMachine>();
+  const getOrCreateFsm = (planetId: string): SaveStateMachine => {
+    let fsm = fsmByPlanet.get(planetId);
+    if (!fsm) {
+      fsm = new SaveStateMachine(
+        { saveWindowMinutes: opts.saveWindowMinutes, safetyMarginMinutes: opts.safetyMarginMinutes },
+        {
+          decideCase: (sourceId) => decideCase(stateRef.current, sourceId),
+          sendFleet: (decision) => sendFleet({
+            ships: decision.ships, cargo: decision.cargo, coords: decision.destCoords,
+            destType: decision.destType, mission: decision.mission, speed: decision.speed,
+          }, { fetch: opts.fetch, token: opts.tokenManager }),
+          recallFleet: (id) => recallFleet(id, { fetch: opts.fetch, token: opts.tokenManager }),
+          now: () => Math.floor(Date.now() / 1000),
+        },
+      );
+      fsmByPlanet.set(planetId, fsm);
+      console.warn(`[orchestrator] new FSM for planet ${planetId} (total fsm count: ${fsmByPlanet.size})`);
+    }
+    return fsm;
+  };
 
   const stopDetector = startAttackDetector(bus, stateRef, { saveWindowMinutes: opts.saveWindowMinutes });
 
@@ -46,7 +61,7 @@ export function startEmergencySave(
   const offAttack = bus.on("emergency.attack", (p: any) => {
     const sourceId = findTargetPlanet(p.to);
     if (!sourceId) return;
-    void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
+    void getOrCreateFsm(sourceId).handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
   });
 
   // Spy-as-threat trigger. Operator 2026-05-23: "把侦察也当作威胁测试紧急起飞,
@@ -87,20 +102,42 @@ export function startEmergencySave(
       return;
     }
     console.warn(`[emergency/spy] 🚨 spy ${p.event_id} → ${p.to.join(":")}: routing to full save chain (toggle ON)`);
-    void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
+    void getOrCreateFsm(sourceId).handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
   });
 
-  // when state updates, check if all known hostiles for target planet have cleared
+  // when state updates, check per-planet hostile clearance. Each FSM
+  // owns its target's pending set; iterate all and notify each whose
+  // pending events have all dropped from events_incoming. Single
+  // global clear (notifyHostileClear with no args) was wrong for
+  // multi-fsm — would clear pending for planet A on planet B's clear.
   const offState = bus.on("state.updated", () => {
-    const remaining = stateRef.current.events_incoming.filter(e => e.hostile);
-    if (remaining.length === 0) fsm.notifyHostileClear();
+    const stillIncoming = new Set(stateRef.current.events_incoming.filter(e => e.hostile).map(e => e.id));
+    for (const fsm of fsmByPlanet.values()) {
+      const snap = fsm.snapshot();
+      for (const pendingId of snap.pendingThreats) {
+        if (!stillIncoming.has(pendingId)) fsm.notifyHostileClear(pendingId);
+      }
+    }
   });
 
-  // tick at 1Hz to drive RECALL_READY → RECALLING transition
-  const ticker = setInterval(() => void fsm.tick(), 1000);
+  // tick at 1Hz to drive RECALL_READY → RECALLING transition for every
+  // active FSM. Tick is per-planet; one planet's recall timing doesn't
+  // affect another's.
+  const ticker = setInterval(() => {
+    for (const fsm of fsmByPlanet.values()) void fsm.tick();
+  }, 1000);
 
   return {
-    snapshot: () => fsm.snapshot(),
+    snapshot: () => {
+      // For backwards compat the OrchestratorHandle.snapshot returns one
+      // FSM's snapshot — pick the first non-WATCHING if any, else first.
+      const fsms = Array.from(fsmByPlanet.values());
+      const active = fsms.find(f => f.snapshot().state !== "WATCHING");
+      return (active ?? fsms[0])?.snapshot() ?? {
+        state: "WATCHING", fleetId: null, decision: null,
+        pendingThreats: [], clearedAt: null, lastError: null,
+      };
+    },
     stop: () => { clearInterval(ticker); offAttack(); offSpy(); offState(); stopDetector(); },
   };
 }
