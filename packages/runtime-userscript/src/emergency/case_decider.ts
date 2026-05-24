@@ -1,7 +1,7 @@
 import { Mission } from "@ogamex/shared";
 import type { WorldState, Coords, ShipCount, MissionCode } from "@ogamex/shared";
 
-export type CaseLetter = "A" | "B" | "C" | "D";
+export type CaseLetter = "A" | "B" | "C";
 
 export interface CaseDecision {
   case: CaseLetter;
@@ -123,43 +123,9 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     };
   }
 
-  // Case D — operator 2026-05-24 strategy improvement. Same-coord debris
-  // recycle (Case C) keeps the flight path INSIDE the attacker's likely
-  // phalanx radius and at a fixed local destination. A nearby friendly
-  // planet (or moon) is a safer haven: shorter flight, full speed, lands
-  // at an independent target the attacker isn't attacking. Pick the
-  // nearest same-galaxy planet/moon other than source.
-  const others = Object.values(state.planets ?? {}).filter((p) => p.id !== source.id);
-  let nearest: (typeof source) | null = null;
-  let nearestScore = Infinity;
-  for (const o of others) {
-    if (o.coords[0] !== source.coords[0]) continue;  // cross-galaxy = skip
-    const ds = Math.abs(o.coords[1] - source.coords[1]);
-    const dp = Math.abs(o.coords[2] - source.coords[2]);
-    const score = ds * 100 + dp;  // 1 system gap weighted way over 1 position gap
-    if (score < nearestScore) {
-      nearestScore = score;
-      nearest = o;
-    }
-  }
-  // Threshold: same system (any position) OR up to 50 systems away. Beyond
-  // that, flight time is so long the operator might as well take the
-  // local-debris play. Adjustable via panel later.
-  if (nearest && nearestScore <= 5000) {
-    return {
-      case: "D",
-      sourcePlanetId: source.id,
-      destCoords: nearest.coords,
-      destType: nearest.type === "moon" ? 3 : 1,
-      mission: Mission.TRANSPORT,
-      speed: 10,
-      ships,
-      cargo,
-      reason: `Case D: nearest friendly ${nearest.type} ${nearest.name}@${nearest.coords.join(":")} (score=${nearestScore}) → transport @ 100% speed (avoids phalanx range of attacker)`,
-    };
-  }
-
-  // Case C: planet, no co-located moon AND no nearby friendly haven.
+  // Case C: planet, no co-located moon. Operator 2026-05-24 rejected the
+  // proposed Case D (transport to nearest friendly planet) — sticking
+  // with spec §3.3 same-coord debris @ 10% speed.
   return {
     case: "C",
     sourcePlanetId: source.id,
@@ -169,6 +135,6 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     speed: 1,
     ships,
     cargo,
-    reason: `Case C: planet ${source.name} (no moon, no nearby friendly) → recycle to local debris @ 10% speed (2026 allows empty-debris recycle)`,
+    reason: `Case C: planet ${source.name} (no moon) → recycle to local debris @ 10% speed (2026 allows empty-debris recycle)`,
   };
 }
