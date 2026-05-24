@@ -43,6 +43,11 @@ export function startEmergencySave(
           sendFleet: (decision) => sendFleet({
             ships: decision.ships, cargo: decision.cargo, coords: decision.destCoords,
             destType: decision.destType, mission: decision.mission, speed: decision.speed,
+            // Pin POST cp= to the case_decider-selected source planet —
+            // operator 2026-05-24: without this, session-cp leaked and
+            // fleet launched from the wrong planet (e.g. operator was on
+            // 3:279:7 but case_decider chose 3:260:9 as source).
+            sourcePlanetId: decision.sourcePlanetId,
           }, { fetch: opts.fetch, token: opts.tokenManager }),
           recallFleet: (id) => recallFleet(id, { fetch: opts.fetch, token: opts.tokenManager }),
           now: () => Math.floor(Date.now() / 1000),

@@ -16,6 +16,14 @@ export interface SendFleetParams {
   mission: MissionCode;
   speed: number;             // 1..10
   holdingTime?: number;      // for ACS defend / expedition duration
+  /** Source planet PID. APPENDED to URL as `cp=<sourcePlanetId>` so the
+   *  fleet POST lands on the source planet regardless of operator's
+   *  current page navigation. Without this, ogame uses session-cp =
+   *  whichever planet the operator was last viewing, and the fleet
+   *  launches from the wrong planet. Operator 2026-05-24: case_decider
+   *  picked source=33650372 (3:260:9), but operator was on 33637818
+   *  (3:279:7) → fleet flew from 3:279:7 instead. */
+  sourcePlanetId?: string;
 }
 
 export interface SendFleetCtx {
@@ -69,7 +77,13 @@ export async function sendFleet(
   p: SendFleetParams,
   ctx: SendFleetCtx,
 ): Promise<SendFleetResult> {
-  const endpoint = ctx.endpoint ?? DEFAULT_ENDPOINT;
+  // Append cp= so the POST lands on the source planet regardless of
+  // operator's current ogame page. Without this, session-cp leaks in
+  // and fleet launches from the wrong planet (operator 2026-05-24 bug).
+  let endpoint = ctx.endpoint ?? DEFAULT_ENDPOINT;
+  if (p.sourcePlanetId && !endpoint.includes("cp=")) {
+    endpoint += `&cp=${encodeURIComponent(p.sourcePlanetId)}`;
+  }
   let token = ctx.token.getFreshToken();
   let body = buildBody(p, token);
 
