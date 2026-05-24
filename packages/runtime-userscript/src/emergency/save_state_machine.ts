@@ -68,6 +68,20 @@ export class SaveStateMachine {
       this.state = "IN_FLIGHT";
     } catch (e) {
       this.lastError = e instanceof Error ? e.message : String(e);
+      // Operator 2026-05-24: "没船 应该走没船流程". When ogame rejects with
+      // a "fleet too small / no recyclers / no ships" pattern, the planet
+      // is functionally unsavable — don't enter FALLBACK (which carries
+      // alarm noise + 10s lockout). Reset to WATCHING immediately so
+      // nothing else gets retried for this dead-end. Patterns cover
+      // ogame v12 errors 140011 (要回收該廢墟,必須派遣回收船),
+      // 140042 (沒有選擇艦船), 140019 (over expedition limit — not really
+      // no-ships but also a "give up and wait" signal).
+      const noFleetRe = /回收船|necessary.*recycler|沒有選擇艦船|no.*ships? selected|140011|140042/i;
+      if (noFleetRe.test(this.lastError)) {
+        console.warn(`[fsm] silent skip: ogame says "${this.lastError}" — treating as no-ships, resetting without FALLBACK`);
+        this.reset();
+        return;
+      }
       console.error(`[fsm] ❌ ${this.state} → FALLBACK  err=${this.lastError}`);
       this.state = "FALLBACK";
       // Auto-reset after 10s so the same planet can retry on the next

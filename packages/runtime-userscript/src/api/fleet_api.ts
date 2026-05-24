@@ -88,6 +88,7 @@ export async function sendFleet(
   let body = buildBody(p, token);
 
   for (let attempt = 1; attempt <= 2; attempt++) {
+    console.log(`[fleet_api/sendFleet] attempt=${attempt} POST ${endpoint} body=${body.toString().replace(/token=[^&]+/, "token=***")}`);
     const res = await ctx.fetch(endpoint, {
       method: "POST",
       headers: {
