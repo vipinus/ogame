@@ -752,12 +752,53 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   // Continuous alarm runs until /v1/emergency reports count=0 (danger cleared).
   const alertedIds = new Set<string>();
 
-  function playBeep(severity: "spy" | "attack"): void {
+  // Shared AudioContext. Recreating per-beep cost us: each new instance
+  // inherited the suspended state from autoplay policy, so the first
+  // tone after page reload was silent. Single ctx, resume() before use.
+  // Operator 2026-05-24: "为啥没听到声音报警".
+  let sharedAudioCtx: AudioContext | null = null;
+  function getAudioCtx(): AudioContext | null {
+    if (sharedAudioCtx) return sharedAudioCtx;
     try {
       const w = doc.defaultView as Window & { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
       const Ctor = w.AudioContext ?? w.webkitAudioContext;
-      if (!Ctor) return;
-      const ctx = new Ctor();
+      if (!Ctor) {
+        console.warn("[panel/alarm] no AudioContext available — browser too old?");
+        return null;
+      }
+      sharedAudioCtx = new Ctor();
+      console.log(`[panel/alarm] AudioContext created, state=${sharedAudioCtx.state}`);
+      return sharedAudioCtx;
+    } catch (e) {
+      console.warn("[panel/alarm] AudioContext init failed:", e);
+      return null;
+    }
+  }
+  // Pre-warm on first user interaction with the page. Chrome's autoplay
+  // policy keeps the context suspended until a user gesture resumes it;
+  // doing this on a hidden listener means the alarm beep at hostile time
+  // will hit a running context, no silent first-tone.
+  let prewarmDone = false;
+  const prewarmHandler = (): void => {
+    if (prewarmDone) return;
+    prewarmDone = true;
+    const ctx = getAudioCtx();
+    if (ctx && ctx.state === "suspended") {
+      void ctx.resume().then(() => console.log("[panel/alarm] AudioContext resumed by user gesture"));
+    }
+  };
+  doc.addEventListener("click", prewarmHandler, true);
+  doc.addEventListener("keydown", prewarmHandler, true);
+
+  function playBeep(severity: "spy" | "attack"): void {
+    const ctx = getAudioCtx();
+    if (!ctx) return;
+    // If still suspended (no user gesture yet), kick resume — best effort.
+    if (ctx.state === "suspended") {
+      void ctx.resume();
+    }
+    console.log(`[panel/alarm] 🔊 playBeep severity=${severity} ctxState=${ctx.state}`);
+    try {
       const tones = severity === "attack" ? [880, 0, 880, 0, 880] : [660];
       const stepMs = severity === "attack" ? 130 : 600;
       let t = ctx.currentTime;
@@ -775,8 +816,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         osc.stop(t + stepMs / 1000);
         t += stepMs / 1000;
       }
-      setTimeout(() => { try { void ctx.close(); } catch { /* */ } }, (stepMs * tones.length) + 500);
-    } catch { /* */ }
+    } catch (e) {
+      console.warn("[panel/alarm] playBeep threw:", e);
+    }
   }
 
   // Persistent-alarm loop: while hostile present, replay beep at fixed
@@ -801,6 +843,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   function startAlarm(severity: "spy" | "attack"): void {
     // If escalating from spy → attack, switch immediately.
     if (alarmIntervalId !== null && currentAlarmSeverity === severity) return;
+    console.warn(`[panel/alarm] 🚨 startAlarm severity=${severity} (panel mounted=${!!doc.getElementById("ogamex-goals-panel")})`);
     stopAlarm();
     currentAlarmSeverity = severity;
     applyFlash(severity);
