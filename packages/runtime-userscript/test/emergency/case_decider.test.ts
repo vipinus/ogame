@@ -156,9 +156,41 @@ describe("decideCase", () => {
     expect(d.cargo.d).toBe(100_000);
   });
 
-  it("throws when no recycler at source (degradation handled by caller)", () => {
+  it("Case C throws when no recycler (only Case C needs recycler)", () => {
+    // Planet with no same-coord moon → falls to Case C → recycle mission
+    // strictly requires recycler. Without one, throws so fsm silent-skips.
     const planet = makePlanet({ ships: { smallCargo: 100 } });
     expect(() => decideCase(emptyState([planet]), "p1")).toThrow(/recycler/i);
+  });
+
+  it("Case A (moon→planet transport) does NOT need recycler — operator 2026-05-24", () => {
+    const moon = makePlanet({
+      id: "m1", coords: [1, 42, 8], type: "moon",
+      ships: { smallCargo: 100, largeCargo: 50 },  // no recycler
+      resources: { m: 0, c: 0, d: 0, e: 0 },
+    });
+    const planet = makePlanet({
+      id: "p1", coords: [1, 42, 8], type: "planet", ships: {},
+    });
+    const d = decideCase(emptyState([moon, planet]), "m1");
+    expect(d.case).toBe("A");
+    expect(d.mission).toBe(3); // transport
+    expect(d.ships.smallCargo).toBe(100);
+  });
+
+  it("Case B (planet→moon transport) does NOT need recycler — operator 2026-05-24", () => {
+    const planet = makePlanet({
+      id: "p1", coords: [1, 42, 8], type: "planet",
+      ships: { smallCargo: 100, lightFighter: 50 },  // no recycler
+      resources: { m: 0, c: 0, d: 0, e: 0 },
+    });
+    const moon = makePlanet({
+      id: "m1", coords: [1, 42, 8], type: "moon", ships: {},
+    });
+    const d = decideCase(emptyState([planet, moon]), "p1");
+    expect(d.case).toBe("B");
+    expect(d.mission).toBe(3); // transport
+    expect(d.ships.smallCargo).toBe(100);
   });
 
   it("throws when source planet not found", () => {

@@ -76,7 +76,7 @@ export class SaveStateMachine {
       // ogame v12 errors 140011 (要回收該廢墟,必須派遣回收船),
       // 140042 (沒有選擇艦船), 140019 (over expedition limit — not really
       // no-ships but also a "give up and wait" signal).
-      const noFleetRe = /回收船|necessary.*recycler|沒有選擇艦船|no.*ships? selected|140011|140042/i;
+      const noFleetRe = /回收船|recycler|沒有選擇艦船|no.*ships? selected|no ships available|140011|140042/i;
       if (noFleetRe.test(this.lastError)) {
         console.warn(`[fsm] silent skip: ogame says "${this.lastError}" — treating as no-ships, resetting without FALLBACK`);
         this.reset();

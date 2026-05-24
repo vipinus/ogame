@@ -38,13 +38,13 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     throw new Error(`source planet ${sourcePlanetId} not found in state.planets`);
   }
 
-  const recyclerCount = source.ships.recycler ?? 0;
   if (totalShips(source.ships) === 0) {
     throw new Error(`no ships available at ${source.name}`);
   }
-  if (recyclerCount === 0) {
-    throw new Error(`no recycler at ${source.name} (recycler required for all emergency saves; caller should degrade)`);
-  }
+  // recycler check moved into Case C branch — operator 2026-05-24:
+  // "没有 recycler 的时候是 FS 星球或者月球吗?" Yes — Case A (moon→planet)
+  // and Case B (planet→moon) are TRANSPORT missions, no recycler needed.
+  // Only Case C (recycle to local debris) actually requires recycler ≥ 1.
 
   const ships: ShipCount = { ...source.ships };
 
@@ -148,6 +148,13 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
   }
 
   // Case C: planet, no co-located moon → same-coord debris recycle @ 10%.
+  // RECYCLE mission strictly needs a recycler. Without one, save is
+  // impossible from this planet — caller must downgrade (fsm catches
+  // and silent-skips per save_state_machine pattern detection).
+  const recyclerCount = source.ships.recycler ?? 0;
+  if (recyclerCount === 0) {
+    throw new Error(`no recycler at ${source.name} for Case C recycle mission — caller should skip`);
+  }
   return {
     case: "C",
     sourcePlanetId: source.id,
