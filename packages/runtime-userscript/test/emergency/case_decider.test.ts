@@ -108,9 +108,9 @@ describe("decideCase", () => {
     });
   });
 
-  it("caps cargo at fleet capacity (operator 2026-05-24 — was 140028 倉存容量不足)", () => {
-    // recycler×1 = 20000 capacity. Resources sum 1234567+891011+22222 = 2,147,800.
-    // Should be scaled proportionally so sum ≈ 20000.
+  it("cargo priority deut→crystal→metal (operator 2026-05-24)", () => {
+    // recycler×1 = 20000 base capacity. Resources 1234567 m + 891011 c + 22222 d.
+    // Priority: full 22222 deut first, then fill crystal w/ remaining, metal last.
     const planet = makePlanet({
       resources: { m: 1234567, c: 891011, d: 22222, e: 100 },
       ships: { recycler: 1 },
@@ -118,9 +118,25 @@ describe("decideCase", () => {
     const d = decideCase(emptyState([planet]), "p1");
     const total = d.cargo.m + d.cargo.c + d.cargo.d;
     expect(total).toBeLessThanOrEqual(20000);
-    // Proportions roughly preserved
-    expect(d.cargo.m).toBeGreaterThan(d.cargo.c);
-    expect(d.cargo.c).toBeGreaterThan(d.cargo.d);
+    // 22222 deut requested but only 20000 capacity → all 20000 goes to deut,
+    // 0 left for crystal/metal.
+    expect(d.cargo.d).toBe(20000);
+    expect(d.cargo.c).toBe(0);
+    expect(d.cargo.m).toBe(0);
+  });
+
+  it("cargo priority fills deut first, then crystal, then metal", () => {
+    // Larger capacity: smallCargo×100 (5000ea) = 500000. Resources 200 d, 800K c, big m.
+    const planet = makePlanet({
+      resources: { m: 1_000_000, c: 800_000, d: 200, e: 0 },
+      ships: { smallCargo: 100, recycler: 1 },  // 500000 + 20000 = 520000 cap
+    });
+    const d = decideCase(emptyState([planet]), "p1");
+    // 200 deut fully loaded, then 519800 capacity remains
+    expect(d.cargo.d).toBe(200);
+    // Crystal 800K requested, fills 519800 of cap → crystal=519800, metal=0
+    expect(d.cargo.c).toBe(519_800);
+    expect(d.cargo.m).toBe(0);
   });
 
   it("Case A reserves 50K deut on moon (operator 2026-05-24 jump-gate fuel)", () => {

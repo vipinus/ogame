@@ -70,12 +70,11 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     const perShip = cargoMap[k] ?? CARGO_BASE[k] ?? 0;
     capacity += perShip * (n ?? 0);
   }
-  // Cap cargo at capacity, priority: deuterium (fuel headroom), then metal, then crystal.
-  // Allocate proportionally if total > capacity.
-  // Operator 2026-05-24: "月球保留50K重氢" — when FS source is a moon,
-  // leave 50_000 deut on the moon (jump gate fuel reserve). Applies
-  // before capacity-cap so the proportional scale doesn't accidentally
-  // try to load the reserved amount.
+  // Operator 2026-05-24 priority: 重氢 → 晶体 → 金属. When cargo doesn't
+  // fit everything, fill deuterium first (also the fleet fuel — keep it
+  // off the planet for the attacker), then crystal, finally metal.
+  // Moon source reserves 50K deut on the moon for jump-gate fuel before
+  // the priority fill.
   const MOON_DEUT_RESERVE = 50_000;
   const dReserve = source.type === "moon" ? MOON_DEUT_RESERVE : 0;
   const requested = {
@@ -83,21 +82,12 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     c: source.resources.c,
     d: Math.max(0, source.resources.d - dReserve),
   };
-  const want = requested.m + requested.c + requested.d;
-  let cargo: { m: number; c: number; d: number };
-  if (want <= capacity) {
-    cargo = requested;
-  } else if (capacity <= 0) {
-    cargo = { m: 0, c: 0, d: 0 };
-  } else {
-    // Proportional scale-down, then floor to integers (ogame rejects floats).
-    const ratio = capacity / want;
-    cargo = {
-      m: Math.floor(requested.m * ratio),
-      c: Math.floor(requested.c * ratio),
-      d: Math.floor(requested.d * ratio),
-    };
-  }
+  // Greedy fill in priority order. Each resource gets min(requested, remaining).
+  let remaining = Math.max(0, capacity);
+  const dLoad = Math.min(requested.d, remaining); remaining -= dLoad;
+  const cLoad = Math.min(requested.c, remaining); remaining -= cLoad;
+  const mLoad = Math.min(requested.m, remaining); remaining -= mLoad;
+  const cargo = { m: mLoad, c: cLoad, d: dLoad };
 
   // Operator 2026-05-24 strategy update:
   //   1. 从星球FS → 同坐标月球 @ 10% (transport)   ← Case B
