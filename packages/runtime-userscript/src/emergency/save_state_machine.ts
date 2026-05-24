@@ -70,6 +70,15 @@ export class SaveStateMachine {
       this.lastError = e instanceof Error ? e.message : String(e);
       console.error(`[fsm] ❌ ${this.state} → FALLBACK  err=${this.lastError}`);
       this.state = "FALLBACK";
+      // Auto-reset after 10s so the same planet can retry on the next
+      // threat (operator 2026-05-24: a single FALLBACK was permanently
+      // killing the planet's fsm — subsequent spies hit "state busy DROP").
+      setTimeout(() => {
+        if (this.state === "FALLBACK") {
+          console.warn(`[fsm] FALLBACK → WATCHING (auto-reset 10s after failure, planet now retry-ready)`);
+          this.reset();
+        }
+      }, 10_000);
     }
   }
 

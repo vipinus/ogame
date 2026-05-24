@@ -84,7 +84,17 @@ export async function sendFleet(
       credentials: "same-origin",
     });
     if (!res.ok) throw new FleetApiError(`HTTP ${res.status}`);
-    const json = (await res.json()) as SendFleetResult["raw"];
+    const rawText = await res.text();
+    let json: SendFleetResult["raw"];
+    try { json = JSON.parse(rawText) as SendFleetResult["raw"]; }
+    catch {
+      console.error(`[fleet_api/sendFleet] non-JSON response (attempt ${attempt}):`, rawText.slice(0, 400));
+      throw new FleetApiError(`non-JSON response: ${rawText.slice(0, 200)}`);
+    }
+    // Always log the raw response — operator 2026-05-24: fsm went to FALLBACK
+    // with err="unknown failure" because json.message was empty and the raw
+    // body was thrown away. Now every sendFleet response is loud.
+    console.log(`[fleet_api/sendFleet] attempt=${attempt} resp success=${json.success} message=${json.message ?? "<none>"} errors=${JSON.stringify((json as { errors?: unknown }).errors ?? null)} raw[0:300]=${rawText.slice(0, 300)}`);
     if (json.success && json.fleetIdToReturn !== undefined) {
       if (json.newAjaxToken) ctx.token.set(json.newAjaxToken);
       return { fleetId: json.fleetIdToReturn, raw: json };
@@ -95,7 +105,14 @@ export async function sendFleet(
       body = buildBody(p, token);
       continue;
     }
-    throw new FleetApiError(json.message ?? "unknown failure", json);
+    // Surface as much of the raw body as possible so the operator can see
+    // what ogame actually said. Cap at 300 chars to keep error messages
+    // readable in panel/Discord; full body is in console log above.
+    const errsField = (json as { errors?: Array<{ message?: string }> }).errors;
+    const errMsg = json.message
+      ?? (Array.isArray(errsField) && errsField[0]?.message)
+      ?? `success=${json.success} raw=${rawText.slice(0, 200)}`;
+    throw new FleetApiError(errMsg, json);
   }
   throw new FleetApiError("retry exhausted");
 }
