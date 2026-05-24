@@ -47,11 +47,45 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
   }
 
   const ships: ShipCount = { ...source.ships };
-  const cargo = {
-    m: source.resources.m,
-    c: source.resources.c,
-    d: source.resources.d,
+
+  // Operator 2026-05-24: ogame rejected sendFleet with 140028 "倉存容量不足!"
+  // when we passed full planet resources as cargo. Fleet cargo capacity is
+  // finite; loading more than capacity = reject. Compute capacity from
+  // selected ships, then cap m+c+d at it. Spec §3.3 says "资源全带" but
+  // partial save > zero save — never block the launch on cargo math.
+  //
+  // Base cargo per ogame v12 (ignores hyperspace tech / lifeform bonuses;
+  // those only INCREASE capacity, so this is a safe lower bound). Deut is
+  // weighted last because it's also the fuel — leave headroom.
+  const CARGO_BASE: Record<string, number> = {
+    smallCargo: 5000, largeCargo: 25000, recycler: 20000, explorer: 10000,
+    colonyShip: 7500, reaper: 7000, destroyer: 2000, battleship: 1500,
+    deathstar: 1_000_000, cruiser: 800, battlecruiser: 750, bomber: 500,
+    heavyFighter: 100, lightFighter: 50, espionageProbe: 5,
+    // solarSatellite/crawler: 0 (immobile in normal mechanics)
   };
+  let capacity = 0;
+  for (const [k, n] of Object.entries(ships)) {
+    capacity += (CARGO_BASE[k] ?? 0) * (n ?? 0);
+  }
+  // Cap cargo at capacity, priority: deuterium (fuel headroom), then metal, then crystal.
+  // Allocate proportionally if total > capacity.
+  const requested = { m: source.resources.m, c: source.resources.c, d: source.resources.d };
+  const want = requested.m + requested.c + requested.d;
+  let cargo: { m: number; c: number; d: number };
+  if (want <= capacity) {
+    cargo = requested;
+  } else if (capacity <= 0) {
+    cargo = { m: 0, c: 0, d: 0 };
+  } else {
+    // Proportional scale-down, then floor to integers (ogame rejects floats).
+    const ratio = capacity / want;
+    cargo = {
+      m: Math.floor(requested.m * ratio),
+      c: Math.floor(requested.c * ratio),
+      d: Math.floor(requested.d * ratio),
+    };
+  }
 
   // Case A: source IS a moon → recycle to local debris @ 10%
   if (source.type === "moon") {
