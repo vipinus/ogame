@@ -550,7 +550,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.254";
+  const USERSCRIPT_VERSION = "0.0.255";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -615,8 +615,20 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       }
     }
     if (targetId === "eventContent") {
+      // Operator 2026-05-24: this path was wiping out API-sourced spy
+      // events. parseEventListHTMLAndInject (eventbox_hook.ts) is the
+      // authoritative source — it adds rows with id prefix "evrow-".
+      // dom.changed on a non-event page returns empty here and was
+      // overwriting events_incoming → spy disappeared → /v1/emergency
+      // empty → panel never fired alarm. Only update if extractor
+      // actually found rows; even then, MERGE with API-sourced
+      // "evrow-" entries instead of replacing.
       const evs = extractIncomingEvents(env.doc);
-      store.setPartial({ events_incoming: evs });
+      if (evs.length > 0) {
+        const cur = store.state.events_incoming ?? [];
+        const apiSourced = cur.filter((e) => e.id.startsWith("evrow-"));
+        store.setPartial({ events_incoming: [...evs, ...apiSourced] });
+      }
     }
     if (targetId === "movement") {
       const fls = extractFleetMovements(env.doc);
