@@ -48,17 +48,27 @@ export class SaveStateMachine {
 
   async handleThreat(t: ThreatInput): Promise<void> {
     this.pending.add(t.eventId);
-    if (this.state !== "WATCHING") return;       // re-entry handled by pending set
+    if (this.state !== "WATCHING") {
+      // Operator 2026-05-24: silent re-entry was hiding multi-planet
+      // threats. Log so it's obvious another planet was dropped.
+      console.warn(`[fsm] DROP threat ${t.eventId} for planet ${t.sourcePlanetId} — state=${this.state} busy (single-fsm limitation, see save_orchestrator for multi-planet TODO)`);
+      return;
+    }
+    console.warn(`[fsm] WATCHING → THREAT_DETECTED  eventId=${t.eventId} source=${t.sourcePlanetId} arrives=${t.arrivesAt}`);
     this.state = "THREAT_DETECTED";
     try {
       this.decision = this.actions.decideCase(t.sourcePlanetId);
+      console.warn(`[fsm] THREAT_DETECTED → SAVE_PLANNED  case=${this.decision.case} mission=${this.decision.mission} speed=${this.decision.speed} dest=${this.decision.destCoords.join(":")}/type${this.decision.destType} ships=${Object.entries(this.decision.ships).filter(([,n]) => n > 0).map(([k,n]) => `${k}×${n}`).join(",")}`);
       this.state = "SAVE_PLANNED";
+      console.warn(`[fsm] SAVE_PLANNED → LAUNCHING  (POST sendFleet)`);
       this.state = "LAUNCHING";
       const res = await this.actions.sendFleet(this.decision);
       this.fleetId = res.fleetId;
+      console.warn(`[fsm] LAUNCHING → IN_FLIGHT  fleetId=${this.fleetId} (waiting for hostile clear + ${this.ctx.safetyMarginMinutes}min margin to recall)`);
       this.state = "IN_FLIGHT";
     } catch (e) {
       this.lastError = e instanceof Error ? e.message : String(e);
+      console.error(`[fsm] ❌ ${this.state} → FALLBACK  err=${this.lastError}`);
       this.state = "FALLBACK";
     }
   }
@@ -71,6 +81,7 @@ export class SaveStateMachine {
     if (eventId) this.pending.delete(eventId);
     else this.pending.clear();
     if (this.state === "IN_FLIGHT" && this.pending.size === 0) {
+      console.warn(`[fsm] IN_FLIGHT → RECALL_READY  all hostiles clear, starting ${this.ctx.safetyMarginMinutes}min safety margin countdown`);
       this.state = "RECALL_READY";
       this.clearedAt = this.actions.now();
     }
@@ -80,11 +91,14 @@ export class SaveStateMachine {
     if (this.state !== "RECALL_READY" || this.fleetId === null || this.clearedAt === null) return;
     const elapsed = this.actions.now() - this.clearedAt;
     if (elapsed < this.ctx.safetyMarginMinutes * 60) return;
+    console.warn(`[fsm] RECALL_READY → RECALLING  fleetId=${this.fleetId} (elapsed=${elapsed}s ≥ margin ${this.ctx.safetyMarginMinutes}min)`);
     this.state = "RECALLING";
     try {
       await this.actions.recallFleet(this.fleetId);
+      console.warn(`[fsm] RECALLING → (awaiting fleet return)  recallFleet POST OK`);
     } catch (e) {
       this.lastError = e instanceof Error ? e.message : String(e);
+      console.error(`[fsm] ❌ RECALLING → FALLBACK  err=${this.lastError}`);
       this.state = "FALLBACK";
     }
   }
