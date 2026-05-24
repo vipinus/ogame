@@ -16,6 +16,7 @@ import type { BootHandle } from "./boot.js";
 import type { BridgeClient } from "./bridge/ws_client.js";
 import type { ExpeditionConfig } from "@ogamex/shared";
 import { startEmergencySave } from "./emergency/save_orchestrator.js";
+import { recallFleet } from "./api/fleet_api.js";
 import { startSpyDetector } from "./emergency/spy_detector.js";
 import { emergencyGate } from "./emergency/priority_gate.js";
 import { startDailyExpeditionLoop } from "./daily/expedition/loop.js";
@@ -80,7 +81,17 @@ export function wireRuntime(
     fetch: opts.fetch,
     saveWindowMinutes: 30,
     safetyMarginMinutes: 5,
+    // Operator 2026-05-24: "fsm 可以放后台" — orchestrator reports each
+    // successful launch to sidecar's SaveCoordinator; sidecar owns recall
+    // scheduling and emits save.recall_now downstream when ready.
+    sidecarBaseUrl: "https://ogame.anyfq.com",
   });
+  // Expose recallFleet for bridge wire's save.recall_now handler (sidecar
+  // tells us when, we POST it because cookies+token live in the page).
+  (opts.win as Window & {
+    __ogamexRecallFleet?: (fleetId: number) => Promise<void>;
+  }).__ogamexRecallFleet = (fleetId: number) =>
+    recallFleet(fleetId, { fetch: opts.fetch, token: tokenManager });
   // Spy detector — informational only (no fleet save). Emits emergency.spy
   // bus event when an inbound espionage probe is detected. Bridge forwards
   // to Discord so operator can see "[spy] X is probing Y".

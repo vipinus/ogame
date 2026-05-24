@@ -156,6 +156,46 @@ export async function wireBridge(
     })();
   });
 
+  // save.recall_now — sidecar's SaveCoordinator decided this fleet's recall
+  // margin elapsed and instructs the userscript to POST the recall. Cookies +
+  // token live in the page world, so the actual ogame API call has to come
+  // from here (sidecar can't cookie-auth into ogame). After the recall POST
+  // succeeds, report back to /v1/save/recall-confirmed so the backend can
+  // close the record.
+  const offRecallNow = client.on("save.recall_now", (msg) => {
+    const m = msg as { planet_id?: string; fleet_id?: number; reason?: string };
+    const fid = m.fleet_id;
+    if (typeof fid !== "number") {
+      console.warn(`[wireBridge] save.recall_now missing fleet_id`, m);
+      return;
+    }
+    console.warn(`[wireBridge] 🪂 save.recall_now planet=${m.planet_id} fleet=${fid} reason=${m.reason ?? ""}`);
+    const w = window as Window & {
+      __ogamexRecallFleet?: (fleetId: number) => Promise<void>;
+    };
+    if (typeof w.__ogamexRecallFleet !== "function") {
+      console.error(`[wireBridge] save.recall_now: __ogamexRecallFleet not exposed, cannot fire recall`);
+      return;
+    }
+    void (async (): Promise<void> => {
+      try {
+        await w.__ogamexRecallFleet!(fid);
+        console.log(`[wireBridge] recall POST ok fleet=${fid}, reporting back to backend`);
+        try {
+          await fetch("https://ogame.anyfq.com/ogamex/v1/save/recall-confirmed", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fleet_id: fid }),
+          });
+        } catch (e) {
+          console.warn(`[wireBridge] recall-confirmed POST failed:`, e);
+        }
+      } catch (e) {
+        console.error(`[wireBridge] recall POST FAILED fleet=${fid}:`, e);
+      }
+    })();
+  });
+
   const offEmergency = boot.bus.on("emergency.attack", (payload: unknown) => {
     const p = (payload ?? {}) as {
       event_id?: string;
@@ -226,6 +266,7 @@ export async function wireBridge(
       offEmergency();
       offSpy();
       offRefresh();
+      offRecallNow();
     },
   };
 }

@@ -28,6 +28,7 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { WsServer } from "./ws_server.js";
 import { HttpServer } from "./http_server.js";
+import { SaveCoordinator } from "./save_coordinator.js";
 import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
 import { GoalsStore } from "./goals_store.js";
@@ -728,6 +729,15 @@ export async function startSidecar(
       console.log(`[discovery] created goal ${id} from planet ${body.source_planet} galaxy=${body.galaxy} base=${body.base_system} range=${body.range ?? 10}`);
       return { ok: true, goal_id: id };
     },
+    recordSaveLaunched: (body) => {
+      saveCoordinator.recordLaunch(body);
+      return { ok: true };
+    },
+    recordSaveRecallConfirmed: (fleet_id) => {
+      saveCoordinator.recordRecallConfirmed(fleet_id);
+      return { ok: true };
+    },
+    listActiveSaves: () => saveCoordinator.list(),
   });
   const http = httpServerCtor();
   await Promise.all([ws.start(), http.start()]);
@@ -907,6 +917,22 @@ export async function startSidecar(
   // because goalsStore.list() returns SQL copies — mutating one is discarded).
   const directiveToDiscoverCoord = new Map<string, string>();
 
+  // --- SaveCoordinator (operator 2026-05-24 "fsm 可以放后台") ------------
+  // Owns per-planet IN_FLIGHT → RECALL_READY → RECALLING bookkeeping.
+  // Userscript reports launches via POST /v1/save/launched (wired into
+  // http opts above) and receives `save.recall_now` downstream when
+  // sidecar decides recall margin elapsed. Detection + sendFleet + recall
+  // POST stay in userscript — sidecar owns only the coordination state.
+  const saveCoordinator = new SaveCoordinator({
+    safetyMarginSeconds: 5 * 60,  // 5min margin from spec §3.3
+    stateRef,
+    send: (msg) => {
+      ws.send(msg);
+      http.queueDownstream(msg);
+    },
+  });
+  saveCoordinator.start();
+
   // --- FailureAggregator ---------------------------------------------------
   const failureAggregator = createFailureAggregator({
     strategyManager,
@@ -940,6 +966,12 @@ export async function startSidecar(
     const prev = stateRef.current;
     stateRef.current = msg.snapshot;
     lastSeen.at = Date.now();
+
+    // SaveCoordinator: diff hostile events between snapshots so per-planet
+    // FSM can advance IN_FLIGHT → RECALL_READY when all that planet's
+    // pending hostiles drop from events_incoming.
+    try { saveCoordinator.onSnapshot(msg.snapshot); }
+    catch (e) { console.error("[save-coord] onSnapshot threw", e); }
 
     // Event-driven expedition trigger: when fleet count drops between two
     // snapshots (fleet returned), bump trigger ts so discord-bridge daemon

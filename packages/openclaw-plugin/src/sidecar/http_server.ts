@@ -67,6 +67,16 @@ export interface HttpServerOptions {
   createDiscoveryGoal?: (body: {
     source_planet: string; galaxy: number; base_system: number; range?: number;
   }) => { ok: boolean; goal_id?: string; reason?: string };
+  /** Backend FSM hooks (operator 2026-05-24 "fsm 可以放后台"). Userscript
+   *  POSTs to /v1/save/launched after a successful sendFleet; reports recall
+   *  completion via /v1/save/recall-confirmed. SaveCoordinator owns
+   *  pending-hostile tracking + recall scheduling and emits save.recall_now
+   *  via downstream when ready. */
+  recordSaveLaunched?: (body: {
+    planet_id: string; fleet_id: number; hostile_event_ids: readonly string[];
+  }) => { ok: boolean; reason?: string };
+  recordSaveRecallConfirmed?: (fleet_id: number) => { ok: boolean; reason?: string };
+  listActiveSaves?: () => Array<unknown>;
 }
 
 interface QueueEntry {
@@ -114,6 +124,11 @@ interface ResolvedHttpServerOptions {
   createDiscoveryGoal?: (body: {
     source_planet: string; galaxy: number; base_system: number; range?: number;
   }) => { ok: boolean; goal_id?: string; reason?: string };
+  recordSaveLaunched?: (body: {
+    planet_id: string; fleet_id: number; hostile_event_ids: readonly string[];
+  }) => { ok: boolean; reason?: string };
+  recordSaveRecallConfirmed?: (fleet_id: number) => { ok: boolean; reason?: string };
+  listActiveSaves?: () => Array<unknown>;
 }
 
 export class HttpServer {
@@ -148,6 +163,9 @@ export class HttpServer {
       ...(opts.setMainGoal !== undefined ? { setMainGoal: opts.setMainGoal } : {}),
       ...(opts.unsetMainGoal !== undefined ? { unsetMainGoal: opts.unsetMainGoal } : {}),
       ...(opts.createDiscoveryGoal !== undefined ? { createDiscoveryGoal: opts.createDiscoveryGoal } : {}),
+      ...(opts.recordSaveLaunched !== undefined ? { recordSaveLaunched: opts.recordSaveLaunched } : {}),
+      ...(opts.recordSaveRecallConfirmed !== undefined ? { recordSaveRecallConfirmed: opts.recordSaveRecallConfirmed } : {}),
+      ...(opts.listActiveSaves !== undefined ? { listActiveSaves: opts.listActiveSaves } : {}),
     };
   }
 
@@ -356,6 +374,22 @@ export class HttpServer {
         void this.handleDiscoveryCreate(req, res);
         return;
       }
+      // Save-coordinator endpoints (operator 2026-05-24 "fsm 可以放后台").
+      // Public no-auth like discovery/expedition triggers — LAN-only trust.
+      if (url === "/ogamex/v1/save/launched") {
+        void this.handleSaveLaunched(req, res);
+        return;
+      }
+      if (url === "/ogamex/v1/save/recall-confirmed") {
+        void this.handleSaveRecallConfirmed(req, res);
+        return;
+      }
+    }
+    if (method === "GET" && url === "/ogamex/v1/save/active") {
+      this.handleProviderGet(res, this.opts.listActiveSaves
+        ? () => this.opts.listActiveSaves?.()
+        : undefined);
+      return;
     }
 
     if (method !== "POST") {
@@ -440,6 +474,56 @@ export class HttpServer {
   }
 
   /** POST /v1/discovery/create — body JSON parsed → callback to sidecar/index. */
+  private async handleSaveLaunched(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    this.writeCorsHeaders(res);
+    if (!this.opts.recordSaveLaunched) {
+      res.statusCode = 501;
+      res.end(JSON.stringify({ ok: false, reason: "recordSaveLaunched not wired" }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    let body: { planet_id?: string; fleet_id?: number; hostile_event_ids?: readonly string[] };
+    try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+    catch { res.statusCode = 400; res.end(JSON.stringify({ ok: false, reason: "bad json" })); return; }
+    if (!body.planet_id || typeof body.fleet_id !== "number" || !Array.isArray(body.hostile_event_ids)) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, reason: "need planet_id+fleet_id(number)+hostile_event_ids(string[])" }));
+      return;
+    }
+    const out = this.opts.recordSaveLaunched({
+      planet_id: body.planet_id,
+      fleet_id: body.fleet_id,
+      hostile_event_ids: body.hostile_event_ids,
+    });
+    res.statusCode = out.ok ? 200 : 400;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(out));
+  }
+
+  private async handleSaveRecallConfirmed(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    this.writeCorsHeaders(res);
+    if (!this.opts.recordSaveRecallConfirmed) {
+      res.statusCode = 501;
+      res.end(JSON.stringify({ ok: false, reason: "recordSaveRecallConfirmed not wired" }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    let body: { fleet_id?: number };
+    try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+    catch { res.statusCode = 400; res.end(JSON.stringify({ ok: false, reason: "bad json" })); return; }
+    if (typeof body.fleet_id !== "number") {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, reason: "need fleet_id(number)" }));
+      return;
+    }
+    const out = this.opts.recordSaveRecallConfirmed(body.fleet_id);
+    res.statusCode = out.ok ? 200 : 400;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(out));
+  }
+
   private async handleDiscoveryCreate(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     this.writeCorsHeaders(res);
     if (!this.opts.createDiscoveryGoal) {

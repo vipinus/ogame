@@ -330,6 +330,11 @@ export type DownstreamMsg =
    *  waits ~2s, then reads /v1/state confident it's fresh. */
   | { type: "data.refresh"; scope: "fleets" | "resources" | "all"; reason?: string }
   | { type: "config.set"; key: string; value: unknown }
+  /** Sidecar's backend SaveCoordinator owns multi-planet FSM state. When a
+   *  planet's pending hostiles are all clear AND the safety margin has
+   *  elapsed, sidecar emits this msg. Userscript receives it and POSTs
+   *  the recall directly to ogame (cookies + token live in the page). */
+  | { type: "save.recall_now"; planet_id: string; fleet_id: number; reason?: string }
   | { type: "ping"; ts: number };
 
 export type BridgeMsg = UpstreamMsg | DownstreamMsg;

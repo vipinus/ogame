@@ -10,6 +10,10 @@ export interface OrchestratorOptions {
   fetch: typeof fetch;
   saveWindowMinutes: number;
   safetyMarginMinutes: number;
+  /** Sidecar base URL (e.g. http://127.0.0.1:28791). When set, orchestrator
+   *  reports each successful launch to /v1/save/launched so the backend
+   *  SaveCoordinator owns recall scheduling. */
+  sidecarBaseUrl?: string;
 }
 
 export interface OrchestratorHandle {
@@ -58,10 +62,35 @@ export function startEmergencySave(
     return t?.id ?? null;
   };
 
+  // Report a successful launch to the backend SaveCoordinator. Best-effort:
+  // a failed POST means backend won't auto-recall, but frontend's own FSM
+  // tick is still in place as fallback (won't break the save chain).
+  const reportLaunchToBackend = async (sourceId: string, fsm: SaveStateMachine): Promise<void> => {
+    if (!opts.sidecarBaseUrl) return;
+    const snap = fsm.snapshot();
+    if (snap.state !== "IN_FLIGHT" || snap.fleetId === null) return;
+    try {
+      await opts.fetch(`${opts.sidecarBaseUrl}/ogamex/v1/save/launched`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planet_id: sourceId,
+          fleet_id: snap.fleetId,
+          hostile_event_ids: snap.pendingThreats,
+        }),
+      });
+      console.log(`[orchestrator] reported launch to backend planet=${sourceId} fleet=${snap.fleetId} pending=${snap.pendingThreats.length}`);
+    } catch (e) {
+      console.warn(`[orchestrator] backend report failed (frontend FSM still active as fallback):`, e);
+    }
+  };
+
   const offAttack = bus.on("emergency.attack", (p: any) => {
     const sourceId = findTargetPlanet(p.to);
     if (!sourceId) return;
-    void getOrCreateFsm(sourceId).handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
+    const fsm = getOrCreateFsm(sourceId);
+    void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at })
+      .then(() => reportLaunchToBackend(sourceId, fsm));
   });
 
   // Spy-as-threat trigger. Operator 2026-05-23: "把侦察也当作威胁测试紧急起飞,
@@ -102,7 +131,9 @@ export function startEmergencySave(
       return;
     }
     console.warn(`[emergency/spy] 🚨 spy ${p.event_id} → ${p.to.join(":")}: routing to full save chain (toggle ON)`);
-    void getOrCreateFsm(sourceId).handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at });
+    const fsm = getOrCreateFsm(sourceId);
+    void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at })
+      .then(() => reportLaunchToBackend(sourceId, fsm));
   });
 
   // when state updates, check per-planet hostile clearance. Each FSM
