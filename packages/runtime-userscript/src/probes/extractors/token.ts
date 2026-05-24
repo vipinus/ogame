@@ -18,5 +18,20 @@ export function extractToken(doc: Document, win: OgameWindow): string | null {
   const meta = doc.querySelector<HTMLMetaElement>('meta[name="ogame-token"]');
   if (meta?.content) return meta.content;
 
+  // 4. Operator 2026-05-24: emergency save on facilities page hit
+  //    "TokenManager.refresh returned empty value" because facilities DOM
+  //    has none of the above. ApiExec writes the freshest newAjaxToken to
+  //    dataset on every successful POST (discover/expedition/etc), and the
+  //    sniffer also persists it to localStorage. Either is fresher than
+  //    what a non-fleet page DOM ever had.
+  try {
+    const dsTok = (doc.documentElement as HTMLElement | null)?.dataset?.["ogamexToken"];
+    if (dsTok) return dsTok;
+  } catch { /* */ }
+  try {
+    const lsTok = win.localStorage?.getItem?.("OGAMEX_TOKEN");
+    if (lsTok) return lsTok;
+  } catch { /* */ }
+
   return null;
 }
