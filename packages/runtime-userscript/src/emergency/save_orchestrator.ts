@@ -67,6 +67,19 @@ export function startEmergencySave(
     return t?.id ?? null;
   };
 
+  // Operator 2026-05-24: "星球和月球如果没有船就不用执行FS". Skip silently
+  // before fsm — no decision, no POST, no FALLBACK, no alarm noise. Saves
+  // operator from the dead-end where case_decider would throw "no ships"
+  // and the planet's fsm flips into FALLBACK for 10s.
+  const hasNoShips = (planetId: string): boolean => {
+    const p = stateRef.current.planets?.[planetId];
+    if (!p) return false;  // unknown planet — don't pre-skip, fsm will handle
+    const ships = p.ships ?? {};
+    let total = 0;
+    for (const v of Object.values(ships)) total += (v ?? 0);
+    return total === 0;
+  };
+
   // Report a successful launch to the backend SaveCoordinator. Best-effort:
   // a failed POST means backend won't auto-recall, but frontend's own FSM
   // tick is still in place as fallback (won't break the save chain).
@@ -93,6 +106,10 @@ export function startEmergencySave(
   const offAttack = bus.on("emergency.attack", (p: any) => {
     const sourceId = findTargetPlanet(p.to);
     if (!sourceId) return;
+    if (hasNoShips(sourceId)) {
+      console.info(`[orchestrator] skip FS: ${sourceId} (${p.to.join(":")}) has no ships — nothing to save`);
+      return;
+    }
     const fsm = getOrCreateFsm(sourceId);
     void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at })
       .then(() => reportLaunchToBackend(sourceId, fsm));
@@ -133,6 +150,10 @@ export function startEmergencySave(
     const sourceId = findTargetPlanet(p.to);
     if (!sourceId) {
       console.warn(`[emergency/spy] no planet at ${p.to.join(":")} — cannot route to FSM`);
+      return;
+    }
+    if (hasNoShips(sourceId)) {
+      console.info(`[emergency/spy] skip FS: ${sourceId} (${p.to.join(":")}) has no ships — nothing to save`);
       return;
     }
     console.warn(`[emergency/spy] 🚨 spy ${p.event_id} → ${p.to.join(":")}: routing to full save chain (toggle ON)`);

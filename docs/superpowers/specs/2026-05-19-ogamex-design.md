@@ -387,25 +387,27 @@ emit("expedition_data_updated") → 触发 audit
 
 ##### 三 case 决策（按舰队当前所在地）
 
+**Operator 2026-05-24 修订**：所有 case 统一 10% speed（phalanx-avoidance 一致），
+月球 ↔ 同坐标星球互飞（transport），没月才打 debris（recycle）。
+
 ```
 hostile_event arrives_in ≤ save_window_minutes
    ↓
 [Case 决策器]
-   ├─ Case A: 舰队当前在【月球】(coords=G:S:P, type=moon)
-   │  → mission = 8 (recycle), dest = debris (G:S:P, type=2)
+   ├─ Case A: 舰队当前在【月球】
+   │  → mission = 3 (transport), dest = 同坐标【星球】 (G:S:P, type=1)
    │  → speed = 1 (10%)
    │  → 必带 recycler ≥ 1
-   │  → 资源全带
-   │  → 理由：月-废墟距离极短，10% 飞行时间 ~20-40min，
-   │          phalanx 从攻击者月球扫不到本地月球出发的航线
+   │  → 资源带，但保留 50K 重氢在月球（jump gate 燃料储备）
+   │  → 理由：月-星球同坐标距离 0，10% 飞行时间 ~20-40min，
+   │          recall before arrival 全身而退
    │
    ├─ Case B: 舰队在【星球】+ 同坐标存在【月球】
    │  → mission = 3 (transport), dest = moon (G:S:P, type=3)
-   │  → speed = 10 (100%)
+   │  → speed = 1 (10%)  ← 2026-05-24 改：从 100% 改为 10%
    │  → 必带 recycler ≥ 1
    │  → 资源全带
-   │  → 理由：月球是独立目标，攻击者打 planet 不会命中 moon 上的舰队
-   │          全速上月球秒级到达，避开攻击窗口
+   │  → 理由：与 Case A 对称的 phalanx-avoidance 飞法
    │  → 注：到月球后舰队"停"在月球上；下次再有威胁时按 Case A 处理
    │
    └─ Case C: 舰队在【星球】+ 同坐标无【月球】
@@ -414,8 +416,24 @@ hostile_event arrives_in ≤ save_window_minutes
       → 必带 recycler ≥ 1
       → 资源全带
       → 理由：2026 版废墟不存在也允许 recycle mission 起飞
-              10% 速度单程 30-60min，足够覆盖攻击 + 余量窗口
 ```
+
+##### Cargo 容量与重氢储备
+
+- **货舱容量**：由 ogame `checkTarget` 响应里 `shipsData[id].cargoCapacity` 字段拿
+  到（已含 hyperspace tech + class + lifeform 加成）。每次 expedition 跑都顺手
+  缓存到 `store.server.ship_cargo_capacity`。case_decider 优先读缓存，冷启用
+  CARGO_BASE 兜底（安全下限）。
+- **资源不够装时按比例缩**：m/c/d 各按 capacity/want 比例缩到刚好装满，永远不
+  超过货舱（避免 ogame 140028 "倉存容量不足"）。
+- **月球 50K 重氢储备**：源为月球时，`requested.d = max(0, moon.deut - 50_000)`。
+  jump gate 跳跃需要燃料，月球至少保留 50K。
+
+##### cp= 源星球钉死（v0.0.258 修复）
+
+`fleet_api.sendFleet` POST 必须带 `cp=<sourcePlanetId>`，否则 ogame 使用 session-cp
+（=operator 最后浏览的页面），fleet 从错星球起飞。expedition flow 一直有，
+emergency flow 早期遗漏过。
 
 ##### Recycler 强制规则
 

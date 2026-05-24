@@ -72,7 +72,17 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
   }
   // Cap cargo at capacity, priority: deuterium (fuel headroom), then metal, then crystal.
   // Allocate proportionally if total > capacity.
-  const requested = { m: source.resources.m, c: source.resources.c, d: source.resources.d };
+  // Operator 2026-05-24: "月球保留50K重氢" — when FS source is a moon,
+  // leave 50_000 deut on the moon (jump gate fuel reserve). Applies
+  // before capacity-cap so the proportional scale doesn't accidentally
+  // try to load the reserved amount.
+  const MOON_DEUT_RESERVE = 50_000;
+  const dReserve = source.type === "moon" ? MOON_DEUT_RESERVE : 0;
+  const requested = {
+    m: source.resources.m,
+    c: source.resources.c,
+    d: Math.max(0, source.resources.d - dReserve),
+  };
   const want = requested.m + requested.c + requested.d;
   let cargo: { m: number; c: number; d: number };
   if (want <= capacity) {
@@ -89,19 +99,33 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     };
   }
 
-  // Case A: source IS a moon → recycle to local debris @ 10%
+  // Operator 2026-05-24 strategy update:
+  //   1. 从星球FS → 同坐标月球 @ 10% (transport)   ← Case B
+  //   2. 从月球FS → 同坐标星球 @ 10% (transport)   ← Case A
+  //   3. 没有月球    → 同坐标 debris @ 10% (recycle) ← Case C
+  // All cases share the same 10% phalanx-avoidance flight pattern: short
+  // path (same-coord), long flight time, recall before arrival.
+
+  // Case A: source IS a moon → transport to same-coord planet @ 10%
   if (source.type === "moon") {
-    return {
-      case: "A",
-      sourcePlanetId: source.id,
-      destCoords: source.coords,
-      destType: 2,
-      mission: Mission.RECYCLE,
-      speed: 1,
-      ships,
-      cargo,
-      reason: `Case A: fleet on moon ${source.name} → recycle to local debris @ 10% speed`,
-    };
+    const sameCoordPlanet = Object.values(state.planets ?? {}).find(
+      p => p.type === "planet" && sameCoords(p.coords, source.coords),
+    );
+    if (sameCoordPlanet) {
+      return {
+        case: "A",
+        sourcePlanetId: source.id,
+        destCoords: sameCoordPlanet.coords,
+        destType: 1,
+        mission: Mission.TRANSPORT,
+        speed: 1,
+        ships,
+        cargo,
+        reason: `Case A: fleet on moon ${source.name} → transport to same-coord planet ${sameCoordPlanet.name} @ 10% speed`,
+      };
+    }
+    // Edge: moon with no co-located planet (impossible in stock ogame
+    // but defensive). Fall through to Case C local-debris recycle.
   }
 
   // source.type === "planet" — check for same-coord moon
@@ -116,16 +140,14 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
       destCoords: sameCoordMoon.coords,
       destType: 3,
       mission: Mission.TRANSPORT,
-      speed: 10,
+      speed: 1,
       ships,
       cargo,
-      reason: `Case B: planet ${source.name} has same-coord moon → transport to moon @ 100% speed`,
+      reason: `Case B: planet ${source.name} has same-coord moon → transport to moon @ 10% speed`,
     };
   }
 
-  // Case C: planet, no co-located moon. Operator 2026-05-24 rejected the
-  // proposed Case D (transport to nearest friendly planet) — sticking
-  // with spec §3.3 same-coord debris @ 10% speed.
+  // Case C: planet, no co-located moon → same-coord debris recycle @ 10%.
   return {
     case: "C",
     sourcePlanetId: source.id,
@@ -135,6 +157,6 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     speed: 1,
     ships,
     cargo,
-    reason: `Case C: planet ${source.name} (no moon) → recycle to local debris @ 10% speed (2026 allows empty-debris recycle)`,
+    reason: `Case C: planet ${source.name} (no moon) → recycle to local debris @ 10% speed`,
   };
 }
