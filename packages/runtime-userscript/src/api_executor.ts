@@ -22,6 +22,7 @@
 import type { Directive } from "@ogamex/shared";
 import { TECH_ID_BY_NAME } from "@ogamex/shared";
 import type { DirectiveExecutor } from "./directive_executor_iface.js";
+import { cacheShipsData } from "./api/ship_cargo_cache.js";
 
 export interface ApiExecutorDeps {
   win: Window;
@@ -537,6 +538,16 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     console.info(`[ApiExec] expedition step3: checkTarget -> success=${stage2.json.success} body=${stage2.raw.slice(0, 200)}`);
     if (stage2.json.success === false) {
       throw new Error(`expedition stage2 rejected: ${JSON.stringify(stage2.json.errors ?? stage2.json.message)}`);
+    }
+    // Harvest authoritative cargo capacity from shipsData (post-bonus).
+    // Operator 2026-05-24: hyperspace tech / class / lifeform all scale
+    // cargo; the only reliable source is ogame's own response. Free
+    // hitch ride on every expedition's checkTarget.
+    try {
+      const shipsData = (stage2.json as { shipsData?: unknown }).shipsData;
+      if (shipsData) cacheShipsData(shipsData, this.win);
+    } catch (e) {
+      console.warn("[ApiExec/expedition] shipsData cache failed:", e);
     }
     token = stage2.token;
 
