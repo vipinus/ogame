@@ -302,7 +302,16 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (!r.ok) throw new Error(`api: ${component} upgrade HTTP ${r.status}`);
     const respText = await r.text();
     let parsed: { success?: boolean; errors?: Array<{ message?: string }>; error?: string; newAjaxToken?: string } | null = null;
-    try { parsed = JSON.parse(respText); } catch { /* HTML */ }
+    try { parsed = JSON.parse(respText); }
+    catch {
+      // Operator 2026-05-25 (discover same-source check): explicit error
+      // pages MUST not be silently treated as success. Legacy ogame
+      // sometimes returns HTML redirect on scheduleEntry success, so
+      // only throw when the body actually mentions an error.
+      if (/error|錯誤|错误|failed/i.test(respText.slice(0, 500))) {
+        throw new Error(`${component} upgrade non-JSON error response: ${respText.slice(0, 200)}`);
+      }
+    }
     console.info(`[ApiExec] ${component}:${targetName} POST resp HTTP ${r.status} json=${parsed ? "yes" : "no(html)"} body[0:200]=${respText.slice(0, 200).replace(/\s+/g, " ")}`);
     // Rotate token: ogame single-use tokens. Refresh dataset + localStorage
     // with response's newAjaxToken so next POST has a fresh one.
@@ -328,7 +337,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       });
       const r2Text = await r2.text();
       let parsed2: { success?: boolean; status?: string; errors?: unknown; newAjaxToken?: string } | null = null;
-      try { parsed2 = JSON.parse(r2Text); } catch { /* */ }
+      try { parsed2 = JSON.parse(r2Text); }
+      catch {
+        if (/error|錯誤|错误|failed/i.test(r2Text.slice(0, 500))) {
+          throw new Error(`retry non-JSON error response: ${r2Text.slice(0, 200)}`);
+        }
+      }
       console.info(`[ApiExec] ${component}:${targetName} retry resp body[0:200]=${r2Text.slice(0,200).replace(/\s+/g," ")}`);
       if (parsed2?.newAjaxToken) {
         (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed2.newAjaxToken;
@@ -385,7 +399,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (!r.ok) throw new Error(`api: shipyard build HTTP ${r.status}`);
     const respText = await r.text();
     let parsed: { success?: boolean; errors?: Array<{ message?: string }>; error?: string; newAjaxToken?: string } | null = null;
-    try { parsed = JSON.parse(respText); } catch { /* HTML response */ }
+    try { parsed = JSON.parse(respText); }
+    catch {
+      if (/error|錯誤|错误|failed/i.test(respText.slice(0, 500))) {
+        throw new Error(`shipyard build non-JSON error response: ${respText.slice(0, 200)}`);
+      }
+    }
     console.info(`[ApiExec] shipyard:${ship}×${amount} POST resp HTTP ${r.status} json=${parsed ? "yes" : "no(html)"} body[0:200]=${respText.slice(0, 200).replace(/\s+/g, " ")}`);
     // Rotate token from response (ogame single-use anti-replay).
     if (parsed?.newAjaxToken) {
@@ -405,7 +424,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       });
       const r2Text = await r2.text();
       let parsed2: { success?: boolean; status?: string; errors?: unknown; newAjaxToken?: string } | null = null;
-      try { parsed2 = JSON.parse(r2Text); } catch { /* */ }
+      try { parsed2 = JSON.parse(r2Text); }
+      catch {
+        if (/error|錯誤|错误|failed/i.test(r2Text.slice(0, 500))) {
+          throw new Error(`retry non-JSON error response: ${r2Text.slice(0, 200)}`);
+        }
+      }
       console.info(`[ApiExec] shipyard:${ship}×${amount} retry resp body[0:200]=${r2Text.slice(0,200).replace(/\s+/g," ")}`);
       if (parsed2?.newAjaxToken) {
         (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed2.newAjaxToken;
@@ -501,7 +525,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       });
       const txt = await r.text();
       let j: ReturnType<typeof POST> extends Promise<infer T> ? T["json"] : never;
-      try { j = JSON.parse(txt); } catch { j = {}; }
+      try { j = JSON.parse(txt); }
+      catch {
+        // Operator 2026-05-25 (discover same-source check): ogame
+        // sometimes returns plain-text "An error has occured!" with
+        // HTTP 200. Silently using j={} treated this as success, no
+        // token rotation → next stage fails with stale token cascade.
+        throw new Error(`expedition ${action} non-JSON response: ${txt.slice(0, 200)}`);
+      }
       const newToken = j.newAjaxToken ?? token;
       return { token: newToken, raw: txt, json: j };
     };
@@ -594,7 +625,13 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // ogame returns JSON {success:true} or {success:false, errors:[...]}.
     // Parse OUTSIDE a swallowing catch so failures actually propagate.
     let parsed: { success?: boolean; errors?: Array<{ message?: string; error?: number }> } | null = null;
-    try { parsed = JSON.parse(txt); } catch { /* not JSON — accept HTTP 200 as opaque success */ }
+    try { parsed = JSON.parse(txt); }
+    catch {
+      // Operator 2026-05-25: non-JSON response = real error (e.g.
+      // "An error has occured!" plain text). Do NOT accept as opaque
+      // success — that hides token-rotation failures.
+      throw new Error(`expedition sendFleet non-JSON response: ${txt.slice(0, 200)}`);
+    }
     if (parsed && (parsed.success === false || parsed.status === "failure")) {
       const msg = parsed.errors?.[0]?.message ?? "unknown error";
       const code = parsed.errors?.[0]?.error ?? -1;
@@ -661,7 +698,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       });
       const txt = await r.text();
       let j: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } = {};
-      try { j = JSON.parse(txt); } catch { /* */ }
+      try { j = JSON.parse(txt); }
+      catch { throw new Error(`colonize ${action} non-JSON response: ${txt.slice(0, 200)}`); }
       return { token: j.newAjaxToken ?? token!, raw: txt, json: j };
     };
 
@@ -709,7 +747,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     console.info(`[ApiExec] colonize step5: HTTP ${r.status} body=${txt.slice(0,300)}`);
     if (!r.ok) throw new Error(`colonize HTTP ${r.status}`);
     let parsed: { success?: boolean; errors?: Array<{ message?: string; error?: number }> } | null = null;
-    try { parsed = JSON.parse(txt); } catch { /* */ }
+    try { parsed = JSON.parse(txt); }
+    catch { throw new Error(`colonize sendFleet non-JSON response: ${txt.slice(0, 200)}`); }
     if (parsed && (parsed.success === false || parsed.status === "failure")) {
       const msg = parsed.errors?.[0]?.message ?? "unknown";
       throw new Error(`colonize rejected: ${msg}`);
@@ -745,7 +784,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       });
       const txt = await r.text();
       let j: { newAjaxToken?: string; success?: boolean; errors?: Array<{ message?: string; error?: number }> } = {};
-      try { j = JSON.parse(txt); } catch { /* */ }
+      try { j = JSON.parse(txt); }
+      catch { throw new Error(`${directive.action} ${action} non-JSON response: ${txt.slice(0, 200)}`); }
       return { token: j.newAjaxToken ?? token!, raw: txt, json: j };
     };
 
@@ -793,7 +833,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     console.info(`[ApiExec] ${directive.action} step5: HTTP ${r.status} body=${txt.slice(0,300)}`);
     if (!r.ok) throw new Error(`${directive.action} HTTP ${r.status}`);
     let parsed: { success?: boolean; errors?: Array<{ message?: string; error?: number }> } | null = null;
-    try { parsed = JSON.parse(txt); } catch { /* */ }
+    try { parsed = JSON.parse(txt); }
+    catch { throw new Error(`${directive.action} sendFleet non-JSON response: ${txt.slice(0, 200)}`); }
     if (parsed && (parsed.success === false || parsed.status === "failure")) {
       const msg = parsed.errors?.[0]?.message ?? "unknown";
       throw new Error(`${directive.action} rejected: ${msg}`);
