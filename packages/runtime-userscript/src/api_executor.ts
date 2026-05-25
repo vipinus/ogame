@@ -479,7 +479,9 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // a `newAjaxToken` that MUST be used for the next stage — single-use,
     // single-stage tokens. Reusing the page-1 token for sendFleet returns
     // error 140043 ("无法派遣艦隊"). We chain through all 3.
-    const token = await this.bootstrapFleetToken(planetId, "expedition");
+    // `let` — token is reassigned at each stage's newAjaxToken
+    // (single-use chain; reusing prior stage token returns 140043).
+    let token: string = await this.bootstrapFleetToken(planetId, "expedition");
     console.info(`[ApiExec] expedition step1: GOT token (ajax-only) len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } }> => {
