@@ -1008,6 +1008,22 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     } | null = null;
     try { parsed = JSON.parse(respText); } catch { /* HTML */ }
     console.info(`[ApiExec/discover] resp HTTP ${r.status} body[0:200]=${respText.slice(0, 200).replace(/\s+/g, " ")}`);
+    // Operator 2026-05-25: ogame sometimes returns plain text like
+    // "An error has occured!" with HTTP 200 but no JSON. Without
+    // detecting this, we treat it as "success", don't rotate token,
+    // and the NEXT POST fails with "在您最後一個動作時,發生錯誤"
+    // because we re-use a stale token. Invalidate the stash so the
+    // next call refetches a fresh galaxy token.
+    const nonJson = parsed === null;
+    if (nonJson) {
+      console.warn(`[ApiExec/discover] non-JSON response (likely error page) — invalidating token, next POST will refetch galaxy`);
+      (this.win as Window & { __ogamexLastGalaxyToken?: string }).__ogamexLastGalaxyToken = undefined;
+      // Also drop cached galaxy state so the next discover re-fetches
+      // fresh fetchGalaxyContent → fresh token.
+      const cacheStore = (this.win as Window & { __ogamexGalaxyDiscovery?: Map<string, { ts: number; states: Map<number, string> }> }).__ogamexGalaxyDiscovery;
+      cacheStore?.delete(cacheKey);
+      throw new Error(`discover ${galaxy}:${system}:${position} returned non-JSON: ${respText.slice(0, 100)}`);
+    }
     if (parsed?.newAjaxToken) {
       (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed.newAjaxToken;
       try { this.win.localStorage.setItem("OGAMEX_TOKEN", parsed.newAjaxToken); } catch { /* */ }
