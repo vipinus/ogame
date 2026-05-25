@@ -148,9 +148,20 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       if (n !== lastOwnFleetCount) {
         const before = lastOwnFleetCount;
         lastOwnFleetCount = n;
-        console.info(`[OgameX/eventbox-hook] friendly fleet count ${before}→${n}, forcing /movement refresh`);
+        console.info(`[OgameX/eventbox-hook] friendly fleet count ${before}→${n}, forcing /movement refresh${n < before ? " + empire pollEmpire (ship returned)" : ""}`);
         const harvest = (win as Window & { __ogamexHarvestMovement?: () => Promise<void> }).__ogamexHarvestMovement;
         if (typeof harvest === "function") void harvest().catch(() => { /* */ });
+        // Operator 2026-05-25: "有船到达事件发生，就刷新舰队库存".
+        // Friendly fleet count DECREASE = one of our fleets just finished
+        // (returned home or arrived at deploy destination). Force an
+        // immediate empire pull so inflight-launches map prunes the
+        // returned ships (empire-delta) without waiting for the 5-min
+        // periodic poll. Without this, planet can stay "stuck preflight
+        // says no ships" for up to 5min after ships actually landed.
+        if (n < before) {
+          const pollEmp = (win as Window & { __ogamexPollEmpire?: (opts?: { force?: boolean }) => Promise<void> }).__ogamexPollEmpire;
+          if (typeof pollEmp === "function") void pollEmp({ force: true }).catch(() => { /* */ });
+        }
       }
     } catch { /* HTML response — skip */ }
   }
