@@ -96,7 +96,11 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
   // All cases share the same 10% phalanx-avoidance flight pattern: short
   // path (same-coord), long flight time, recall before arrival.
 
-  // Case A: source IS a moon → transport to same-coord planet @ 10%
+  // Case A: source IS a moon → deploy to same-coord planet @ 10%
+  // Operator 2026-05-25: "FS 用部署替换运输". mission=4 DEPLOY ≠ mission=3
+  // TRANSPORT. DEPLOY permanently relocates the fleet to own planet/moon;
+  // TRANSPORT has different recall/holding semantics. For FS purposes the
+  // fleet is a long-term move, not a courier round-trip.
   if (source.type === "moon") {
     const sameCoordPlanet = Object.values(state.planets ?? {}).find(
       p => p.type === "planet" && sameCoords(p.coords, source.coords),
@@ -107,11 +111,11 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
         sourcePlanetId: source.id,
         destCoords: sameCoordPlanet.coords,
         destType: 1,
-        mission: Mission.TRANSPORT,
+        mission: Mission.DEPLOY,
         speed: 1,
         ships,
         cargo,
-        reason: `Case A: fleet on moon ${source.name} → transport to same-coord planet ${sameCoordPlanet.name} @ 10% speed`,
+        reason: `Case A: fleet on moon ${source.name} → DEPLOY to same-coord planet ${sameCoordPlanet.name} @ 10% speed`,
       };
     }
     // Edge: moon with no co-located planet (impossible in stock ogame
@@ -129,11 +133,11 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
       sourcePlanetId: source.id,
       destCoords: sameCoordMoon.coords,
       destType: 3,
-      mission: Mission.TRANSPORT,
+      mission: Mission.DEPLOY,
       speed: 1,
       ships,
       cargo,
-      reason: `Case B: planet ${source.name} has same-coord moon → transport to moon @ 10% speed`,
+      reason: `Case B: planet ${source.name} has same-coord moon → DEPLOY to moon @ 10% speed`,
     };
   }
 

@@ -42,7 +42,7 @@ describe("decideCase", () => {
     });
     const d = decideCase(emptyState([moon, planet]), "m1");
     expect(d.case).toBe("A");
-    expect(d.mission).toBe(3);
+    expect(d.mission).toBe(4);  // DEPLOY (operator 2026-05-25)
     expect(d.destType).toBe(1);
     expect(d.destCoords).toEqual([1, 42, 8]);
     expect(d.speed).toBe(1);
@@ -66,7 +66,7 @@ describe("decideCase", () => {
     });
     const d = decideCase(emptyState([planet, moon]), "p1");
     expect(d.case).toBe("B");
-    expect(d.mission).toBe(3);
+    expect(d.mission).toBe(4);  // DEPLOY (operator 2026-05-25)
     expect(d.destType).toBe(3);
     expect(d.destCoords).toEqual([1, 42, 8]);
     expect(d.speed).toBe(1);
@@ -190,7 +190,7 @@ describe("decideCase", () => {
     });
     const d = decideCase(emptyState([moon, planet]), "m1");
     expect(d.case).toBe("A");
-    expect(d.mission).toBe(3); // transport
+    expect(d.mission).toBe(4); // DEPLOY
     expect(d.ships.smallCargo).toBe(100);
   });
 
@@ -205,7 +205,7 @@ describe("decideCase", () => {
     });
     const d = decideCase(emptyState([planet, moon]), "p1");
     expect(d.case).toBe("B");
-    expect(d.mission).toBe(3); // transport
+    expect(d.mission).toBe(4); // DEPLOY
     expect(d.ships.smallCargo).toBe(100);
   });
 
