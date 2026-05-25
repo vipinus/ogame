@@ -479,31 +479,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // a `newAjaxToken` that MUST be used for the next stage — single-use,
     // single-stage tokens. Reusing the page-1 token for sendFleet returns
     // error 140043 ("无法派遣艦隊"). We chain through all 3.
-    //
-    // Operator 2026-05-25: "用 api 实现 不要点网页". Previously this
-    // started with a heavy GET /component=fleetdispatch&cp=PID returning
-    // hundreds of KB of HTML just to extract a CSRF token. That GET
-    // switched session-cp AND made the operator's open tab repaint.
-    // Skip the HTML entirely — get the initial token from:
-    //   1. document.documentElement.dataset.ogamexToken (sniffer-cached
-    //      from operator's recent ogame actions or our prior POSTs)
-    //   2. fetchEventBox ajax JSON — tiny payload (~200B), returns
-    //      newAjaxToken at top-level
-    let token: string | null = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] ?? null;
-    if (!token) {
-      try {
-        const ebResp = await this.fetchFn(
-          `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${planetId}`,
-          { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-        );
-        const ebJson = await ebResp.json() as { newAjaxToken?: string };
-        if (ebJson.newAjaxToken && ebJson.newAjaxToken.length >= 16) token = ebJson.newAjaxToken;
-      } catch (e) {
-        console.warn("[ApiExec] expedition: fetchEventBox token fetch failed:", e);
-      }
-    }
-    if (!token) throw new Error("expedition: no token from dataset/eventbox (operator tab needs at least one ogame action this session)");
-    console.info(`[ApiExec] expedition step1: GOT token (ajax-only path, no fleetdispatch HTML) len=${token.length}`);
+    const token = await this.bootstrapFleetToken(planetId, "expedition");
+    console.info(`[ApiExec] expedition step1: GOT token (ajax-only) len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } }> => {
       // cp=<planetId> routes to the specific source planet. Without it
@@ -669,18 +646,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const tSystem = parseInt(tsStr ?? "0", 10);
     const tPos = parseInt(tpStr ?? "0", 10);
     if (!tGalaxy || !tSystem || !tPos) throw new Error(`colonize: bad target_coords`);
-    // Token chain (same 3-step pattern as expedition).
-    const fdUrl = `/game/index.php?page=ingame&component=fleetdispatch&cp=${planetId}`;
-    const fdResp = await this.fetchFn(fdUrl, { credentials: "same-origin" });
-    const fdHtml = await fdResp.text();
-    let token: string | null = null;
-    const m1 = fdHtml.match(/var\s+token\s*=\s*['"]([a-zA-Z0-9]{16,})['"]/);
-    if (m1) token = m1[1]!;
-    if (!token) {
-      const datasetTok = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"];
-      token = datasetTok ?? null;
-    }
-    if (!token) throw new Error("colonize: no token");
+    // Operator 2026-05-25: "用 api 实现 不要点网页" — ajax-only token chain.
+    let token: string = await this.bootstrapFleetToken(planetId, "colonize");
     console.info(`[ApiExec] colonize step1: token len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } }> => {
@@ -763,17 +730,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const tPos = parseInt(tpStr ?? "0", 10);
     if (!tGalaxy || !tSystem || !tPos) throw new Error(`${directive.action}: bad target_coords`);
     if (Object.keys(ships).length === 0) throw new Error(`${directive.action}: no ships`);
-    const fdUrl = `/game/index.php?page=ingame&component=fleetdispatch&cp=${planetId}`;
-    const fdResp = await this.fetchFn(fdUrl, { credentials: "same-origin" });
-    const fdHtml = await fdResp.text();
-    let token: string | null = null;
-    const m1 = fdHtml.match(/var\s+token\s*=\s*['"]([a-zA-Z0-9]{16,})['"]/);
-    if (m1) token = m1[1]!;
-    if (!token) {
-      const datasetTok = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"];
-      token = datasetTok ?? null;
-    }
-    if (!token) throw new Error(`${directive.action}: no token`);
+    // Operator 2026-05-25: ajax-only token bootstrap (no fdHtml).
+    let token: string = await this.bootstrapFleetToken(planetId, directive.action);
     console.info(`[ApiExec] ${directive.action} step1: token len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; errors?: Array<{ message?: string; error?: number }> } }> => {
@@ -1091,6 +1049,37 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    * issuing one cheap ajax GET with cp=<operatorCp> after each
    * cp-targeted POST.
    */
+  /**
+   * Get a fresh CSRF token for fleet dispatch chains without fetching the
+   * heavy /component=fleetdispatch HTML page. Operator 2026-05-25:
+   * "用 api 实现 不要点网页". Sources, in priority:
+   *   1. document.documentElement.dataset.ogamexToken — sniffer-cached
+   *      from operator's recent ogame interactions or our prior successful
+   *      POSTs. Zero HTTP if present.
+   *   2. fetchEventBox ajax JSON — tiny ~200B payload, returns
+   *      newAjaxToken at top-level. Same session as operator.
+   * Shared by execExpedition / execColonize / execFleetSend.
+   */
+  private async bootstrapFleetToken(planetId: string, action: string): Promise<string> {
+    let token: string | null = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] ?? null;
+    if (token && token.length >= 16) return token;
+    try {
+      const ebResp = await this.fetchFn(
+        `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${planetId}`,
+        { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+      );
+      const ebJson = await ebResp.json() as { newAjaxToken?: string };
+      if (ebJson.newAjaxToken && ebJson.newAjaxToken.length >= 16) {
+        token = ebJson.newAjaxToken;
+        (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = token;
+      }
+    } catch (e) {
+      console.warn(`[ApiExec/${action}] fetchEventBox token bootstrap failed:`, e);
+    }
+    if (!token) throw new Error(`${action}: no token (dataset empty + fetchEventBox failed)`);
+    return token;
+  }
+
   private async restoreSessionCp(operatorCp: string | null, wePostedCp: string): Promise<void> {
     if (!operatorCp || operatorCp === wePostedCp) return;
     try {
