@@ -107,12 +107,32 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       ?? (directive.params as { source_planet?: string }).source_planet;
     if (!planetId) throw new Error(`api: no planet_id for ${directive.action}`);
 
-    if (directive.action === "expedition") return this.execExpedition(directive, planetId);
-    if (directive.action === "colonize") return this.execColonize(directive, planetId);
-    if (directive.action === "deploy" || directive.action === "transport") {
-      return this.execFleetSend(directive, planetId);
+    // Operator 2026-05-25: "调用api也必须切星球吗？" — yes, ogame's cp=
+    // in URL switches session-cp regardless of ajax/HTML. ALL action
+    // handlers below carry cp=<sourcePlanet> in their POSTs, which
+    // shifts the operator's tab too. Capture original session-cp here
+    // (operator's view) and restore via try/finally so every action,
+    // not just discover, leaves the operator on their planet.
+    const operatorCp = this.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? null;
+    const inner = async (): Promise<{ action: string; clicked: boolean }> => {
+      if (directive.action === "expedition") return this.execExpedition(directive, planetId);
+      if (directive.action === "colonize") return this.execColonize(directive, planetId);
+      if (directive.action === "deploy" || directive.action === "transport") {
+        return this.execFleetSend(directive, planetId);
+      }
+      if (directive.action === "discover") return this.execDiscover(directive, planetId);
+      return this.execLegacy(directive, planetId);
+    };
+    try {
+      return await inner();
+    } finally {
+      await this.restoreSessionCp(operatorCp, planetId);
     }
-    if (directive.action === "discover") return this.execDiscover(directive, planetId);
+  }
+
+  /** Old replay/capture path for non-fleet actions (build/research/etc).
+   *  Wrapped out of execute() so the outer try/finally can restore cp. */
+  private async execLegacy(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
 
     // TIER 1 — replay sniffer-captured ogame URL if seen. ogame's own
     // click triggers the REAL endpoint with EXACT format; we just copy.
@@ -832,6 +852,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    *    body: galaxy=N&system=N&position=N&token=...
    *  Cost: Metal 5000 / Crystal 1000 / Deuterium 500 per shot, 7-day per-coord cooldown.
    *  Uses 1 fleet slot until exploration fleet returns. */
+  // execute() at top wraps EVERY action in try/finally that restores
+  // session-cp — no per-action restore needed here.
   private async execDiscover(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
     const p = directive.params as { galaxy?: number; system?: number; position?: number; goal_id?: string };
     const galaxy = p.galaxy ?? 0;
@@ -840,21 +862,6 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (!galaxy || !system || !position) {
       throw new Error(`discover: missing galaxy/system/position (got ${galaxy}:${system}:${position})`);
     }
-    // Capture operator's view planet BEFORE any cp= request. All paths
-    // through this function MUST restore via try/finally so background
-    // discovery never leaves session-cp pointing at a source planet.
-    const operatorCp = this.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? null;
-    try {
-      return await this.execDiscoverInner(directive, planetId, galaxy, system, position);
-    } finally {
-      await this.restoreSessionCp(operatorCp, planetId);
-    }
-  }
-
-  private async execDiscoverInner(
-    directive: Directive, planetId: string,
-    galaxy: number, system: number, position: number,
-  ): Promise<{ action: string; clicked: boolean }> {
 
     // Pre-check: fetch galaxy system content + classify position's discovery
     // state. Operator: "先从 api 拿到星球是否扫过, 没扫过的继续, 扫过的跳过".
