@@ -556,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.278";
+  const USERSCRIPT_VERSION = "0.0.279";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -911,20 +911,46 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // changes.
   async function harvestSlotsFromFleetdispatch(): Promise<void> {
     try {
-      // v0.0.277 used `&ajax=1&asJson=1` → returned EMPTY components
-      // (67B `{"components":[],"newAjaxToken":"..."}` — operator log
-      // 2026-05-25). asJson stripped too aggressively.
-      //
-      // ogame's SPA-navigation pattern uses `&ajax=1` (NO asJson) which
-      // returns JSON `{content: "<html fragment>"}` containing the
-      // page body — typically ~30-50KB, ~10x smaller than chrome page.
-      // Includes #slots container with labels.
+      // History:
+      //   v0.0.277  GET ?ajax=1&asJson=1  → 67B `{components:[],newAjaxToken:...}` (empty)
+      //   v0.0.278  GET ?ajax=1           → 405 Method Not Allowed
+      //   v0.0.279  POST ?ajax=1          → ogame's SPA-navigation pattern
+      // POST is what ogame's UI uses internally for SPA chunk loads.
       const url = "/game/index.php?page=ingame&component=fleetdispatch&ajax=1";
       const resp = await env.win.fetch(url, {
+        method: "POST",
         credentials: "same-origin",
-        headers: { "X-Requested-With": "XMLHttpRequest" },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        body: "",
       });
-      if (!resp.ok) return;
+      if (!resp.ok) {
+        console.warn(`[OgameX/fd-bg] ajax POST HTTP ${resp.status} — fallback to HTML GET`);
+        // Defensive: original HTML path so operator never loses slot data.
+        const r2 = await env.win.fetch("/game/index.php?page=ingame&component=fleetdispatch", { credentials: "same-origin" });
+        if (!r2.ok) return;
+        const html = await r2.text();
+        const fl = html.match(/(?:艦隊|舰队|[Ff]leet)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
+        const el = html.match(/(?:遠征艦隊|远征舰队|遠征|[Ee]xpedit\w*)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
+        const [uf, mf] = fl ? [parseInt(fl[1]!, 10), parseInt(fl[2]!, 10)] : [0, 0];
+        const [ue, me] = el ? [parseInt(el[1]!, 10), parseInt(el[2]!, 10)] : [0, 0];
+        if (me > 0 || mf > 0) {
+          console.info(`[OgameX/fd-bg] HTML fallback fetched: fleet=${uf}/${mf} expedition=${ue}/${me}`);
+          if (me > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_EXP", String(me)); } catch { /* */ }
+          if (mf > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_FLEET", String(mf)); } catch { /* */ }
+          const cur2 = store.state;
+          store.setPartial({
+            server: {
+              ...(cur2.server ?? {}),
+              ...(me > 0 ? { max_expedition_slots: me, used_expedition_slots: ue } : {}),
+              ...(mf > 0 ? { max_fleet_slots: mf, used_fleet_slots: uf } : {}),
+            } as typeof cur2.server,
+          });
+        }
+        return;
+      }
       const text = await resp.text();
       // ogame returns either raw HTML or JSON-wrapped. Probe both.
       let body = text;
