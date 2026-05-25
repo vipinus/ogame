@@ -556,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.276";
+  const USERSCRIPT_VERSION = "0.0.277";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -897,42 +897,37 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   const eventboxHook = installEventBoxHook({ store, win: env.win });
   void eventboxHook; // handle kept alive via closure; .stop() if we add teardown
 
-  // BACKUP: fetch fleetdispatch page directly for slot caps. That page
-  // ALWAYS renders "艦隊:X/Y 遠征艦隊:N/M" regardless of which page operator
-  // is currently on. Used when movement endpoint regex can't find caps.
+  // Slot harvest via ajax fleetdispatch fragment — operator 2026-05-25:
+  // "slot harvest 也改 ajax". ogame's SPA navigation uses
+  // `&ajax=1&asJson=1` on fleetdispatch which returns a JSON envelope
+  // containing the page's `<div id="slots">...</div>` HTML fragment
+  // INSTEAD of the full ~500KB page chrome. ~5-15KB payload, no
+  // browser-tab render side effects.
+  //
+  // Response shape (verified empirically): { components: [...],
+  // newAjaxToken: "...", ... } where components includes an entry
+  // for the slots container with `html` field. We scan the entire JSON
+  // text for the slot labels — robust against component-array layout
+  // changes.
   async function harvestSlotsFromFleetdispatch(): Promise<void> {
     try {
-      const url = "/game/index.php?page=ingame&component=fleetdispatch";
-      const resp = await env.win.fetch(url, { credentials: "same-origin" });
+      const url = "/game/index.php?page=ingame&component=fleetdispatch&ajax=1&asJson=1";
+      const resp = await env.win.fetch(url, {
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+      });
       if (!resp.ok) return;
-      const html = await resp.text();
-      // Look for the slots container with fleet + expedition pairs in order.
-      // ogame v12 uses <div id="slots">...艦隊:1/2 遠征艦隊:1/2...</div>
-      // Match #slots container then scan its inner HTML for the
-      // 艦隊:X/Y 遠征艦隊:N/M pattern directly (more robust than
-      // generic "first 2 digit pairs"). ogame v12 always has both
-      // labels even on fetched HTML.
-      const fleetLabel = html.match(/(?:艦隊|舰队|[Ff]leet)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
-      const expLabel = html.match(/(?:遠征艦隊|远征舰队|遠征|[Ee]xpedit\w*)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
-      // Diagnostic: dump first occurrence of each label's surrounding text
-      // so we can see actual ogame HTML format. Run once per session.
-      if (!(env.win as Window & { __ogamexDumpedFd?: boolean }).__ogamexDumpedFd) {
-        (env.win as Window & { __ogamexDumpedFd?: boolean }).__ogamexDumpedFd = true;
-        // (fd-dump silenced — slot extraction works)
-        void html;
-      }
-      const pairs: Array<readonly [number, number]> = [];
-      if (fleetLabel) pairs.push([parseInt(fleetLabel[1]!, 10), parseInt(fleetLabel[2]!, 10)]);
-      else pairs.push([0, 0]);
-      if (expLabel) pairs.push([parseInt(expLabel[1]!, 10), parseInt(expLabel[2]!, 10)]);
-      else pairs.push([0, 0]);
-      if (pairs.length === 0) return;
-      const [usedFleet, maxFleet] = pairs[0] ?? [0, 0];
-      const [usedExp, maxExp] = pairs[1] ?? [0, 0];
+      const text = await resp.text();
+      // Look for slot labels anywhere in the JSON-encoded HTML fragments.
+      // ogame escapes inner HTML in JSON strings as `\/` and `<`
+      // sometimes — strip escapes before matching.
+      const norm = text.replace(/\\\//g, "/").replace(/\\u003c/gi, "<").replace(/\\u003e/gi, ">").replace(/\\"/g, '"');
+      const fleetLabel = norm.match(/(?:艦隊|舰队|[Ff]leet)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
+      const expLabel = norm.match(/(?:遠征艦隊|远征舰队|遠征|[Ee]xpedit\w*)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
+      const [usedFleet, maxFleet] = fleetLabel ? [parseInt(fleetLabel[1]!, 10), parseInt(fleetLabel[2]!, 10)] : [0, 0];
+      const [usedExp, maxExp] = expLabel ? [parseInt(expLabel[1]!, 10), parseInt(expLabel[2]!, 10)] : [0, 0];
       if (maxExp > 0 || maxFleet > 0) {
-        console.info(`[OgameX/fd-bg] fleetdispatch fetched: fleet=${usedFleet}/${maxFleet} expedition=${usedExp}/${maxExp}`);
-        // Persist max_expedition_slots to localStorage so subsequent ticks
-        // remember it even if scraper momentarily can't find label text.
+        console.info(`[OgameX/fd-bg] fleetdispatch ajax fetched: fleet=${usedFleet}/${maxFleet} expedition=${usedExp}/${maxExp}`);
         if (maxExp > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_EXP", String(maxExp)); } catch { /* */ }
         if (maxFleet > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_FLEET", String(maxFleet)); } catch { /* */ }
         const cur = store.state;
@@ -943,8 +938,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             ...(maxFleet > 0 ? { max_fleet_slots: maxFleet, used_fleet_slots: usedFleet } : {}),
           } as typeof cur.server,
         });
+      } else {
+        console.warn(`[OgameX/fd-bg] ajax fleetdispatch returned no slot labels (${text.length}B). Sample: ${text.slice(0, 300).replace(/\s+/g, " ")}`);
       }
-    } catch (e) { void e; }
+    } catch (e) {
+      console.warn("[OgameX/fd-bg] ajax fleetdispatch fetch failed:", e);
+    }
   }
   setTimeout(() => { void harvestSlotsFromFleetdispatch(); }, 3500);
   // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed 30s setInterval;
