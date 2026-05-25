@@ -556,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.264";
+  const USERSCRIPT_VERSION = "0.0.265";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1767,6 +1767,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           const p = store.state.planets[pid];
           const coordStr = p?.coords ? p.coords.join(":") : "";
           const inTransit: Record<string, number> = {};
+          // Source 1: state.fleets_outbound (from /movement scrape). Each
+          // entry's `ships` field is usually empty {} for synthetic fleets,
+          // so this source rarely contributes. Kept defensively.
           for (const f of store.state.fleets_outbound ?? []) {
             const fOrig = Array.isArray(f.origin) ? f.origin.join(":") : "";
             if (fOrig !== coordStr || !coordStr) continue;
@@ -1774,6 +1777,28 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             for (const [s, n] of Object.entries(fs)) {
               if (typeof n !== "number") continue;
               inTransit[s] = (inTransit[s] ?? 0) + n;
+            }
+          }
+          // Source 2: __ogamexInflightLaunches — populated by ApiExec right
+          // after a successful sendFleet POST. This is the AUTHORITATIVE
+          // count of ships we just launched from this planet but haven't
+          // seen reflected in empire yet. Operator 2026-05-25: "派了缺船的
+          // 舰队" — empire reports owned ships (= still counts in-flight as
+          // owned), state.fleets_outbound has empty ships{}, so preflight
+          // over-estimated. Track our own launches as ground truth.
+          const inflight = (env.win as Window & {
+            __ogamexInflightLaunches?: Map<string, Array<{ ships: Record<string, number>; ts: number }>>;
+          }).__ogamexInflightLaunches;
+          if (inflight) {
+            const launches = inflight.get(pid) ?? [];
+            const TTL_MS = 90 * 60 * 1000;  // 90min: longest realistic exp round-trip
+            const fresh = launches.filter((x) => Date.now() - x.ts < TTL_MS);
+            inflight.set(pid, fresh);
+            for (const x of fresh) {
+              for (const [s, n] of Object.entries(x.ships)) {
+                if (typeof n !== "number" || n <= 0) continue;
+                inTransit[s] = (inTransit[s] ?? 0) + n;
+              }
             }
           }
           const launchable: Record<string, number> = {};

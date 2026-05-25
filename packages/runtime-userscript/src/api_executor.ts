@@ -616,6 +616,21 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       // we sent — operator can verify am202, am203, etc. counts vs planet.
       throw new Error(`expedition rejected by ogame (${code}): ${msg} | req: ${reqBodyStr.slice(0, 250)} | resp: ${txt.slice(0, 200).replace(/\s+/g, " ")}`);
     }
+    // Track successful launch in __ogamexInflightLaunches so the NEXT
+    // preflight for this planet subtracts these ships from empire's
+    // owned-count. Operator 2026-05-25: "派了缺船的舰队" — empire
+    // reports ships still in flight as "owned"; without tracking our
+    // own launches, the next launch over-estimates and ogame rejects.
+    try {
+      const w = this.win as Window & {
+        __ogamexInflightLaunches?: Map<string, Array<{ ships: Record<string, number>; ts: number }>>;
+      };
+      if (!w.__ogamexInflightLaunches) w.__ogamexInflightLaunches = new Map();
+      const arr = w.__ogamexInflightLaunches.get(planetId) ?? [];
+      arr.push({ ships: { ...ships }, ts: Date.now() });
+      w.__ogamexInflightLaunches.set(planetId, arr);
+      console.log(`[ApiExec] expedition tracked inflight for ${planetId}: ${JSON.stringify(ships)} (total entries: ${arr.length})`);
+    } catch { /* */ }
     return { action: "expedition", clicked: true };
   }
 
