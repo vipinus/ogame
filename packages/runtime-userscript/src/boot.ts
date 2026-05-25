@@ -556,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.269";
+  const USERSCRIPT_VERSION = "0.0.270";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -878,12 +878,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
   }
   setTimeout(() => { void harvestSlotsFromMovement(); }, 2000);
-  // 30s → 10s. Operator observed state.fleets_outbound stale by 1 fleet
-  // after return (ogame /movement showed 5, state showed 6). 30s window
-  // missed the return; 10s catches faster. Cost: ~6 req/min extra to
-  // /movement endpoint (acceptable, was pollFetchResources's old rate).
-  setInterval(() => { if (!userBusy()) void harvestSlotsFromMovement(); }, 10_000);
-  // Expose so eventbox hook can fire it on fleet-count delta detection.
+  // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed the 10s
+  // setInterval. Triggers that refresh /movement now:
+  //   1. eventbox_hook friendly-fleet-count delta (launch OR return)
+  //   2. ApiExec sendFleet success (api_executor.ts after step5)
+  //   3. wire.ts data.refresh downstream (sidecar's expedition trigger)
+  // No periodic poll; if events miss, daemon's data.refresh acts as backup.
+  // Expose so eventbox hook + ApiExec can fire it on demand.
   (env.win as Window & { __ogamexHarvestMovement?: () => Promise<void> }).__ogamexHarvestMovement = harvestSlotsFromMovement;
 
   // PARASITIC EVENTBOX HOOK — replaces failed /movement-based pollInboundFleets.
@@ -946,7 +947,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     } catch (e) { void e; }
   }
   setTimeout(() => { void harvestSlotsFromFleetdispatch(); }, 3500);
-  setInterval(() => { if (!userBusy()) void harvestSlotsFromFleetdispatch(); }, 30_000);
+  // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed 30s setInterval;
+  // slot caps from /fleetdispatch are now refreshed by ApiExec when it
+  // touches that endpoint as part of its expedition/save flows.
 
   // (pollEventList REMOVED — parasitic eventbox_hook now handles eventList
   //  intercept via ogame's own native 5s poll. Self-fetch watchdog inside
@@ -995,10 +998,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     // (slots-extracted log silenced — running every 5-8s, no diagnostic value
     //  in steady state. Resurfaces via server.{max,used}_*_slots in /v1/state.)
   }
-  // Boot retries + continuous 30s interval so max never gets stuck stale
-  // if the user navigated to a page without expedition text on boot.
+  // Boot retries (5 attempts in 20s) catch the slot-bar DOM as it
+  // hydrates. Operator 2026-05-25: "不要用倒计时，都用事件驱动".
+  // Removed continuous 30s setInterval — slot caps change rarely and
+  // pollEmpire / harvestSlotsFromMovement events catch slot changes.
   [800, 2400, 4800, 10_000, 20_000].forEach((ms) => setTimeout(harvestSlots, ms));
-  setInterval(() => { if (!userBusy()) harvestSlots(); }, 30_000);
 
   function harvestQueues(): void {
     const actives = env.doc.querySelectorAll<HTMLElement>('li.technology[data-status="active"]');
@@ -1215,7 +1219,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // already updates resources when user navigates; this 30s is just for
   // background-tab cases where mutations don't fire.
   setTimeout(() => { void pollFetchResources(); }, 1500);
-  setInterval(() => { if (!userBusy()) void pollFetchResources(); }, 30_000);
+  // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed 30s
+  // setInterval. Resources accumulate predictably (production rates +
+  // delta T), DOM mutation observers update on navigation. Background-
+  // tab drift is acceptable; planner re-derives from server.resources
+  // when needed.
 
   // Expedition mail poller — DISABLED per operator. Function kept for
   // re-enable if needed; the schedule calls below are commented out.
@@ -1662,16 +1670,19 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       console.warn(`[OgameX/empire] fetch failed:`, e);
     }
   }
-  // Empire fetch: seed once at +12s, then SLOW periodic safety net every
-  // 5 min. Pure event-driven left building levels (lifeform_buildings,
-  // research, regular buildings) STALE forever because nothing periodically
-  // refreshed them. Operator observed: "sanctuary 已经到达目标了 但还在
-  // 继续建造" — state stuck at L37 while ogame at L42 → planner kept
-  // queuing builds. 5 min cadence catches build completions without
-  // hammering ogame (1 req/5min = 0.2/min). pollEmpire endpoint has no
-  // cp= so doesn't pollute session.
+  // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed periodic
+  // pollEmpire setInterval. Triggers that refresh empire now:
+  //   1. Boot seed +12s (initial state hydration).
+  //   2. eventbox_hook friendly-fleet-count delta DECREASE → fleet
+  //      returned, fresh ship counts arriving.
+  //   3. ApiExec sendFleet success → fresh launch, update inventory.
+  //   4. ApiExec scheduleEntry capture (build queued) → state.snapshot
+  //      delta picks up new queue entry.
+  //   5. wire.ts data.refresh downstream from sidecar.
+  // Build/research level updates rely on events 2-5 organically (fleet
+  // launches happen daily, builds complete around them). If state ever
+  // drifts, daemon's data.refresh enqueues a force pull.
   setTimeout(pollEmpire, 12_000);
-  setInterval(() => { void pollEmpire(); }, 5 * 60_000);
   // Expose globally so ApiExec can request a refresh on demand.
   (env.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire = pollEmpire;
   // Diagnostic helper — operator calls __ogamexDebugGalaxy(g,s) in DevTools.

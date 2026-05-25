@@ -618,18 +618,24 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     }
     // Track successful launch in __ogamexInflightLaunches so the NEXT
     // preflight for this planet subtracts these ships from empire's
-    // owned-count. Operator 2026-05-25: "派了缺船的舰队" — empire
-    // reports ships still in flight as "owned"; without tracking our
-    // own launches, the next launch over-estimates and ogame rejects.
+    // owned-count.
     try {
       const w = this.win as Window & {
         __ogamexInflightLaunches?: Map<string, Array<{ ships: Record<string, number>; ts: number }>>;
+        __ogamexHarvestMovement?: () => Promise<void>;
+        __ogamexPollEmpire?: (opts?: { force?: boolean }) => Promise<void>;
       };
       if (!w.__ogamexInflightLaunches) w.__ogamexInflightLaunches = new Map();
       const arr = w.__ogamexInflightLaunches.get(planetId) ?? [];
       arr.push({ ships: { ...ships }, ts: Date.now() });
       w.__ogamexInflightLaunches.set(planetId, arr);
       console.log(`[ApiExec] expedition tracked inflight for ${planetId}: ${JSON.stringify(ships)} (total entries: ${arr.length})`);
+      // Operator 2026-05-25 "不要用倒计时，都用事件驱动": successful
+      // sendFleet IS the event. Trigger /movement + empire refresh so
+      // fleets_outbound + ship counts catch up immediately (no 5min
+      // setInterval poll needed). Fire-and-forget — don't block return.
+      if (typeof w.__ogamexHarvestMovement === "function") void w.__ogamexHarvestMovement().catch(() => { /* */ });
+      if (typeof w.__ogamexPollEmpire === "function") void w.__ogamexPollEmpire({ force: true }).catch(() => { /* */ });
     } catch { /* */ }
     return { action: "expedition", clicked: true };
   }
