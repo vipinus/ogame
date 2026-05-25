@@ -13,6 +13,7 @@ export interface EmergencyAttackPayload {
   event_id: string;
   from: readonly [number, number, number];
   to: readonly [number, number, number];
+  to_type?: "planet" | "moon";
   arrives_at: number;        // unix seconds
   ships_count: number | "?";
   detected_at: number;       // unix seconds
@@ -48,6 +49,7 @@ export function startAttackDetector(
         event_id: ev.id,
         from: ev.from,
         to: ev.to,
+        ...(ev.to_type !== undefined ? { to_type: ev.to_type } : {}),
         arrives_at: ev.arrives_at,
         ships_count: ev.ships_count,
         detected_at: nowSec,

@@ -5,6 +5,7 @@ export interface EmergencySpyPayload {
   event_id: string;
   from: readonly [number, number, number];
   to: readonly [number, number, number];
+  to_type?: "planet" | "moon";
   arrives_at: number;
   detected_at: number;
 }
@@ -43,6 +44,7 @@ export function startSpyDetector(bus: EventBus, ref: StateRef): () => void {
         event_id: ev.id,
         from: ev.from,
         to: ev.to,
+        ...(ev.to_type !== undefined ? { to_type: ev.to_type } : {}),
         arrives_at: ev.arrives_at,
         detected_at: nowSec,
       };

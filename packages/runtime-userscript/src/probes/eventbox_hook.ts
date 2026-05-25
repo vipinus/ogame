@@ -407,12 +407,26 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
         return m ? [parseInt(m[1]!, 10), parseInt(m[2]!, 10), parseInt(m[3]!, 10)] as const : [0, 0, 0] as const;
       };
       const arr = parseInt(tr.getAttribute("data-arrival-time") ?? "0", 10);
+      // Operator 2026-05-25: extract dest body type so emergency orchestrator
+      // can pick the right source (planet vs moon at same G:S:P). ogame
+      // event row destination column has either a planet or moon figure.
+      // Defensive multi-pattern match — first hit wins, default "planet".
+      const destFleetEl = tr.querySelector(".destFleet, td.destFleet");
+      const destFigureClass = destFleetEl?.querySelector("figure")?.className ?? "";
+      const destHtml = destFleetEl?.innerHTML ?? "";
+      const isMoonDest =
+        /\bmoon\b/i.test(destFigureClass)
+        || /planetIcon[^"]*\bmoon\b/i.test(destHtml)
+        || /\b(?:tooltipMoon|icon_moon|moon_destination)\b/i.test(destHtml)
+        || /<a[^>]*data-fleet-type="3"/i.test(destHtml);
+      const to_type: "planet" | "moon" = isMoonDest ? "moon" : "planet";
       hostileEntries.push({
         id: `evrow-${evId}`,
         type: isSpy ? "spy" : "attack",
         hostile: true,
         from: parse3(orCoords),
         to: parse3(dsCoords),
+        to_type,
         arrives_at: arr,
         ships_count: "?",
       });

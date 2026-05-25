@@ -86,6 +86,11 @@ export interface IncomingEvent {
   hostile: boolean;
   from: Coords;
   to: Coords;
+  /** Destination body type — disambiguates planet vs moon at same coords.
+   *  Operator 2026-05-25: "敌人探测和进攻的是月球，星球上的舰队不要FS,
+   *  威胁指向的具体位置上面的舰队FS". Without this, planet+moon share
+   *  G:S:P and emergency orchestrator picked the wrong source. */
+  to_type?: "planet" | "moon";
   arrives_at: number;
   ships_count: number | "?";
   raw_html_id?: string;

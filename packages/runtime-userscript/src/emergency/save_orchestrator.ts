@@ -61,10 +61,30 @@ export function startEmergencySave(
 
   const stopDetector = startAttackDetector(bus, stateRef, { saveWindowMinutes: opts.saveWindowMinutes });
 
-  const findTargetPlanet = (to: readonly [number, number, number]): string | null => {
-    const t = Object.values(stateRef.current.planets ?? {}).find(pl =>
-      pl.coords[0] === to[0] && pl.coords[1] === to[1] && pl.coords[2] === to[2]);
-    return t?.id ?? null;
+  // Operator 2026-05-25: "敌人探测和进攻的是月球，星球上的舰队不要FS,
+  // 威胁指向的具体位置上面的舰队FS". planet + moon share G:S:P; the
+  // target's body type comes from the event row (parseEventListHTMLAndInject
+  // extracts it into ev.to_type). Use type to disambiguate; only fall back
+  // to first-match-by-coord when type unknown (defensive).
+  const findTargetPlanet = (
+    to: readonly [number, number, number],
+    toType?: "planet" | "moon",
+  ): string | null => {
+    const candidates = Object.values(stateRef.current.planets ?? {}).filter(pl =>
+      pl.coords[0] === to[0] && pl.coords[1] === to[1] && pl.coords[2] === to[2],
+    );
+    if (candidates.length === 0) return null;
+    if (toType) {
+      const exact = candidates.find((c) => c.type === toType);
+      if (exact) return exact.id;
+      // type-mismatch (e.g., parser said "moon" but state has no moon
+      // record yet) — don't silently FS the planet. Return null so
+      // orchestrator skips this threat instead of saving the wrong body.
+      console.warn(`[orchestrator] threat to_type=${toType} but no ${toType} at ${to.join(":")} — skip FS (won't save wrong body)`);
+      return null;
+    }
+    // No type info — fall back to first match (legacy behavior).
+    return candidates[0]!.id;
   };
 
   // Operator 2026-05-24: "星球和月球如果没有船就不用执行FS". Skip silently
@@ -104,7 +124,7 @@ export function startEmergencySave(
   };
 
   const offAttack = bus.on("emergency.attack", (p: any) => {
-    const sourceId = findTargetPlanet(p.to);
+    const sourceId = findTargetPlanet(p.to, p.to_type);
     if (!sourceId) return;
     if (hasNoShips(sourceId)) {
       console.info(`[orchestrator] skip FS: ${sourceId} (${p.to.join(":")}) has no ships — nothing to save`);
@@ -147,7 +167,7 @@ export function startEmergencySave(
       console.info(`[emergency/spy] ${p.event_id} ignored — spy-triggers-save OFF (toggle on panel)`);
       return;
     }
-    const sourceId = findTargetPlanet(p.to);
+    const sourceId = findTargetPlanet(p.to, p.to_type);
     if (!sourceId) {
       console.warn(`[emergency/spy] no planet at ${p.to.join(":")} — cannot route to FSM`);
       return;
