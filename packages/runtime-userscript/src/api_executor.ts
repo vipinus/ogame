@@ -479,59 +479,31 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // a `newAjaxToken` that MUST be used for the next stage — single-use,
     // single-stage tokens. Reusing the page-1 token for sendFleet returns
     // error 140043 ("无法派遣艦隊"). We chain through all 3.
-    const fdUrl = `/game/index.php?page=ingame&component=fleetdispatch&cp=${planetId}`;
-    const fdResp = await this.fetchFn(fdUrl, { credentials: "same-origin" });
-    const fdHtml = await fdResp.text();
-    // Operator 2026-05-25: "远征有空槽没有自动起飞". sidecar's
-    // expeditionProvider falls back to computed max = floor(sqrt(astro))
-    // + classBonus when server.max_expedition_slots is null. The
-    // formula misses lifeform tech bonuses (Kaelesh trade-guild etc).
-    // /fleetdispatch HTML reliably renders "遠征艦隊:N/M" — parse it
-    // here so every expedition launch refreshes the authoritative max.
-    try {
-      const expMatch =
-        fdHtml.match(/(?:[Ee]xpedit\w*|遠征艦隊|远征舰队|遠征|远征)[^<\d]{0,30}?(\d+)\s*\/\s*(\d+)/)
-        ?? fdHtml.match(/(\d+)\s*\/\s*(\d+)[^<\d]{0,30}?(?:[Ee]xpedit\w*|遠征|远征)/);
-      if (expMatch) {
-        const used = parseInt(expMatch[1]!, 10);
-        const max = parseInt(expMatch[2]!, 10);
-        if (max > 0) {
-          const storeRef = (this.win as Window & { __ogamexStore?: { state: { server?: Record<string, unknown> }; setPartial: (p: { server: Record<string, unknown> }) => void } }).__ogamexStore;
-          if (storeRef) {
-            const cur = storeRef.state.server ?? {};
-            storeRef.setPartial({ server: { ...cur, used_expedition_slots: used, max_expedition_slots: max } });
-            console.log(`[ApiExec/expedition] harvested slots from fdHtml: ${used}/${max} (authoritative, includes lifeform bonus)`);
-          }
-        }
+    //
+    // Operator 2026-05-25: "用 api 实现 不要点网页". Previously this
+    // started with a heavy GET /component=fleetdispatch&cp=PID returning
+    // hundreds of KB of HTML just to extract a CSRF token. That GET
+    // switched session-cp AND made the operator's open tab repaint.
+    // Skip the HTML entirely — get the initial token from:
+    //   1. document.documentElement.dataset.ogamexToken (sniffer-cached
+    //      from operator's recent ogame actions or our prior POSTs)
+    //   2. fetchEventBox ajax JSON — tiny payload (~200B), returns
+    //      newAjaxToken at top-level
+    let token: string | null = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] ?? null;
+    if (!token) {
+      try {
+        const ebResp = await this.fetchFn(
+          `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${planetId}`,
+          { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+        );
+        const ebJson = await ebResp.json() as { newAjaxToken?: string };
+        if (ebJson.newAjaxToken && ebJson.newAjaxToken.length >= 16) token = ebJson.newAjaxToken;
+      } catch (e) {
+        console.warn("[ApiExec] expedition: fetchEventBox token fetch failed:", e);
       }
-    } catch (e) { void e; }
-    const tokenMatch =
-      fdHtml.match(/<input[^>]*name="token"[^>]*value="([^"]+)"/i)
-      ?? fdHtml.match(/<meta[^>]*name="ogame-token"[^>]*content="([^"]+)"/i);
-    let token: string | null = tokenMatch ? tokenMatch[1]! : null;
-    // Try live DOM token if fetched HTML doesn't have it. ogame pages
-    // bury tokens in inline JS / hidden fields late in HTML.
-    if (!token) {
-      const liveInput = this.doc.querySelector<HTMLInputElement>('input[name="token"]');
-      token = liveInput?.value ?? null;
-      if (token) console.info(`[ApiExec] expedition: token from LIVE DOM (len=${token.length})`);
     }
-    // Search more aggressively. ogame v12 stores the fleet-dispatch
-    // token as `var token = "abc..."` in inline JS, NOT in any <input>.
-    if (!token) {
-      const m2 =
-        fdHtml.match(/var\s+token\s*=\s*['"]([a-zA-Z0-9]{16,})['"]/)
-        ?? fdHtml.match(/['"]token['"]\s*:\s*['"]([a-zA-Z0-9]{16,})['"]/)
-        ?? fdHtml.match(/\btoken\s*=\s*['"]([a-zA-Z0-9]{16,})['"]/);
-      if (m2) token = m2[1]!;
-    }
-    if (!token) {
-      // Dump WHERE in HTML token-like strings appear so we can pin format.
-      const tokenLines = fdHtml.split("\n").filter((l) => /token/i.test(l)).slice(0, 5).map((l) => l.trim().slice(0, 200));
-      console.warn(`[ApiExec] expedition: no token. fdHtml=${fdHtml.length}B. token-mention lines:\n${tokenLines.join("\n  -- ")}`);
-      throw new Error("expedition: no token on fleetdispatch page");
-    }
-    console.info(`[ApiExec] expedition step1: GOT token len=${token.length}`);
+    if (!token) throw new Error("expedition: no token from dataset/eventbox (operator tab needs at least one ogame action this session)");
+    console.info(`[ApiExec] expedition step1: GOT token (ajax-only path, no fleetdispatch HTML) len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } }> => {
       // cp=<planetId> routes to the specific source planet. Without it
