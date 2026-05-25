@@ -482,6 +482,29 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const fdUrl = `/game/index.php?page=ingame&component=fleetdispatch&cp=${planetId}`;
     const fdResp = await this.fetchFn(fdUrl, { credentials: "same-origin" });
     const fdHtml = await fdResp.text();
+    // Operator 2026-05-25: "远征有空槽没有自动起飞". sidecar's
+    // expeditionProvider falls back to computed max = floor(sqrt(astro))
+    // + classBonus when server.max_expedition_slots is null. The
+    // formula misses lifeform tech bonuses (Kaelesh trade-guild etc).
+    // /fleetdispatch HTML reliably renders "遠征艦隊:N/M" — parse it
+    // here so every expedition launch refreshes the authoritative max.
+    try {
+      const expMatch =
+        fdHtml.match(/(?:[Ee]xpedit\w*|遠征艦隊|远征舰队|遠征|远征)[^<\d]{0,30}?(\d+)\s*\/\s*(\d+)/)
+        ?? fdHtml.match(/(\d+)\s*\/\s*(\d+)[^<\d]{0,30}?(?:[Ee]xpedit\w*|遠征|远征)/);
+      if (expMatch) {
+        const used = parseInt(expMatch[1]!, 10);
+        const max = parseInt(expMatch[2]!, 10);
+        if (max > 0) {
+          const storeRef = (this.win as Window & { __ogamexStore?: { state: { server?: Record<string, unknown> }; setPartial: (p: { server: Record<string, unknown> }) => void } }).__ogamexStore;
+          if (storeRef) {
+            const cur = storeRef.state.server ?? {};
+            storeRef.setPartial({ server: { ...cur, used_expedition_slots: used, max_expedition_slots: max } });
+            console.log(`[ApiExec/expedition] harvested slots from fdHtml: ${used}/${max} (authoritative, includes lifeform bonus)`);
+          }
+        }
+      }
+    } catch (e) { void e; }
     const tokenMatch =
       fdHtml.match(/<input[^>]*name="token"[^>]*value="([^"]+)"/i)
       ?? fdHtml.match(/<meta[^>]*name="ogame-token"[^>]*content="([^"]+)"/i);

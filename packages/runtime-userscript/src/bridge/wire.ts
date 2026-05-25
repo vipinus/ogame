@@ -137,16 +137,22 @@ export async function wireBridge(
     const w = window as Window & {
       __ogamexHarvestMovement?: () => Promise<void>;
       __ogamexPollEmpire?: () => Promise<void>;
+      __ogamexHarvestFdSlots?: () => Promise<void>;
       __ogamexPushNow?: () => void;
     };
     // Run harvests in parallel; their setPartial calls fan-out via store
     // and trigger state.updated bus events. After harvests complete, force
     // an immediate state push so sidecar/daemon see fresh data ASAP.
+    // Operator 2026-05-25 "远征有空槽没有自动起飞": daemon's free-slot
+    // calc needs authoritative max_expedition_slots, which only the
+    // /fleetdispatch HTML reliably exposes (includes lifeform bonus).
+    // Pull it whenever sidecar requests a refresh.
     void (async (): Promise<void> => {
       const jobs: Promise<unknown>[] = [];
       if (scope === "all" || scope === "fleets") {
         if (typeof w.__ogamexHarvestMovement === "function") jobs.push(w.__ogamexHarvestMovement());
         if (typeof w.__ogamexPollEmpire === "function") jobs.push(w.__ogamexPollEmpire());
+        if (typeof w.__ogamexHarvestFdSlots === "function") jobs.push(w.__ogamexHarvestFdSlots());
       }
       if (scope === "all" || scope === "resources") {
         if (typeof w.__ogamexPollEmpire === "function" && scope !== "fleets") jobs.push(w.__ogamexPollEmpire());

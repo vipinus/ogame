@@ -556,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.273";
+  const USERSCRIPT_VERSION = "0.0.274";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -950,6 +950,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed 30s setInterval;
   // slot caps from /fleetdispatch are now refreshed by ApiExec when it
   // touches that endpoint as part of its expedition/save flows.
+  // Operator 2026-05-25 follow-up "远征有空槽没有自动起飞": daemon needs
+  // accurate max_expedition_slots to decide free slots. The computed
+  // fallback (sqrt(astro) + class) misses lifeform tech bonus. Expose
+  // so wire.ts data.refresh handler can trigger a fresh harvest on
+  // demand from sidecar without waiting for an expedition launch.
+  (env.win as Window & { __ogamexHarvestFdSlots?: () => Promise<void> }).__ogamexHarvestFdSlots = harvestSlotsFromFleetdispatch;
 
   // (pollEventList REMOVED — parasitic eventbox_hook now handles eventList
   //  intercept via ogame's own native 5s poll. Self-fetch watchdog inside
