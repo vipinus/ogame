@@ -556,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.267";
+  const USERSCRIPT_VERSION = "0.0.268";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1531,6 +1531,18 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       void usedPattern; // (silenced — happens every 5s, expected steady-state)
       const cur = store.state;
       const patchPlanets: Record<string, typeof cur.planets[string]> = { ...cur.planets };
+      // Operator 2026-05-25: "远征船不够以后卡住了，有新船到达星球也没有起飞".
+      // Detect ship-count INCREASE between empire polls per planet — ships
+      // returned. Prune __ogamexInflightLaunches[pid] so the next preflight
+      // stops subtracting "in-flight" that's already landed. Empire-delta
+      // is the authoritative arrival signal; 90min TTL alone was too lax.
+      const inflightHandle = env.win as Window & {
+        __ogamexInflightLaunches?: Map<string, Array<{ ships: Record<string, number>; ts: number }>>;
+        __ogamexEmpireShipSnapshot?: Map<string, Record<string, number>>;
+      };
+      if (!inflightHandle.__ogamexEmpireShipSnapshot) inflightHandle.__ogamexEmpireShipSnapshot = new Map();
+      const lastShipSnap = inflightHandle.__ogamexEmpireShipSnapshot;
+
       let updated = 0;
       for (const planet of data) {
         const pid = String(planet["id"] ?? "");
@@ -1586,6 +1598,38 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           if (tid >= 200 && tid < 300) ships[name] = n;
           else if (tid >= 11000 && tid < 15000) lifeform_buildings[name] = n;
           else if (tid > 0 && tid < 200) buildings[name] = n;
+        }
+        // Empire-delta inflight pruning: if ship count INCREASED since
+        // last poll, those ships landed. Subtract the increase from the
+        // oldest inflight entries for this planet, removing entries that
+        // become fully consumed.
+        if (Object.keys(ships).length > 0 && inflightHandle.__ogamexInflightLaunches) {
+          const prev = lastShipSnap.get(pid) ?? {};
+          for (const [shipName, currentN] of Object.entries(ships)) {
+            const prevN = prev[shipName] ?? currentN;
+            const delta = currentN - prevN;
+            if (delta <= 0) continue;  // not a return; could be hangar build
+            // Subtract delta from this planet's inflight entries for this ship.
+            let toReclaim = delta;
+            const launches = inflightHandle.__ogamexInflightLaunches.get(pid) ?? [];
+            for (const entry of launches) {
+              if (toReclaim <= 0) break;
+              const inflightN = entry.ships[shipName] ?? 0;
+              if (inflightN <= 0) continue;
+              const consume = Math.min(inflightN, toReclaim);
+              entry.ships[shipName] = inflightN - consume;
+              toReclaim -= consume;
+            }
+            // Drop entries that have no ships left at all (all returned).
+            const compact = launches.filter((e) => Object.values(e.ships).some((v) => (v ?? 0) > 0));
+            if (compact.length !== launches.length || launches.some((e, i) => e !== compact[i])) {
+              inflightHandle.__ogamexInflightLaunches.set(pid, compact);
+              if (compact.length < launches.length) {
+                console.log(`[OgameX/empire] pruned ${launches.length - compact.length} inflight entry on ${pid} (ship returned: ${shipName} +${delta})`);
+              }
+            }
+          }
+          lastShipSnap.set(pid, { ...ships });
         }
         const hasAny = Object.keys(ships).length > 0 || Object.keys(buildings).length > 0 || Object.keys(lifeform_buildings).length > 0;
         if (hasAny) {
