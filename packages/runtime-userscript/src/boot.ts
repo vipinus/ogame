@@ -70,9 +70,15 @@ function mergeWithExistingPlanets(
   ids: import("./probes/extractors/planets.js").PlanetIdentity[],
   existing: Record<string, import("@ogamex/shared").Planet>,
 ): Record<string, import("@ogamex/shared").Planet> {
-  const out: Record<string, import("@ogamex/shared").Planet> = {};
+  // Operator 2026-05-25 "全有月球，你的数据有问题": previous version only
+  // returned entries from `ids` (DOM-extracted planetList), so any planet
+  // or moon present in state but missing from the current DOM scrape was
+  // silently DROPPED. Side panel doesn't render on every page; moons are
+  // also sometimes only listed via empire api, not planetList DOM. Start
+  // from `existing` (keep everything) and overlay DOM-fresh identity.
+  const out: Record<string, import("@ogamex/shared").Planet> = { ...existing };
   for (const p of ids) {
-    const prev = existing[p.id];
+    const prev = out[p.id];
     if (prev) {
       out[p.id] = { ...prev, ...p } as import("@ogamex/shared").Planet;
     } else {
@@ -550,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.263";
+  const USERSCRIPT_VERSION = "0.0.264";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1472,9 +1478,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     // Periodic state-push poller passes no force=true so it still defers
     // to user activity for politeness; ApiExec helper passes force=true.
     if (!opts.force && userBusy()) return;
+    // Operator 2026-05-25: "全有月球，你的数据有问题 ... 从api拿数据".
+    // empire endpoint takes planetType param. v12: 0 = planets, 1 = moons.
+    // We fetch BOTH and merge — every poll cycle. Without this, moons
+    // never reach state.planets, case_decider's same-coord-moon lookup
+    // always fails, every FS is Case C (debris) by default.
+    await pollEmpireForType("planet", 0);
+    await pollEmpireForType("moon", 1);
+  }
+  async function pollEmpireForType(typeLabel: "planet" | "moon", planetTypeParam: number): Promise<void> {
     try {
-      // Note: planet=0, mode=0 selects ALL planets in v12 empire endpoint.
-      const url = `/game/index.php?page=standalone&component=empire&planetType=0`;
+      const url = `/game/index.php?page=standalone&component=empire&planetType=${planetTypeParam}`;
       const r = await env.win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
       if (!r.ok) return;
       const html = await r.text();
@@ -1520,7 +1534,31 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       let updated = 0;
       for (const planet of data) {
         const pid = String(planet["id"] ?? "");
-        if (!pid || !patchPlanets[pid]) continue;
+        if (!pid) continue;
+        // If not in state yet (typical for moons — operator 2026-05-25
+        // "全有月球, 你的数据有问题"), synthesize a minimal entry so the
+        // case_decider's same-coord-moon lookup finds it. Coords + name
+        // pulled from the empire row itself.
+        if (!patchPlanets[pid]) {
+          const g = Number(planet["galaxy"] ?? 0);
+          const s = Number(planet["system"] ?? 0);
+          const pos = Number(planet["position"] ?? 0);
+          const nm = String(planet["name"] ?? (typeLabel === "moon" ? "月球" : "殖民"));
+          if (g > 0 && s > 0 && pos > 0) {
+            patchPlanets[pid] = {
+              id: pid, name: nm, coords: [g, s, pos] as const, type: typeLabel,
+              resources: { m: 0, c: 0, d: 0, e: 0 },
+              storage: { m_max: 0, c_max: 0, d_max: 0 },
+              production: { m_h: 0, c_h: 0, d_h: 0 },
+              buildings: {}, build_q: null, shipyard_q: null, defense_q: null,
+              ships: {}, defense: {}, lifeform: null,
+            } as typeof patchPlanets[string];
+            updated += 1;
+            console.log(`[OgameX/empire] new ${typeLabel} ${pid} ${nm}@${g}:${s}:${pos}`);
+          } else {
+            continue;
+          }
+        }
         const ships: Record<string, number> = {};
         // STRICT key match + thousand-separator-aware value parse.
         // Parse 3 tid ranges from empire response:
