@@ -556,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.280";
+  const USERSCRIPT_VERSION = "0.0.281";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -928,8 +928,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         return;
       }
       const html = await resp.text();
-      const fleetLabel = html.match(/(?:艦隊|舰队|[Ff]leet)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
-      const expLabel = html.match(/(?:遠征艦隊|远征舰队|遠征|[Ee]xpedit\w*)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
+      // Operator 2026-05-25 log: regex didn't match in 354KB HTML.
+      // ogame v12 wraps slot numbers in nested spans like
+      //   <span ...>N</span><span ...>/</span><span ...>M</span>
+      // Tight digit/digit regex spans-only didn't reach across tags.
+      // Strip tags + collapse whitespace → plain text → loose regex.
+      const stripped = html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
+      const fleetLabel = stripped.match(/(?:艦隊|舰队|[Ff]leet)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
+      const expLabel = stripped.match(/(?:遠征艦隊|远征舰队|遠征|[Ee]xpedit\w*)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
       const [usedFleet, maxFleet] = fleetLabel ? [parseInt(fleetLabel[1]!, 10), parseInt(fleetLabel[2]!, 10)] : [0, 0];
       const [usedExp, maxExp] = expLabel ? [parseInt(expLabel[1]!, 10), parseInt(expLabel[2]!, 10)] : [0, 0];
       if (maxExp > 0 || maxFleet > 0) {
@@ -945,7 +951,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           } as typeof cur.server,
         });
       } else {
-        console.warn(`[OgameX/fd-bg] fleetdispatch returned no slot labels (${html.length}B)`);
+        console.warn(`[OgameX/fd-bg] fleetdispatch returned no slot labels (${html.length}B stripped=${stripped.length}B)`);
+        // Diagnostic: dump 400 chars around each label hint so operator can
+        // paste back and we adjust the regex to the actual ogame format.
+        const hints = ["遠征艦隊", "遠征", "远征", "expedit", "艦隊", "舰队", "fleet"];
+        for (const h of hints) {
+          const idx = stripped.toLowerCase().indexOf(h.toLowerCase());
+          if (idx >= 0) {
+            console.warn(`[OgameX/fd-bg] ctx near "${h}" @${idx}: ${stripped.slice(Math.max(0, idx - 40), idx + 400)}`);
+          }
+        }
       }
     } catch (e) {
       console.warn("[OgameX/fd-bg] fleetdispatch fetch failed:", e);
