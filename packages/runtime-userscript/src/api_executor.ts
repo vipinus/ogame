@@ -879,6 +879,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         const states = new Map<number, string>();
         try {
           const j = JSON.parse(galTxt) as {
+            token?: string;
             system?: {
               usedFleetSlots?: number;
               maximumFleetSlots?: number;
@@ -888,6 +889,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
               }>;
             };
           };
+          // Stash the galaxy-fetched token so the next sendDiscoveryFleet POST
+          // doesn't need a second HTTP GET to /component=galaxy (operator
+          // 2026-05-25: that GET switches session-cp + causes UI lag).
+          if (typeof j.token === "string" && j.token.length >= 16) {
+            (this.win as Window & { __ogamexLastGalaxyToken?: string }).__ogamexLastGalaxyToken = j.token;
+          }
           // Authoritative slot data from ogame — push immediately so planner
           // doesn't rely on 10s /movement harvest. Operator: "你的舰队槽的数量
           // 是不是又是猜的？" — answer is now no, we read it from ogame's own
@@ -969,22 +976,29 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
     } catch (e) { void e; /* missing store = skip the gate, fall through */ }
 
-    // Get fresh CSRF token via galaxy page fetch (background, no SPA nav).
-    const tokenPageUrl = `/game/index.php?page=ingame&component=galaxy&cp=${planetId}`;
-    const tokenResp = await this.fetchFn(tokenPageUrl, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
-    const tokenHtml = await tokenResp.text();
-    const tokenMatch =
-      tokenHtml.match(/var\s+token\s*=\s*['"]([a-zA-Z0-9]{16,})['"]/)
-      ?? tokenHtml.match(/<input[^>]*name="token"[^>]*value="([a-zA-Z0-9]{16,})"/)
-      ?? tokenHtml.match(/<meta[^>]*name="ogame-token"[^>]*content="([a-zA-Z0-9]{16,})"/);
-    if (!tokenMatch) {
-      // Last resort: cached token from previous POST (dataset).
+    // Operator 2026-05-25: "种族发现任务是不是在点击网页，打开以后就会
+    // 很卡，改成api方式". Previously we did a second HTTP GET to
+    // /component=galaxy&cp=PID just to extract a CSRF token from the
+    // HTML page. That GET carries cp= which SWITCHES ogame's session-cp
+    // — if operator has the ogame tab open, the session shifts and
+    // their UI silently re-renders the source planet's galaxy view,
+    // hammering the page and causing visible lag.
+    //
+    // The fetchGalaxyContent JSON response above already returns
+    // `token` at top-level. Use that — no second HTTP call, no
+    // session-cp switch, no UI lag. dataset cache fallback if the
+    // galaxy fetch failed earlier.
+    let token: string | null = null;
+    if (cache && cache.states.size > 0) {
+      // We just fetched fetchGalaxyContent — token is in galaxyJsonTok
+      const w = this.win as Window & { __ogamexLastGalaxyToken?: string };
+      token = w.__ogamexLastGalaxyToken ?? null;
+    }
+    if (!token) {
       const cached = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"];
-      if (!cached) throw new Error("discover: no token in galaxy page nor cache");
-      console.warn(`[ApiExec/discover] galaxy page had no token, using cached`);
-      var token = cached;
-    } else {
-      var token = tokenMatch[1]!;
+      if (!cached) throw new Error("discover: no token in galaxy json nor dataset cache");
+      console.warn(`[ApiExec/discover] using dataset.ogamexToken cache (no fresh galaxy token)`);
+      token = cached;
     }
 
     const postUrl = `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1&cp=${planetId}`;
