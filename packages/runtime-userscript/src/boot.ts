@@ -556,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.281";
+  const USERSCRIPT_VERSION = "0.0.282";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -821,13 +821,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }
         return { mission, origin, dest, arrival_at, return_at };
       });
-      // Max slots typically displayed as "fleet slots used: 1/4" in HTML.
+      // Max slots — operator 2026-05-25: strip HTML tags first so the
+      // digit/slash/digit pattern can match across nested <span> wrappers.
+      const stripped = html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
       const maxFleetMatch =
-        html.match(/(?:[Ff]leets?|艦隊|舰队)[^<]{0,30}?(\d+)\s*\/\s*(\d+)/)
-        ?? html.match(/(\d+)\s*\/\s*(\d+)[^<]{0,30}?(?:[Ff]leets?|艦隊|舰队)/);
+        stripped.match(/(?:[Ff]leets?|艦隊|舰队)\s*:?\s*(\d+)\s*\/\s*(\d+)/)
+        ?? stripped.match(/(\d+)\s*\/\s*(\d+)\s*[^\d]{0,30}?(?:[Ff]leets?|艦隊|舰队)/);
       const maxExpMatch =
-        html.match(/(?:[Ee]xpedit\w*|遠征|远征)[^<]{0,30}?(\d+)\s*\/\s*(\d+)/)
-        ?? html.match(/(\d+)\s*\/\s*(\d+)[^<]{0,30}?(?:[Ee]xpedit\w*|遠征|远征)/);
+        stripped.match(/(?:[Ee]xpedit\w*|遠征艦隊|远征舰队|遠征|远征)\s*:?\s*(\d+)\s*\/\s*(\d+)/)
+        ?? stripped.match(/(\d+)\s*\/\s*(\d+)\s*[^\d]{0,30}?(?:[Ee]xpedit\w*|遠征|远征)/);
       const maxFleet = maxFleetMatch ? parseInt(maxFleetMatch[2]!, 10) : 0;
       const maxExp = maxExpMatch ? parseInt(maxExpMatch[2]!, 10) : 0;
       // Sanity guard: if scrape shows usedExp=0 but previous tick had ≥2,
@@ -910,61 +912,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // text for the slot labels — robust against component-array layout
   // changes.
   async function harvestSlotsFromFleetdispatch(): Promise<void> {
-    try {
-      // Operator 2026-05-25 verification logs proved ogame v12 has NO
-      // ajax-only slot endpoint:
-      //   GET ?ajax=1&asJson=1   → 67B {components:[], newAjaxToken}
-      //   GET ?ajax=1            → 405 Method Not Allowed
-      //   POST ?ajax=1           → 405 Method Not Allowed
-      // Stuck with the full HTML page. Cost is acceptable because this
-      // harvest fires rarely — only on data.refresh from sidecar daemon
-      // (event-driven, not periodic), never on operator's hot path.
-      const resp = await env.win.fetch(
-        "/game/index.php?page=ingame&component=fleetdispatch",
-        { credentials: "same-origin" },
-      );
-      if (!resp.ok) {
-        console.warn(`[OgameX/fd-bg] HTML fetch HTTP ${resp.status}`);
-        return;
-      }
-      const html = await resp.text();
-      // Operator 2026-05-25 log: regex didn't match in 354KB HTML.
-      // ogame v12 wraps slot numbers in nested spans like
-      //   <span ...>N</span><span ...>/</span><span ...>M</span>
-      // Tight digit/digit regex spans-only didn't reach across tags.
-      // Strip tags + collapse whitespace → plain text → loose regex.
-      const stripped = html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
-      const fleetLabel = stripped.match(/(?:艦隊|舰队|[Ff]leet)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
-      const expLabel = stripped.match(/(?:遠征艦隊|远征舰队|遠征|[Ee]xpedit\w*)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
-      const [usedFleet, maxFleet] = fleetLabel ? [parseInt(fleetLabel[1]!, 10), parseInt(fleetLabel[2]!, 10)] : [0, 0];
-      const [usedExp, maxExp] = expLabel ? [parseInt(expLabel[1]!, 10), parseInt(expLabel[2]!, 10)] : [0, 0];
-      if (maxExp > 0 || maxFleet > 0) {
-        console.info(`[OgameX/fd-bg] fleetdispatch fetched: fleet=${usedFleet}/${maxFleet} expedition=${usedExp}/${maxExp} (payload=${html.length}B)`);
-        if (maxExp > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_EXP", String(maxExp)); } catch { /* */ }
-        if (maxFleet > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_FLEET", String(maxFleet)); } catch { /* */ }
-        const cur = store.state;
-        store.setPartial({
-          server: {
-            ...(cur.server ?? {}),
-            ...(maxExp > 0 ? { max_expedition_slots: maxExp, used_expedition_slots: usedExp } : {}),
-            ...(maxFleet > 0 ? { max_fleet_slots: maxFleet, used_fleet_slots: usedFleet } : {}),
-          } as typeof cur.server,
-        });
-      } else {
-        console.warn(`[OgameX/fd-bg] fleetdispatch returned no slot labels (${html.length}B stripped=${stripped.length}B)`);
-        // Diagnostic: dump 400 chars around each label hint so operator can
-        // paste back and we adjust the regex to the actual ogame format.
-        const hints = ["遠征艦隊", "遠征", "远征", "expedit", "艦隊", "舰队", "fleet"];
-        for (const h of hints) {
-          const idx = stripped.toLowerCase().indexOf(h.toLowerCase());
-          if (idx >= 0) {
-            console.warn(`[OgameX/fd-bg] ctx near "${h}" @${idx}: ${stripped.slice(Math.max(0, idx - 40), idx + 400)}`);
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("[OgameX/fd-bg] fleetdispatch fetch failed:", e);
-    }
+    // Operator 2026-05-25 "真的没有 api 直接拿 slot 位吗?". Yes — /movement
+    // is the ajax-only (page=componentOnly&ajax=1) endpoint we already use
+    // via harvestSlotsFromMovement, and its HTML renders the
+    // "艦隊:X/Y 遠征艦隊:N/M" labels. Delegate. Keeps a single source of
+    // truth for slot harvest + drops the heavy /fleetdispatch HTML fetch.
+    return harvestSlotsFromMovement();
   }
   setTimeout(() => { void harvestSlotsFromFleetdispatch(); }, 3500);
   // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed 30s setInterval;
