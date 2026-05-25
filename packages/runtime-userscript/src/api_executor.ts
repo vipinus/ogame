@@ -1011,6 +1011,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (parsed?.newAjaxToken) {
       (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed.newAjaxToken;
       try { this.win.localStorage.setItem("OGAMEX_TOKEN", parsed.newAjaxToken); } catch { /* */ }
+      // Operator 2026-05-25 console: subsequent sendDiscoveryFleet POSTs
+      // failed with "在您最後一個動作時,發生錯誤" because we kept reusing
+      // the OLD galaxy token. ogame rotates a fresh token on every
+      // sendDiscoveryFleet response (success OR failure). Use it for
+      // the NEXT POST.
+      (this.win as Window & { __ogamexLastGalaxyToken?: string }).__ogamexLastGalaxyToken = parsed.newAjaxToken;
     }
     // Check BOTH nested + top-level (defensive).
     const innerSuccess = parsed?.response?.success;

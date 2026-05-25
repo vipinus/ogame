@@ -556,7 +556,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.279";
+  const USERSCRIPT_VERSION = "0.0.280";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -911,59 +911,29 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // changes.
   async function harvestSlotsFromFleetdispatch(): Promise<void> {
     try {
-      // History:
-      //   v0.0.277  GET ?ajax=1&asJson=1  → 67B `{components:[],newAjaxToken:...}` (empty)
-      //   v0.0.278  GET ?ajax=1           → 405 Method Not Allowed
-      //   v0.0.279  POST ?ajax=1          → ogame's SPA-navigation pattern
-      // POST is what ogame's UI uses internally for SPA chunk loads.
-      const url = "/game/index.php?page=ingame&component=fleetdispatch&ajax=1";
-      const resp = await env.win.fetch(url, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Requested-With": "XMLHttpRequest",
-        },
-        body: "",
-      });
+      // Operator 2026-05-25 verification logs proved ogame v12 has NO
+      // ajax-only slot endpoint:
+      //   GET ?ajax=1&asJson=1   → 67B {components:[], newAjaxToken}
+      //   GET ?ajax=1            → 405 Method Not Allowed
+      //   POST ?ajax=1           → 405 Method Not Allowed
+      // Stuck with the full HTML page. Cost is acceptable because this
+      // harvest fires rarely — only on data.refresh from sidecar daemon
+      // (event-driven, not periodic), never on operator's hot path.
+      const resp = await env.win.fetch(
+        "/game/index.php?page=ingame&component=fleetdispatch",
+        { credentials: "same-origin" },
+      );
       if (!resp.ok) {
-        console.warn(`[OgameX/fd-bg] ajax POST HTTP ${resp.status} — fallback to HTML GET`);
-        // Defensive: original HTML path so operator never loses slot data.
-        const r2 = await env.win.fetch("/game/index.php?page=ingame&component=fleetdispatch", { credentials: "same-origin" });
-        if (!r2.ok) return;
-        const html = await r2.text();
-        const fl = html.match(/(?:艦隊|舰队|[Ff]leet)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
-        const el = html.match(/(?:遠征艦隊|远征舰队|遠征|[Ee]xpedit\w*)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
-        const [uf, mf] = fl ? [parseInt(fl[1]!, 10), parseInt(fl[2]!, 10)] : [0, 0];
-        const [ue, me] = el ? [parseInt(el[1]!, 10), parseInt(el[2]!, 10)] : [0, 0];
-        if (me > 0 || mf > 0) {
-          console.info(`[OgameX/fd-bg] HTML fallback fetched: fleet=${uf}/${mf} expedition=${ue}/${me}`);
-          if (me > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_EXP", String(me)); } catch { /* */ }
-          if (mf > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_FLEET", String(mf)); } catch { /* */ }
-          const cur2 = store.state;
-          store.setPartial({
-            server: {
-              ...(cur2.server ?? {}),
-              ...(me > 0 ? { max_expedition_slots: me, used_expedition_slots: ue } : {}),
-              ...(mf > 0 ? { max_fleet_slots: mf, used_fleet_slots: uf } : {}),
-            } as typeof cur2.server,
-          });
-        }
+        console.warn(`[OgameX/fd-bg] HTML fetch HTTP ${resp.status}`);
         return;
       }
-      const text = await resp.text();
-      // ogame returns either raw HTML or JSON-wrapped. Probe both.
-      let body = text;
-      try {
-        const j = JSON.parse(text) as { content?: string; html?: string };
-        body = j.content ?? j.html ?? text;
-      } catch { /* not JSON — raw HTML */ }
-      const fleetLabel = body.match(/(?:艦隊|舰队|[Ff]leet)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
-      const expLabel = body.match(/(?:遠征艦隊|远征舰队|遠征|[Ee]xpedit\w*)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
+      const html = await resp.text();
+      const fleetLabel = html.match(/(?:艦隊|舰队|[Ff]leet)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
+      const expLabel = html.match(/(?:遠征艦隊|远征舰队|遠征|[Ee]xpedit\w*)\s*:?\s*(\d+)\s*\/\s*(\d+)/);
       const [usedFleet, maxFleet] = fleetLabel ? [parseInt(fleetLabel[1]!, 10), parseInt(fleetLabel[2]!, 10)] : [0, 0];
       const [usedExp, maxExp] = expLabel ? [parseInt(expLabel[1]!, 10), parseInt(expLabel[2]!, 10)] : [0, 0];
       if (maxExp > 0 || maxFleet > 0) {
-        console.info(`[OgameX/fd-bg] fleetdispatch ajax fetched: fleet=${usedFleet}/${maxFleet} expedition=${usedExp}/${maxExp} (payload=${text.length}B)`);
+        console.info(`[OgameX/fd-bg] fleetdispatch fetched: fleet=${usedFleet}/${maxFleet} expedition=${usedExp}/${maxExp} (payload=${html.length}B)`);
         if (maxExp > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_EXP", String(maxExp)); } catch { /* */ }
         if (maxFleet > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_FLEET", String(maxFleet)); } catch { /* */ }
         const cur = store.state;
@@ -975,10 +945,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           } as typeof cur.server,
         });
       } else {
-        console.warn(`[OgameX/fd-bg] ajax fleetdispatch returned no slot labels (${text.length}B). Sample: ${body.slice(0, 300).replace(/\s+/g, " ")}`);
+        console.warn(`[OgameX/fd-bg] fleetdispatch returned no slot labels (${html.length}B)`);
       }
     } catch (e) {
-      console.warn("[OgameX/fd-bg] ajax fleetdispatch fetch failed:", e);
+      console.warn("[OgameX/fd-bg] fleetdispatch fetch failed:", e);
     }
   }
   setTimeout(() => { void harvestSlotsFromFleetdispatch(); }, 3500);
