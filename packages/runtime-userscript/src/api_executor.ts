@@ -840,6 +840,21 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (!galaxy || !system || !position) {
       throw new Error(`discover: missing galaxy/system/position (got ${galaxy}:${system}:${position})`);
     }
+    // Capture operator's view planet BEFORE any cp= request. All paths
+    // through this function MUST restore via try/finally so background
+    // discovery never leaves session-cp pointing at a source planet.
+    const operatorCp = this.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? null;
+    try {
+      return await this.execDiscoverInner(directive, planetId, galaxy, system, position);
+    } finally {
+      await this.restoreSessionCp(operatorCp, planetId);
+    }
+  }
+
+  private async execDiscoverInner(
+    directive: Directive, planetId: string,
+    galaxy: number, system: number, position: number,
+  ): Promise<{ action: string; clicked: boolean }> {
 
     // Pre-check: fetch galaxy system content + classify position's discovery
     // state. Operator: "先从 api 拿到星球是否扫过, 没扫过的继续, 扫过的跳过".
@@ -1001,6 +1016,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       token = cached;
     }
 
+    // operatorCp + restoreSessionCp handled by outer execDiscover try/finally.
     const postUrl = `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1&cp=${planetId}`;
     const body = new URLSearchParams({
       galaxy: String(galaxy),
@@ -1061,5 +1077,29 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (incFn) incFn();
     } catch (e) { void e; }
     return { action: directive.action, clicked: true };
+  }
+
+  /**
+   * Restore ogame session-cp back to the operator's view planet after a
+   * background POST that used cp=<otherPlanet>. Operator 2026-05-25:
+   * "发现任务会干扰前台操作，其他星球发的舰队的任务会变到从进行发现的星球上".
+   * Background POSTs carry cp= to target a specific source planet, which
+   * also SHIFTS the session's active planet — so the operator's next
+   * manual click in their tab inherits OUR planet, not theirs. Fix by
+   * issuing one cheap ajax GET with cp=<operatorCp> after each
+   * cp-targeted POST.
+   */
+  private async restoreSessionCp(operatorCp: string | null, wePostedCp: string): Promise<void> {
+    if (!operatorCp || operatorCp === wePostedCp) return;
+    try {
+      // fetchEventBox is the lightest cp=-carrying endpoint — small JSON,
+      // no UI render, no DOM mutation, just session-cp side effect.
+      await this.fetchFn(
+        `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${operatorCp}`,
+        { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+      );
+    } catch (e) {
+      console.warn(`[ApiExec/restoreSessionCp] failed to restore operator cp=${operatorCp}:`, e);
+    }
   }
 }
