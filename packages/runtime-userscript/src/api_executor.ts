@@ -711,6 +711,17 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const tSystem = parseInt(tsStr ?? "0", 10);
     const tPos = parseInt(tpStr ?? "0", 10);
     if (!tGalaxy || !tSystem || !tPos) throw new Error(`colonize: bad target_coords`);
+    // FLEET SLOT GATE — operator 2026-05-27 同族 review: 任何 fleet POST 都
+    // 必经 slot gate. keep-1-empty 跟 discover 同 (留个槽给紧急 FS).
+    {
+      const srv = (this.win as Window & { __ogamexStore?: { state: { server?: { used_fleet_slots?: number; max_fleet_slots?: number } } } })
+        .__ogamexStore?.state.server;
+      const usedNow = srv?.used_fleet_slots ?? -1;
+      const maxNow = srv?.max_fleet_slots ?? -1;
+      if (usedNow >= 0 && maxNow > 0 && usedNow >= maxNow - 1) {
+        throw new Error(`colonize aborted (slot gate): used=${usedNow} max=${maxNow} keep-1-empty for emergency FS`);
+      }
+    }
     // Operator 2026-05-25: "用 api 实现 不要点网页" — ajax-only token chain.
     let token: string = await this.bootstrapFleetToken(planetId, "colonize");
     console.info(`[ApiExec] colonize step1: token len=${token.length}`);
@@ -801,6 +812,17 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const tPos = parseInt(tpStr ?? "0", 10);
     if (!tGalaxy || !tSystem || !tPos) throw new Error(`${directive.action}: bad target_coords`);
     if (Object.keys(ships).length === 0) throw new Error(`${directive.action}: no ships`);
+    // FLEET SLOT GATE — operator 2026-05-27 同族 review: deploy/transport
+    // 也是 fleet POST, 同 keep-1-empty 模式.
+    {
+      const srv = (this.win as Window & { __ogamexStore?: { state: { server?: { used_fleet_slots?: number; max_fleet_slots?: number } } } })
+        .__ogamexStore?.state.server;
+      const usedNow = srv?.used_fleet_slots ?? -1;
+      const maxNow = srv?.max_fleet_slots ?? -1;
+      if (usedNow >= 0 && maxNow > 0 && usedNow >= maxNow - 1) {
+        throw new Error(`${directive.action} aborted (slot gate): used=${usedNow} max=${maxNow} keep-1-empty for emergency FS`);
+      }
+    }
     // Operator 2026-05-25: ajax-only token bootstrap (no fdHtml).
     let token: string = await this.bootstrapFleetToken(planetId, directive.action);
     console.info(`[ApiExec] ${directive.action} step1: token len=${token.length}`);

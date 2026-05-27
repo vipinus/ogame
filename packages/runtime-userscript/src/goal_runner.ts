@@ -257,17 +257,29 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
         }
       }
     }
-    // 2026-05-27 v0.0.364 early-skip expedition when no slots left — operator:
-    // "远征发船之前没有查看是否有可用的slot？". Ack-fail without queuing so
-    // backend stops dispatching for this tick.
-    if (dr.action === "expedition") {
-      const srv = (window as Window & { __ogamexStore?: { state: { server?: { used_expedition_slots?: number; max_expedition_slots?: number } } } })
-        .__ogamexStore?.state.server;
-      const usedExp = srv?.used_expedition_slots ?? -1;
-      const maxExp = srv?.max_expedition_slots ?? -1;
-      if (usedExp >= 0 && maxExp > 0 && usedExp >= maxExp) {
-        ack(dr.id, { success: false, error: `expedition slots full ${usedExp}/${maxExp} (early skip, not queued)` });
-        return;
+    // 2026-05-27 v0.0.364 early-skip slot-exhausted fleet POSTs:
+    //   expedition → uses expedition slot
+    //   colonize / deploy / transport / discover → uses fleet slot (keep-1-empty)
+    // operator 同族 review: 任何 fleet POST action 都该 slot-gate.
+    {
+      const srv = (window as Window & { __ogamexStore?: { state: { server?: {
+        used_expedition_slots?: number; max_expedition_slots?: number;
+        used_fleet_slots?: number; max_fleet_slots?: number;
+      } } } }).__ogamexStore?.state.server;
+      if (dr.action === "expedition") {
+        const usedExp = srv?.used_expedition_slots ?? -1;
+        const maxExp = srv?.max_expedition_slots ?? -1;
+        if (usedExp >= 0 && maxExp > 0 && usedExp >= maxExp) {
+          ack(dr.id, { success: false, error: `expedition slots full ${usedExp}/${maxExp} (early skip, not queued)` });
+          return;
+        }
+      } else if (dr.action === "colonize" || dr.action === "deploy" || dr.action === "transport") {
+        const usedF = srv?.used_fleet_slots ?? -1;
+        const maxF = srv?.max_fleet_slots ?? -1;
+        if (usedF >= 0 && maxF > 0 && usedF >= maxF - 1) {
+          ack(dr.id, { success: false, error: `fleet slots full ${usedF}/${maxF} keep-1-empty (early skip, not queued)` });
+          return;
+        }
       }
     }
     recentIds.set(dr.id, Date.now() + RECENT_IDS_TTL_MS);

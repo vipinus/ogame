@@ -194,6 +194,16 @@ export function wireRuntime(
     gate: emergencyGate,
     config: opts.expeditionConfig,
     send: async (p) => {
+      // Operator 2026-05-27 同族 review: daily expedition 也走 fleet POST + 用
+      // expedition slot. 满槽时 throw 让 daily loop 跳过此 tick (不 fire 一通然后
+      // ogame 140019 reject 浪费 token chain).
+      const srv = (opts.win as Window & { __ogamexStore?: { state: { server?: { used_expedition_slots?: number; max_expedition_slots?: number } } } })
+        .__ogamexStore?.state.server;
+      const usedExp = srv?.used_expedition_slots ?? -1;
+      const maxExp = srv?.max_expedition_slots ?? -1;
+      if (usedExp >= 0 && maxExp > 0 && usedExp >= maxExp) {
+        throw new Error(`daily expedition aborted (slot gate): used_expedition_slots=${usedExp} >= max=${maxExp}`);
+      }
       const { sendFleet } = await import("./api/fleet_api.js");
       return sendFleet(p, { fetch: opts.fetch, token: tokenManager });
     },
