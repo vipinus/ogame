@@ -984,7 +984,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.356";
+  const USERSCRIPT_VERSION = "0.0.357";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1339,17 +1339,27 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Boot 时清空所有月球已有的 jumpgate_cooldown_sec — 那些是历史 harvest 来的
   // 污染数据 (无 pair, 时间不准, 3-singles 显示 bug 根因). 静默清掉.
   setTimeout(() => {
+    // Operator 2026-05-27 evidence: aggressive clear-on-boot wiped 9 jumpgate
+    // fields → hydrate then race-skipped (expedition fired concurrent cp=,
+    // session-cp clobbered) → panel went from 3 rows to 0.
+    //
+    // New policy: TRUST IDB-hydrated data (last-session's accurate writes
+    // with pair_with). Only clear obviously-expired entries (harvested_at
+    // > 2h ago, well beyond jumpgate max cooldown ~60min). Hydrate then
+    // refreshes precise cd for entries still in 2h window.
     const planets = store.state.planets ?? {};
-    const clearPatch: Record<string, Partial<typeof planets[string]>> = {};
+    const now = Date.now();
+    const expiredPatch: Record<string, Partial<typeof planets[string]>> = {};
     for (const [id, p] of Object.entries(planets)) {
-      if (p.type === "moon" && (p.jumpgate_cooldown_sec !== undefined || p.jumpgate_harvested_at !== undefined)) {
-        clearPatch[id] = { jumpgate_cooldown_sec: null, jumpgate_harvested_at: null, jumpgate_pair_with: null };
+      if (p.type !== "moon" || typeof p.jumpgate_cooldown_sec !== "number") continue;
+      const at = p.jumpgate_harvested_at ?? 0;
+      if (at > 0 && now - at > 2 * 3600_000) {
+        expiredPatch[id] = { jumpgate_cooldown_sec: null, jumpgate_harvested_at: null, jumpgate_pair_with: null };
       }
     }
-    const cleared = Object.keys(clearPatch).length;
-    if (cleared > 0) {
-      store.setPlanetsPatch(clearPatch);
-      console.info(`[OgameX/jumpgate] cleared ${cleared} stale harvest cooldowns — now event-driven only (sniffer)`);
+    if (Object.keys(expiredPatch).length > 0) {
+      store.setPlanetsPatch(expiredPatch);
+      console.info(`[OgameX/jumpgate] cleared ${Object.keys(expiredPatch).length} >2h-old cooldowns (definitely expired)`);
     }
 
     // Operator 2026-05-27: hydrate from sniffer's sync localStorage log.
