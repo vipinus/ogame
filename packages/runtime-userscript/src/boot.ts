@@ -980,7 +980,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.353";
+  const USERSCRIPT_VERSION = "0.0.354";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -2154,11 +2154,35 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }
       }
       if (updated > 0) {
-        store.setPartial({ planets: patchPlanets });
+        // RACE FIX 2026-05-27: pollEmpire's fetch is async (~1-3s). During that
+        // window commitCooldown (jumpgate event) may have written jumpgate fields
+        // to store.planets. patchPlanets was derived from cur captured BEFORE
+        // the await, so it has STALE jumpgate fields (typically null/undefined).
+        // setPartial({planets: patchPlanets}) would overwrite the recent write.
+        // Re-snapshot fresh state and overlay ONLY the fields we patched
+        // (ships, buildings, lifeform_buildings, plus newly-created planet stubs).
+        const live = store.state.planets;
+        const final: typeof live = { ...live };
+        for (const [pid, patched] of Object.entries(patchPlanets)) {
+          const liveBase = live[pid];
+          if (!liveBase) {
+            // Brand-new planet we synthesized in this poll. Use patched as-is.
+            final[pid] = patched;
+            continue;
+          }
+          const p = patched as Partial<typeof liveBase> & { ships?: Record<string, number>; buildings?: Record<string, number>; lifeform_buildings?: Record<string, number> };
+          // Spread fresh live (preserves jumpgate fields written during our await),
+          // then overlay ONLY the fields pollEmpire actually patched.
+          final[pid] = {
+            ...liveBase,
+            ...(p.ships !== undefined ? { ships: p.ships } : {}),
+            ...(p.buildings !== undefined ? { buildings: p.buildings } : {}),
+            ...(p.lifeform_buildings !== undefined ? { lifeform_buildings: p.lifeform_buildings } : {}),
+          };
+        }
+        store.setPartial({ planets: final });
         // Expose to BOTH sandboxed window AND page's real window (unsafeWindow)
         // so devtools console eval can read/write the store directly.
-        // Tampermonkey @grant GM_* enables sandbox; without unsafeWindow
-        // bridge the page-side `__ogamexStore` reference would be undefined.
         (env.win as Window & { __ogamexStore?: typeof store }).__ogamexStore = store;
         const pw = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & { __ogamexStore?: typeof store };
         pw.__ogamexStore = store;
