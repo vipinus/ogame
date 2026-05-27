@@ -32,6 +32,13 @@ export function startEmergencySave(
   // saves run independently. API takeoff is fast enough (POST returns
   // in <500ms) that 4-way concurrency is no bottleneck.
   const fsmByPlanet = new Map<string, SaveStateMachine>();
+  // Operator 2026-05-27: patchFleetId picked stale (operator daily-deploy from
+  // same source planet) mission=4 fleet because state.fleets_outbound hadn't
+  // refreshed yet. Result: FSM tracked wrong fleet id (2083526 instead of new
+  // 2083474) → recall POST hit a ghost → ogame {"success":false}.
+  // Fix: snapshot existing fleet ids BEFORE handleThreat fires sendFleet;
+  // patcher then accepts only ids NOT in baseline = guaranteed new fleet.
+  const baseFleetIds = new Map<string, Set<string>>();
   const getOrCreateFsm = (planetId: string): SaveStateMachine => {
     let fsm = fsmByPlanet.get(planetId);
     if (!fsm) {
@@ -159,6 +166,13 @@ export function startEmergencySave(
       return;
     }
     const fsm = getOrCreateFsm(sourceId);
+    // Snapshot existing fleet ids BEFORE sendFleet so patcher distinguishes
+    // pre-existing fleets from the one this FSM is about to launch.
+    baseFleetIds.set(sourceId, new Set(
+      (stateRef.current.fleets_outbound ?? [])
+        .map((f) => f.id)
+        .filter((id): id is string => typeof id === "string"),
+    ));
     void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at })
       .then(() => reportLaunchToBackend(sourceId, fsm));
   });
@@ -210,6 +224,13 @@ export function startEmergencySave(
     }
     console.warn(`[emergency/spy] 🚨 spy ${p.event_id} → ${p.to.join(":")}: routing to full save chain (toggle ON)`);
     const fsm = getOrCreateFsm(sourceId);
+    baseFleetIds.set(sourceId, new Set(
+      (stateRef.current.fleets_outbound ?? [])
+        .map((f) => f.id)
+        .filter((id): id is string => typeof id === "string"),
+    ));
+    const baseSnapshot = baseFleetIds.get(sourceId)!;
+    console.warn(`[orchestrator] pre-launch baseline fleets=[${[...baseSnapshot].join(",") || "(empty)"}] → patcher will skip these`);
     void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at })
       .then(() => reportLaunchToBackend(sourceId, fsm));
   });
@@ -239,9 +260,14 @@ export function startEmergencySave(
       const srcKey = sourcePl.coords.join(":");
       // Find a fleet whose origin matches source planet + mission matches
       // decision.mission + id is numeric (real ogame id, not synthetic mvt-).
+      const baseline = baseFleetIds.get(planetId) ?? new Set<string>();
       const candidate = fleets.find((f) => {
         const id = f.id;
         if (typeof id !== "string" || !/^\d+$/.test(id)) return false;
+        // Skip fleet ids that already existed BEFORE we fired sendFleet — they
+        // belong to operator's other missions (e.g., daily deploy from same
+        // source planet), not the one this FSM just launched.
+        if (baseline.has(id)) return false;
         if (f.mission !== dec.mission) return false;
         const fOrig = Array.isArray(f.origin) ? f.origin.join(":") : "";
         return fOrig === srcKey;
@@ -250,6 +276,9 @@ export function startEmergencySave(
         const realId = parseInt(candidate.id, 10);
         if (realId > 0) {
           const patched = fsm.patchFleetId(realId);
+          // Clear baseline once we've matched — prevents stale baseline from
+          // blocking a subsequent FSM cycle on same planet (e.g., second spy).
+          if (patched) baseFleetIds.delete(planetId);
           // Operator 2026-05-26: backend SaveCoordinator was stored fleet=0 (frontend
           // reported launch with placeholder); when hostiles cleared, sidecar emitted
           // save.recall_now planet=X fleet=0 → recall POST FAILED. After patch, re-report
