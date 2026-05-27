@@ -337,6 +337,34 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   };
   env.doc.addEventListener("mousedown", onUserAct, true);
   env.doc.addEventListener("keydown", onUserAct, true);
+  // Operator 2026-05-27: "在 3:297:7 操作又跳到 3:260:8" — mousedown/keydown
+  // alone misses "operator 盯着 tab,鼠标停在某处" (busy=false → backend fired
+  // expedition → ApiExec cp= shifted ogame UI). mousemove + scroll = passive
+  // activity = also busy. Throttle to once per 5s to avoid spam.
+  let _lastMoveTick = 0;
+  const onPassiveAct = (e: Event): void => {
+    if (!e.isTrusted) return;
+    const now = Date.now();
+    if (now - _lastMoveTick < 5000) return;
+    _lastMoveTick = now;
+    onUserAct(e);
+  };
+  env.doc.addEventListener("mousemove", onPassiveAct, { capture: true, passive: true });
+  env.doc.addEventListener("scroll", onPassiveAct, { capture: true, passive: true });
+  env.doc.addEventListener("wheel", onPassiveAct, { capture: true, passive: true });
+  // Visibility refresh — operator switches to ogame tab AT ALL = treat as
+  // about to interact, defer backend for 60s. Skip the isTrusted gate since
+  // visibilitychange synthetic event has isTrusted=false but is what we want.
+  env.doc.addEventListener("visibilitychange", () => {
+    if (env.doc.visibilityState === "visible") {
+      updateBusy();
+      const until = (env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0;
+      const cur = store.state.server ?? {};
+      if ((cur as { user_busy_until?: number }).user_busy_until !== until) {
+        store.setPartial({ server: { ...cur, user_busy_until: until } as typeof cur });
+      }
+    }
+  }, true);
   function userBusy(): boolean {
     return ((env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0) > Date.now();
   }
@@ -984,7 +1012,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.357";
+  const USERSCRIPT_VERSION = "0.0.358";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
