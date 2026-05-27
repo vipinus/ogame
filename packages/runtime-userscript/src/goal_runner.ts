@@ -247,7 +247,10 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     }
     const apKey = actionPlanetKey(dr);
     if (recentActionPlanet.has(apKey)) {
-      ack(dr.id, { success: false, error: `duplicate ${apKey} (last accepted within 60s)` });
+      // 2026-05-27 ack as SUCCESS (was fail) — backend was marking the goal
+      // cancelled on every dup, killing recurring goals. Treat as "no-op
+      // completed" so backend keeps the goal alive for next legitimate tick.
+      ack(dr.id, { success: true, result: { action: dr.action, clicked: false, skipped: "duplicate" } });
       return;
     }
     // 2026-05-27 v0.0.363 early-skip discover for cooldown/unavailable coord —
