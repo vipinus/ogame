@@ -809,28 +809,46 @@ export async function startSidecar(
               const completed = Array.isArray(tgt.completed) ? [...tgt.completed] : [];
               const lastDispatched = directiveToDiscoverCoord.get(m.directive_id);
               directiveToDiscoverCoord.delete(m.directive_id);
-              if (lastDispatched && !completed.includes(lastDispatched)) {
-                completed.push(lastDispatched);
-              }
-              // Operator 2026-05-27: frontend ack may include `system_states`
-              // map (galaxy fetch revealed all 15 positions' cooldown state).
-              // Batch-add all cooled/unavailable coords to completed[] so
-              // planner skips ahead instead of dispatching the other 14.
-              const resultMaybe = (m as { result?: { result?: { system_states?: Record<string, string> } } }).result?.result;
-              const systemStates = resultMaybe?.system_states;
-              let batchAdded = 0;
-              if (systemStates && typeof systemStates === "object") {
-                for (const k of Object.keys(systemStates)) {
-                  if (!completed.includes(k)) {
-                    completed.push(k);
-                    batchAdded++;
+
+              // Operator 2026-05-27 "pending it dont drop": frontend ack
+              // skipped:"slot_full" means ApiExec hit slot gate AFTER
+              // planner's snapshot was stale (planner saw 15/17, ApiExec
+              // fetched fresh 17/17). Revert the optimistic completed[]
+              // add (line ~919) so planner picks this coord again next
+              // tick when fleet returns. Without revert = silent drop.
+              const resultMaybeSkip = (m as { result?: { result?: { skipped?: string } } }).result?.result;
+              if (resultMaybeSkip?.skipped === "slot_full" && lastDispatched) {
+                const idx = completed.indexOf(lastDispatched);
+                if (idx >= 0) {
+                  completed.splice(idx, 1);
+                  goalsStore.updateTarget(goalId, { ...tgt, completed } as Record<string, unknown>);
+                  const totalCoords = ((tgt.range ?? 10) * 2 + 1) * 15;
+                  console.log(`[discovery] goal ${goalId} HOLD ${lastDispatched} (slot_full, reverted optimistic add) progress: ${completed.length}/${totalCoords}`);
+                }
+              } else {
+                if (lastDispatched && !completed.includes(lastDispatched)) {
+                  completed.push(lastDispatched);
+                }
+                // Operator 2026-05-27: frontend ack may include `system_states`
+                // map (galaxy fetch revealed all 15 positions' cooldown state).
+                // Batch-add all cooled/unavailable coords to completed[] so
+                // planner skips ahead instead of dispatching the other 14.
+                const resultMaybe = (m as { result?: { result?: { system_states?: Record<string, string> } } }).result?.result;
+                const systemStates = resultMaybe?.system_states;
+                let batchAdded = 0;
+                if (systemStates && typeof systemStates === "object") {
+                  for (const k of Object.keys(systemStates)) {
+                    if (!completed.includes(k)) {
+                      completed.push(k);
+                      batchAdded++;
+                    }
                   }
                 }
-              }
-              if (lastDispatched || batchAdded > 0) {
-                goalsStore.updateTarget(goalId, { ...tgt, completed } as Record<string, unknown>);
-                const totalCoords = ((tgt.range ?? 10) * 2 + 1) * 15;
-                console.log(`[discovery] goal ${goalId} progress: ${completed.length}/${totalCoords} (added ${lastDispatched ?? "?"}${batchAdded > 0 ? ` + batch ${batchAdded} from system_states` : ""})`);
+                if (lastDispatched || batchAdded > 0) {
+                  goalsStore.updateTarget(goalId, { ...tgt, completed } as Record<string, unknown>);
+                  const totalCoords = ((tgt.range ?? 10) * 2 + 1) * 15;
+                  console.log(`[discovery] goal ${goalId} progress: ${completed.length}/${totalCoords} (added ${lastDispatched ?? "?"}${batchAdded > 0 ? ` + batch ${batchAdded} from system_states` : ""})`);
+                }
               }
             }
             // build / research / build_ships / lifeform_building → no-op,

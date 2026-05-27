@@ -1051,8 +1051,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       const usedNow = srv?.used_fleet_slots ?? -1;
       const maxNow = srv?.max_fleet_slots ?? -1;
       if (usedNow >= 0 && maxNow > 0 && usedNow >= maxNow - 1) {
-        console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} SLOT GATE — would overshoot keep-1-empty (used=${usedNow} max=${maxNow}), no POST`);
-        return { action: directive.action, clicked: true };
+        // Operator 2026-05-27: "pending it dont drop". Signal HOLD to sidecar
+        // via skipped:"slot_full" — sidecar reverts optimistic completed[]
+        // add so planner re-selects this coord next tick. Without skipped
+        // signal, ack-success leaves coord in completed[] = silent drop.
+        console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} SLOT GATE HOLD — used=${usedNow}/${maxNow} keep-1, ack skipped:slot_full (sidecar will revert + retry)`);
+        return { action: directive.action, clicked: false, skipped: "slot_full" } as unknown as { action: string; clicked: boolean };
       }
     } catch (e) { void e; /* missing store = skip the gate, fall through */ }
 
