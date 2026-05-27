@@ -114,15 +114,19 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       return;
     }
     // userBusy DEFER REINSTATED (operator 2026-05-27: "在3:279:7P操作又被自动切到3:260:8M").
-    // v0.0.222 假设 cp=PID per-request 无副作用是错的 — 即使 finally restoreSessionCp,
-    // ogame 服务端 cp 切换→UI 顶栏跟着跳→操作员视角"被自动切到其他星球".
-    // 只 defer 非 emergency 的 background directive (build/research/expedition).
-    // emergency.* (FS) 走 orchestrator → bus.emit, 不通过 GoalRunner,不受这里影响.
+    // Defer via execQueue re-push — NOT bare setTimeout(run) — so multiple
+    // concurrently-deferred directives don't all wake at the same 10s tick
+    // and fire ApiExec in parallel (cp= race). pumpQueue's `executing` lock
+    // serializes; deferred directives wait their turn.
     if (typeof userBusy === "function" && userBusy()) {
-      const retryMs = 10_000;
+      const retryMs = 5_000;
       // eslint-disable-next-line no-console
-      console.info(`[GoalRunner] operator busy — defer ${directive.action} for ${retryMs/1000}s (avoid cp shift)`);
-      setTimeout(() => { if (!stopped) void run(directive); }, retryMs);
+      console.info(`[GoalRunner] operator busy — defer ${directive.action} ${retryMs/1000}s (avoid cp race)`);
+      setTimeout(() => {
+        if (stopped) return;
+        execQueue.push(directive);  // back to queue, NOT bare run()
+        void pumpQueue();             // serial fire
+      }, retryMs);
       return;
     }
     // eslint-disable-next-line no-console
