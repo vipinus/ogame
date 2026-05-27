@@ -807,13 +807,30 @@ export async function startSidecar(
             if (type === "species_discovery" && row) {
               const tgt = row.goal.target as { galaxy?: number; system?: number; position?: number; completed?: string[]; range?: number };
               const completed = Array.isArray(tgt.completed) ? [...tgt.completed] : [];
-              // Pull dispatched coord from in-memory map (stashed at dispatch).
               const lastDispatched = directiveToDiscoverCoord.get(m.directive_id);
               directiveToDiscoverCoord.delete(m.directive_id);
               if (lastDispatched && !completed.includes(lastDispatched)) {
                 completed.push(lastDispatched);
+              }
+              // Operator 2026-05-27: frontend ack may include `system_states`
+              // map (galaxy fetch revealed all 15 positions' cooldown state).
+              // Batch-add all cooled/unavailable coords to completed[] so
+              // planner skips ahead instead of dispatching the other 14.
+              const resultMaybe = (m as { result?: { result?: { system_states?: Record<string, string> } } }).result?.result;
+              const systemStates = resultMaybe?.system_states;
+              let batchAdded = 0;
+              if (systemStates && typeof systemStates === "object") {
+                for (const k of Object.keys(systemStates)) {
+                  if (!completed.includes(k)) {
+                    completed.push(k);
+                    batchAdded++;
+                  }
+                }
+              }
+              if (lastDispatched || batchAdded > 0) {
                 goalsStore.updateTarget(goalId, { ...tgt, completed } as Record<string, unknown>);
-                console.log(`[discovery] goal ${goalId} progress: ${completed.length}/${((tgt.range ?? 10) * 2 + 1) * 15} (added ${lastDispatched})`);
+                const totalCoords = ((tgt.range ?? 10) * 2 + 1) * 15;
+                console.log(`[discovery] goal ${goalId} progress: ${completed.length}/${totalCoords} (added ${lastDispatched ?? "?"}${batchAdded > 0 ? ` + batch ${batchAdded} from system_states` : ""})`);
               }
             }
             // build / research / build_ships / lifeform_building → no-op,

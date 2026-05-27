@@ -1027,12 +1027,16 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
     }
     const positionState = cache?.states.get(position) ?? "";
-    // "available" = missionType=18 was in this position's availableMissions.
-    // Anything else (unavailable, missing, unknown) = skip POST.
-    // If states map is EMPTY (cache fetch failed), allow POST as fallback.
     if (cache && cache.states.size > 0 && positionState !== "available") {
-      console.info(`[ApiExec/discover] ${galaxy}:${system}:${position} pre-check SKIP (state=${positionState || "unknown"}) — no POST`);
-      return { action: directive.action, clicked: true };
+      // Operator 2026-05-27: dump entire system's state into result so
+      // sidecar planner can mark ALL cooled coords done in one ack —
+      // avoid dispatching the remaining 14 cooldown coords this tick.
+      const systemStates: Record<string, "cooldown" | "unavailable"> = {};
+      for (const [pos, st] of cache.states) {
+        if (st !== "available") systemStates[`${galaxy}:${system}:${pos}`] = st as "cooldown" | "unavailable";
+      }
+      console.info(`[ApiExec/discover] ${galaxy}:${system}:${position} pre-check SKIP (state=${positionState || "unknown"}) — no POST. system batch-skip ${Object.keys(systemStates).length} coords`);
+      return { action: directive.action, clicked: true, system_states: systemStates } as unknown as { action: string; clicked: boolean };
     }
 
     // Slot-gate defense in depth. Galaxy fetch above wrote authoritative
