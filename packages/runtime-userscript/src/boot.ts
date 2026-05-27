@@ -984,7 +984,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.355";
+  const USERSCRIPT_VERSION = "0.0.356";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1378,21 +1378,35 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           return true;
         });
       if (candidates.length > 0) {
-        // Hydrate IS page-navigate recovery (not "background work during user
-        // activity"). bypassBusy=true: even if user_busy_until is stale from
-        // mousedown right before refresh, run anyway — helper still restores
-        // cp afterwards so顶栏 跳回 operator current planet.
-        console.info(`[OgameX/jumpgate] hydrating ${candidates.length} cooldown(s) from sync log via overlay re-fetch (page-navigate-safe)`);
-        for (const entry of candidates) {
-          void (async (): Promise<void> => {
+        // Operator 2026-05-27 evidence: 3 rows with identical cd=29:15 after
+        // multi-moon hydrate. ogame session-cp is single-slot per session;
+        // concurrent cp= fetches RACE on server side. All N parallel overlays
+        // see whichever cp won the race → all return SAME moon's cooldown.
+        // Serial the loop to give each cp= fetch a clean session-cp window.
+        // Also verify origin coords from response — defense-in-depth against
+        // session-cp race even when serial.
+        console.info(`[OgameX/jumpgate] hydrating ${candidates.length} cooldown(s) from sync log (SERIAL to avoid session-cp race)`);
+        void (async (): Promise<void> => {
+          const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
+          for (const entry of candidates) {
             try {
-              const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
               const r = await fetchWithCpBypassBusy(
                 `/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1`,
                 { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
                 entry.src,
               );
               const html = await r.text();
+              // Origin verify: parse 起始座標 from response; if it doesn't match
+              // entry.src's coords, server saw a different cp (race) — skip.
+              const originMatch = html.match(/起始座[標标][\s\S]{0,300}?\[(\d+):(\d+):(\d+)\]/);
+              if (originMatch) {
+                const got = `${originMatch[1]}:${originMatch[2]}:${originMatch[3]}`;
+                const want = (store.state.planets[entry.src]?.coords ?? []).join(":");
+                if (want && got !== want) {
+                  console.warn(`[OgameX/jumpgate] hydrate src=${entry.src} session-cp race: wanted ${want} got ${got} — skipping`);
+                  continue;
+                }
+              }
               let parsedCd: number | null = null;
               const patterns = [
                 /simpleCountdown\s*\(\s*\$\(["']#cooldown["']\)\s*,\s*(\d+)/,
@@ -1404,9 +1418,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               }
               if (parsedCd === null || parsedCd <= 0) {
                 console.warn(`[OgameX/jumpgate] hydrate src=${entry.src}: overlay says no cooldown (already ready or parse failed). Skipping.`);
-                return;
+                continue;
               }
-              if (!store.state.planets[entry.src]) return;
+              if (!store.state.planets[entry.src]) continue;
               const hydratePatch: Record<string, Partial<typeof store.state.planets[string]>> = {
                 [entry.src]: { jumpgate_cooldown_sec: parsedCd, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: entry.tgt },
               };
@@ -1423,8 +1437,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                 console.warn(`[OgameX/jumpgate] hydrate fetch failed src=${entry.src}:`, e);
               }
             }
-          })();
-        }
+          }
+        })();
       }
     } catch (e) { console.warn("[OgameX/jumpgate] hydrate from log failed:", e); }
   }, 2_000);
