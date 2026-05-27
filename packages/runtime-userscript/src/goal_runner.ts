@@ -235,16 +235,27 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     gcRecent();
     gcActionPlanet();
     if (recentIds.has(dr.id)) {
-      // Exact id replay — WS retry. Skip silently.
       return;
     }
-    // 2026-05-27 v0.0.361: dedup by (action, planet) — backend rapid-re-pushes
-    // same op with different ids; per-id dedup didn't catch this. Ack as
-    // "duplicate of recent" so backend stops re-issuing the same task.
     const apKey = actionPlanetKey(dr);
     if (recentActionPlanet.has(apKey)) {
       ack(dr.id, { success: false, error: `duplicate ${apKey} (last accepted within 60s)` });
       return;
+    }
+    // 2026-05-27 v0.0.363 early-skip discover for cooldown/unavailable coord —
+    // operator: "cooldown 的星球不要处理不要进队列，直接跳过". Saves GoalRunner
+    // serial slot (~2-3s) + Apiexec preflight time per skipped coord.
+    if (dr.action === "discover") {
+      const p = dr.params as { galaxy?: number; system?: number; position?: number } | undefined;
+      const g = p?.galaxy ?? 0, s = p?.system ?? 0, pos = p?.position ?? 0;
+      if (g > 0 && s > 0 && pos > 0) {
+        const lookup = (window as Window & { __ogamexCheckDiscoverCooldown?: (g: number, s: number, p: number) => string }).__ogamexCheckDiscoverCooldown;
+        const state = lookup ? lookup(g, s, pos) : "unknown";
+        if (state === "cooldown" || state === "unavailable") {
+          ack(dr.id, { success: false, error: `discover ${g}:${s}:${pos} ${state} (early skip, not queued)` });
+          return;
+        }
+      }
     }
     recentIds.set(dr.id, Date.now() + RECENT_IDS_TTL_MS);
     recentActionPlanet.set(apKey, Date.now() + RECENT_ACTION_PLANET_TTL_MS);

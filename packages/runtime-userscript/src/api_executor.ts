@@ -56,6 +56,19 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     };
     deps.doc.addEventListener("mousedown", onAct, true);
     deps.doc.addEventListener("keydown", onAct, true);
+    // Operator 2026-05-27: expose discover-cooldown lookup so GoalRunner
+    // can early-skip cooldown coords BEFORE entering exec queue.
+    (this.win as Window & { __ogamexCheckDiscoverCooldown?: (g: number, s: number, p: number) => "available" | "cooldown" | "unavailable" | "unknown" })
+      .__ogamexCheckDiscoverCooldown = (galaxy, system, position) => {
+        const w = this.win as Window & { __ogamexGalaxyDiscovery?: Map<string, { ts: number; states: Map<number, string> }> };
+        const cache = w.__ogamexGalaxyDiscovery?.get(`${galaxy}:${system}`);
+        if (!cache || Date.now() - cache.ts > 30 * 60 * 1000) return "unknown";
+        const st = cache.states.get(position);
+        if (st === "available") return "available";
+        if (st === "cooldown") return "cooldown";
+        if (st === "unavailable") return "unavailable";
+        return "unknown";
+      };
   }
 
   canHandle(d: Directive): boolean {
@@ -871,7 +884,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (!w.__ogamexGalaxyDiscovery) w.__ogamexGalaxyDiscovery = new Map();
     const cacheStore = w.__ogamexGalaxyDiscovery;
     let cache = cacheStore.get(cacheKey);
-    const CACHE_TTL = 5 * 60 * 1000;
+    const CACHE_TTL = 30 * 60 * 1000;  // operator 2026-05-27: 5min → 30min (batch sweep)
     if (!cache || Date.now() - cache.ts > CACHE_TTL) {
       try {
         const galResp = await fetchWithCpBypassBusy(

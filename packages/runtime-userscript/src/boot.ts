@@ -317,7 +317,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // too short — manual workflows often pause > 10s between clicks. 60s gives
   // operator a real protected window. Background API POSTs (ApiExec) keep
   // running; foreground DOM/click ops are blocked by additional gates.
-  const IDLE_GUARD_MS = 20_000;  // operator 2026-05-27: 60s 太长 → 20s
+  const IDLE_GUARD_MS = 5_000;  // operator 2026-05-27: 20s → 5s
   const updateBusy = (): void => {
     (env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil = Date.now() + IDLE_GUARD_MS;
   };
@@ -989,7 +989,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.362";
+  const USERSCRIPT_VERSION = "0.0.363";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
