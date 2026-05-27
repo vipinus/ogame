@@ -257,6 +257,19 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
         }
       }
     }
+    // 2026-05-27 v0.0.364 early-skip expedition when no slots left — operator:
+    // "远征发船之前没有查看是否有可用的slot？". Ack-fail without queuing so
+    // backend stops dispatching for this tick.
+    if (dr.action === "expedition") {
+      const srv = (window as Window & { __ogamexStore?: { state: { server?: { used_expedition_slots?: number; max_expedition_slots?: number } } } })
+        .__ogamexStore?.state.server;
+      const usedExp = srv?.used_expedition_slots ?? -1;
+      const maxExp = srv?.max_expedition_slots ?? -1;
+      if (usedExp >= 0 && maxExp > 0 && usedExp >= maxExp) {
+        ack(dr.id, { success: false, error: `expedition slots full ${usedExp}/${maxExp} (early skip, not queued)` });
+        return;
+      }
+    }
     recentIds.set(dr.id, Date.now() + RECENT_IDS_TTL_MS);
     recentActionPlanet.set(apKey, Date.now() + RECENT_ACTION_PLANET_TTL_MS);
     console.log(`[GoalRunner] received ${dr.action} ${JSON.stringify(dr.params).slice(0,80)} id=${dr.id.slice(0,8)}`);

@@ -475,6 +475,24 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       ships?: Record<string, number>;
     };
     const ships = params.ships ?? { smallCargo: 1, espionageProbe: 1 };
+
+    // EXPEDITION SLOT GATE — operator 2026-05-27: "远征怎么会有警告？发船之前
+    // 没有查看是否有可用的slot？". ogame error 140043/140019 = expedition slots
+    // exhausted (≠ fleet slots). store.server.used_expedition_slots / max_*
+    // is updated by /movement harvest + galaxy fetch. Refuse POST if full.
+    try {
+      const srv = (this.win as Window & { __ogamexStore?: { state: { server?: { used_expedition_slots?: number; max_expedition_slots?: number } } } })
+        .__ogamexStore?.state.server;
+      const usedExp = srv?.used_expedition_slots ?? -1;
+      const maxExp = srv?.max_expedition_slots ?? -1;
+      if (usedExp >= 0 && maxExp > 0 && usedExp >= maxExp) {
+        throw new Error(`expedition aborted (slot gate): used_expedition_slots=${usedExp} >= max_expedition_slots=${maxExp}, no POST`);
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("expedition aborted (slot gate)")) throw e;
+      // missing store = skip gate, fall through
+    }
+
     // BLOCKING preflight — owner explicit requirement: "每次远征之前从 api
     // 拿最新的舰船数量". v0.0.166 had fire-and-forget pollEmpire (data lands
     // too late). v0.0.167 had fdHtml2 parse (caused 140042). This version
