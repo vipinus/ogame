@@ -113,20 +113,19 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       });
       return;
     }
-    // userBusy DEFER REINSTATED (operator 2026-05-27: "在3:279:7P操作又被自动切到3:260:8M").
-    // Defer via execQueue re-push — NOT bare setTimeout(run) — so multiple
-    // concurrently-deferred directives don't all wake at the same 10s tick
-    // and fire ApiExec in parallel (cp= race). pumpQueue's `executing` lock
-    // serializes; deferred directives wait their turn.
+    // userBusy DEFER (v0.0.361 rewritten — operator "卡住了"): single
+    // single-shot pollTimer instead of per-directive setTimeout. Multiple
+    // re-deferrals share the same wake-up tick → no exponential growth.
     if (typeof userBusy === "function" && userBusy()) {
-      const retryMs = 5_000;
-      // eslint-disable-next-line no-console
-      console.info(`[GoalRunner] operator busy — defer ${directive.action} ${retryMs/1000}s (avoid cp race)`);
-      setTimeout(() => {
-        if (stopped) return;
-        execQueue.push(directive);  // back to queue, NOT bare run()
-        void pumpQueue();             // serial fire
-      }, retryMs);
+      // Log only once per minute to avoid console flood when backend rapid-
+      // re-pushes same action while user is active.
+      const now = Date.now();
+      if (now - lastDeferLogAt > 60_000) {
+        console.info(`[GoalRunner] operator busy — deferring ${directive.action} & all queued (single wake when idle, log throttled 60s)`);
+        lastDeferLogAt = now;
+      }
+      deferredQueue.push(directive);
+      schedulePollIdle();
       return;
     }
     // eslint-disable-next-line no-console
@@ -168,8 +167,46 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
   // but protects against accidental same-id replay within the WS layer.
   const RECENT_IDS_TTL_MS = 5_000;
   const recentIds = new Map<string, number>(); // id → expiresAt
+  // 2026-05-27 v0.0.361 anti-flood: backend re-pushes same (action, planet)
+  // every ~1s while waiting for ack. With per-id dedup only, every dispatch
+  // grew execQueue. Add action+planet de-dup with 60s window — if a directive
+  // with same (action, source_planet) was seen recently, drop and ack so
+  // backend stops re-issuing.
+  const RECENT_ACTION_PLANET_TTL_MS = 60_000;
+  const recentActionPlanet = new Map<string, number>();  // "action:planet" → expiresAt
   let executing = false;
   const execQueue: Directive[] = [];
+  // userBusy defer: single shared poll timer + queue, NOT per-directive setTimeout
+  const deferredQueue: Directive[] = [];
+  let pollIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastDeferLogAt = 0;
+  const schedulePollIdle = (): void => {
+    if (pollIdleTimer || stopped) return;
+    pollIdleTimer = setTimeout(() => {
+      pollIdleTimer = null;
+      if (stopped) return;
+      // Still busy? wait again.
+      if (typeof userBusy === "function" && userBusy()) {
+        schedulePollIdle();
+        return;
+      }
+      // Idle now — drain deferredQueue into execQueue (preserving FIFO),
+      // pumpQueue serializes execution.
+      while (deferredQueue.length > 0) execQueue.push(deferredQueue.shift()!);
+      void pumpQueue();
+    }, 5_000);
+  };
+  // Action+planet dedup helper
+  const actionPlanetKey = (d: Directive): string => {
+    const planet = (d.params as { planet_id?: string; source_planet?: string } | undefined)?.planet_id
+      ?? (d.params as { source_planet?: string } | undefined)?.source_planet
+      ?? "";
+    return `${d.action}:${planet}`;
+  };
+  const gcActionPlanet = (): void => {
+    const now = Date.now();
+    for (const [k, exp] of recentActionPlanet) if (exp < now) recentActionPlanet.delete(k);
+  };
   const gcRecent = (): void => {
     const now = Date.now();
     for (const [id, exp] of recentIds) if (exp < now) recentIds.delete(id);
@@ -196,15 +233,22 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     }
     const dr = d as Directive;
     gcRecent();
+    gcActionPlanet();
     if (recentIds.has(dr.id)) {
-      // Exact id replay — only happens on rare WS retry. Skip.
+      // Exact id replay — WS retry. Skip silently.
+      return;
+    }
+    // 2026-05-27 v0.0.361: dedup by (action, planet) — backend rapid-re-pushes
+    // same op with different ids; per-id dedup didn't catch this. Ack as
+    // "duplicate of recent" so backend stops re-issuing the same task.
+    const apKey = actionPlanetKey(dr);
+    if (recentActionPlanet.has(apKey)) {
+      ack(dr.id, { success: false, error: `duplicate ${apKey} (last accepted within 60s)` });
       return;
     }
     recentIds.set(dr.id, Date.now() + RECENT_IDS_TTL_MS);
+    recentActionPlanet.set(apKey, Date.now() + RECENT_ACTION_PLANET_TTL_MS);
     console.log(`[GoalRunner] received ${dr.action} ${JSON.stringify(dr.params).slice(0,80)} id=${dr.id.slice(0,8)}`);
-    // PriorityGate is held by an in-progress emergency response (fleet save,
-    // anomaly halt). While active, queue directives in `pending` to drain
-    // when gate flips inactive.
     if (gate.isActive()) {
       pending.push(dr);
       return;
