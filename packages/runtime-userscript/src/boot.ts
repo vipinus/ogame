@@ -67,22 +67,27 @@ function readMeta(doc: Document, name: string): string | undefined {
  * into state.planets so additional planets in existing (e.g. moons not in
  * the current planetList scrape) are NOT lost.
  */
+/**
+ * Race-safe planet identity merge (operator 2026-05-27: "不稳定" — full
+ * planet-record overwrites raced against jumpgate cooldown writes).
+ *
+ * Returns ONLY per-planet identity patches (id/name/coords/type for existing,
+ * full default record for new). Caller passes this to `store.setPlanetsPatch`
+ * which spreads LIVE planet under the patch — preserving any concurrent
+ * writes to other fields (jumpgate_cooldown_sec, etc.).
+ */
 function mergeWithExistingPlanets(
   ids: import("./probes/extractors/planets.js").PlanetIdentity[],
   existing: Record<string, import("@ogamex/shared").Planet>,
-): Record<string, import("@ogamex/shared").Planet> {
-  // Operator 2026-05-25 "全有月球，你的数据有问题": previous version only
-  // returned entries from `ids` (DOM-extracted planetList), so any planet
-  // or moon present in state but missing from the current DOM scrape was
-  // silently DROPPED. Side panel doesn't render on every page; moons are
-  // also sometimes only listed via empire api, not planetList DOM. Start
-  // from `existing` (keep everything) and overlay DOM-fresh identity.
-  const out: Record<string, import("@ogamex/shared").Planet> = { ...existing };
+): Record<string, Partial<import("@ogamex/shared").Planet>> {
+  const out: Record<string, Partial<import("@ogamex/shared").Planet>> = {};
   for (const p of ids) {
-    const prev = out[p.id];
-    if (prev) {
-      out[p.id] = { ...prev, ...p } as import("@ogamex/shared").Planet;
+    if (existing[p.id]) {
+      // Existing planet — patch ONLY identity fields. setPlanetsPatch will
+      // overlay onto live state, preserving everything else (incl. jumpgate).
+      out[p.id] = { id: p.id, name: p.name, coords: p.coords, type: p.type };
     } else {
+      // New planet (first time seen) — full default record.
       out[p.id] = {
         ...p,
         resources: { m: 0, c: 0, d: 0, e: 0 },
@@ -813,21 +818,20 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
 
         // Helper: commit cooldown to store. cd!=null → cooldown active;
         // cd===0 → mark ready (clear pair); cd===null → noop.
+        // Uses setPlanetsPatch (race-safe — re-reads live at write time).
         const commitCooldown = (srcId: string | null, cdSec: number | null): void => {
           if (!srcId) return;
-          const planets = { ...store.state.planets };
-          if (!planets[srcId]) return;
+          if (!store.state.planets[srcId]) return;
+          const patch: Record<string, Partial<typeof store.state.planets[string]>> = {};
           if (cdSec !== null && cdSec > 0) {
-            planets[srcId] = { ...planets[srcId]!, jumpgate_cooldown_sec: cdSec, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: pairTgt };
-            // target gets pair_with→source but its OWN cooldown is NOT set
-            // (ogame v12: only source moon enters cooldown).
-            if (pairTgt && planets[pairTgt]) {
-              planets[pairTgt] = { ...planets[pairTgt]!, jumpgate_pair_with: pairSrc };
+            patch[srcId] = { jumpgate_cooldown_sec: cdSec, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: pairTgt };
+            if (pairTgt && store.state.planets[pairTgt]) {
+              patch[pairTgt] = { jumpgate_pair_with: pairSrc };
             }
           } else if (cdSec === 0) {
-            planets[srcId] = { ...planets[srcId]!, jumpgate_cooldown_sec: 0, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: null };
+            patch[srcId] = { jumpgate_cooldown_sec: 0, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: null };
           }
-          store.setPartial({ planets });
+          store.setPlanetsPatch(patch);
           // Auto-expand Moons section so operator sees the new cooldown row even
           // if they previously collapsed it. Operator 2026-05-27 第一次跳完
           // "panel 里面没有显示" — 极可能是 section collapsed 状态遗留.
@@ -980,7 +984,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.354";
+  const USERSCRIPT_VERSION = "0.0.355";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -1033,16 +1037,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         // Route updates to the ACTIVE planet (per `<meta name="ogame-planet-id">`).
         // Production is needed by the bridge optimizer for "矿升到几级最快" —
         // without it, prodPerSec=0 and every mine candidate gets discarded.
-        const cur = store.state;
         const activeIdRaw = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
-        const existing = activeIdRaw ? cur.planets[activeIdRaw] : undefined;
-        if (existing) {
-          const updatedPlanet = {
-            ...existing,
-            ...(r ? { resources: { m: r.m, c: r.c, d: r.d, e: r.e ?? 0 } } : {}),
-            ...(prod ? { production: { m_h: prod.m_h, c_h: prod.c_h, d_h: prod.d_h } } : {}),
-          };
-          store.setPartial({ planets: { ...cur.planets, [activeIdRaw]: updatedPlanet } });
+        if (activeIdRaw && store.state.planets[activeIdRaw]) {
+          store.setPlanetsPatch({
+            [activeIdRaw]: {
+              ...(r ? { resources: { m: r.m, c: r.c, d: r.d, e: r.e ?? 0 } } : {}),
+              ...(prod ? { production: { m_h: prod.m_h, c_h: prod.c_h, d_h: prod.d_h } } : {}),
+            },
+          });
         }
       }
     }
@@ -1068,7 +1070,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
     if (targetId === "planetList") {
       const pls = mergeWithExistingPlanets(extractPlanets(env.doc), store.state.planets);
-      if (Object.keys(pls).length > 0) store.setPartial({ planets: pls });
+      if (Object.keys(pls).length > 0) store.setPlanetsPatch(pls);
     }
   });
 
@@ -1081,7 +1083,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const newCount = Object.keys(pls).length;
       const oldCount = Object.keys(store.state.planets).length;
       if (newCount > 0 && newCount !== oldCount) {
-        store.setPartial({ planets: pls });
+        store.setPlanetsPatch(pls);
       }
       // Same window: harvest building / research levels from current page.
       mergeTechLevels(env.doc, store);
@@ -1102,17 +1104,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     const prod = extractProduction(env.doc);
     const res = extractResources(env.doc);
     if (!prod && !res) return false;
-    const cur = store.state;
-    if (Object.keys(cur.planets).length === 0) return false;
+    if (Object.keys(store.state.planets).length === 0) return false;
     const activeIdRaw = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
-    const existing = activeIdRaw ? cur.planets[activeIdRaw] : undefined;
-    if (!existing) return false;
-    const updatedPlanet = {
-      ...existing,
-      ...(res ? { resources: { m: res.m, c: res.c, d: res.d, e: res.e ?? 0 } } : {}),
-      ...(prod ? { production: { m_h: prod.m_h, c_h: prod.c_h, d_h: prod.d_h } } : {}),
-    };
-    store.setPartial({ planets: { ...cur.planets, [activeIdRaw]: updatedPlanet } });
+    if (!activeIdRaw || !store.state.planets[activeIdRaw]) return false;
+    store.setPlanetsPatch({
+      [activeIdRaw]: {
+        ...(res ? { resources: { m: res.m, c: res.c, d: res.d, e: res.e ?? 0 } } : {}),
+        ...(prod ? { production: { m_h: prod.m_h, c_h: prod.c_h, d_h: prod.d_h } } : {}),
+      },
+    });
     return true;
   };
   // Try immediately + at the same checkpoints the planet extractor uses.
@@ -1168,13 +1168,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       }
     }
     if (Object.keys(out).length === 0) return;
-    const cur = store.state;
-    if (Object.keys(cur.planets).length === 0) return;
+    if (Object.keys(store.state.planets).length === 0) return;
     const activeIdRaw = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
-    const target = activeIdRaw ? cur.planets[activeIdRaw] : undefined;
+    const target = activeIdRaw ? store.state.planets[activeIdRaw] : undefined;
     if (!target) return;
-    const updatedPlanet = { ...target, ships: { ...(target.ships ?? {}), ...out } };
-    store.setPartial({ planets: { ...cur.planets, [activeIdRaw]: updatedPlanet } });
+    store.setPlanetsPatch({ [activeIdRaw]: { ships: { ...(target.ships ?? {}), ...out } } });
   }
   // Run on boot + retries (shipyard page DOM mounts late).
   [600, 2200, 4600].forEach((ms) => setTimeout(harvestShips, ms));
@@ -1342,16 +1340,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // 污染数据 (无 pair, 时间不准, 3-singles 显示 bug 根因). 静默清掉.
   setTimeout(() => {
     const planets = store.state.planets ?? {};
-    let cleared = 0;
-    const newPlanets: typeof planets = { ...planets };
+    const clearPatch: Record<string, Partial<typeof planets[string]>> = {};
     for (const [id, p] of Object.entries(planets)) {
       if (p.type === "moon" && (p.jumpgate_cooldown_sec !== undefined || p.jumpgate_harvested_at !== undefined)) {
-        newPlanets[id] = { ...p, jumpgate_cooldown_sec: null, jumpgate_harvested_at: null, jumpgate_pair_with: null };
-        cleared++;
+        clearPatch[id] = { jumpgate_cooldown_sec: null, jumpgate_harvested_at: null, jumpgate_pair_with: null };
       }
     }
+    const cleared = Object.keys(clearPatch).length;
     if (cleared > 0) {
-      store.setPartial({ planets: newPlanets });
+      store.setPlanetsPatch(clearPatch);
       console.info(`[OgameX/jumpgate] cleared ${cleared} stale harvest cooldowns — now event-driven only (sniffer)`);
     }
 
@@ -1409,13 +1406,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                 console.warn(`[OgameX/jumpgate] hydrate src=${entry.src}: overlay says no cooldown (already ready or parse failed). Skipping.`);
                 return;
               }
-              const planets = { ...store.state.planets };
-              if (!planets[entry.src]) return;
-              planets[entry.src] = { ...planets[entry.src]!, jumpgate_cooldown_sec: parsedCd, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: entry.tgt };
-              if (entry.tgt && planets[entry.tgt]) {
-                planets[entry.tgt] = { ...planets[entry.tgt]!, jumpgate_pair_with: entry.src };
+              if (!store.state.planets[entry.src]) return;
+              const hydratePatch: Record<string, Partial<typeof store.state.planets[string]>> = {
+                [entry.src]: { jumpgate_cooldown_sec: parsedCd, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: entry.tgt },
+              };
+              if (entry.tgt && store.state.planets[entry.tgt]) {
+                hydratePatch[entry.tgt] = { jumpgate_pair_with: entry.src };
               }
-              store.setPartial({ planets });
+              store.setPlanetsPatch(hydratePatch);
               const fmt = (s: number): string => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,"0")}`;
               console.info(`[OgameX/jumpgate] hydrated src=${entry.src} tgt=${entry.tgt} cd=${fmt(parsedCd)} (precise from overlay)`);
             } catch (e) {
@@ -1565,32 +1563,28 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         });
         console.log(`[OgameX] research queue: ${name} L${target_level} ends_at=${ends_at}`);
       } else if (kind === "ship" || kind === "defense") {
-        // shipyard queue on active planet (resolved via meta tag)
-        const cur = store.state;
-        if (Object.keys(cur.planets).length === 0) continue;
+        if (Object.keys(store.state.planets).length === 0) continue;
         const activeIdRaw = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
-        const target = activeIdRaw ? cur.planets[activeIdRaw] : undefined;
+        const target = activeIdRaw ? store.state.planets[activeIdRaw] : undefined;
         if (!target) continue;
         const cnt = (target.ships?.[name] ?? 0);
-        const updatedPlanet = {
-          ...target,
-          shipyard_q: { ship: name, technology_id, count: cnt + 1, ends_at: ends_at ?? Date.now() + 60000 } as typeof target.shipyard_q,
-        };
-        store.setPartial({ planets: { ...cur.planets, [activeIdRaw]: updatedPlanet } });
+        store.setPlanetsPatch({
+          [activeIdRaw]: {
+            shipyard_q: { ship: name, technology_id, count: cnt + 1, ends_at: ends_at ?? Date.now() + 60000 } as typeof target.shipyard_q,
+          },
+        });
         console.log(`[OgameX] shipyard queue (planet ${activeIdRaw}): ${name}`);
       } else {
-        // building queue on active planet (resolved via meta tag)
-        const cur = store.state;
-        if (Object.keys(cur.planets).length === 0) continue;
+        if (Object.keys(store.state.planets).length === 0) continue;
         const activeIdRaw = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
-        const target = activeIdRaw ? cur.planets[activeIdRaw] : undefined;
+        const target = activeIdRaw ? store.state.planets[activeIdRaw] : undefined;
         if (!target) continue;
         const target_level = (target.buildings?.[name] ?? 0) + 1;
-        const updatedPlanet = {
-          ...target,
-          build_q: { building: name, technology_id, level: target_level, ends_at: ends_at ?? Date.now() + 60000 } as typeof target.build_q,
-        };
-        store.setPartial({ planets: { ...cur.planets, [activeIdRaw]: updatedPlanet } });
+        store.setPlanetsPatch({
+          [activeIdRaw]: {
+            build_q: { building: name, technology_id, level: target_level, ends_at: ends_at ?? Date.now() + 60000 } as typeof target.build_q,
+          },
+        });
         console.log(`[OgameX] build queue (planet ${activeIdRaw}): ${name} L${target_level}`);
       }
     }
@@ -1894,37 +1888,31 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           store.setPartial({ research: { ...cur2, queue: { tech: name, technology_id, level: target_level, ends_at } as typeof cur2.queue } });
           console.log(`[OgameX/bg] research queue refreshed: ${name} L${target_level}`);
         } else if (kind2 === "ship" || kind2 === "defense") {
-          // shipyard queue on the page's planet (cp=planetId)
-          const cur2 = store.state;
-          const target = planetId ? cur2.planets[planetId] : undefined;
+          const target = planetId ? store.state.planets[planetId] : undefined;
           if (target && planetId) {
             const cnt = (target.ships?.[name] ?? 0);
-            const updatedPlanet = { ...target, shipyard_q: { ship: name, technology_id, count: cnt + 1, ends_at } as typeof target.shipyard_q };
-            store.setPartial({ planets: { ...cur2.planets, [planetId]: updatedPlanet } });
+            store.setPlanetsPatch({
+              [planetId]: { shipyard_q: { ship: name, technology_id, count: cnt + 1, ends_at } as typeof target.shipyard_q },
+            });
             console.log(`[OgameX/bg] shipyard queue refreshed (planet ${planetId}): ${name}`);
           }
         } else if (kind2 === "lifeform_building") {
-          // Lifeform queue on the page's planet — ogame's lf queue is
-          // independent of the supplies/facilities queue, so we track it
-          // in a separate field. Without this, lifeform_building goals
-          // never have an ETA.
-          const cur2 = store.state;
-          const target = planetId ? cur2.planets[planetId] : undefined;
+          const target = planetId ? store.state.planets[planetId] : undefined;
           if (target && planetId) {
             const lfBldg = (target as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {};
             const target_level = (lfBldg[name] ?? 0) + 1;
-            const updatedPlanet = { ...target, lf_build_q: { building: name, technology_id, level: target_level, ends_at } } as typeof target & { lf_build_q: unknown };
-            store.setPartial({ planets: { ...cur2.planets, [planetId]: updatedPlanet } });
+            store.setPlanetsPatch({
+              [planetId]: { lf_build_q: { building: name, technology_id, level: target_level, ends_at } } as Partial<typeof target & { lf_build_q: unknown }>,
+            });
             console.log(`[OgameX/bg] lf queue refreshed (planet ${planetId}): ${name} L${target_level}`);
           }
         } else {
-          // building queue on the page's planet (cp=planetId)
-          const cur2 = store.state;
-          const target = planetId ? cur2.planets[planetId] : undefined;
+          const target = planetId ? store.state.planets[planetId] : undefined;
           if (target && planetId) {
             const target_level = (target.buildings?.[name] ?? 0) + 1;
-            const updatedPlanet = { ...target, build_q: { building: name, technology_id, level: target_level, ends_at } as typeof target.build_q };
-            store.setPartial({ planets: { ...cur2.planets, [planetId]: updatedPlanet } });
+            store.setPlanetsPatch({
+              [planetId]: { build_q: { building: name, technology_id, level: target_level, ends_at } as typeof target.build_q },
+            });
             console.log(`[OgameX/bg] build queue refreshed (planet ${planetId}): ${name} L${target_level}`);
           }
         }
@@ -1939,18 +1927,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           console.log(`[OgameX/bg] research queue CLEARED (page=${page}, no active)`);
         }
         if ((page === "supplies" || page === "facilities") && planetId) {
-          const cur2 = store.state;
-          const target = cur2.planets[planetId];
+          const target = store.state.planets[planetId];
           if (target && target.build_q) {
-            store.setPartial({ planets: { ...cur2.planets, [planetId]: { ...target, build_q: null } } });
+            store.setPlanetsPatch({ [planetId]: { build_q: null } });
             console.log(`[OgameX/bg] build queue CLEARED (planet ${planetId}, page=${page}, no active)`);
           }
         }
         if (page === "lfbuildings" && planetId) {
-          const cur2 = store.state;
-          const target = cur2.planets[planetId] as (typeof cur2.planets[string] & { lf_build_q?: unknown }) | undefined;
+          const target = store.state.planets[planetId] as (typeof store.state.planets[string] & { lf_build_q?: unknown }) | undefined;
           if (target && target.lf_build_q) {
-            store.setPartial({ planets: { ...cur2.planets, [planetId]: { ...target, lf_build_q: null } as typeof target } });
+            store.setPlanetsPatch({ [planetId]: { lf_build_q: null } as Partial<typeof target> });
             console.log(`[OgameX/bg] lf queue CLEARED (planet ${planetId}, page=${page}, no active)`);
           }
         }
@@ -2154,33 +2140,27 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }
       }
       if (updated > 0) {
-        // RACE FIX 2026-05-27: pollEmpire's fetch is async (~1-3s). During that
-        // window commitCooldown (jumpgate event) may have written jumpgate fields
-        // to store.planets. patchPlanets was derived from cur captured BEFORE
-        // the await, so it has STALE jumpgate fields (typically null/undefined).
-        // setPartial({planets: patchPlanets}) would overwrite the recent write.
-        // Re-snapshot fresh state and overlay ONLY the fields we patched
-        // (ships, buildings, lifeform_buildings, plus newly-created planet stubs).
-        const live = store.state.planets;
-        const final: typeof live = { ...live };
+        // RACE FIX 2026-05-27: pollEmpire's fetch is async (~1-3s). Use the
+        // race-safe setPlanetsPatch API — per-planet partials are spread over
+        // LIVE state at write time, so any concurrent commitCooldown writes
+        // (jumpgate fields) survive.
+        const patchByPid: Record<string, Partial<typeof store.state.planets[string]>> = {};
         for (const [pid, patched] of Object.entries(patchPlanets)) {
-          const liveBase = live[pid];
-          if (!liveBase) {
-            // Brand-new planet we synthesized in this poll. Use patched as-is.
-            final[pid] = patched;
-            continue;
+          const live = store.state.planets[pid];
+          const p = patched as Partial<typeof store.state.planets[string]> & { ships?: Record<string, number>; buildings?: Record<string, number>; lifeform_buildings?: Record<string, number> };
+          if (!live) {
+            // Brand-new planet synthesized in this poll — pass full record.
+            patchByPid[pid] = patched as Partial<typeof store.state.planets[string]>;
+          } else {
+            // Only the fields pollEmpire actually patched.
+            patchByPid[pid] = {
+              ...(p.ships !== undefined ? { ships: p.ships } : {}),
+              ...(p.buildings !== undefined ? { buildings: p.buildings } : {}),
+              ...(p.lifeform_buildings !== undefined ? { lifeform_buildings: p.lifeform_buildings } : {}),
+            };
           }
-          const p = patched as Partial<typeof liveBase> & { ships?: Record<string, number>; buildings?: Record<string, number>; lifeform_buildings?: Record<string, number> };
-          // Spread fresh live (preserves jumpgate fields written during our await),
-          // then overlay ONLY the fields pollEmpire actually patched.
-          final[pid] = {
-            ...liveBase,
-            ...(p.ships !== undefined ? { ships: p.ships } : {}),
-            ...(p.buildings !== undefined ? { buildings: p.buildings } : {}),
-            ...(p.lifeform_buildings !== undefined ? { lifeform_buildings: p.lifeform_buildings } : {}),
-          };
         }
-        store.setPartial({ planets: final });
+        store.setPlanetsPatch(patchByPid);
         // Expose to BOTH sandboxed window AND page's real window (unsafeWindow)
         // so devtools console eval can read/write the store directly.
         (env.win as Window & { __ogamexStore?: typeof store }).__ogamexStore = store;
@@ -2424,11 +2404,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         return store.state.planets[pid]?.ships ?? {};
       }
       console.info(`[OgameX/fetchShips] ${pid}: ${JSON.stringify(ships)}`);
-      // Mirror hangar truth into store.
-      const cur = store.state;
-      if (cur.planets[pid]) {
-        const p = cur.planets[pid];
-        store.setPartial({ planets: { ...cur.planets, [pid]: { ...p, ships: { ...p.ships, ...ships } } } });
+      // Mirror hangar truth into store (race-safe via setPlanetsPatch).
+      const p = store.state.planets[pid];
+      if (p) {
+        store.setPlanetsPatch({ [pid]: { ships: { ...p.ships, ...ships } } });
       }
       return ships;
     } catch (e) {

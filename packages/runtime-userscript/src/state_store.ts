@@ -52,6 +52,35 @@ export class StateStore {
     this.bus.emit("state.updated", { ts: this._state.last_update });
   }
 
+  /**
+   * Race-safe per-planet patch (operator 2026-05-27: "不稳定" — async snapshots
+   * of store.state.planets get overwritten by stale writes from other code
+   * paths that captured the snapshot earlier).
+   *
+   * For each `pid -> partial planet patch`, spreads the **live** planet at
+   * write time and overlays the patch fields. Any concurrent write to OTHER
+   * fields (e.g. jumpgate_cooldown_sec written by commitCooldown while a
+   * pollEmpire fetch was in-flight) survives.
+   *
+   * Use this INSTEAD of `setPartial({planets: {...cur.planets, [pid]: ...}})`
+   * — that pattern races whenever the caller snapped cur before an await.
+   */
+  setPlanetsPatch(byId: Record<string, Partial<WorldState["planets"][string]>>): void {
+    const live = this._state.planets;
+    const out: WorldState["planets"] = { ...live };
+    for (const [pid, patch] of Object.entries(byId)) {
+      const liveBase = live[pid];
+      if (!liveBase) {
+        // No live entry yet — caller's patch must be a full planet record.
+        out[pid] = patch as WorldState["planets"][string];
+      } else {
+        out[pid] = { ...liveBase, ...patch } as WorldState["planets"][string];
+      }
+    }
+    this._state = { ...this._state, planets: out, last_update: Date.now() };
+    this.bus.emit("state.updated", { ts: this._state.last_update });
+  }
+
   /** Replace the entire state (e.g., on hydrate). */
   replace(state: WorldState): void {
     this._state = state;
