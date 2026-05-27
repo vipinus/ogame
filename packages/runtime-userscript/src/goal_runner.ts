@@ -196,11 +196,19 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       void pumpQueue();
     }, 5_000);
   };
-  // Action+planet dedup helper
+  // Action+planet dedup helper.
+  // 2026-05-27 v0.0.366 finer-grained for discover: include target coord so
+  // backend's "扫整个 system 15 个 position" 不被 60s 一刀切. expedition /
+  // colonize / deploy / transport 仍按 action+planet (per-planet 节流合理).
   const actionPlanetKey = (d: Directive): string => {
-    const planet = (d.params as { planet_id?: string; source_planet?: string } | undefined)?.planet_id
-      ?? (d.params as { source_planet?: string } | undefined)?.source_planet
-      ?? "";
+    const params = d.params as { planet_id?: string; source_planet?: string; galaxy?: number; system?: number; position?: number } | undefined;
+    const planet = params?.planet_id ?? params?.source_planet ?? "";
+    if (d.action === "discover") {
+      const g = params?.galaxy ?? 0;
+      const s = params?.system ?? 0;
+      const p = params?.position ?? 0;
+      return `discover:${g}:${s}:${p}`;  // per-coord, not per-planet
+    }
     return `${d.action}:${planet}`;
   };
   const gcActionPlanet = (): void => {
