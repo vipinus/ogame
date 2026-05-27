@@ -18,6 +18,10 @@ export interface GoalRunnerDeps {
   gate: PriorityGate;
   /** One or more executors; first whose `canHandle(directive)===true` wins. */
   executors: DirectiveExecutor[];
+  /** Operator activity gate — when true, defer non-emergency directives so the
+   *  cp= session-shift doesn't visibly bounce ogame UI under the operator's
+   *  cursor. Re-queued for retry every 10s until busy clears or expires_at hit. */
+  userBusy?: () => boolean;
 }
 
 export interface GoalRunnerHandle {
@@ -61,7 +65,7 @@ function isValidDirective(d: unknown): d is Directive {
 }
 
 export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
-  const { client, gate, executors } = deps;
+  const { client, gate, executors, userBusy } = deps;
 
   const pending: Directive[] = [];
   let stopped = false;
@@ -109,14 +113,18 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       });
       return;
     }
-    // userBusy blanket DEFER REMOVED (v0.0.222 — operator "装 A 全 API 化").
-    // ApiExec is now the only executor and does pure background POSTs
-    // (scheduleEntry / fleetdispatch) — they don't touch the foreground
-    // DOM, don't trigger SPA nav, don't click. Safe to fire even during
-    // operator activity. Session.cp coherence is handled by per-request
-    // cp=PID params (no implicit session mutation).
-    // If anti-bot rate limit becomes an issue again, throttle here, not
-    // defer entirely.
+    // userBusy DEFER REINSTATED (operator 2026-05-27: "在3:279:7P操作又被自动切到3:260:8M").
+    // v0.0.222 假设 cp=PID per-request 无副作用是错的 — 即使 finally restoreSessionCp,
+    // ogame 服务端 cp 切换→UI 顶栏跟着跳→操作员视角"被自动切到其他星球".
+    // 只 defer 非 emergency 的 background directive (build/research/expedition).
+    // emergency.* (FS) 走 orchestrator → bus.emit, 不通过 GoalRunner,不受这里影响.
+    if (typeof userBusy === "function" && userBusy()) {
+      const retryMs = 10_000;
+      // eslint-disable-next-line no-console
+      console.info(`[GoalRunner] operator busy — defer ${directive.action} for ${retryMs/1000}s (avoid cp shift)`);
+      setTimeout(() => { if (!stopped) void run(directive); }, retryMs);
+      return;
+    }
     // eslint-disable-next-line no-console
     console.log(`[GoalRunner] executing ${directive.action} via ${chosen.constructor.name}`);
     try {

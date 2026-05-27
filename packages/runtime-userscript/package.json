@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "check:cp-fetch": "bash scripts/check-no-raw-cp.sh",
+    "prebuild": "bash scripts/check-no-raw-cp.sh",
     "build": "rollup -c",
     "build:watch": "rollup -c -w",
     "typecheck": "tsc --noEmit",

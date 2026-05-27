@@ -23,6 +23,7 @@ import type { Directive } from "@ogamex/shared";
 import { TECH_ID_BY_NAME } from "@ogamex/shared";
 import type { DirectiveExecutor } from "./directive_executor_iface.js";
 import { cacheShipsData } from "./api/ship_cargo_cache.js";
+import { fetchWithCpBypassBusy, restoreSessionCp } from "./api/safe_fetch.js";
 
 export interface ApiExecutorDeps {
   win: Window;
@@ -205,8 +206,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     planetId: string,
     numericId: number,
   ): Promise<{ token: string; status: string | null; reason: string | null }> {
-    const url = `/game/index.php?page=ingame&component=${component}&cp=${planetId}`;
-    const resp = await this.fetchFn(url, { credentials: "same-origin" });
+    const resp = await fetchWithCpBypassBusy(
+      `/game/index.php?page=ingame&component=${component}`,
+      { credentials: "same-origin" },
+      planetId,
+      { skipRestore: true },  // outer execute() does single restore
+    );
     const html = await resp.text();
     // Token can be in: hidden input, meta tag, or inline JS var. Try all.
     const tokenMatch =
@@ -283,22 +288,20 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // cp=<planetId> targets the SPECIFIC planet. Without it ogame defaults
     // to the user's currently-active planet (whatever browser cp cookie is
     // on) — causes multi-planet builds to land on home planet by mistake.
-    const postUrl = `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1&cp=${planetId}`;
     const body = new URLSearchParams({
       technologyId: String(numericId),
       amount: "1",
       mode: "1",
       token,
     });
-    const r = await this.fetchFn(postUrl, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body,
-    });
+    const r = await fetchWithCpBypassBusy(
+      `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
+      { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+        body },
+      planetId,
+      { skipRestore: true },
+    );
     if (!r.ok) throw new Error(`api: ${component} upgrade HTTP ${r.status}`);
     const respText = await r.text();
     let parsed: { success?: boolean; errors?: Array<{ message?: string }>; error?: string; newAjaxToken?: string } | null = null;
@@ -327,14 +330,17 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const isGenericRetry = parsed?.status === "failure"
       && /unknown\s+error|未知|未知錯誤/i.test(errMsg)
       && parsed.newAjaxToken;
-    if (isGenericRetry) {
+    if (isGenericRetry && parsed?.newAjaxToken) {
       const retryBody = new URLSearchParams({ ...Object.fromEntries(body), token: parsed.newAjaxToken });
       console.info(`[ApiExec] ${component}:${targetName} RETRY with rotated token`);
-      const r2 = await this.fetchFn(postUrl, {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body: retryBody,
-      });
+      const r2 = await fetchWithCpBypassBusy(
+        `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
+        { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body: retryBody },
+        planetId,
+        { skipRestore: true },
+      );
       const r2Text = await r2.text();
       let parsed2: { success?: boolean; status?: string; errors?: unknown; newAjaxToken?: string } | null = null;
       try { parsed2 = JSON.parse(r2Text); }
@@ -380,22 +386,20 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
       throw new Error(`${ship} unavailable: ${reason ?? "disabled"}`);
     }
-    const postUrl = `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1&cp=${planetId}`;
     const body = new URLSearchParams({
       technologyId: String(numericId),
       amount: String(amount),
       mode: "1",
       token,
     });
-    const r = await this.fetchFn(postUrl, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body,
-    });
+    const r = await fetchWithCpBypassBusy(
+      `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
+      { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+        body },
+      planetId,
+      { skipRestore: true },
+    );
     if (!r.ok) throw new Error(`api: shipyard build HTTP ${r.status}`);
     const respText = await r.text();
     let parsed: { success?: boolean; errors?: Array<{ message?: string }>; error?: string; newAjaxToken?: string } | null = null;
@@ -417,11 +421,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (pStatus === "failure" && /unknown\s+error|未知|未知錯誤/i.test(errMsg) && parsed?.newAjaxToken) {
       const retryBody = new URLSearchParams({ ...Object.fromEntries(body), token: parsed.newAjaxToken });
       console.info(`[ApiExec] shipyard:${ship}×${amount} RETRY with rotated token`);
-      const r2 = await this.fetchFn(postUrl, {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body: retryBody,
-      });
+      const r2 = await fetchWithCpBypassBusy(
+        `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
+        { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body: retryBody },
+        planetId,
+        { skipRestore: true },
+      );
       const r2Text = await r2.text();
       let parsed2: { success?: boolean; status?: string; errors?: unknown; newAjaxToken?: string } | null = null;
       try { parsed2 = JSON.parse(r2Text); }
@@ -509,28 +516,18 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     console.info(`[ApiExec] expedition step1: GOT token (ajax-only) len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } }> => {
-      // cp=<planetId> routes to the specific source planet. Without it
-      // ogame's session uses the currently-active cp cookie (whatever
-      // planet the operator was last viewing) — and the fleet POSTs land
-      // on that planet, not the goal's planet.
-      const url = `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1&cp=${planetId}`;
-      const r = await this.fetchFn(url, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Requested-With": "XMLHttpRequest",
-        },
-        body,
-      });
+      const r = await fetchWithCpBypassBusy(
+        `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1`,
+        { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body },
+        planetId,
+        { skipRestore: true },
+      );
       const txt = await r.text();
       let j: ReturnType<typeof POST> extends Promise<infer T> ? T["json"] : never;
       try { j = JSON.parse(txt); }
       catch {
-        // Operator 2026-05-25 (discover same-source check): ogame
-        // sometimes returns plain-text "An error has occured!" with
-        // HTTP 200. Silently using j={} treated this as success, no
-        // token rotation → next stage fails with stale token cascade.
         throw new Error(`expedition ${action} non-JSON response: ${txt.slice(0, 200)}`);
       }
       const newToken = j.newAjaxToken ?? token;
@@ -608,17 +605,15 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (!numId || n <= 0) continue;
       stage3Body.append(`am${numId}`, String(n));
     }
-    const stage3Url = `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1&cp=${planetId}`;
     console.info(`[ApiExec] expedition step4: sendFleet target=${galaxy}:${system}:16 ships=${JSON.stringify(ships)}`);
-    const r = await this.fetchFn(stage3Url, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: stage3Body,
-    });
+    const r = await fetchWithCpBypassBusy(
+      `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1`,
+      { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+        body: stage3Body },
+      planetId,
+      { skipRestore: true },
+    );
     const txt = await r.text();
     console.info(`[ApiExec] expedition step5: resp HTTP ${r.status} body=${txt.slice(0,300)}`);
     if (!r.ok) throw new Error(`expedition: HTTP ${r.status}`);
@@ -638,7 +633,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       const reqBodyStr = stage3Body.toString();
       try {
         (this.win as Window & { __ogamexLastExpFailure?: unknown }).__ogamexLastExpFailure = {
-          ts: Date.now(), url: stage3Url, reqBody: reqBodyStr,
+          ts: Date.now(), url: `sendFleet (cp=${planetId})`, reqBody: reqBodyStr,
           respBody: txt.slice(0, 800), sentShips: ships,
           targetCoords: `${galaxy}:${system}:16`, planetId,
         };
@@ -690,12 +685,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     console.info(`[ApiExec] colonize step1: token len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } }> => {
-      const url = `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1&cp=${planetId}`;
-      const r = await this.fetchFn(url, {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body,
-      });
+      const r = await fetchWithCpBypassBusy(
+        `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1`,
+        { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body },
+        planetId,
+        { skipRestore: true },
+      );
       const txt = await r.text();
       let j: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } = {};
       try { j = JSON.parse(txt); }
@@ -736,13 +733,15 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (!numId || n <= 0) continue;
       stage3Body.append(`am${numId}`, String(n));
     }
-    const stage3Url = `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1&cp=${planetId}`;
     console.info(`[ApiExec] colonize step4: sendFleet target=${tGalaxy}:${tSystem}:${tPos} mission=7`);
-    const r = await this.fetchFn(stage3Url, {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-      body: stage3Body,
-    });
+    const r = await fetchWithCpBypassBusy(
+      `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1`,
+      { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+        body: stage3Body },
+      planetId,
+      { skipRestore: true },
+    );
     const txt = await r.text();
     console.info(`[ApiExec] colonize step5: HTTP ${r.status} body=${txt.slice(0,300)}`);
     if (!r.ok) throw new Error(`colonize HTTP ${r.status}`);
@@ -776,12 +775,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     console.info(`[ApiExec] ${directive.action} step1: token len=${token.length}`);
 
     const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; errors?: Array<{ message?: string; error?: number }> } }> => {
-      const url = `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1&cp=${planetId}`;
-      const r = await this.fetchFn(url, {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body,
-      });
+      const r = await fetchWithCpBypassBusy(
+        `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1`,
+        { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body },
+        planetId,
+        { skipRestore: true },
+      );
       const txt = await r.text();
       let j: { newAjaxToken?: string; success?: boolean; errors?: Array<{ message?: string; error?: number }> } = {};
       try { j = JSON.parse(txt); }
@@ -822,13 +823,15 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (!numId || n <= 0) continue;
       stage3Body.append(`am${numId}`, String(n));
     }
-    const stage3Url = `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1&cp=${planetId}`;
     console.info(`[ApiExec] ${directive.action} step4: sendFleet ${tGalaxy}:${tSystem}:${tPos} mission=${mission}`);
-    const r = await this.fetchFn(stage3Url, {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-      body: stage3Body,
-    });
+    const r = await fetchWithCpBypassBusy(
+      `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1`,
+      { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+        body: stage3Body },
+      planetId,
+      { skipRestore: true },
+    );
     const txt = await r.text();
     console.info(`[ApiExec] ${directive.action} step5: HTTP ${r.status} body=${txt.slice(0,300)}`);
     if (!r.ok) throw new Error(`${directive.action} HTTP ${r.status}`);
@@ -871,14 +874,16 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const CACHE_TTL = 5 * 60 * 1000;
     if (!cache || Date.now() - cache.ts > CACHE_TTL) {
       try {
-        const galResp = await this.fetchFn(
-          `/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1&cp=${planetId}`,
+        const galResp = await fetchWithCpBypassBusy(
+          `/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1`,
           {
             method: "POST",
             credentials: "same-origin",
             headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
             body: `galaxy=${galaxy}&system=${system}`,
           },
+          planetId,
+          { skipRestore: true },
         );
         const galTxt = await galResp.text();
         // Response is JSON. Verified shape from operator sniff:
@@ -1019,8 +1024,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       token = cached;
     }
 
-    // operatorCp + restoreSessionCp handled by outer execDiscover try/finally.
-    const postUrl = `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1&cp=${planetId}`;
+    // outer execute() owns the single restoreSessionCp call.
     const body = new URLSearchParams({
       galaxy: String(galaxy),
       system: String(system),
@@ -1028,12 +1032,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       token,
     });
     console.info(`[ApiExec/discover] POST ${galaxy}:${system}:${position} from planet ${planetId}`);
-    const r = await this.fetchFn(postUrl, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-      body,
-    });
+    const r = await fetchWithCpBypassBusy(
+      `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
+      { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+        body },
+      planetId,
+      { skipRestore: true },
+    );
     if (!r.ok) throw new Error(`discover: HTTP ${r.status}`);
     const respText = await r.text();
     // ogame v12 sendDiscoveryFleet response shape (verified from real POST):
@@ -1091,6 +1097,54 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} COOLDOWN — marking attempted, moving to next`);
         return { action: directive.action, clicked: true };
       }
+      // Operator 2026-05-25 verify: ogame intermittently returns "資源不足/
+      // resources insufficient" even when store + ogame top-bar both show
+      // resources WELL ABOVE the threshold (5000 metal / 1000 crystal /
+      // 500 deuterium). Re-POST same payload immediately succeeds. Likely
+      // backend race / lock contention during burst discovery. Self-heal:
+      // when our state shows resources >= threshold, retry once. Persistent
+      // failure → throw.
+      const isResShortage = /資源不足|资源不足|insufficient.*resource|resource.*insufficient|not enough/i.test(msg);
+      if (isResShortage) {
+        const storeRes = (this.win as Window & { __ogamexStore?: { state: { planets: Record<string, { resources?: { m?: number; c?: number; d?: number } }> } } })
+          .__ogamexStore?.state?.planets?.[planetId]?.resources;
+        const m = storeRes?.m ?? 0, c = storeRes?.c ?? 0, d = storeRes?.d ?? 0;
+        const aboveThreshold = m >= 5000 && c >= 1000 && d >= 500;
+        if (aboveThreshold) {
+          console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} 資源不足 误报 (store m=${m} c=${c} d=${d}) — single retry`);
+          const retryToken = parsed?.newAjaxToken ?? token;
+          const retryBody = new URLSearchParams({ galaxy: String(galaxy), system: String(system), position: String(position), token: retryToken });
+          const r2 = await fetchWithCpBypassBusy(
+            `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
+            { method: "POST", credentials: "same-origin",
+              headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+              body: retryBody },
+            planetId,
+            { skipRestore: true },
+          );
+          const retryText = await r2.text();
+          let retryParsed: typeof parsed = null;
+          try { retryParsed = JSON.parse(retryText); } catch { /* */ }
+          console.info(`[ApiExec/discover] retry ${galaxy}:${system}:${position} resp[0:200]=${retryText.slice(0, 200).replace(/\s+/g, " ")}`);
+          if (retryParsed?.newAjaxToken) {
+            (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = retryParsed.newAjaxToken;
+            try { this.win.localStorage.setItem("OGAMEX_TOKEN", retryParsed.newAjaxToken); } catch { /* */ }
+            (this.win as Window & { __ogamexLastGalaxyToken?: string }).__ogamexLastGalaxyToken = retryParsed.newAjaxToken;
+          }
+          const retrySuccess = retryParsed?.response?.success !== false && retryParsed?.success !== false;
+          if (retrySuccess) {
+            console.info(`[ApiExec/discover] retry SUCCESS for ${galaxy}:${system}:${position}`);
+            try {
+              const incFn = (this.win as Window & { __ogamexIncrementUsedSlot?: () => void }).__ogamexIncrementUsedSlot;
+              if (incFn) incFn();
+            } catch { /* */ }
+            return { action: directive.action, clicked: true };
+          }
+          const retryMsg = retryParsed?.response?.message ?? retryParsed?.message ?? "unknown";
+          throw new Error(`discover ${galaxy}:${system}:${position} rejected after retry: ${retryMsg}`);
+        }
+        console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} 資源不足 — store actually low (m=${m} c=${c} d=${d}) — no retry`);
+      }
       throw new Error(`discover ${galaxy}:${system}:${position} rejected: ${msg}`);
     }
     // Optimistic local slot increment — the new fleet is in flight. Next
@@ -1129,9 +1183,11 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     let token: string | null = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] ?? null;
     if (token && token.length >= 16) return token;
     try {
-      const ebResp = await this.fetchFn(
-        `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${planetId}`,
+      const ebResp = await fetchWithCpBypassBusy(
+        `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1`,
         { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+        planetId,
+        { skipRestore: true },
       );
       const ebJson = await ebResp.json() as { newAjaxToken?: string };
       if (ebJson.newAjaxToken && ebJson.newAjaxToken.length >= 16) {
@@ -1147,15 +1203,6 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
 
   private async restoreSessionCp(operatorCp: string | null, wePostedCp: string): Promise<void> {
     if (!operatorCp || operatorCp === wePostedCp) return;
-    try {
-      // fetchEventBox is the lightest cp=-carrying endpoint — small JSON,
-      // no UI render, no DOM mutation, just session-cp side effect.
-      await this.fetchFn(
-        `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${operatorCp}`,
-        { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-      );
-    } catch (e) {
-      console.warn(`[ApiExec/restoreSessionCp] failed to restore operator cp=${operatorCp}:`, e);
-    }
+    await restoreSessionCp(operatorCp);
   }
 }

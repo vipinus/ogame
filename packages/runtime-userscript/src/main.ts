@@ -123,6 +123,9 @@ if (_inIframe) {
         auditThresholds: {},
         fetch: window.fetch.bind(window),
         ...(goalsPanelBaseUrl ? { goalsPanelBaseUrl } : {}),
+        // Forward bridge token to panel for auth-required sidecar endpoints
+        // (operator 2026-05-26: pause/resume daemon 按钮被 sidecar 401 拒).
+        ...(bridgeToken ? { goalsPanelBridgeToken: bridgeToken } : {}),
       });
       (window as unknown as { __OGAMEX_RUNTIME__: unknown }).__OGAMEX_RUNTIME__ = runtime;
       console.info("[OgameX] runtime subsystems wired");

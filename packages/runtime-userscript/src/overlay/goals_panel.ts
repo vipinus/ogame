@@ -42,7 +42,6 @@ export interface GoalRowFromHttp {
   planet?: string;
   created_at: number;
   updated_at: number;
-  is_main_goal?: boolean;
   eta_at?: number | null;
 }
 
@@ -57,6 +56,9 @@ export interface GoalsPanelOptions {
   fetch?: typeof fetch;
   /** Injectable doc — tests stub via jsdom. */
   doc?: Document;
+  /** Bearer token for sidecar auth-required endpoints (pause/resume daemon, etc).
+   *  Same as bridge token. main.ts reads via readConfig("OGAMEX_BRIDGE_TOKEN"). */
+  bridgeToken?: string;
 }
 
 export interface GoalsPanelHandle {
@@ -165,10 +167,37 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   let lastEmergency: EmergencyPayload | null = null;
   let lastExpedition: ExpeditionPayload | null = null;
   // Persisted section-level collapse state.
+  // Operator 2026-05-26: "panel 菜单 默认都是收起的". One-time migration:
+  // if sentinel v302 not set, overwrite all section flags to collapsed=true
+  // (old users had localStorage values from before this directive).
+  const COLLAPSED_DEFAULT_SENTINEL = "ogamex.panel.collapsed-default.v302";
+  if (!loadJSON<boolean>(COLLAPSED_DEFAULT_SENTINEL, false)) {
+    saveJSON("ogamex.panel.section.emergency", true);
+    saveJSON("ogamex.panel.section.expedition", true);
+    saveJSON("ogamex.panel.section.goals", true);
+    saveJSON("ogamex.panel.section.discovery", true);
+    saveJSON("ogamex.panel.section.moons", true);
+    saveJSON("ogamex.panel.section.cargo", true);
+    saveJSON(COLLAPSED_DEFAULT_SENTINEL, true);
+  }
   const sectionCollapsed: Record<string, boolean> = {
-    emergency: loadJSON<boolean>("ogamex.panel.section.emergency", false),
-    expedition: loadJSON<boolean>("ogamex.panel.section.expedition", false),
-    goals: loadJSON<boolean>("ogamex.panel.section.goals", false),
+    emergency: loadJSON<boolean>("ogamex.panel.section.emergency", true),
+    expedition: loadJSON<boolean>("ogamex.panel.section.expedition", true),
+    goals: loadJSON<boolean>("ogamex.panel.section.goals", true),
+    moons: loadJSON<boolean>("ogamex.panel.section.moons", true),
+    discovery: loadJSON<boolean>("ogamex.panel.section.discovery", true),
+    cargo: loadJSON<boolean>("ogamex.panel.section.cargo", true),
+  };
+  // Cargo calculator local state (persisted across re-renders within session).
+  // auto-follow: when true, Cargo Calc planet auto-tracks ogame's active planet
+  // (meta[name="ogame-planet-id"]). operator 切星球时资源自动刷新. 一旦 operator
+  // 手动改 dropdown → autoFollow=false, planet 锁定. 重置 autoFollow 通过再次
+  // 选中"= ogame 当前" (UI暂不暴露, 默认就是自动).
+  const cargoState: { planetId: string; ship: "smallCargo" | "largeCargo"; use: { m: boolean; c: boolean; d: boolean }; autoFollow: boolean } = {
+    planetId: loadJSON<string>("ogamex.panel.cargo.planet", ""),
+    ship: (loadJSON<string>("ogamex.panel.cargo.ship", "largeCargo") as "smallCargo" | "largeCargo"),
+    use: loadJSON<{ m: boolean; c: boolean; d: boolean }>("ogamex.panel.cargo.use", { m: true, c: true, d: true }),
+    autoFollow: loadJSON<boolean>("ogamex.panel.cargo.autoFollow", true),
   };
   function setSectionCollapsed(name: string, val: boolean): void {
     sectionCollapsed[name] = val;
@@ -537,7 +566,124 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
 </div>`;
     const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff", discHeaderBtn)}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
 
-    const body = `<div data-ogamex-body="1" style="display:${bodyDisplay};">${emergencySection}${expeditionSection}${discSection}${goalsSection}</div>`;
+    // Jumpgate cooldown per moon — operator 2026-05-26:
+    //   "在月球上显示，跳跃门冷却时间" + "ready 的不用显示，只显示倒计时的，
+    //    时间加上秒 mm:ss"
+    // Lazy computation: live remaining = max(0, snapshot - (now - harvestedAt)).
+    // 1-second ticker (#jg-cd-N spans) updates display without re-rendering whole panel.
+    let moonsSection = "";
+    try {
+      const st = (window as Window & { __ogamexStore?: { state: { planets?: Record<string, { id?: string; type?: string; coords?: number[]; jumpgate_cooldown_sec?: number | null; jumpgate_harvested_at?: number | null; jumpgate_pair_with?: string | null }> } } }).__ogamexStore;
+      const planets = st?.state?.planets ?? {};
+      const now = Date.now();
+      // Pair grouping — operator 2026-05-27 "JG都是成对使用 显示改成 [源]/[目标] mm:ss".
+      // Walk moons with active cooldown; for each, emit at most ONE row per pair
+      // (skip when the partner has already been rendered). Sort by remaining
+      // cooldown so 即将冷却完的排上面.
+      const activeMoons = Object.entries(planets)
+        .filter(([_id, p]) => {
+          if (p.type !== "moon" || typeof p.jumpgate_cooldown_sec !== "number") return false;
+          const cd = p.jumpgate_cooldown_sec ?? 0;
+          const elapsed = Math.floor((now - (p.jumpgate_harvested_at ?? now)) / 1000);
+          return Math.max(0, cd - elapsed) > 0;
+        })
+        .map(([id, p]) => ({ id, p, remain: Math.max(0, (p.jumpgate_cooldown_sec ?? 0) - Math.floor((now - (p.jumpgate_harvested_at ?? now)) / 1000)) }))
+        .sort((a, b) => a.remain - b.remain);
+      const rendered = new Set<string>();
+      const pairRows: string[] = [];
+      for (const { id, p } of activeMoons) {
+        if (rendered.has(id)) continue;
+        const partnerId = p.jumpgate_pair_with ?? null;
+        const partner = partnerId ? planets[partnerId] : null;
+        const cd = p.jumpgate_cooldown_sec ?? 0;
+        const at = p.jumpgate_harvested_at ?? now;
+        const elapsed = Math.floor((now - at) / 1000);
+        const remain = Math.max(0, cd - elapsed);
+        const mm = Math.floor(remain / 60);
+        const ss = remain % 60;
+        const coordsThis = (p.coords ?? []).join(":");
+        // Operator 2026-05-27: "JG都是成对使用 显示改成 源/目的 成对显示".
+        // 没 pair_with (harvest-derived) → 显示 [?] 明确表示 target 未知,
+        // 而非误导用户以为单边即冷却.
+        const label = partner
+          ? `[${coordsThis}]/[${(partner.coords ?? []).join(":")}]`
+          : `[${coordsThis}]/[?]`;
+        pairRows.push(`<div style="padding:2px 0; color:#c0d0e0; font-size:11px;">🌙 ${label} JG: <span class="jg-cd" data-snap="${cd}" data-at="${at}" style="color:#bdb76b;">${mm}:${ss.toString().padStart(2, "0")}</span></div>`);
+        rendered.add(id);
+        if (partnerId) rendered.add(partnerId);  // suppress partner's own row
+      }
+      if (pairRows.length > 0) {
+        // Operator 2026-05-27: 第一次跳完 panel 没显示 — 因为 sectionCollapsed
+        // .moons 默认 true (折叠). data 已塞进 HTML 字符串但 display:none. 这里
+        // 显式 force expand: 任何冷却中的月球都让用户看到, 否则模块跟没存在一样.
+        moonsSection = `${sectionHeader("moons", "🌙 Moons / Jumpgate", pairRows.length, "#80c0ff", "")}<div style="display:block;">${pairRows.join("")}</div>`;
+      }
+      // Operator 2026-05-27: 第一次跳完 panel 没显示 — log render path
+      // empirics 给我看 activeMoons / pairRows 实际长度
+      console.info(`[panel/moons] render activeMoons=${activeMoons.length} pairRows=${pairRows.length} moonsSection.length=${moonsSection.length}`);
+    } catch (e) { console.warn("[panel/moons] render failed:", e); }
+
+    // Cargo calculator section — operator 2026-05-26:
+    //   "1 选择星球 2 选择运输舰类型 LC/SC 3 checkbox 列出星球三种资源
+    //    自动算需要的战舰数量 点击复制到剪贴板"
+    let cargoSection = "";
+    try {
+      const st = (window as Window & { __ogamexStore?: { state: { planets?: Record<string, { id?: string; coords?: number[]; name?: string; resources?: { m?: number; c?: number; d?: number }; type?: string }>; server?: { ship_cargo_capacity?: Record<string, number> } } } }).__ogamexStore;
+      const planets = Object.values(st?.state?.planets ?? {})
+        // Operator 2026-05-26: "删除里面的月球，只显示星球" — Cargo Calc 拉资源
+        // 来源限定 planets (月球通常无资源生产), 简化 dropdown 选择.
+        .filter((p) => Array.isArray(p.coords) && p.coords.length === 3 && p.type === "planet")
+        .sort((a, b) => (a.coords![0]! - b.coords![0]!) || (a.coords![1]! - b.coords![1]!) || (a.coords![2]! - b.coords![2]!));
+      // Auto-follow ogame's active planet (meta) — operator 2026-05-26:
+      // "切换星球，资源没有刷新". When autoFollow=true, cargoState.planetId
+      // tracks the currently-visible planet so resources update immediately
+      // as operator clicks between planets in ogame's sidebar.
+      const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
+      if (cargoState.autoFollow && ogameCurrentPid && planets.find((p) => p.id === ogameCurrentPid)) {
+        cargoState.planetId = ogameCurrentPid;
+      }
+      const selectedId = cargoState.planetId && planets.find((p) => p.id === cargoState.planetId) ? cargoState.planetId : (planets[0]?.id ?? "");
+      cargoState.planetId = selectedId;
+      const planetOptsCargo = planets.map((p) =>
+        // 只显示坐标 (operator 2026-05-26): planets only, 不含 moon, 不带后缀.
+        `<option value="${escapeHtml(p.id ?? "")}" ${p.id === selectedId ? "selected" : ""}>[${p.coords!.join(":")}]</option>`
+      ).join("");
+      const selected = planets.find((p) => p.id === selectedId);
+      const m = selected?.resources?.m ?? 0;
+      const c = selected?.resources?.c ?? 0;
+      const d = selected?.resources?.d ?? 0;
+      const total = (cargoState.use.m ? m : 0) + (cargoState.use.c ? c : 0) + (cargoState.use.d ? d : 0);
+      const cap = (st?.state?.server?.ship_cargo_capacity ?? {})[cargoState.ship]
+        ?? (cargoState.ship === "smallCargo" ? 5000 : 25000);
+      const shipsNeeded = total > 0 && cap > 0 ? Math.ceil(total / cap) : 0;
+      const lbl = (v: number): string => v.toLocaleString();
+      const cargoCollapsed = sectionCollapsed.cargo;
+      cargoSection = `${sectionHeader("cargo", "🧮 Cargo Calc", shipsNeeded, "#80ffd0", "")}
+<div style="display:${cargoCollapsed ? "none" : "block"}; padding:6px 10px; color:#c0d0e0; font-size:11px;">
+  <div style="margin-bottom:4px;">
+    Planet: <select data-action="cargo-planet" style="background:#1a2330; color:#c0d0e0; border:1px solid #354050; width:auto;">${planetOptsCargo}</select>
+    <button data-action="cargo-auto" title="${cargoState.autoFollow ? "Auto-follow ON — tracks ogame current planet" : "Manual — click to re-enable auto-follow"}" style="background:${cargoState.autoFollow ? "#205a40" : "#2a3a52"}; color:#fff; border:1px solid ${cargoState.autoFollow ? "#408a60" : "#354050"}; padding:1px 5px; border-radius:3px; cursor:pointer; font-size:10px; margin-left:4px;">${cargoState.autoFollow ? "🔁 Auto" : "🔒 Lock"}</button>
+  </div>
+  <div style="margin-bottom:4px;">
+    Ship:
+    <label style="margin-right:8px;"><input type="radio" name="cargo-ship" value="smallCargo" data-action="cargo-ship" ${cargoState.ship === "smallCargo" ? "checked" : ""}> SC (${lbl((st?.state?.server?.ship_cargo_capacity ?? {}).smallCargo ?? 5000)})</label>
+    <label><input type="radio" name="cargo-ship" value="largeCargo" data-action="cargo-ship" ${cargoState.ship === "largeCargo" ? "checked" : ""}> LC (${lbl((st?.state?.server?.ship_cargo_capacity ?? {}).largeCargo ?? 25000)})</label>
+  </div>
+  <div style="margin-bottom:4px;">
+    <label style="margin-right:6px;"><input type="checkbox" data-action="cargo-m" ${cargoState.use.m ? "checked" : ""}> M ${lbl(m)}</label>
+    <label style="margin-right:6px;"><input type="checkbox" data-action="cargo-c" ${cargoState.use.c ? "checked" : ""}> C ${lbl(c)}</label>
+    <label><input type="checkbox" data-action="cargo-d" ${cargoState.use.d ? "checked" : ""}> D ${lbl(d)}</label>
+  </div>
+  <div style="display:flex; align-items:center; gap:6px;">
+    <span>Need: <span data-cargo-need style="color:#7cfc00; font-weight:bold; font-size:13px;">${lbl(shipsNeeded)}</span> ${cargoState.ship === "smallCargo" ? "SC" : "LC"}</span>
+    <button data-action="cargo-fill" title="Deploy ships from current planet to its moon (same coords, mission=4)" style="background:#205a80; color:#fff; border:1px solid #408aa0; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🚀 Deploy→Moon</button>
+    <span data-cargo-copied style="color:#7cfc00; font-size:10px; display:none;">✓ deployed</span>
+  </div>
+  <div style="color:#6a7080; font-size:10px; margin-top:2px;">total=${lbl(total)} ÷ cap=${lbl(cap)} = ${lbl(shipsNeeded)} ship${shipsNeeded === 1 ? "" : "s"}</div>
+</div>`;
+    } catch { /* no store yet */ }
+
+    const body = `<div data-ogamex-body="1" style="display:${bodyDisplay};">${emergencySection}${expeditionSection}${discSection}${moonsSection}${cargoSection}${goalsSection}</div>`;
     panel.innerHTML = header + body;
     // Wire discovery Start button.
     const startBtn = panel.querySelector<HTMLElement>("[data-action=\"discovery-start\"]");
@@ -595,6 +741,67 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         if (lastGoals) render(lastGoals);
       });
     }
+    // Wire cargo calculator handlers.
+    const cargoRerender = (): void => { if (lastGoals) render(lastGoals); };
+    const cargoSel = panel.querySelector<HTMLSelectElement>('[data-action="cargo-planet"]');
+    if (cargoSel) cargoSel.addEventListener("change", () => {
+      cargoState.planetId = cargoSel.value;
+      cargoState.autoFollow = false;  // manual override → stop auto-follow
+      saveJSON("ogamex.panel.cargo.planet", cargoState.planetId);
+      saveJSON("ogamex.panel.cargo.autoFollow", false);
+      cargoRerender();
+    });
+    const autoBtn = panel.querySelector<HTMLElement>('[data-action="cargo-auto"]');
+    if (autoBtn) autoBtn.addEventListener("click", () => {
+      cargoState.autoFollow = !cargoState.autoFollow;
+      saveJSON("ogamex.panel.cargo.autoFollow", cargoState.autoFollow);
+      cargoRerender();
+    });
+    panel.querySelectorAll<HTMLInputElement>('[data-action="cargo-ship"]').forEach((r) => {
+      r.addEventListener("change", () => {
+        if (r.checked) {
+          cargoState.ship = r.value as "smallCargo" | "largeCargo";
+          saveJSON("ogamex.panel.cargo.ship", cargoState.ship);
+          cargoRerender();
+        }
+      });
+    });
+    for (const key of ["m", "c", "d"] as const) {
+      const cb = panel.querySelector<HTMLInputElement>(`[data-action="cargo-${key}"]`);
+      if (cb) cb.addEventListener("change", () => {
+        cargoState.use[key] = cb.checked;
+        saveJSON("ogamex.panel.cargo.use", cargoState.use);
+        cargoRerender();
+      });
+    }
+    const fillBtn = panel.querySelector<HTMLElement>('[data-action="cargo-fill"]');
+    if (fillBtn) fillBtn.addEventListener("click", async () => {
+      const needSpan = panel!.querySelector<HTMLElement>("[data-cargo-need]");
+      const n = parseInt((needSpan?.textContent ?? "").replace(/[^0-9]/g, ""), 10) || 0;
+      const ok = panel!.querySelector<HTMLElement>("[data-cargo-copied]");
+      if (n <= 0) {
+        if (ok) { ok.textContent = "✗ N=0"; ok.style.color = "#ff8080"; ok.style.display = "inline"; setTimeout(() => { ok.style.display = "none"; ok.style.color = "#7cfc00"; }, 1500); }
+        return;
+      }
+      // Operator 2026-05-26: "改行为为部署这些船到本星球的月球". 直接 ajax
+      // sendFleet mission=4 deploy from current planet → same-coord moon.
+      // Helper exposed by wire_runtime.ts __ogamexDeployToMoon.
+      const deployFn = (window as Window & {
+        __ogamexDeployToMoon?: (ship: string, n: number) => Promise<{ ok: boolean; message: string }>;
+      }).__ogamexDeployToMoon;
+      if (typeof deployFn !== "function") {
+        if (ok) { ok.textContent = "✗ deploy helper missing"; ok.style.color = "#ff8080"; ok.style.display = "inline"; }
+        return;
+      }
+      if (ok) { ok.textContent = "⏳ deploying…"; ok.style.color = "#bdb76b"; ok.style.display = "inline"; }
+      const res = await deployFn(cargoState.ship, n);
+      if (ok) {
+        ok.textContent = res.ok ? `✓ deployed (${res.message})` : `✗ ${res.message.slice(0, 60)}`;
+        ok.style.color = res.ok ? "#7cfc00" : "#ff8080";
+        setTimeout(() => { ok.style.display = "none"; ok.style.color = "#7cfc00"; }, res.ok ? 3000 : 6000);
+      }
+    });
+
     // Wire section collapse toggles.
     for (const el of panel.querySelectorAll<HTMLElement>("[data-section-toggle]")) {
       el.addEventListener("click", (e) => {
@@ -621,12 +828,36 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         saveJSON(`ogamex.${daemon}.paused`, next);
         btn.textContent = next ? "▶" : "⏸";
         btn.title = next ? "Resume daemon" : "Pause daemon";
+        // Operator 2026-05-26: emergency (FS) 是 frontend FSM, sidecar 没
+        // /ogamex/v1/emergency/pause 端点 → 404. localStorage toggle 即可,
+        // orchestrator handleThreat 读这个 flag 决定是否 skip.
+        if (daemon === "emergency") {
+          console.info(`[panel] emergency ${action} — localStorage flag set, orchestrator will honor`);
+          return;
+        }
         try {
-          await fetchFn(`${baseUrl}/ogamex/v1/${daemon}/${action}`, { method: "POST" });
+          // Operator 2026-05-26: "远征 stop 按钮无效" — sidecar pause/resume
+          // 端点在 auth-required block, panel POST 没带 bearer → 401 拒绝.
+          // Fix: 带 bearer token (same as bridge). 同时 sidecar 那边 endpoint
+          // 也移到 public block (双保险).
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          // Try multi-source token (operator's bridge token, same one bridge uses):
+          // 1. opts.bridgeToken (injected by main.ts via readConfig — GM_getValue+localStorage)
+          // 2. localStorage fallback (sandbox may have isolated localStorage)
+          let tok: string | null = opts.bridgeToken ?? null;
+          if (!tok) {
+            try { tok = (typeof window !== "undefined" ? window.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") : null); }
+            catch { /* */ }
+          }
+          if (tok) headers["Authorization"] = `Bearer ${tok}`;
+          else console.warn(`[panel] pause-daemon: no bridge token available — sidecar may reject 401`);
+          const res = await fetchFn(`${baseUrl}/ogamex/v1/${daemon}/${action}`, { method: "POST", headers });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
         } catch (err) {
           btn.textContent = wasPaused ? "▶" : "⏸";
           btn.title = "ERR: " + (err as Error).message;
           saveJSON(`ogamex.${daemon}.paused`, wasPaused);
+          console.warn(`[panel] pause/${action} ${daemon} failed:`, err);
         }
       });
     }
@@ -909,9 +1140,34 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     }, pollMs);
   }
 
+  // 1Hz ticker — updates jumpgate mm:ss countdowns in place without full
+  // panel re-render. Reads each .jg-cd span's snapshot value + harvested_at
+  // and recomputes remaining seconds. Hides span when remaining hits 0.
+  let jgTickerId: ReturnType<typeof setInterval> | null = setInterval(() => {
+    if (!panel) return;
+    const spans = panel.querySelectorAll<HTMLElement>(".jg-cd");
+    if (spans.length === 0) return;
+    const now = Date.now();
+    spans.forEach((sp) => {
+      const snap = parseInt(sp.dataset["snap"] ?? "0", 10);
+      const at = parseInt(sp.dataset["at"] ?? "0", 10);
+      const elapsed = Math.floor((now - at) / 1000);
+      const remain = Math.max(0, snap - elapsed);
+      if (remain === 0) {
+        const row = sp.closest("div");
+        if (row) (row as HTMLElement).style.display = "none";
+        return;
+      }
+      const mm = Math.floor(remain / 60);
+      const ss = remain % 60;
+      sp.textContent = `${mm}:${ss.toString().padStart(2, "0")}`;
+    });
+  }, 1000);
+
   function stop(): void {
     stopped = true;
     if (timer) clearTimeout(timer);
+    if (jgTickerId) { clearInterval(jgTickerId); jgTickerId = null; }
     stopAlarm();
     panel?.remove();
   }

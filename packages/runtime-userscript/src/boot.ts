@@ -2,6 +2,7 @@ import type { WorldState } from "@ogamex/shared";
 import { EventBus } from "./event_bus.js";
 import { StateStore } from "./state_store.js";
 import type { IndexedKv } from "./store/indexed_db.js";
+import { initSafeFetch, fetchWithCp, BusyDeferredError } from "./api/safe_fetch.js";
 import { startMutationObserver } from "./probes/mutation_observer.js";
 import { installXhrHook } from "./probes/xhr_hook.js";
 import {
@@ -196,6 +197,10 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
 export async function boot(env: BootEnv): Promise<BootHandle> {
   const bus = new EventBus();
   const store = new StateStore(bus, env.kv ?? null);
+
+  // Init safe_fetch — every cp= fetch site beyond this line must use it
+  // (architecture enforcement, see scripts/check-no-raw-cp.sh).
+  initSafeFetch({ store, win: env.win, doc: env.doc });
 
   // 1. Hydrate prior state from IndexedDB if available
   try {
@@ -419,13 +424,35 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             try { localStorage.setItem(LS_KEY, json); } catch (_) {}
           } catch (_) {}
         };
-        const log = (kind, url, body, status, respLen) => {
+        const log = (kind, url, body, status, respLen, respText) => {
           const u = String(url).replace(/^.*\\/game\\//, "/game/");
           console.log("[OgameXSniff]", kind, status||"", u, body ? "body="+String(body).slice(0,300) : "", respLen?("resp="+respLen+"B"):"");
-          // Persist only non-trivial (with body OR with action/modus URL).
-          if (body || /[?&](?:modus|action|menge)=/.test(u)) {
-            persist({ ts: Date.now(), kind, url: u, body: String(body || "").slice(0, 500), status });
+          // Persist only non-trivial (with body OR with action/modus URL OR
+          // any URL/body containing "jump" — captures jumpgate overlay GET
+          // which has neither body nor action/modus params but IS critical).
+          const isJump = /jump/i.test(u) || (body && /jump/i.test(String(body)));
+          if (body || /[?&](?:modus|action|menge)=/.test(u) || isJump) {
+            const rec = { ts: Date.now(), kind, url: u, body: String(body || "").slice(0, 500), status };
+            if (isJump && respText) rec.resp = String(respText).slice(0, 2000);
+            persist(rec);
           }
+        };
+        // Expose a one-liner dump helper for operator. Reads OGAMEX_API_CAPTURES
+        // ring (50 last calls) + filters or shows last N. Returns array so
+        // operator can copy from console.
+        window.__ogamexDumpCaptures = function(filter) {
+          try {
+            var arr = JSON.parse(localStorage.getItem(LS_KEY) || "[]");
+            if (filter) arr = arr.filter(function(c){ return new RegExp(filter,"i").test(c.url + (c.body||"") + (c.resp||"")); });
+            console.log("[OgameXSniff/dump] " + arr.length + " captures matching " + (filter||"<all>"));
+            arr.forEach(function(c, i){
+              console.log("[" + i + "] ts=" + new Date(c.ts).toISOString() + " " + c.kind + " status=" + c.status);
+              console.log("    url=" + c.url);
+              if (c.body) console.log("    body=" + c.body);
+              if (c.resp) console.log("    resp=" + c.resp);
+            });
+            return arr;
+          } catch (e) { console.warn("dump failed", e); return []; }
         };
         const origFetch = window.fetch;
         window.fetch = function(input, init) {
@@ -436,7 +463,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             const p = origFetch.apply(this, arguments);
             p.then(r => {
               try { r.clone().text().then(t => {
-                log("FETCH "+method, url, body, r.status, t.length);
+                log("FETCH "+method, url, body, r.status, t.length, t);
                 // Sniff newAjaxToken from ANY ogame JSON response and
                 // refresh dataset/localStorage so ApiExec gets fresh token.
                 try {
@@ -449,6 +476,71 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                       document.documentElement.dataset.ogamexToken = m[1];
                       localStorage.setItem(TOKEN_LS_KEY, m[1]);
                     }
+                  }
+                  if (url.includes("action=checkTarget")) {
+                    try {
+                      const j = JSON.parse(t);
+                      if (j && j.shipsData) {
+                        window.postMessage(
+                          { source: "ogamex:shipsData", shipsData: j.shipsData },
+                          window.location.origin
+                        );
+                      }
+                    } catch (_) { /* not JSON */ }
+                  }
+                  // Operator 2026-05-26/27: "发生跳跃事件 从 api 拿到源和目的
+                  // 月球的计时时长并开始计时". Robust sniff — broader URL match
+                  // + multiple body field candidates + 起始座標 fallback parse.
+                  // 2026-05-27: relax to ANY url/body containing "jump" — ogame
+                  // may use action=ajaxJumpgateAction etc. (operator: 跳了没拿到数据)
+                  if (/jump/i.test(url) || (body && /jump/i.test(body))) {
+                    try {
+                      // JSON parse first (executeJump endpoint returns JSON)
+                      let cd = null;
+                      let jsonResp = null;
+                      try { jsonResp = JSON.parse(t); } catch(_) {}
+                      if (jsonResp) {
+                        cd = jsonResp.cooldown ?? jsonResp.nextActionAt ?? jsonResp.cooldownSec ?? jsonResp.time ?? null;
+                        if (cd !== null) cd = parseInt(cd, 10);
+                      }
+                      // HTML overlay fallback
+                      if (cd === null) {
+                        const cdMatch = t.match(/simpleCountdown\\s*\\(\\s*\\$\\(["']#cooldown["']\\)\\s*,\\s*(\\d+)/);
+                        cd = cdMatch ? parseInt(cdMatch[1], 10) : null;
+                      }
+                      const cpMatch = url.match(/[?&]cp=(\\d+)/) || (body && body.match(/[?&]cp=(\\d+)/));
+                      let sourceMoonId = cpMatch ? cpMatch[1] : null;
+                      if (!sourceMoonId) {
+                        try {
+                          const meta = document.querySelector("meta[name='ogame-planet-id']");
+                          if (meta) sourceMoonId = meta.getAttribute("content");
+                        } catch(_) {}
+                      }
+                      let targetMoonId = null;
+                      if (body) {
+                        const m = body.match(/targetSpaceObjectId=(\\d+)/)
+                              || body.match(/selectedTarget=(\\d+)/)
+                              || body.match(/[\\?&]target=(\\d+)/)
+                              || body.match(/destId=(\\d+)/)
+                              || body.match(/destinationId=(\\d+)/)
+                              || body.match(/dest_planet=(\\d+)/);
+                        if (m) targetMoonId = m[1];
+                      }
+                      const origCoordMatch = t.match(/起始座[標标][\\s\\S]{0,300}?\\[(\\d+):(\\d+):(\\d+)\\]/);
+                      const originCoords = origCoordMatch ? [origCoordMatch[1], origCoordMatch[2], origCoordMatch[3]].join(":") : null;
+                      console.log("[OgameXSniff] jumpgate detected url=" + url.slice(0, 80) + " src=" + sourceMoonId + " tgt=" + targetMoonId + " cd=" + cd + " origCoords=" + originCoords);
+                      if (cd === null && jsonResp) {
+                        console.log("[OgameXSniff] jumpgate cooldown NOT FOUND in JSON resp=" + t.slice(0, 300));
+                      }
+                      if (!targetMoonId && body && body.length > 0) {
+                        console.log("[OgameXSniff] jumpgate target NOT FOUND, body=" + String(body).slice(0, 400));
+                      }
+                      window.postMessage({
+                        source: "ogamex:jumpgateEvent",
+                        sourceMoonId, targetMoonId, cooldownSec: cd, originCoords,
+                        url, hasNotReady: t.includes("jumpgateNotReady") || (jsonResp && (jsonResp.status === true || jsonResp.success === true)),
+                      }, window.location.origin);
+                    } catch (e) { console.warn("[OgameXSniff] jumpgate parse fail:", e); }
                   }
                 } catch (_) {}
               }); } catch(_){}
@@ -468,7 +560,93 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             reqBody = body ? (body instanceof URLSearchParams ? body.toString() : (typeof body === "string" ? body : "<form>")) : "";
             xhr.addEventListener("load", () => {
               if (url.includes("/game/index.php")) {
-                try { log("XHR "+method, url, reqBody, xhr.status, (xhr.responseText||"").length); } catch(_){}
+                try { log("XHR "+method, url, reqBody, xhr.status, (xhr.responseText||"").length, xhr.responseText); } catch(_){}
+                // checkTarget shipsData piggyback (same as fetch branch)
+                if (url.includes("action=checkTarget")) {
+                  try {
+                    const j = JSON.parse(xhr.responseText || "{}");
+                    if (j && j.shipsData) {
+                      window.postMessage(
+                        { source: "ogamex:shipsData", shipsData: j.shipsData },
+                        window.location.origin
+                      );
+                    }
+                  } catch(_) {}
+                }
+                // Mirror fetch branch broader URL/field match.
+                if (/jump/i.test(url) || (reqBody && /jump/i.test(reqBody))) {
+                  try {
+                    const t = xhr.responseText || "";
+                    // 2026-05-27 真实 ogame v12 evidence:
+                    //   POST .../component=jumpgate&action=executeJump&asJson=1
+                    //   resp 是 JSON 274B (不是 HTML overlay) → 必须 JSON parse
+                    //   cooldown 字段大概率叫 cooldown / nextActionAt / time
+                    let cd = null;
+                    let jsonResp = null;
+                    try { jsonResp = JSON.parse(t); } catch(_) {}
+                    if (jsonResp) {
+                      // try common field names — operator paste 1 次后我对症
+                      cd = jsonResp.cooldown ?? jsonResp.nextActionAt ?? jsonResp.cooldownSec ?? jsonResp.time ?? null;
+                      if (cd !== null) cd = parseInt(cd, 10);
+                    }
+                    // HTML overlay fallback (page=ajax&component=jumpgate&overlay=1)
+                    if (cd === null) {
+                      const cdMatch = t.match(/simpleCountdown\\s*\\(\\s*\\$\\(["']#cooldown["']\\)\\s*,\\s*(\\d+)/);
+                      cd = cdMatch ? parseInt(cdMatch[1], 10) : null;
+                    }
+                    // SOURCE: real ogame URL/body 都没 cp= (executeJump endpoint).
+                    // Fallback chain: URL cp= → body cp= → current session meta planet-id
+                    const cpMatch = url.match(/[?&]cp=(\\d+)/) || (reqBody && reqBody.match(/[?&]cp=(\\d+)/));
+                    let sourceMoonId = cpMatch ? cpMatch[1] : null;
+                    if (!sourceMoonId) {
+                      try {
+                        const meta = document.querySelector("meta[name='ogame-planet-id']");
+                        if (meta) sourceMoonId = meta.getAttribute("content");
+                      } catch(_) {}
+                    }
+                    let targetMoonId = null;
+                    if (reqBody) {
+                      const m = reqBody.match(/targetSpaceObjectId=(\\d+)/)
+                            || reqBody.match(/selectedTarget=(\\d+)/)
+                            || reqBody.match(/[\\?&]target=(\\d+)/)
+                            || reqBody.match(/destId=(\\d+)/)
+                            || reqBody.match(/destinationId=(\\d+)/)
+                            || reqBody.match(/dest_planet=(\\d+)/);
+                      if (m) targetMoonId = m[1];
+                    }
+                    const origCoordMatch = t.match(/起始座[標标][\\s\\S]{0,300}?\\[(\\d+):(\\d+):(\\d+)\\]/);
+                    const originCoords = origCoordMatch ? [origCoordMatch[1], origCoordMatch[2], origCoordMatch[3]].join(":") : null;
+                    console.log("[OgameXSniff] XHR jumpgate url=" + url.slice(0, 80) + " src=" + sourceMoonId + " tgt=" + targetMoonId + " cd=" + cd);
+                    if (cd === null && jsonResp) {
+                      console.log("[OgameXSniff] XHR jumpgate cooldown NOT FOUND in JSON resp=" + t.slice(0, 300));
+                    }
+                    if (!targetMoonId && reqBody && reqBody.length > 0) {
+                      console.log("[OgameXSniff] XHR jumpgate target NOT FOUND, body=" + String(reqBody).slice(0, 400));
+                    }
+                    window.postMessage({
+                      source: "ogamex:jumpgateEvent",
+                      sourceMoonId, targetMoonId, cooldownSec: cd, originCoords,
+                      url, hasNotReady: t.includes("jumpgateNotReady") || (jsonResp && (jsonResp.status === true || jsonResp.success === true)),
+                    }, window.location.origin);
+                    // 2026-05-27 operator: 点确认对话框 = page navigate target moon,
+                    // sandbox async overlay re-fetch 来不及跑完就被 abort. 这里同步
+                    // 写 localStorage (blocking) — navigate 前必然落盘. boot 时
+                    // hydrate. ONLY 真实 jump (有 target) 写, overlay GET 不写.
+                    if (url.includes("action=executeJump") && targetMoonId && sourceMoonId
+                        && jsonResp && (jsonResp.status === true || jsonResp.success === true)) {
+                      try {
+                        const key = "OGAMEX_JUMPGATE_LOG";
+                        const log = JSON.parse(localStorage.getItem(key) || "[]");
+                        // 只记 ts+pair, 不假设 cooldown 时长 (jumpgate level 决定真实值).
+                        // hydrate 时 fire overlay re-fetch 拿精确剩余, 而非用默认值.
+                        log.push({ ts: Date.now(), src: sourceMoonId, tgt: targetMoonId });
+                        while (log.length > 20) log.shift();
+                        localStorage.setItem(key, JSON.stringify(log));
+                        console.log("[OgameXSniff] jumpgate sync-persisted src=" + sourceMoonId + " tgt=" + targetMoonId);
+                      } catch (_) {}
+                    }
+                  } catch(_) {}
+                }
               }
             });
             return origSend.apply(this, arguments);
@@ -477,12 +655,258 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }
         PatchedXHR.prototype = OrigXHR.prototype;
         window.XMLHttpRequest = PatchedXHR;
-        console.log("[OgameXSniff] installed — fetch + XHR wrapped, logging /game/index.php calls");
+        // 2026-05-27: jumpgate may be <form> POST (full page nav) not XHR.
+        // Hook submit event in CAPTURE phase so we see action+body BEFORE
+        // navigation. Logs every form submit; jumpgate-detect filters later.
+        try {
+          document.addEventListener("submit", function(e) {
+            try {
+              var form = e.target;
+              if (!form || !form.tagName || form.tagName !== "FORM") return;
+              var action = form.action || form.getAttribute("action") || "";
+              var fd = new FormData(form);
+              var bodyStr = new URLSearchParams(fd).toString();
+              console.log("[OgameXSniff] FORM-SUBMIT action=" + action + " body=" + bodyStr.slice(0, 400));
+              // Detect jumpgate by URL substring (case-insensitive)
+              if (/jump/i.test(action) || /jump/i.test(bodyStr)) {
+                window.postMessage({
+                  source: "ogamex:jumpgateFormSubmit",
+                  action: action,
+                  body: bodyStr,
+                }, window.location.origin);
+              }
+            } catch (_) {}
+          }, true);
+          console.log("[OgameXSniff] form-submit listener installed");
+        } catch (e) { console.warn("[OgameXSniff] form listener install failed", e); }
+        console.log("[OgameXSniff] installed — fetch + XHR + form-submit wrapped, logging /game/index.php calls");
       } catch (e) { console.warn("[OgameXSniff] install failed", e); }
     })();
   `;
   env.doc.documentElement.appendChild(sniffer);
   setTimeout(() => { try { sniffer.remove(); } catch { /* gone */ } }, 500);
+
+  // Active cargo-cap probe — operator 2026-05-26: cache 一直空因为 boot 后
+  // ogame 没自动 fire checkTarget (operator 没手动 select 目标). 主动跑 stage1+
+  // stage2 chain (fleetSelectionAjax → checkTarget) ABORT 在 stage3 之前.
+  // sniffer postMessage 自动 piggyback cache. 不依赖 ogame UI / daemon expedition.
+  async function probeShipCargoCap(): Promise<void> {
+    // Operator 2026-05-26: "我在星球上操作会自动切换到其他星球". probe 跑
+    // fleetSelectionAjax + checkTarget 可能触发 ogame internal state redraw.
+    // 即使 cp=current 不切, ogame 内部 fleet form state 改变 (am20X=1 select)
+    // 可能 cause UI ripple. operator userBusy 时推迟.
+    if (userBusy()) {
+      console.info("[OgameX/cargo-probe] operator busy, skip — retry in 10s");
+      setTimeout(() => { void probeShipCargoCap(); }, 10_000);
+      return;
+    }
+    try {
+      const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
+      if (!planetId) return;
+      const planet = store.state.planets[planetId];
+      if (!planet || !Array.isArray(planet.coords) || planet.coords.length !== 3) return;
+      // bootstrap token via fetchEventBox cp=current (no UI shift; current==target).
+      // probe runs only when !userBusy (gated above) — safe to bypassBusy here.
+      const r0 = await fetchWithCp(
+        `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1`,
+        { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+        planetId,
+        { bypassBusy: true, skipRestore: true },
+      );
+      const j0 = await r0.json() as { newAjaxToken?: string };
+      let token = j0.newAjaxToken;
+      if (!token) token = (env.doc.documentElement as HTMLElement).dataset["ogamexToken"] ?? "";
+      if (!token) return;
+      const body1 = new URLSearchParams({ token });
+      body1.append("am202", "1");
+      const r1 = await fetchWithCp(
+        `/game/index.php?page=ingame&component=fleetdispatch&action=fleetSelectionAjax&ajax=1&asJson=1`,
+        { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body: body1 },
+        planetId,
+        { bypassBusy: true, skipRestore: true },
+      );
+      const j1 = await r1.json() as { newAjaxToken?: string };
+      if (!j1.newAjaxToken) return;
+      const body2 = new URLSearchParams({
+        token: j1.newAjaxToken,
+        galaxy: String(planet.coords[0]),
+        system: String(planet.coords[1]),
+        position: String(planet.coords[2]),
+        type: "1",
+      });
+      body2.append("am202", "1");
+      const r2 = await fetchWithCp(
+        `/game/index.php?page=ingame&component=fleetdispatch&action=checkTarget&ajax=1&asJson=1`,
+        { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body: body2 },
+        planetId,
+        { bypassBusy: true, skipRestore: true },
+      );
+      const j2 = await r2.json() as { shipsData?: unknown };
+      console.info(`[OgameX/cargo-probe] checkTarget response shipsData present=${!!j2.shipsData}`);
+      if (j2.shipsData) {
+        const { cacheShipsData } = await import("./api/ship_cargo_cache.js");
+        cacheShipsData(j2.shipsData, env.win);
+      }
+    } catch (e) {
+      console.warn("[OgameX/cargo-probe] failed:", e);
+    }
+  }
+  // Fire one probe at boot +10s, gives empire/planets time to populate.
+  setTimeout(() => { void probeShipCargoCap(); }, 10_000);
+  // Expose for manual re-trigger from console / panel.
+  (env.win as Window & { __ogamexProbeShipCargo?: () => Promise<void> }).__ogamexProbeShipCargo = probeShipCargoCap;
+  try {
+    if (typeof (globalThis as { unsafeWindow?: Window }).unsafeWindow !== "undefined") {
+      ((globalThis as { unsafeWindow: Window }).unsafeWindow as Window & { __ogamexProbeShipCargo?: () => Promise<void> })
+        .__ogamexProbeShipCargo = probeShipCargoCap;
+    }
+  } catch { /* */ }
+
+  // Listen for shipsData piggybacked from sniffer (page world) on
+  // EVERY checkTarget response — caches post-bonus cargoCapacity into
+  // store.server.ship_cargo_capacity. Uses window.postMessage to cross
+  // Tampermonkey sandbox boundary (CustomEvent.detail object identity
+  // is lost across boundary, postMessage uses structured clone).
+  env.win.addEventListener("message", (ev) => {
+    try {
+      const data = ev.data as { source?: string; shipsData?: unknown };
+      // 2026-05-27 diagnostic — log ALL ogamex:* messages BEFORE source/origin
+      // filtering so we know whether listener is even receiving page-world posts.
+      if (data && typeof data === "object" && data.source && String(data.source).startsWith("ogamex:")) {
+        console.info("[OgameX/msg-listener] received source=" + data.source + " ev.source===env.win? " + (ev.source === env.win) + " origin=" + ev.origin);
+      }
+      // 2026-05-27: 放宽 source check —— Tampermonkey sandbox 隔离下
+      // ev.source (page-world window) !== env.win (sandbox proxy) is possible
+      // even though they are the same underlying window. Origin check 已足够.
+      if (ev.origin !== env.win.location.origin) return;
+      if (!data) return;
+      if (data.source === "ogamex:shipsData" && data.shipsData) {
+        void import("./api/ship_cargo_cache.js").then(({ cacheShipsData }) => {
+          cacheShipsData(data.shipsData, env.win);
+        }).catch((e) => console.warn("[OgameX] shipsData cache import failed:", e));
+      }
+      // Operator 2026-05-26: 跳跃事件驱动 update jumpgate cooldown.
+      // Sniffer 监听 component=jumpgate POST/GET response, post message 含
+      // sourceMoonId / targetMoonId / cooldownSec → 写 store, ticker 自动倒计时.
+      if (data.source === "ogamex:jumpgateEvent") {
+        const e = data as unknown as { sourceMoonId?: string; targetMoonId?: string; cooldownSec?: number | null; hasNotReady?: boolean; originCoords?: string };
+        const cd = e.cooldownSec ?? null;
+        const ts = Date.now();
+        // Fallback — if sourceMoonId regex missed, find moon by originCoords
+        let resolvedSourceId = e.sourceMoonId;
+        if (!resolvedSourceId && e.originCoords) {
+          const [g, s, p] = e.originCoords.split(":").map(Number);
+          const m = Object.values(store.state.planets ?? {}).find((pl) =>
+            pl.type === "moon" && pl.coords[0] === g && pl.coords[1] === s && pl.coords[2] === p
+          );
+          if (m) {
+            resolvedSourceId = m.id;
+            console.info(`[OgameX/jumpgate-event] sourceMoonId fallback by coords ${e.originCoords} → ${resolvedSourceId}`);
+          }
+        }
+        const pairTgt = e.targetMoonId ?? null;
+        const pairSrc = resolvedSourceId ?? null;
+
+        // Helper: commit cooldown to store. cd!=null → cooldown active;
+        // cd===0 → mark ready (clear pair); cd===null → noop.
+        const commitCooldown = (srcId: string | null, cdSec: number | null): void => {
+          if (!srcId) return;
+          const planets = { ...store.state.planets };
+          if (!planets[srcId]) return;
+          if (cdSec !== null && cdSec > 0) {
+            planets[srcId] = { ...planets[srcId]!, jumpgate_cooldown_sec: cdSec, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: pairTgt };
+            // target gets pair_with→source but its OWN cooldown is NOT set
+            // (ogame v12: only source moon enters cooldown).
+            if (pairTgt && planets[pairTgt]) {
+              planets[pairTgt] = { ...planets[pairTgt]!, jumpgate_pair_with: pairSrc };
+            }
+          } else if (cdSec === 0) {
+            planets[srcId] = { ...planets[srcId]!, jumpgate_cooldown_sec: 0, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: null };
+          }
+          store.setPartial({ planets });
+          // Auto-expand Moons section so operator sees the new cooldown row even
+          // if they previously collapsed it. Operator 2026-05-27 第一次跳完
+          // "panel 里面没有显示" — 极可能是 section collapsed 状态遗留.
+          try { window.localStorage.setItem("ogamex.panel.section.moons", "false"); } catch (_) {}
+          const fmt = (sec: number): string => `${Math.floor(sec / 60)}:${(sec % 60).toString().padStart(2, "0")}`;
+          console.info(`[OgameX/jumpgate-event] src=${srcId} tgt=${pairTgt ?? "?"} cd=${cdSec !== null ? fmt(cdSec) : "READY"}`);
+          // Loud diagnostic — dump all moons w/ cooldown OR pair_with after commit
+          // so we see store actually got the update.
+          const debug = Object.entries(store.state.planets ?? {})
+            .filter(([_, p]) => p.type === "moon" && (p.jumpgate_cooldown_sec !== null && p.jumpgate_cooldown_sec !== undefined || p.jumpgate_pair_with))
+            .map(([id, p]) => `${id}(${(p.coords ?? []).join(":")}) cd=${p.jumpgate_cooldown_sec} at=${p.jumpgate_harvested_at} pair=${p.jumpgate_pair_with}`);
+          console.info(`[OgameX/jumpgate-event] post-commit store snapshot: ${debug.length} entries → ${debug.join(" | ")}`);
+        };
+
+        // CASE A: sniffer 拿到了精确 cooldown → 直接 commit
+        if (cd !== null && cd > 0) {
+          commitCooldown(resolvedSourceId ?? null, cd);
+        } else if (e.hasNotReady === true && resolvedSourceId && e.targetMoonId) {
+          // CASE B: 真实 jump 事件 (有 target) — 跳跃成功但 ogame executeJump
+          // JSON 不返回 cd. Event-driven re-fetch overlay GET → parse cooldown.
+          // **关键 gate**: 必须有 e.targetMoonId. Operator 2026-05-27 第二次跳前
+          // 打开 jumpgate widget → overlay GET 也触发 sniffer with tgt=null +
+          // hasNotReady=true (源月球还在 cooldown). 如果不 gate,会:
+          //   (1) 死循环: re-fetch overlay → sniffer 拦它 → 又 fire CASE B
+          //   (2) pair_with 被 overlay GET (tgt=null) 覆写成 null → panel 坏
+          // Try several regex variants (ogame v12 may use different markup).
+          // Fallback to 3600 (60 min, level-1 jumpgate default).
+          console.info(`[OgameX/jumpgate-event] success but JSON no cd — re-fetch overlay cp=${resolvedSourceId} for precise cooldown`);
+          void (async (): Promise<void> => {
+            try {
+              // CASE B fires right after operator clicked jump → cp likely already at
+              // source moon (no UI bounce). Still bypassBusy=true since this is event-
+              // driven response to operator's own action.
+              const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
+              const r = await fetchWithCpBypassBusy(
+                `/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1`,
+                { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+                resolvedSourceId,
+              );
+              const html = await r.text();
+              // Multi-regex sweep — first hit wins.
+              const patterns: RegExp[] = [
+                /simpleCountdown\s*\(\s*\$\(["']#cooldown["']\)\s*,\s*(\d+)/,
+                /simpleCountdown\s*\(\s*[^,)]+,\s*(\d+)/,
+                /id\s*=\s*["']cooldown["'][^>]*data-(?:end-time|cd|cooldown|countdown)\s*=\s*["']?(\d+)/i,
+                /data-(?:end-time|cd|cooldown|countdown)\s*=\s*["']?(\d+)["']?[^>]*id\s*=\s*["']cooldown["']/i,
+                /id\s*=\s*["']cooldown["'][^>]*>\s*(\d+)/,
+              ];
+              let parsedCd: number | null = null;
+              for (const re of patterns) {
+                const m = html.match(re);
+                if (m && m[1]) {
+                  parsedCd = parseInt(m[1], 10);
+                  if (!isNaN(parsedCd) && parsedCd > 0) {
+                    console.info(`[OgameX/jumpgate-event] overlay cd parsed via ${re.source.slice(0, 50)}... → ${parsedCd}s`);
+                    break;
+                  }
+                  parsedCd = null;
+                }
+              }
+              if (parsedCd === null) {
+                // Dump cooldown-keyword vicinity for next-iter regex refinement.
+                const cdIdx = html.toLowerCase().indexOf("cooldown");
+                if (cdIdx >= 0) {
+                  console.warn(`[OgameX/jumpgate-event] overlay regex all missed — context: ${html.slice(Math.max(0, cdIdx - 100), cdIdx + 300)}`);
+                }
+                parsedCd = 3600;
+                console.warn(`[OgameX/jumpgate-event] using fallback cooldown=3600s (60min default for level-1 jumpgate)`);
+              }
+              commitCooldown(resolvedSourceId, parsedCd);
+            } catch (err) {
+              console.warn(`[OgameX/jumpgate-event] overlay re-fetch failed, fallback 3600s:`, err);
+              commitCooldown(resolvedSourceId, 3600);
+            }
+          })();
+        }
+      }
+    } catch (e) { console.warn("[OgameX] message listener failed:", e); }
+  });
 
   // 3. Initial extraction from current page
   const resources = extractResources(env.doc);
@@ -556,7 +980,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.284";
+  const USERSCRIPT_VERSION = "0.0.353";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
@@ -576,11 +1000,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   }
   store.setPartial({
     server: {
+      // Operator 2026-05-26 evidence: SC/LC 反复回 5000/25000 base — 因为
+      // boot init 每次 (ogame SPA navigate 重 inject) 跑此 setPartial 用
+      // hardcode server build, 覆盖 ship_cargo_capacity. Fix: spread existing
+      // store.state.server (rehydrated from IndexedDB) 才保留 cache 字段.
+      ...(store.state.server ?? {}),
       universe: ogame_meta.universe ?? "",
       speed: ogame_meta.universe_speed ?? 1,
-      // userscript_version is non-typed here (extra field) — sidecar
-      // listState passes through any extra server fields, so /v1/state
-      // surfaces it for "which version is connected" debugging.
       userscript_version: USERSCRIPT_VERSION,
       ...(metaSpeedFleetP ? { fleet_peaceful_speed: Number(metaSpeedFleetP) } : {}),
       ...(metaSpeedFleetW ? { fleet_war_speed: Number(metaSpeedFleetW) } : {}),
@@ -781,6 +1207,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const inner = m[1] ?? "";
         const missionM = block.match(/data-mission-type="(\d+)"/);
         const mission = missionM ? parseInt(missionM[1]!, 10) : 0;
+        // Real ogame fleet id (v0.0.295 — operator probe 2026-05-26 evidence):
+        //   <span class="timer tooltip" ... id="timer_NNNNNNN">載入中...</span>
+        // The numeric suffix after "timer_" IS the ogame fleet id; used by
+        // recallFleetAjax POST. Verified for both mission=4 deploy (2005022)
+        // and mission=15 expedition (2001819) on live server. Previous guess
+        // `data-fleet-id` was from fleetdispatch fixture — wrong page.
+        const fleetIdMatch = inner.match(/id="timer_(\d+)"/);
+        const fleetId = fleetIdMatch ? parseInt(fleetIdMatch[1]!, 10) : null;
         // Find ALL coords [G:S:P] in the inner block. First = origin, last = dest.
         const coordsList = Array.from(inner.matchAll(/\[(\d+):(\d+):(\d+)\]/g)).map((cm) =>
           [parseInt(cm[1]!, 10), parseInt(cm[2]!, 10), parseInt(cm[3]!, 10)] as readonly number[]
@@ -819,7 +1253,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (mission === 15 && origin && origin.length === 3) {
           dest = [origin[0]!, origin[1]!, 16] as readonly number[];
         }
-        return { mission, origin, dest, arrival_at, return_at };
+        return { mission, origin, dest, arrival_at, return_at, fleetId };
       });
       // Max slots — operator 2026-05-25: strip HTML tags first so the
       // digit/slash/digit pattern can match across nested <span> wrappers.
@@ -857,15 +1291,19 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         origin: undefined as readonly number[] | undefined,
         dest: undefined as readonly number[] | undefined,
       }));
-      const syntheticFleets = sourceList.map((f, idx) => ({
-        id: `mvt-${idx}`,
-        mission: f.mission,
-        origin: f.origin,
-        dest: f.dest,
-        arrival_at: (f as { arrival_at?: number }).arrival_at ?? 0,
-        return_at: (f as { return_at?: number | null }).return_at ?? null,
-        ships: {} as Record<string, number>,
-      })) as unknown as typeof cur.fleets_outbound;
+      const syntheticFleets = sourceList.map((f, idx) => {
+        // Real fleet id preferred over synthetic; fsm.patchFleetId needs it.
+        const realId = (f as { fleetId?: number | null }).fleetId;
+        return {
+          id: realId !== null && realId !== undefined ? String(realId) : `mvt-${idx}`,
+          mission: f.mission,
+          origin: f.origin,
+          dest: f.dest,
+          arrival_at: (f as { arrival_at?: number }).arrival_at ?? 0,
+          return_at: (f as { return_at?: number | null }).return_at ?? null,
+          ships: {} as Record<string, number>,
+        };
+      }) as unknown as typeof cur.fleets_outbound;
       const cur = store.state;
       store.setPartial({
         server: {
@@ -888,6 +1326,110 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // No periodic poll; if events miss, daemon's data.refresh acts as backup.
   // Expose so eventbox hook + ApiExec can fire it on demand.
   (env.win as Window & { __ogamexHarvestMovement?: () => Promise<void> }).__ogamexHarvestMovement = harvestSlotsFromMovement;
+
+  // Jumpgate cooldown harvester — DELETED 2026-05-27 (architecture migration).
+  // Original purpose: probe each moon's jumpgate overlay every boot+15s + 24h
+  // throttle to fill store.jumpgate_cooldown_sec. Replaced by:
+  //   1. sniffer (page-world) intercepts ogame's real executeJump POST
+  //   2. sandbox CASE B fires overlay re-fetch via fetchWithCpBypassBusy
+  //   3. sync-log in localStorage survives page-navigate; boot+2s hydrate
+  // Old code dropped (~110 lines). Function not exposed; no callers.
+  // 2026-05-27 operator: "不要用 boot 时的 harvest 探针 改成截取跳跃事件 / 事件驱动".
+  // harvestJumpgateCooldowns() FULLY DEPRECATED — boot 时不再 fire, 不再 expose.
+  // 仅靠 sniffer (fetch+XHR+form-submit) 截取 ogame 真实 jumpgate POST 事件
+  // → message listener 写 source.pair_with=target + target.pair_with=source.
+  // Boot 时清空所有月球已有的 jumpgate_cooldown_sec — 那些是历史 harvest 来的
+  // 污染数据 (无 pair, 时间不准, 3-singles 显示 bug 根因). 静默清掉.
+  setTimeout(() => {
+    const planets = store.state.planets ?? {};
+    let cleared = 0;
+    const newPlanets: typeof planets = { ...planets };
+    for (const [id, p] of Object.entries(planets)) {
+      if (p.type === "moon" && (p.jumpgate_cooldown_sec !== undefined || p.jumpgate_harvested_at !== undefined)) {
+        newPlanets[id] = { ...p, jumpgate_cooldown_sec: null, jumpgate_harvested_at: null, jumpgate_pair_with: null };
+        cleared++;
+      }
+    }
+    if (cleared > 0) {
+      store.setPartial({ planets: newPlanets });
+      console.info(`[OgameX/jumpgate] cleared ${cleared} stale harvest cooldowns — now event-driven only (sniffer)`);
+    }
+
+    // Operator 2026-05-27: hydrate from sniffer's sync localStorage log.
+    // Page navigate race kills sandbox async re-fetch; sniffer writes
+    // OGAMEX_JUMPGATE_LOG synchronously before navigate. For each log entry,
+    // fire overlay re-fetch to get PRECISE remaining cooldown (jumpgate level
+    // → cooldown 1800/2400/3600 都可能, 不能 hardcode).
+    try {
+      const log = JSON.parse(env.win.localStorage.getItem("OGAMEX_JUMPGATE_LOG") || "[]") as Array<{ts: number; src: string; tgt: string}>;
+      const now = Date.now();
+      // Dedupe by src (latest entry per source moon wins).
+      const latestBySrc = new Map<string, {ts: number; src: string; tgt: string}>();
+      for (const entry of log) {
+        const cur = latestBySrc.get(entry.src);
+        if (!cur || entry.ts > cur.ts) latestBySrc.set(entry.src, entry);
+      }
+      // Skip entries older than 2 hours (any jumpgate cooldown maxes at <2h).
+      const candidates = Array.from(latestBySrc.values())
+        .filter(e => (now - e.ts) < 2 * 3600_000)
+        .filter(e => {
+          const src = store.state.planets?.[e.src];
+          if (!src || src.type !== "moon") return false;
+          // 已经有更新的精确 cd (CASE B 校正), 不重新 fetch
+          if (typeof src.jumpgate_cooldown_sec === "number" && src.jumpgate_cooldown_sec > 0
+              && src.jumpgate_harvested_at && src.jumpgate_harvested_at > e.ts) return false;
+          return true;
+        });
+      if (candidates.length > 0) {
+        // Hydrate IS page-navigate recovery (not "background work during user
+        // activity"). bypassBusy=true: even if user_busy_until is stale from
+        // mousedown right before refresh, run anyway — helper still restores
+        // cp afterwards so顶栏 跳回 operator current planet.
+        console.info(`[OgameX/jumpgate] hydrating ${candidates.length} cooldown(s) from sync log via overlay re-fetch (page-navigate-safe)`);
+        for (const entry of candidates) {
+          void (async (): Promise<void> => {
+            try {
+              const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
+              const r = await fetchWithCpBypassBusy(
+                `/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1`,
+                { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+                entry.src,
+              );
+              const html = await r.text();
+              let parsedCd: number | null = null;
+              const patterns = [
+                /simpleCountdown\s*\(\s*\$\(["']#cooldown["']\)\s*,\s*(\d+)/,
+                /simpleCountdown\s*\(\s*[^,)]+,\s*(\d+)/,
+              ];
+              for (const re of patterns) {
+                const m = html.match(re);
+                if (m && m[1]) { parsedCd = parseInt(m[1], 10); if (!isNaN(parsedCd) && parsedCd > 0) break; parsedCd = null; }
+              }
+              if (parsedCd === null || parsedCd <= 0) {
+                console.warn(`[OgameX/jumpgate] hydrate src=${entry.src}: overlay says no cooldown (already ready or parse failed). Skipping.`);
+                return;
+              }
+              const planets = { ...store.state.planets };
+              if (!planets[entry.src]) return;
+              planets[entry.src] = { ...planets[entry.src]!, jumpgate_cooldown_sec: parsedCd, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: entry.tgt };
+              if (entry.tgt && planets[entry.tgt]) {
+                planets[entry.tgt] = { ...planets[entry.tgt]!, jumpgate_pair_with: entry.src };
+              }
+              store.setPartial({ planets });
+              const fmt = (s: number): string => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,"0")}`;
+              console.info(`[OgameX/jumpgate] hydrated src=${entry.src} tgt=${entry.tgt} cd=${fmt(parsedCd)} (precise from overlay)`);
+            } catch (e) {
+              if (e instanceof BusyDeferredError) {
+                console.info(`[OgameX/jumpgate] hydrate src=${entry.src} deferred (operator busy); will retry on next state.updated tick`);
+              } else {
+                console.warn(`[OgameX/jumpgate] hydrate fetch failed src=${entry.src}:`, e);
+              }
+            }
+          })();
+        }
+      }
+    } catch (e) { console.warn("[OgameX/jumpgate] hydrate from log failed:", e); }
+  }, 2_000);
 
   // PARASITIC EVENTBOX HOOK — replaces failed /movement-based pollInboundFleets.
   // Rationale (corrected from earlier design): /movement endpoint returns ONLY
@@ -1086,8 +1628,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // for a few minutes is acceptable; broken expeditions are not.
       const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
       if (!planetId) return;
-      const url = `/game/index.php?page=fetchResources&ajax=1&cp=${planetId}`;
-      const resp = await env.win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
+      // cp=current ≈ no shift; skipRestore + bypassBusy keep periodic poll cheap.
+      const resp = await fetchWithCp(
+        `/game/index.php?page=fetchResources&ajax=1`,
+        { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+        planetId,
+        { bypassBusy: true, skipRestore: true },
+      );
       if (!resp.ok) return;
       const j = await resp.json() as Record<string, unknown> & {
         resources?: { metal?: { amount?: number; production?: number }; crystal?: { amount?: number; production?: number }; deuterium?: { amount?: number; production?: number }; energy?: { amount?: number } };
@@ -1204,60 +1751,45 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // tab drift is acceptable; planner re-derives from server.resources
   // when needed.
 
-  // Expedition mail poller — DISABLED per operator. Function kept for
-  // re-enable if needed; the schedule calls below are commented out.
-  // Rationale: stats were classified but never consumed by anything
-  // critical (just localStorage write), so the every-5min fetch + log
-  // wasn't load-bearing. If a danger-rate throttle is wanted later,
-  // re-enable by uncommenting the setTimeout+setInterval.
-  /* eslint-disable @typescript-eslint/no-unused-vars */
-  async function _pollExpeditionMails_DISABLED(): Promise<void> {
-    try {
-      const url = `/game/index.php?page=componentOnly&component=messages&asJson=1&action=getMessagesList`;
-      const resp = await env.win.fetch(url, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body: "activeSubTab=22&showTrash=false",
-      });
-      if (!resp.ok) return;
-      const txt = await resp.text();
-      try {
-        const j = JSON.parse(txt) as { status?: string; messages?: unknown; messagesContent?: unknown; components?: unknown };
-        const msgs = (j as { messages?: unknown[] }).messages;
-        const SAFE_RE = /未被探索|第一批|未探索|virgin|unexplored/i;
-        const DANGER_RE = /遇到其他人|已經先來過|已经先来过|有人.*先到|pirate|hostile|encountered/i;
-        let safe = 0, danger = 0, total = 0;
-        const scan = (text: string): void => {
-          total++;
-          if (SAFE_RE.test(text)) safe++;
-          else if (DANGER_RE.test(text)) danger++;
-        };
-        if (Array.isArray(msgs)) for (const m of msgs) scan(JSON.stringify(m));
-        const rate = total > 0 ? danger / total : 0;
-        console.log(`[OgameX/mail-poll] outcomes: safe=${safe} danger=${danger} total=${total} danger_rate=${(rate*100).toFixed(0)}%`);
-        try { localStorage.setItem("OGAMEX_EXP_STATS", JSON.stringify({ safe, danger, total, rate, ts: Date.now() })); } catch (_) { void _; }
-      } catch (_) {
-        console.log(`[OgameX/mail-poll] non-JSON resp[0:200]=${txt.slice(0,200)}`);
-      }
-    } catch (e) { void e; }
-  }
-  /* eslint-enable @typescript-eslint/no-unused-vars */
-  void _pollExpeditionMails_DISABLED;
-  // setTimeout(() => { void _pollExpeditionMails_DISABLED(); }, 5000);
-  // setInterval(() => { if (!userBusy()) void _pollExpeditionMails_DISABLED(); }, 5 * 60 * 1000);
-
   const REFRESH_PAGES = ["research", "supplies", "facilities", "shipyard", "fleetdispatch", "lfbuildings"];
   let refreshIdx = 0;
+  // Per-component chunk usability — verified 2026-05-25 via live probe:
+  //   fleetdispatch chunk returns 131KB with full inline data (var shipsOnPlanet)
+  //   research/supplies/facilities/shipyard/lfbuildings chunks return ~1KB STUBS
+  //     (200 OK but no data-technology elements, no inline data dump)
+  // Only fleetdispatch is SPA-routable as componentOnly chunk; the rest must
+  // go through page=ingame full-page to render building/research levels.
+  const CHUNK_SUPPORTED = new Set<string>(["fleetdispatch"]);
   async function refreshOnePage(): Promise<void> {
     const page = REFRESH_PAGES[refreshIdx % REFRESH_PAGES.length]!;
     refreshIdx += 1;
     try {
       const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
-      const url = `/game/index.php?page=ingame&component=${page}${planetId ? `&cp=${planetId}` : ""}`;
-      const resp = await env.win.fetch(url, { credentials: "same-origin" });
-      if (!resp.ok) return;
+      const useChunk = CHUNK_SUPPORTED.has(page);
+      const baseUrl = useChunk
+        ? `/game/index.php?page=componentOnly&component=${page}&ajax=1`
+        : `/game/index.php?page=ingame&component=${page}`;
+      const init = {
+        credentials: "same-origin" as const,
+        ...(useChunk ? { headers: { "X-Requested-With": "XMLHttpRequest" } } : {}),
+      };
+      // cp=current ≈ no shift; bypass busy because refreshOnePage already
+      // self-throttles AND respects opts.force userBusy check at top.
+      const resp = planetId
+        ? await fetchWithCp(baseUrl, init, planetId, { bypassBusy: true, skipRestore: true })
+        : await env.win.fetch(baseUrl, init);
+      if (!resp.ok) {
+        console.warn(`[OgameX/refreshOnePage] ${page} HTTP ${resp.status} (${useChunk ? "chunk" : "full"}) — abort`);
+        return;
+      }
       const html = await resp.text();
+      // Defense in depth: if a "chunk-supported" component suddenly returns
+      // a stub (<5KB, no DOM data), warn and abort rather than wipe store.
+      if (useChunk && html.length < 5000) {
+        console.warn(`[OgameX/refreshOnePage] ${page} chunk too small (${html.length}B) — ogame changed shape? skipping refresh`);
+        return;
+      }
+      console.info(`[OgameX/refreshOnePage] ${page}: ${useChunk ? "chunk" : "full"} ${html.length}B`);
       // Parse via DOMParser into a detached document; reuse the same
       // extractors that run on env.doc by SWAPPING `env.doc` temporarily?
       // No — extractors close over env.doc. Run them inline against the
@@ -1265,20 +1797,6 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const parser = new (env.win as unknown as { DOMParser: typeof DOMParser }).DOMParser();
       const parsedDoc = parser.parseFromString(html, "text/html");
 
-      // Diagnostic dump for lfbuildings — ogame may use different DOM than
-      // regular buildings. Without seeing actual markup we can't write the
-      // right selector. Logs once per refresh tick so console doesn't flood.
-      if (page === "lfbuildings") {
-        const lis = parsedDoc.querySelectorAll<HTMLElement>('[data-technology]');
-        const sample = Array.from(lis).slice(0, 8).map((li) => ({
-          tag: li.tagName, id: li.getAttribute("data-technology"),
-          cls: (li.className ?? "").slice(0, 60),
-          lvl_dv: li.querySelector(".level")?.getAttribute("data-value"),
-          lvl_txt: (li.querySelector(".level")?.textContent ?? "").trim().slice(0, 20),
-        }));
-        // (lf-dump silenced — extractor working, sample only useful for new lf tech debug)
-        void sample;
-      }
       // 1) Tech levels (research/supplies/facilities → regular; lfbuildings → lifeform)
       const techMap = (await import("./probes/extractors/buildings.js")).extractTechLevels(parsedDoc);
       if (Object.keys(techMap).length > 0) {
@@ -1714,35 +2232,73 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // explicit requirement: "每次远征之前从 api 拿最新的舰船数量".
   (env.win as Window & { __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>> })
     .__ogamexFetchPlanetShips = async (pid: string): Promise<Record<string, number>> => {
-    // GROUND TRUTH = fleetdispatch page. /empire endpoint includes in-transit
-    // ships (reports total owned-per-planet including departed fleets).
-    // fleetdispatch page's <input data-max-amount=N> reflects what's
-    // LAUNCHABLE right now = hangar only.
+    // GROUND TRUTH = fleetdispatch SPA chunk. Endpoint chosen 2026-05-25
+    // via live probe: `componentOnly&component=fleetdispatch&ajax=1` is the
+    // exact endpoint ogame's own SPA uses when navigating to /fleetdispatch
+    // — returns 131KB chunk vs 352KB full-page (63% smaller) with identical
+    // inline data block. /empire endpoint counts in-transit ships as owned,
+    // so we can't use it for hangar-only ground truth.
     //
-    // Owner observation: state showed 1500 largeCargo on a planet that
-    // "实际没有船" — fleet was already in transit, empire returned the
-    // committed count not the available count.
+    // Primary parser: inline JS `var shipsOnPlanet = [{"id":203,"number":N}, ...]`
+    //   This is ogame's own structured data dump (not DOM). Same pattern we
+    //   use for /movement slot harvest. Missing ship id == 0 in hangar.
+    // Fallbacks: `data-max-amount` DOM regex (legacy DOM scrape) kept for
+    //   resilience if ogame ever refactors the inline JS block.
     try {
-      const url = `/game/index.php?page=ingame&component=fleetdispatch&cp=${pid}`;
-      const r = await env.win.fetch(url, { credentials: "same-origin" });
+      // pid is target planet (might differ from operator's current cp). Use
+      // helper for proper busy gate + restore. bypassBusy because this is
+      // pre-flight resource check for FS emergency, not visible to operator.
+      const r = await fetchWithCp(
+        `/game/index.php?page=componentOnly&component=fleetdispatch&ajax=1`,
+        { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+        pid,
+        { bypassBusy: true },
+      );
       if (!r.ok) {
-        // CONSERVATIVE ABORT (was: stale store fallback). Operator:
-        // "发了缺船的远征" — don't risk launching on stale data.
-        console.warn(`[OgameX/fetchShips] fd HTTP ${r.status} for ${pid} → ABORT preflight`);
+        console.warn(`[OgameX/fetchShips] fd-chunk HTTP ${r.status} for ${pid} → ABORT preflight`);
         return {};
       }
       const html = await r.text();
       const ships: Record<string, number> = {};
-      // Multi-pattern parse — ogame v12 ship HTML varies. Try each:
-      // A: name="am2XX" ... data-max-amount="N"
-      // B: data-max-amount="N" ... name="am2XX" (attribute order reversed)
-      // C: data-amount="N" data-technology="2XX" (span/div variant)
-      const patternA = /name="am(\d+)"[^>]*data-max-amount="(\d+)"/g;
-      for (const m of html.matchAll(patternA)) {
-        const tid = String(m[1] ?? ""); const max = parseInt(m[2] ?? "0", 10);
-        const name = TECH_ID_TO_NAME[tid];
-        if (name && tid.startsWith("2")) ships[name] = max;
+      // PRIMARY: inline JS shipsOnPlanet block (ogame's official data dump).
+      // Format: `var shipsOnPlanet = [{"id":203,"number":4500}, ...];`
+      // IDs not listed = 0 ships (write zeros so downstream `have < need`
+      // comparisons work correctly).
+      const onPlanetMatch = html.match(/var\s+shipsOnPlanet\s*=\s*(\[[\s\S]*?\])\s*;/);
+      if (onPlanetMatch) {
+        try {
+          const arr = JSON.parse(onPlanetMatch[1]!) as Array<{ id?: number; number?: number }>;
+          // Initialize all ship ids to 0; populate from response. ogame ship
+          // tech IDs are 3-digit 202-219; buildings 21..24 also startsWith("2")
+          // but with length 2 — gate strictly on 3-digit numeric.
+          for (const tid of Object.keys(TECH_ID_TO_NAME)) {
+            if (tid.length === 3 && tid.startsWith("2")) {
+              const name = TECH_ID_TO_NAME[tid]!;
+              ships[name] = 0;
+            }
+          }
+          for (const entry of arr) {
+            const tid = String(entry.id ?? "");
+            const n = typeof entry.number === "number" ? entry.number : 0;
+            const name = TECH_ID_TO_NAME[tid];
+            if (name) ships[name] = n;
+          }
+          console.info(`[OgameX/fetchShips] ${pid} via inline shipsOnPlanet: ${arr.length} ship types listed`);
+        } catch (e) {
+          console.warn(`[OgameX/fetchShips] inline shipsOnPlanet JSON parse failed:`, e);
+          for (const k of Object.keys(ships)) delete ships[k];
+        }
       }
+      // FALLBACK A: name="am2XX" ... data-max-amount="N"
+      if (Object.keys(ships).length === 0) {
+        const patternA = /name="am(\d+)"[^>]*data-max-amount="(\d+)"/g;
+        for (const m of html.matchAll(patternA)) {
+          const tid = String(m[1] ?? ""); const max = parseInt(m[2] ?? "0", 10);
+          const name = TECH_ID_TO_NAME[tid];
+          if (name && tid.startsWith("2")) ships[name] = max;
+        }
+      }
+      // FALLBACK B: data-max-amount="N" ... name="am2XX" (attr order reversed)
       if (Object.keys(ships).length === 0) {
         const patternB = /data-max-amount="(\d+)"[^>]*name="am(\d+)"/g;
         for (const m of html.matchAll(patternB)) {
@@ -1770,29 +2326,25 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }
       }
       // If empty parse — disambiguate:
-      //   - Full ogame page (>10KB) with NO am2XX strings anywhere = planet
-      //     truly has 0 ships. Write zeros to store (override stale empire
-      //     data) so daemon stops queuing. Return zeros so preflight aborts.
-      //   - Small response or fetch failed = unknown, fall back to store.
+      //   - SPA chunk (>5KB) with fleetdispatch markers but NO ship inputs
+      //     = planet truly has 0 ships. Write zeros to store, return zeros.
+      //   - Small response or no chunk markers = unknown, fall back to store.
       if (Object.keys(ships).length === 0) {
-        // CRITICAL: verify fdHtml is actually for the requested planet.
-        // ogame's session-cp cookie controls which planet's data renders.
-        // GET /...?cp=PID may or may not switch session — depends on whether
-        // ogame treats cp= as session-switch (varies by build).
-        // If returned page is for a DIFFERENT planet, we can't trust 0
-        // ships found = "hangar truly empty". Fall back to store.
-        const planetMetaMatch = html.match(/<meta\s+name="ogame-planet-id"\s+content="(\d+)"/);
-        const returnedPlanetId = planetMetaMatch?.[1];
-        const planetMatches = returnedPlanetId === pid;
-        const isFullPage = html.length > 10000;
+        // SPA chunk endpoint does NOT carry <meta name="ogame-planet-id">
+        // (that lives in the full-page chrome only). Verify response is a
+        // valid fleetdispatch chunk via the `<div id='fleetdispatch'>` marker
+        // ogame always emits. cp=PID drives session for this endpoint
+        // reliably (it's the SPA's own path; no leaky session-cp mode).
+        const isValidChunk = /id=['"]fleetdispatch['"]/.test(html);
+        const isSubstantial = html.length > 5000;
         const hasAmAny = /\bam20\d\b|\bam21\d\b|\bam22\d\b/.test(html);
-        if (!planetMatches) {
-          // Session-cp didn't switch → can't trust this response. ABORT
-          // conservatively rather than risk stale-store launch.
-          console.warn(`[OgameX/fetchShips] ${pid}: fdHtml returned for DIFFERENT planet (got ${returnedPlanetId}) → ABORT preflight`);
+        if (!isValidChunk) {
+          // Not a fleetdispatch chunk at all (maybe ogame redirect / error)
+          // — can't trust this for hangar count. Abort preflight.
+          console.warn(`[OgameX/fetchShips] ${pid}: response missing fleetdispatch chunk marker (${html.length}B) → ABORT preflight`);
           return {};
         }
-        if (isFullPage && !hasAmAny) {
+        if (isSubstantial && !hasAmAny) {
           // 0 am2XX inputs in full fd page (ogame v12 may render via JS).
           // Fallback: use empire data (just refreshed by ApiExec's pre-
           // preflight pollEmpire) MINUS in-transit ships from fleets_outbound
@@ -1840,11 +2392,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             if (typeof n !== "number") continue;
             launchable[s] = Math.max(0, n - (inTransit[s] ?? 0));
           }
-          console.warn(`[OgameX/fetchShips] ${pid}: fd no am2XX, fallback empire-minus-transit: launchable=${JSON.stringify(launchable)} inTransit=${JSON.stringify(inTransit)}`);
+          console.warn(`[OgameX/fetchShips] ${pid}: chunk has no am2XX/shipsOnPlanet, fallback empire-minus-transit: launchable=${JSON.stringify(launchable)} inTransit=${JSON.stringify(inTransit)}`);
           return launchable;
         }
-        // Parse failure on a smaller/partial response — also fall back to
-        // fresh-store-minus-transit (same approach).
+        // Chunk too small but has marker — partial render. Fall back to store.
         console.warn(`[OgameX/fetchShips] PARSE failed for ${pid} (${html.length}B); using fresh store ships`);
         return store.state.planets[pid]?.ships ?? {};
       }
@@ -1863,6 +2414,18 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       return {};
     }
   };
+  // Dual-expose to page world (unsafeWindow) so DevTools console can call it
+  // for verification. Tampermonkey sandbox isolates env.win from page-world
+  // window; ApiExec calls work fine via env.win, but operator's DevTools
+  // sees the bare page-world window. Mirror to both.
+  try {
+    const pwShips = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & {
+      __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>>;
+    };
+    pwShips.__ogamexFetchPlanetShips = (env.win as Window & {
+      __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>>;
+    }).__ogamexFetchPlanetShips;
+  } catch { /* unsafeWindow may be undefined in tests */ }
 
   // One-shot prereq discovery — fetch technologyDetails for every lifeform
   // building on boot and dump real requirements to console. Operator
@@ -1964,6 +2527,59 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     const pw = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & { __ogamexStore?: typeof store };
     pw.__ogamexStore = store;
   } catch { /* unsafeWindow may be undefined in non-Tampermonkey contexts (tests) */ }
+
+  // Cargo Calc pending-fill — operator 2026-05-26: "从本星球准备多少船去拉资源".
+  // Panel "📤 Fill" navigates to CURRENT planet's fleetdispatch (source = current
+  // planet, has ships). pending-fill carries {shipId, n}; planetId is the cp we
+  // navigated to (current cp). Apply if numeric n > 0, regardless of cp match.
+  if (/component=fleetdispatch/.test(env.win.location?.href ?? "")) {
+    try {
+      const raw = env.win.sessionStorage.getItem("ogamex.fleet.pending-fill");
+      if (raw) {
+        const { shipId, n } = JSON.parse(raw) as { shipId: number; n: number; planetId: string };
+        if (shipId && n > 0) {
+          // ogame fleetdispatch DOM may render lazily; retry up to 10× over 5s.
+          let attempts = 0;
+          const tryFill = (): void => {
+            attempts++;
+            // Live DOM 2026-05-26: ogame v12 input is <input id="ship203" name="ship[203]">.
+            // Use page-world script injection so ogame's own jQuery handlers
+            // (which manage internal selectedShips model) receive the change —
+            // sandbox dispatchEvent doesn't reach them.
+            const input = env.doc.querySelector<HTMLInputElement>(`#ship${shipId}`);
+            if (input) {
+              const script = env.doc.createElement("script");
+              script.textContent = `
+                (function() {
+                  var inp = document.getElementById('ship${shipId}');
+                  if (!inp) return;
+                  inp.focus();
+                  if (window.jQuery) {
+                    window.jQuery(inp).val('${n}').trigger('input').trigger('change').trigger('keyup').trigger('blur');
+                  } else {
+                    inp.value = '${n}';
+                    inp.dispatchEvent(new Event('input', { bubbles: true }));
+                    inp.dispatchEvent(new Event('change', { bubbles: true }));
+                    inp.dispatchEvent(new Event('keyup', { bubbles: true }));
+                  }
+                })();
+              `;
+              env.doc.body.appendChild(script);
+              env.doc.body.removeChild(script);
+              env.win.sessionStorage.removeItem("ogamex.fleet.pending-fill");
+              console.info(`[OgameX/cargo-fill] filled ship[${shipId}]=${n} via page-world jQuery`);
+            } else if (attempts < 10) {
+              setTimeout(tryFill, 500);
+            } else {
+              console.warn(`[OgameX/cargo-fill] gave up — input ship[${shipId}] not found after ${attempts} attempts`);
+              env.win.sessionStorage.removeItem("ogamex.fleet.pending-fill");
+            }
+          };
+          setTimeout(tryFill, 300);
+        }
+      }
+    } catch (e) { console.warn("[OgameX/cargo-fill] failed:", e); }
+  }
 
   return {
     bus,

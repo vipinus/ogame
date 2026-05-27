@@ -2,12 +2,16 @@ import type { CaseDecision } from "./case_decider.js";
 
 export type SaveState =
   | "WATCHING" | "THREAT_DETECTED" | "SAVE_PLANNED"
-  | "LAUNCHING" | "IN_FLIGHT" | "RECALL_READY" | "RECALLING"
+  | "LAUNCHING" | "IN_FLIGHT" | "RECALLING"
   | "RETURNED" | "FALLBACK";
 
+// Operator 2026-05-26: "威胁解除立即召回，不要计时，改成事件驱动".
+// safetyMarginMinutes dropped — no more RECALL_READY intermediate state.
+// hostile clear → immediate recall POST. Trade-off documented: if ogame's
+// "hostile cleared" signal is a false positive (attacker swapped fleet),
+// our save fleet will already be returning. Operator accepts the trade.
 export interface SaveContext {
   saveWindowMinutes: number;
-  safetyMarginMinutes: number;
 }
 
 export interface SaveActions {
@@ -64,7 +68,7 @@ export class SaveStateMachine {
       this.state = "LAUNCHING";
       const res = await this.actions.sendFleet(this.decision);
       this.fleetId = res.fleetId;
-      console.warn(`[fsm] LAUNCHING → IN_FLIGHT  fleetId=${this.fleetId} (waiting for hostile clear + ${this.ctx.safetyMarginMinutes}min margin to recall)`);
+      console.warn(`[fsm] LAUNCHING → IN_FLIGHT  fleetId=${this.fleetId} (waiting for hostile clear → instant recall, no margin)`);
       this.state = "IN_FLIGHT";
     } catch (e) {
       this.lastError = e instanceof Error ? e.message : String(e);
@@ -101,29 +105,64 @@ export class SaveStateMachine {
   }
 
   notifyHostileClear(eventId?: string): void {
+    // Operator 2026-05-26 evidence: pendingThreats=[] but state=IN_FLIGHT no recall.
+    // Race: orchestrator state.updated fired DURING handleThreat (fsm.state==LAUNCHING),
+    // notifyHostileClear cleared pending; then fsm reached IN_FLIGHT — but pending
+    // already empty so subsequent state.updated never sees a pendingId to clear
+    // → notifyHostileClear never gets called when state==IN_FLIGHT → never RECALLING.
+    // Fix: don't burn the signal early. Only honor clear when post-launch.
+    if (this.state !== "IN_FLIGHT" && this.state !== "RECALLING") return;
     if (eventId) this.pending.delete(eventId);
     else this.pending.clear();
     if (this.state === "IN_FLIGHT" && this.pending.size === 0) {
-      console.warn(`[fsm] IN_FLIGHT → RECALL_READY  all hostiles clear, starting ${this.ctx.safetyMarginMinutes}min safety margin countdown`);
-      this.state = "RECALL_READY";
       this.clearedAt = this.actions.now();
+      // Operator 2026-05-26: "威胁解除立即召回，不要计时". RECALL_READY +
+      // safetyMargin tick removed — IN_FLIGHT → RECALLING the moment last
+      // hostile drops from events_incoming. POST recall immediately.
+      console.warn(`[fsm] IN_FLIGHT → RECALLING  all hostiles clear, instant recall (fleetId=${this.fleetId})`);
+      this.state = "RECALLING";
+      if (this.fleetId !== null && this.fleetId > 0) {
+        void this.actions.recallFleet(this.fleetId)
+          .then(() => console.warn(`[fsm] RECALLING → (awaiting fleet return)  recallFleet POST OK`))
+          .catch((e) => {
+            this.lastError = e instanceof Error ? e.message : String(e);
+            console.error(`[fsm] ❌ RECALLING → FALLBACK  err=${this.lastError}`);
+            this.state = "FALLBACK";
+          });
+      } else {
+        console.warn(`[fsm] RECALLING skipped recall POST — fleetId=${this.fleetId} unknown (sendFleet returned placeholder); /movement harvest must populate fleetId before recall can fire`);
+      }
     }
   }
 
-  async tick(): Promise<void> {
-    if (this.state !== "RECALL_READY" || this.fleetId === null || this.clearedAt === null) return;
-    const elapsed = this.actions.now() - this.clearedAt;
-    if (elapsed < this.ctx.safetyMarginMinutes * 60) return;
-    console.warn(`[fsm] RECALL_READY → RECALLING  fleetId=${this.fleetId} (elapsed=${elapsed}s ≥ margin ${this.ctx.safetyMarginMinutes}min)`);
-    this.state = "RECALLING";
-    try {
-      await this.actions.recallFleet(this.fleetId);
-      console.warn(`[fsm] RECALLING → (awaiting fleet return)  recallFleet POST OK`);
-    } catch (e) {
-      this.lastError = e instanceof Error ? e.message : String(e);
-      console.error(`[fsm] ❌ RECALLING → FALLBACK  err=${this.lastError}`);
-      this.state = "FALLBACK";
+  /** Deprecated — kept for backward compat (call site count). No-op now. */
+  async tick(): Promise<void> { /* recall is event-driven, no timer */ }
+
+  /**
+   * Patch real ogame fleet id over the placeholder (0) set when sendFleet
+   * couldn't return fleetIdToReturn. Called by orchestrator after each
+   * /movement harvest. Idempotent: only writes when fleetId is currently
+   * placeholder (null / <=0) and we're in IN_FLIGHT / RECALLING.
+   * Returns true if patched, false if no-op.
+   */
+  patchFleetId(realId: number): boolean {
+    if (realId <= 0) return false;
+    if (this.state !== "IN_FLIGHT" && this.state !== "RECALLING") return false;
+    if (this.fleetId !== null && this.fleetId > 0) return false;
+    const prev = this.fleetId;
+    this.fleetId = realId;
+    console.warn(`[fsm] patchFleetId ${prev} → ${realId} (state=${this.state})`);
+    // If we were stuck in RECALLING with no id, fire recall now.
+    if (this.state === "RECALLING") {
+      void this.actions.recallFleet(realId)
+        .then(() => console.warn(`[fsm] (post-patch) recallFleet POST OK fleetId=${realId}`))
+        .catch((e) => {
+          this.lastError = e instanceof Error ? e.message : String(e);
+          console.error(`[fsm] ❌ (post-patch) RECALLING → FALLBACK  err=${this.lastError}`);
+          this.state = "FALLBACK";
+        });
     }
+    return true;
   }
 
   notifyFleetReturned(): void {

@@ -924,7 +924,7 @@ export async function startSidecar(
   // sidecar decides recall margin elapsed. Detection + sendFleet + recall
   // POST stay in userscript — sidecar owns only the coordination state.
   const saveCoordinator = new SaveCoordinator({
-    safetyMarginSeconds: 5 * 60,  // 5min margin from spec §3.3
+    // safetyMarginSeconds removed 2026-05-26 — recall is event-driven (instant on hostile clear)
     stateRef,
     send: (msg) => {
       ws.send(msg);

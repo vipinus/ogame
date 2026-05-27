@@ -27,6 +27,16 @@ export interface Planet {
   ships: ShipCount;
   defense: Record<string, number>;
   lifeform: LifeformState | null;        // 2026 LifeForm 扩展，§3.4
+  /** Jumpgate cooldown for moons only. 0 = ready, >0 = seconds until next use.
+   *  null = unknown / no jumpgate built. Snapshot value at jumpgate_harvested_at.
+   *  Consumer should compute live remaining = max(0, snapshot - (now_ms - harvested_at_ms) / 1000). */
+  jumpgate_cooldown_sec?: number | null;
+  /** ms epoch when jumpgate_cooldown_sec was captured (for live mm:ss countdown). */
+  jumpgate_harvested_at?: number | null;
+  /** Planet id of the moon this jump's TARGET was — for pair display
+   *  "[源]/[目标] mm:ss". Set on the SOURCE moon when sniffer captures a
+   *  jump event. null = source-only cooldown (legacy, no pair known). */
+  jumpgate_pair_with?: string | null;
 }
 
 // === LifeForm 2026 系统 ===

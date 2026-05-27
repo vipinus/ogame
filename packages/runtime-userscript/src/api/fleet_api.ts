@@ -77,27 +77,29 @@ export async function sendFleet(
   p: SendFleetParams,
   ctx: SendFleetCtx,
 ): Promise<SendFleetResult> {
-  // Append cp= so the POST lands on the source planet regardless of
-  // operator's current ogame page. Without this, session-cp leaks in
-  // and fleet launches from the wrong planet (operator 2026-05-24 bug).
-  let endpoint = ctx.endpoint ?? DEFAULT_ENDPOINT;
-  if (p.sourcePlanetId && !endpoint.includes("cp=")) {
-    endpoint += `&cp=${encodeURIComponent(p.sourcePlanetId)}`;
-  }
+  // cp= 通过 fetchWithCpBypassBusy 自动注入 + restore — FS emergency path
+  // 不 gated by userBusy (life-or-death). Caller passes sourcePlanetId.
+  const endpoint = ctx.endpoint ?? DEFAULT_ENDPOINT;
   let token = ctx.token.getFreshToken();
   let body = buildBody(p, token);
+  const { fetchWithCpBypassBusy } = await import("./safe_fetch.js");
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    console.log(`[fleet_api/sendFleet] attempt=${attempt} POST ${endpoint} body=${body.toString().replace(/token=[^&]+/, "token=***")}`);
-    const res = await ctx.fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: body.toString(),
-      credentials: "same-origin",
-    });
+    const sourcePID = p.sourcePlanetId ?? "";
+    console.log(`[fleet_api/sendFleet] attempt=${attempt} POST ${endpoint}${sourcePID ? ` (cp=${sourcePID})` : ""} body=${body.toString().replace(/token=[^&]+/, "token=***")}`);
+    const res = sourcePID
+      ? await fetchWithCpBypassBusy(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body: body.toString(),
+          credentials: "same-origin",
+        }, sourcePID)
+      : await ctx.fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body: body.toString(),
+          credentials: "same-origin",
+        });
     if (!res.ok) throw new FleetApiError(`HTTP ${res.status}`);
     const rawText = await res.text();
     let json: SendFleetResult["raw"];
@@ -110,9 +112,16 @@ export async function sendFleet(
     // with err="unknown failure" because json.message was empty and the raw
     // body was thrown away. Now every sendFleet response is loud.
     console.log(`[fleet_api/sendFleet] attempt=${attempt} resp success=${json.success} message=${json.message ?? "<none>"} errors=${JSON.stringify((json as { errors?: unknown }).errors ?? null)} raw[0:300]=${rawText.slice(0, 300)}`);
-    if (json.success && json.fleetIdToReturn !== undefined) {
+    if (json.success) {
+      // Operator 2026-05-26 live verify: ogame v12 sendFleet response shape is
+      //   {"success":true,"message":"您已成功發送艦隊.","redirectUrl":"...","components":[],"newAjaxToken":"..."}
+      // — there is NO fleetIdToReturn field. Prior code required fleetIdToReturn
+      // and treated this success as failure, sending fsm to FALLBACK with
+      // err="您已成功發送艦隊." even though the fleet actually launched. Trust
+      // success=true; fleet ID is harvested from the next /movement scrape by
+      // boot.ts:761 harvestSlotsFromMovement (and matched by mission+origin).
       if (json.newAjaxToken) ctx.token.set(json.newAjaxToken);
-      return { fleetId: json.fleetIdToReturn, raw: json };
+      return { fleetId: json.fleetIdToReturn ?? 0, raw: json };
     }
     if (attempt === 1 && json.message && TOKEN_INVALID_RE.test(json.message)) {
       await ctx.token.invalidate();
@@ -144,6 +153,7 @@ export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<v
     const body = new URLSearchParams();
     body.set("fleetId", String(fleetId));
     body.set("token", token);
+    console.log(`[fleet_api/recallFleet] attempt=${attempt} POST ${RECALL_ENDPOINT} body=fleetId=${fleetId}&token=***`);
     const res = await ctx.fetch(RECALL_ENDPOINT, {
       method: "POST",
       headers: {
@@ -153,8 +163,16 @@ export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<v
       body: body.toString(),
       credentials: "same-origin",
     });
-    if (!res.ok) throw new FleetApiError(`HTTP ${res.status}`);
-    const json = (await res.json()) as RecallResponse;
+    const rawText = await res.text();
+    console.log(`[fleet_api/recallFleet] attempt=${attempt} HTTP ${res.status} raw[0:400]=${rawText.slice(0, 400)}`);
+    if (!res.ok) throw new FleetApiError(`HTTP ${res.status}: ${rawText.slice(0, 200)}`);
+    let json: RecallResponse;
+    try { json = JSON.parse(rawText) as RecallResponse; }
+    catch {
+      // Operator 2026-05-27: recall POST returning non-JSON HTML means we hit
+      // wrong endpoint (or ogame redirected to movement page). Surface raw.
+      throw new FleetApiError(`non-JSON response (likely wrong endpoint): ${rawText.slice(0, 300)}`);
+    }
     if (json.success) {
       if (json.newAjaxToken) ctx.token.set(json.newAjaxToken);
       return;
@@ -164,6 +182,13 @@ export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<v
       token = ctx.token.getFreshToken();
       continue;
     }
-    throw new FleetApiError(json.message ?? "recall failed", json);
+    // Surface full message + errors[] + raw — operator 2026-05-27 evidence:
+    // recall POST fails silently with "recall failed" default. Need the real
+    // ogame body to identify wrong endpoint/field-name.
+    const errsField = (json as { errors?: Array<{ message?: string }> }).errors;
+    const errMsg = json.message
+      ?? (Array.isArray(errsField) && errsField[0]?.message)
+      ?? `success=${json.success} raw=${rawText.slice(0, 200)}`;
+    throw new FleetApiError(errMsg, json);
   }
 }

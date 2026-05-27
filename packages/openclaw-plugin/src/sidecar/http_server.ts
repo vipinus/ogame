@@ -384,6 +384,17 @@ export class HttpServer {
         void this.handleSaveRecallConfirmed(req, res);
         return;
       }
+      // Operator 2026-05-26: "远征的 stop 按钮无效" — pause/resume 端点之前
+      // 在 auth check 之后, panel 不带 bearer token → 401 拒绝. 移到 public
+      // 区跟 discovery/save 端点一致 (LAN-only trust).
+      if (url === EXPEDITION_PAUSE_PATH) {
+        this.handleExpeditionFlag(res, true);
+        return;
+      }
+      if (url === EXPEDITION_RESUME_PATH) {
+        this.handleExpeditionFlag(res, false);
+        return;
+      }
     }
     if (method === "GET" && url === "/ogamex/v1/save/active") {
       this.handleProviderGet(res, this.opts.listActiveSaves
@@ -414,15 +425,7 @@ export class HttpServer {
       void this.handlePoll(req, res);
       return;
     }
-    if (url === EXPEDITION_PAUSE_PATH) {
-      this.handleExpeditionFlag(res, true);
-      return;
-    }
-    if (url === EXPEDITION_RESUME_PATH) {
-      this.handleExpeditionFlag(res, false);
-      return;
-    }
-    // (EXPEDITION_TRIGGER_PATH handled above — public, no-auth)
+    // (EXPEDITION_PAUSE_PATH / RESUME / TRIGGER_PATH handled above — public, no-auth)
 
     this.writeCorsHeaders(res);
     res.statusCode = 404;

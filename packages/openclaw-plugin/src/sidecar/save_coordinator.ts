@@ -26,8 +26,11 @@
 
 import type { DownstreamMsg, WorldState } from "@ogamex/shared";
 
+// Operator 2026-05-26: "威胁解除立即召回，不要计时". RECALL_READY dropped —
+// IN_FLIGHT → RECALLING fires the moment hostiles clear; safetyMargin tick
+// removed.
 export type SaveState =
-  | "IN_FLIGHT" | "RECALL_READY" | "RECALLING" | "RETURNED" | "FALLBACK";
+  | "IN_FLIGHT" | "RECALLING" | "RETURNED" | "FALLBACK";
 
 export interface SaveRecord {
   planet_id: string;
@@ -46,25 +49,23 @@ export interface SaveLaunchedInput {
 }
 
 export interface SaveCoordinatorOptions {
-  /** Safety margin between "all hostiles clear" and "fire recall". */
-  safetyMarginSeconds: number;
   /** State reference — coordinator reads events_incoming on every tick. */
   stateRef: { current: WorldState | null };
   /** Send a DownstreamMsg to userscript (typically ws.broadcast). */
   send: (msg: DownstreamMsg) => void;
   /** Clock injection for tests. */
   now?: () => number;
+  /** @deprecated 2026-05-26 — kept for backward-compat test calls, ignored. */
+  safetyMarginSeconds?: number;
 }
 
 export class SaveCoordinator {
   private readonly recordsByPlanet = new Map<string, SaveRecord>();
   private readonly recordsByFleet = new Map<number, SaveRecord>();
-  private readonly opts: Required<Omit<SaveCoordinatorOptions, "now">> & { now: () => number };
-  private ticker: ReturnType<typeof setInterval> | null = null;
+  private readonly opts: { stateRef: SaveCoordinatorOptions["stateRef"]; send: SaveCoordinatorOptions["send"]; now: () => number };
 
   constructor(opts: SaveCoordinatorOptions) {
     this.opts = {
-      safetyMarginSeconds: opts.safetyMarginSeconds,
       stateRef: opts.stateRef,
       send: opts.send,
       now: opts.now ?? Date.now,
@@ -117,41 +118,30 @@ export class SaveCoordinator {
         }
       }
       if (cleared && rec.pendingEventIds.size === 0) {
-        rec.state = "RECALL_READY";
+        // Operator 2026-05-26: "威胁解除立即召回". Skip RECALL_READY +
+        // margin tick — instantly emit save.recall_now downstream so
+        // userscript fires recall POST without waiting.
         rec.clearedAt = this.opts.now();
-        console.log(`[save-coord] IN_FLIGHT → RECALL_READY planet=${rec.planet_id} fleet=${rec.fleet_id} margin=${this.opts.safetyMarginSeconds}s`);
+        rec.state = "RECALLING";
+        console.log(`[save-coord] IN_FLIGHT → RECALLING (instant) planet=${rec.planet_id} fleet=${rec.fleet_id}`);
+        this.opts.send({
+          type: "save.recall_now",
+          planet_id: rec.planet_id,
+          fleet_id: rec.fleet_id,
+          reason: `all hostiles clear (instant recall, no margin)`,
+        });
       }
     }
   }
 
-  /** 1Hz tick — promote RECALL_READY → RECALLING when margin elapsed. */
-  tick(): void {
-    const now = this.opts.now();
-    const marginMs = this.opts.safetyMarginSeconds * 1000;
-    for (const rec of this.recordsByPlanet.values()) {
-      if (rec.state !== "RECALL_READY" || rec.clearedAt === null) continue;
-      if (now - rec.clearedAt < marginMs) continue;
-      console.log(`[save-coord] RECALL_READY → RECALLING planet=${rec.planet_id} fleet=${rec.fleet_id} (elapsed=${Math.floor((now - rec.clearedAt) / 1000)}s)`);
-      rec.state = "RECALLING";
-      this.opts.send({
-        type: "save.recall_now",
-        planet_id: rec.planet_id,
-        fleet_id: rec.fleet_id,
-        reason: `all hostiles clear ${Math.floor((now - rec.clearedAt) / 1000)}s ago`,
-      });
-    }
-  }
+  /** @deprecated 2026-05-26 — no-op; recall is event-driven, no timer. */
+  tick(): void { /* event-driven */ }
 
-  /** Spawn the 1Hz tick loop. */
-  start(): void {
-    if (this.ticker) return;
-    this.ticker = setInterval(() => this.tick(), 1000);
-  }
+  /** @deprecated 2026-05-26 — no-op; no ticker to spawn. */
+  start(): void { /* event-driven */ }
 
-  stop(): void {
-    if (this.ticker) clearInterval(this.ticker);
-    this.ticker = null;
-  }
+  /** @deprecated 2026-05-26 — no-op; no ticker to clear. */
+  stop(): void { /* event-driven */ }
 
   /** Read-only snapshot for /v1/save/active. */
   list(): Array<Omit<SaveRecord, "pendingEventIds"> & { pendingEventIds: string[] }> {

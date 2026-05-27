@@ -9,7 +9,6 @@ export interface OrchestratorOptions {
   tokenManager: TokenManager;
   fetch: typeof fetch;
   saveWindowMinutes: number;
-  safetyMarginMinutes: number;
   /** Sidecar base URL (e.g. http://127.0.0.1:28791). When set, orchestrator
    *  reports each successful launch to /v1/save/launched so the backend
    *  SaveCoordinator owns recall scheduling. */
@@ -37,18 +36,20 @@ export function startEmergencySave(
     let fsm = fsmByPlanet.get(planetId);
     if (!fsm) {
       fsm = new SaveStateMachine(
-        { saveWindowMinutes: opts.saveWindowMinutes, safetyMarginMinutes: opts.safetyMarginMinutes },
+        { saveWindowMinutes: opts.saveWindowMinutes },
         {
           decideCase: (sourceId) => decideCase(stateRef.current, sourceId),
-          sendFleet: (decision) => sendFleet({
-            ships: decision.ships, cargo: decision.cargo, coords: decision.destCoords,
-            destType: decision.destType, mission: decision.mission, speed: decision.speed,
-            // Pin POST cp= to the case_decider-selected source planet —
-            // operator 2026-05-24: without this, session-cp leaked and
-            // fleet launched from the wrong planet (e.g. operator was on
-            // 3:279:7 but case_decider chose 3:260:9 as source).
-            sourcePlanetId: decision.sourcePlanetId,
-          }, { fetch: opts.fetch, token: opts.tokenManager }),
+          sendFleet: async (decision) => {
+            // Operator 2026-05-26: "前端操作的时候会自动跳到其他星球".
+            // sendFleet POST with cp=sourcePlanetId 切 ogame session-cp.
+            // restoreSessionCp 由 fleet_api.sendFleet 内部经 fetchWithCpBypassBusy
+            // 自动处理 (v0.0.352 架构迁移). 不再外层 try/finally restore.
+            return await sendFleet({
+              ships: decision.ships, cargo: decision.cargo, coords: decision.destCoords,
+              destType: decision.destType, mission: decision.mission, speed: decision.speed,
+              sourcePlanetId: decision.sourcePlanetId,
+            }, { fetch: opts.fetch, token: opts.tokenManager });
+          },
           recallFleet: (id) => recallFleet(id, { fetch: opts.fetch, token: opts.tokenManager }),
           now: () => Math.floor(Date.now() / 1000),
         },
@@ -104,6 +105,18 @@ export function startEmergencySave(
   // a failed POST means backend won't auto-recall, but frontend's own FSM
   // tick is still in place as fallback (won't break the save chain).
   const reportLaunchToBackend = async (sourceId: string, fsm: SaveStateMachine): Promise<void> => {
+    // Operator 2026-05-26: sendFleet response has no fleetIdToReturn, so
+    // fsm enters IN_FLIGHT with fleetId=0. Force a movement harvest right
+    // after launch so the patchFleetId hook fires on the next state.updated
+    // tick (without waiting for the next periodic harvest cycle).
+    try {
+      const harvestFn = (typeof window !== "undefined"
+        ? (window as Window & { __ogamexHarvestMovement?: () => Promise<void> })
+        : null);
+      if (harvestFn?.__ogamexHarvestMovement) {
+        void harvestFn.__ogamexHarvestMovement().catch(() => { /* */ });
+      }
+    } catch { /* */ }
     if (!opts.sidecarBaseUrl) return;
     const snap = fsm.snapshot();
     if (snap.state !== "IN_FLIGHT" || snap.fleetId === null) return;
@@ -123,7 +136,22 @@ export function startEmergencySave(
     }
   };
 
+  // Operator 2026-05-26: panel emergency pause button (⏸) → toggles
+  // localStorage["ogamex.emergency.paused"]. When true, orchestrator skips
+  // FS auto-launch for BOTH attack and spy events. operator 主动 pause 紧急
+  // 起飞 (e.g. 测试 / 知道是友军 alpha attack / debug).
+  const emergencyPaused = (): boolean => {
+    try {
+      const v = window.localStorage.getItem("ogamex.emergency.paused");
+      return v === "true" || v === '"true"' || v === "1";
+    } catch { return false; }
+  };
+
   const offAttack = bus.on("emergency.attack", (p: any) => {
+    if (emergencyPaused()) {
+      console.warn(`[orchestrator] emergency PAUSED — attack ${p.event_id} ignored (operator toggled ⏸)`);
+      return;
+    }
     const sourceId = findTargetPlanet(p.to, p.to_type);
     if (!sourceId) return;
     if (hasNoShips(sourceId)) {
@@ -161,6 +189,10 @@ export function startEmergencySave(
   // Initial mirror to window for DevTools introspection.
   winRef.__ogamexSpyTriggersSave = isSpyTriggersSaveOn();
   const offSpy = bus.on("emergency.spy", (p: any) => {
+    if (emergencyPaused()) {
+      console.warn(`[orchestrator] emergency PAUSED — spy ${p.event_id} ignored (operator toggled ⏸)`);
+      return;
+    }
     const on = isSpyTriggersSaveOn();
     winRef.__ogamexSpyTriggersSave = on;  // keep mirror fresh
     if (!on) {
@@ -189,6 +221,44 @@ export function startEmergencySave(
   // multi-fsm — would clear pending for planet A on planet B's clear.
   const offState = bus.on("state.updated", () => {
     const stillIncoming = new Set(stateRef.current.events_incoming.filter(e => e.hostile).map(e => e.id));
+    // Operator 2026-05-26: reverse-patch real fleet id from /movement harvest.
+    // sendFleet response has no fleetIdToReturn (v0.0.292), so fsm enters
+    // IN_FLIGHT with fleetId=0 placeholder. After /movement scrape (now
+    // captures data-fleet-id, v0.0.294), look for a fleets_outbound entry
+    // matching this fsm's decision (origin coord + mission) and patch the
+    // real id over the placeholder so recall POST can fire.
+    const fleets = stateRef.current.fleets_outbound ?? [];
+    for (const [planetId, fsm] of fsmByPlanet) {
+      const snap = fsm.snapshot();
+      if ((snap.state !== "IN_FLIGHT" && snap.state !== "RECALLING") ||
+          (snap.fleetId !== null && snap.fleetId > 0)) continue;
+      const dec = snap.decision;
+      if (!dec) continue;
+      const sourcePl = stateRef.current.planets?.[planetId];
+      if (!sourcePl) continue;
+      const srcKey = sourcePl.coords.join(":");
+      // Find a fleet whose origin matches source planet + mission matches
+      // decision.mission + id is numeric (real ogame id, not synthetic mvt-).
+      const candidate = fleets.find((f) => {
+        const id = f.id;
+        if (typeof id !== "string" || !/^\d+$/.test(id)) return false;
+        if (f.mission !== dec.mission) return false;
+        const fOrig = Array.isArray(f.origin) ? f.origin.join(":") : "";
+        return fOrig === srcKey;
+      });
+      if (candidate) {
+        const realId = parseInt(candidate.id, 10);
+        if (realId > 0) {
+          const patched = fsm.patchFleetId(realId);
+          // Operator 2026-05-26: backend SaveCoordinator was stored fleet=0 (frontend
+          // reported launch with placeholder); when hostiles cleared, sidecar emitted
+          // save.recall_now planet=X fleet=0 → recall POST FAILED. After patch, re-report
+          // with real id so backend tracks correct fleet for any subsequent recall_now.
+          if (patched) void reportLaunchToBackend(planetId, fsm);
+        }
+      }
+    }
+    // Hostile clear → fsm.notifyHostileClear (instant recall path).
     for (const fsm of fsmByPlanet.values()) {
       const snap = fsm.snapshot();
       for (const pendingId of snap.pendingThreats) {
@@ -197,12 +267,9 @@ export function startEmergencySave(
     }
   });
 
-  // tick at 1Hz to drive RECALL_READY → RECALLING transition for every
-  // active FSM. Tick is per-planet; one planet's recall timing doesn't
-  // affect another's.
-  const ticker = setInterval(() => {
-    for (const fsm of fsmByPlanet.values()) void fsm.tick();
-  }, 1000);
+  // Operator 2026-05-26: "威胁解除立即召回，不要计时，改成事件驱动".
+  // 1Hz tick removed — IN_FLIGHT → RECALLING is now fired the moment
+  // notifyHostileClear empties pending (in fsm itself), no timer needed.
 
   return {
     snapshot: () => {
@@ -215,6 +282,6 @@ export function startEmergencySave(
         pendingThreats: [], clearedAt: null, lastError: null,
       };
     },
-    stop: () => { clearInterval(ticker); offAttack(); offSpy(); offState(); stopDetector(); },
+    stop: () => { offAttack(); offSpy(); offState(); stopDetector(); },
   };
 }
