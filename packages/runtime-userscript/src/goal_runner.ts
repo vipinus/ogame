@@ -113,12 +113,12 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       });
       return;
     }
-    // userBusy DEFER (v0.0.361 rewritten — operator "卡住了"): single
-    // single-shot pollTimer instead of per-directive setTimeout. Multiple
-    // re-deferrals share the same wake-up tick → no exponential growth.
-    if (typeof userBusy === "function" && userBusy()) {
-      // Log only once per minute to avoid console flood when backend rapid-
-      // re-pushes same action while user is active.
+    // userBusy DEFER (v0.0.361). Operator 2026-05-27: discover is a
+    // background batch sweep, never touches operator's planet (cp= goes
+    // to source planet of the dispatch, not where operator's viewing).
+    // Discover MUST run regardless of busy — bypass the gate so sweep
+    // throughput stays at ogame's natural pace.
+    if (directive.action !== "discover" && typeof userBusy === "function" && userBusy()) {
       const now = Date.now();
       if (now - lastDeferLogAt > 60_000) {
         console.info(`[GoalRunner] operator busy — deferring ${directive.action} & all queued (single wake when idle, log throttled 60s)`);
@@ -260,7 +260,9 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
         const lookup = (window as Window & { __ogamexCheckDiscoverCooldown?: (g: number, s: number, p: number) => string }).__ogamexCheckDiscoverCooldown;
         const state = lookup ? lookup(g, s, pos) : "unknown";
         if (state === "cooldown" || state === "unavailable") {
-          ack(dr.id, { success: false, error: `discover ${g}:${s}:${pos} ${state} (early skip, not queued)` });
+          // Operator 2026-05-27: ack as SUCCESS so backend marks this coord
+          // done (not retry-able). 7-day cooldown — coord won't change soon.
+          ack(dr.id, { success: true, result: { action: "discover", clicked: false, skipped: state } });
           return;
         }
       }
@@ -291,7 +293,11 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       }
     }
     recentIds.set(dr.id, Date.now() + RECENT_IDS_TTL_MS);
-    recentActionPlanet.set(apKey, Date.now() + RECENT_ACTION_PLANET_TTL_MS);
+    // discover ttl 5s only (just WS retry guard) — coord goes into 7-day
+    // ogame cooldown on success, can't legitimately re-fire within 60s.
+    // Other actions keep 60s throttle.
+    const ttl = dr.action === "discover" ? 5_000 : RECENT_ACTION_PLANET_TTL_MS;
+    recentActionPlanet.set(apKey, Date.now() + ttl);
     console.log(`[GoalRunner] received ${dr.action} ${JSON.stringify(dr.params).slice(0,80)} id=${dr.id.slice(0,8)}`);
     if (gate.isActive()) {
       pending.push(dr);
