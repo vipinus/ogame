@@ -359,6 +359,18 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           const tgtCoords = String(target["target_coords"] ?? "?");
           return [planetTag, "→", tgtCoords].filter(Boolean).join(" ");
         }
+        case "species_discovery": {
+          // Operator 2026-05-28: don't JSON-dump the completed[] array
+          // (200+ coord strings). Show only source planet coords.
+          const srcId = String(target["source_planet"] ?? "");
+          let srcCoords = srcId ? `(${srcId.slice(-4)})` : "?";
+          try {
+            const st = (window as Window & { __ogamexStore?: { state: { planets: Record<string, { coords?: number[] }> } } }).__ogamexStore;
+            const p = srcId ? st?.state.planets?.[srcId] : undefined;
+            if (p?.coords) srcCoords = p.coords.join(":");
+          } catch { /* */ }
+          return `@ ${srcCoords}`;
+        }
         default:
           return JSON.stringify(target);
       }
