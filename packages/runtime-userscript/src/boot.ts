@@ -376,8 +376,23 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // (Handled below — sync prevent + async await + replay.)
     })();
   };
+  // Boot-time test: can we even construct + dispatch a synthetic MouseEvent
+  // in this Tampermonkey sandbox? Some sandboxes reject `view: env.win`
+  // (env.win is a wrapped proxy, not the real Window). v0.0.386 evidence:
+  // "Failed to construct 'MouseEvent': Failed to convert value to 'Window'".
+  // If we can't replay, the worst outcome is operator clicks getting eaten
+  // (preventDefault fires but no re-dispatch) — kills UI. Test first.
+  let canReplayClick = false;
+  try {
+    const probe = new MouseEvent("click", { bubbles: true, cancelable: true });
+    void probe; // unused
+    canReplayClick = true;
+  } catch (err) {
+    console.warn("[OgameX/click-lock] sandbox can't construct synthetic MouseEvent — click intercept DISABLED to avoid eating clicks", err);
+  }
   // Synchronous prevent + async wait + replay implementation.
   const clickInterceptSync = (e: Event): void => {
+    if (!canReplayClick) return; // failsafe — never block clicks we can't replay
     if (!e.isTrusted) return;
     const ev = e as Event & { [k: string]: unknown };
     if (ev[REPLAY_FLAG]) return;
@@ -396,6 +411,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       } catch { /* */ }
       hideSyncToast();
       // Replay the click as a synthetic event with REPLAY_FLAG set.
+      // Note: `view` is intentionally omitted — TM sandbox env.win isn't
+      // accepted as Window for MouseEvent construction. jQuery handlers
+      // and ogame's framework don't rely on .view; bubbles+cancelable
+      // are enough for the click to propagate normally.
       try {
         const target = e.target as HTMLElement | null;
         if (!target) return;
@@ -403,7 +422,6 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const synth = new MouseEvent(e.type, {
           bubbles: true,
           cancelable: true,
-          view: env.win,
           button: me.button ?? 0,
           buttons: me.buttons ?? 0,
           clientX: me.clientX ?? 0,
@@ -416,12 +434,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         (synth as unknown as Record<string, unknown>)[REPLAY_FLAG] = true;
         target.dispatchEvent(synth);
       } catch (err) {
-        console.warn("[OgameX/click-lock] replay failed", err);
+        console.warn("[OgameX/click-lock] replay failed (click lost)", err);
       }
     })();
   };
-  env.doc.addEventListener("click", clickInterceptSync, true);
-  env.doc.addEventListener("mousedown", clickInterceptSync, true);
+  if (canReplayClick) {
+    env.doc.addEventListener("click", clickInterceptSync, true);
+    env.doc.addEventListener("mousedown", clickInterceptSync, true);
+  }
   // safe_fetch will keep this mirror count current on each fetch start/end.
   // Polled here as a cheap fallback in case mirror gets out of sync.
   setInterval(async () => {
@@ -1087,7 +1107,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.388";
+  const USERSCRIPT_VERSION = "0.0.389";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
