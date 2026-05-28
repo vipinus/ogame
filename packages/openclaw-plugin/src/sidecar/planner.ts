@@ -231,14 +231,29 @@ function planSpeciesDiscoveryGoal(goal: Goal, state: WorldState): PlanResult {
   const planet = state.planets[planetId];
   if (!planet) return { blocked: `species_discovery: planet ${planetId} not in state` };
 
-  // Slot capacity check — keep 1 slot empty. server.used_fleet_slots /
-  // max_fleet_slots written at runtime; not in strict WorldState.server
-  // type, so cast.
-  const server = (state.server ?? {}) as { used_fleet_slots?: number; max_fleet_slots?: number };
+  // Operator 2026-05-28: "sidecar planner 加 expedition > discover 优先级".
+  // Sort-priority alone (compareRows: expedition=10 > discover=5) only
+  // orders dispatch within a tick; slot competition happens at ApiExec
+  // POST time which is async. To truly let expedition win the fleet-slot
+  // race, the discover gate must RESERVE enough fleet slots for every
+  // expedition slot ogame still has room for, plus 1 for emergency FS.
+  //
+  // Reserve = freeExpSlots + 1
+  //   - freeExpSlots: how many expedition fleets ogame would still accept
+  //   - +1: emergency FS save (FSM bypass still works regardless, but
+  //         leaving headroom avoids 140043 on FS save burst)
+  const server = (state.server ?? {}) as {
+    used_fleet_slots?: number; max_fleet_slots?: number;
+    used_expedition_slots?: number; max_expedition_slots?: number;
+  };
   const used = server.used_fleet_slots ?? 0;
   const max = server.max_fleet_slots ?? 0;
-  if (max > 0 && used >= max - 1) {
-    return { blocked: `species_discovery: keep 1 fleet slot empty (used=${used} max=${max})` };
+  const usedExp = server.used_expedition_slots ?? 0;
+  const maxExp = server.max_expedition_slots ?? 0;
+  const freeExpSlots = Math.max(0, maxExp - usedExp);
+  const reserveForExp = freeExpSlots + 1; // +1 emergency FS
+  if (max > 0 && used >= max - reserveForExp) {
+    return { blocked: `species_discovery: reserve ${reserveForExp} fleet slot(s) for expedition+emergency (used=${used} max=${max} freeExp=${freeExpSlots})` };
   }
 
   // Build radial iteration order and find next coord not in completed[].
