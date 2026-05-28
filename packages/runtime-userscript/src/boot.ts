@@ -947,11 +947,24 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           if (!store.state.planets[srcId]) return;
           const patch: Record<string, Partial<typeof store.state.planets[string]>> = {};
           if (cdSec !== null && cdSec > 0) {
-            patch[srcId] = { jumpgate_cooldown_sec: cdSec, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: pairTgt };
-            if (pairTgt && store.state.planets[pairTgt]) {
+            // Operator 2026-05-28: when pairTgt is null (sniffer caught an
+            // overlay GET / re-fetch that doesn't carry target info), don't
+            // OVERWRITE the existing pair_with with null. null means "I don't
+            // know", not "clear it". Only patch pair_with when we have a
+            // positive new value. Same for partner side.
+            const srcPatch: Partial<typeof store.state.planets[string]> = {
+              jumpgate_cooldown_sec: cdSec,
+              jumpgate_harvested_at: Date.now(),
+            };
+            if (pairTgt !== null) {
+              srcPatch.jumpgate_pair_with = pairTgt;
+            }
+            patch[srcId] = srcPatch;
+            if (pairTgt && store.state.planets[pairTgt] && pairSrc !== null) {
               patch[pairTgt] = { jumpgate_pair_with: pairSrc };
             }
           } else if (cdSec === 0) {
+            // Explicit READY signal — clearing pair is fine here.
             patch[srcId] = { jumpgate_cooldown_sec: 0, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: null };
           }
           store.setPlanetsPatch(patch);
@@ -1107,7 +1120,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.389";
+  const USERSCRIPT_VERSION = "0.0.390";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
