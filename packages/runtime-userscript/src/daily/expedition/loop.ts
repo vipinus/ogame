@@ -87,10 +87,15 @@ export function startDailyExpeditionLoop(
   const onFleetReturned = async (payload: FleetReturnedPayload): Promise<void> => {
     const fleet = payload.fleet;
     if (fleet.mission !== Mission.EXPEDITION) return;
+    // Operator 2026-05-27: "远征回来以后立即发新船". Refill slot IMMEDIATELY on
+    // expedition fleet return — don't wait for report parse, don't wait for
+    // expedition_data_updated emit, don't wait for 5min fallback interval.
+    // Report parse below is best-effort; even if reportHtml is missing the
+    // slot must be filled at once.
+    void tick();
     if (!payload.reportHtml) {
-      // Spec: skip silently for M3.7; the real WS flow lands in M4.
       console.debug(
-        "[daily/expedition/loop] fleet_returned (expedition) without reportHtml — skipping parse",
+        "[daily/expedition/loop] fleet_returned without reportHtml — slot refill tick fired, skipping report parse",
       );
       return;
     }

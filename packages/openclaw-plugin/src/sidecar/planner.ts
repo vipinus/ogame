@@ -810,7 +810,10 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
       mission: MISSION_EXPEDITION,
     },
     preconds: [],
-    expires_at: Date.now() + DIRECTIVE_TTL_MS,
+    // Operator 2026-05-27: "也不要有 ttl". Expedition directive must never
+    // expire — fleet returns asynchronously and may sit cross-boundary;
+    // expiring leads to silent miss + slot underuse.
+    expires_at: Number.MAX_SAFE_INTEGER,
     reason: `expedition from ${sourceCoordsKey} → pos ${targetPosition} (${duration})`,
     goal_id: goal.id,
   };
