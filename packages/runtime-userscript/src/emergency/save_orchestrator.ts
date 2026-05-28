@@ -261,6 +261,14 @@ export function startEmergencySave(
       // Find a fleet whose origin matches source planet + mission matches
       // decision.mission + id is numeric (real ogame id, not synthetic mvt-).
       const baseline = baseFleetIds.get(planetId) ?? new Set<string>();
+      // Operator 2026-05-28 evidence: concurrent FSMs at the SAME coords
+      // (planet 33649009 + moon 33640786, both at 2:279:8) both patched
+      // to the same fleet 2142558 because find() didn't distinguish
+      // planet-typed origin from moon-typed origin. Result: sidecar got
+      // duplicate launch records, recall fired twice for one real fleet
+      // (causing first cycle's 4-attempt FAIL → FALLBACK), and FSM 1
+      // (whose sendFleet actually failed silent-skip) wrongly claimed
+      // FSM 2's fleet. Add origin_type gate.
       const candidate = fleets.find((f) => {
         const id = f.id;
         if (typeof id !== "string" || !/^\d+$/.test(id)) return false;
@@ -269,6 +277,10 @@ export function startEmergencySave(
         // source planet), not the one this FSM just launched.
         if (baseline.has(id)) return false;
         if (f.mission !== dec.mission) return false;
+        // Origin type gate: planet vs moon share G:S:P; without this check
+        // a planet-FSM steals a moon-FSM's fleet (or vice versa) when both
+        // launched at the same coord.
+        if (f.origin_type !== sourcePl.type) return false;
         const fOrig = Array.isArray(f.origin) ? f.origin.join(":") : "";
         return fOrig === srcKey;
       });
