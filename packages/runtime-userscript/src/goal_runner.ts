@@ -135,6 +135,24 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       schedulePollIdle();
       return;
     }
+    // Operator 2026-05-28 evidence: ogame's own fleetdispatch UI fires
+    // checkTarget POST that shares the global ajax token with our
+    // background discover/expedition dispatch. Token race → ogame UI gets
+    // a stale-token rejection (resp=244B), then crashes:
+    //   "Cannot read properties of null (reading 'baseFuelCapacity')"
+    // While operator is on the fleetdispatch page, defer ALL directives.
+    // Same deferredQueue + schedulePollIdle path as userBusy — the poll
+    // wakes once the operator navigates away (location.search changes).
+    if (typeof window !== "undefined" && window.location?.search?.includes("component=fleetdispatch")) {
+      const now = Date.now();
+      if (now - lastDeferLogAt > 60_000) {
+        console.info(`[GoalRunner] on fleetdispatch page — deferring ${directive.action} & all queued (waiting for operator to navigate away, log throttled 60s)`);
+        lastDeferLogAt = now;
+      }
+      deferredQueue.push(directive);
+      schedulePollIdle();
+      return;
+    }
     // eslint-disable-next-line no-console
     console.log(`[GoalRunner] executing ${directive.action} via ${chosen.constructor.name}`);
     try {
@@ -192,8 +210,9 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     pollIdleTimer = setTimeout(() => {
       pollIdleTimer = null;
       if (stopped) return;
-      // Still busy? wait again.
-      if (typeof userBusy === "function" && userBusy()) {
+      // Still busy or still on fleetdispatch page? wait again.
+      const onFleetDispatchPage = typeof window !== "undefined" && window.location?.search?.includes("component=fleetdispatch");
+      if ((typeof userBusy === "function" && userBusy()) || onFleetDispatchPage) {
         schedulePollIdle();
         return;
       }
