@@ -1183,6 +1183,49 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} COOLDOWN — marking attempted, moving to next`);
         return ackOk("server-cooldown");
       }
+      // Operator 2026-05-28: ogame "在您最後一個動作時,發生錯誤" = stale ajax
+      // token. discover shares the global token with galaxy/eventbox/resource
+      // polls; a concurrent background fetch can rotate the token between
+      // ApiExec's discover dispatches. Self-heal: invalidate cache+token,
+      // refetch fresh on next call, single retry NOW with the freshly-issued
+      // newAjaxToken from THIS failure response.
+      const isTokenRace = /在您最後一個動作時|最後一個動作|您最後一次|last.*action/i.test(msg);
+      if (isTokenRace) {
+        console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} TOKEN RACE — invalidating cache + single retry with fresh token`);
+        const cacheStoreInv = (this.win as Window & { __ogamexGalaxyDiscovery?: Map<string, { ts: number; states: Map<number, string> }> }).__ogamexGalaxyDiscovery;
+        cacheStoreInv?.delete(cacheKey);
+        (this.win as Window & { __ogamexLastGalaxyToken?: string }).__ogamexLastGalaxyToken = undefined;
+        const retryToken = parsed?.newAjaxToken ?? token;
+        const retryBody = new URLSearchParams({ galaxy: String(galaxy), system: String(system), position: String(position), token: retryToken });
+        const r2 = await fetchWithCpBypassBusy(
+          `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
+          { method: "POST", credentials: "same-origin",
+            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+            body: retryBody },
+          planetId,
+          { skipRestore: true },
+        );
+        const retryText = await r2.text();
+        let retryParsed: typeof parsed = null;
+        try { retryParsed = JSON.parse(retryText); } catch { /* */ }
+        console.info(`[ApiExec/discover] token-race retry ${galaxy}:${system}:${position} resp[0:200]=${retryText.slice(0, 200).replace(/\s+/g, " ")}`);
+        if (retryParsed?.newAjaxToken) {
+          (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = retryParsed.newAjaxToken;
+          try { this.win.localStorage.setItem("OGAMEX_TOKEN", retryParsed.newAjaxToken); } catch { /* */ }
+          (this.win as Window & { __ogamexLastGalaxyToken?: string }).__ogamexLastGalaxyToken = retryParsed.newAjaxToken;
+        }
+        const retrySuccess = retryParsed?.response?.success !== false && retryParsed?.success !== false;
+        if (retrySuccess) {
+          console.info(`[ApiExec/discover] retry SUCCESS after token race for ${galaxy}:${system}:${position}`);
+          try {
+            const incFn = (this.win as Window & { __ogamexIncrementUsedSlot?: () => void }).__ogamexIncrementUsedSlot;
+            if (incFn) incFn();
+          } catch { /* */ }
+          return ackOk("retry-success-token-race");
+        }
+        const retryMsg = retryParsed?.response?.message ?? retryParsed?.message ?? "unknown";
+        throw new Error(`discover ${galaxy}:${system}:${position} rejected after token-race retry: ${retryMsg}`);
+      }
       // Operator 2026-05-25 verify: ogame intermittently returns "資源不足/
       // resources insufficient" even when store + ogame top-bar both show
       // resources WELL ABOVE the threshold (5000 metal / 1000 crystal /
