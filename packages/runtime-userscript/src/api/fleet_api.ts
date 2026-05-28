@@ -58,12 +58,17 @@ const TOKEN_INVALID_RE = /invalid token|csrf|session expired/i;
 // loop instead of bouncing to FSM FALLBACK (which costs 10s reset window
 // while resources sit on planet under hostile incoming).
 const TRANSIENT_RACE_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later/i;
-// Operator 2026-05-28: ogame 140028 "倉存容量不足!" = dest planet/moon
-// storage cap can't accept the cargo we're sending. For emergency FS save,
-// what we ACTUALLY need is to get the SHIPS off the planet — the cargo is
-// only the side-payload. Self-heal: strip metal/crystal/deuterium to 0 and
-// retry, sending only ships. Operator loses the resource transport
-// optimization for this save, but keeps the fleet alive.
+// Operator 2026-05-28: ogame 140028 "倉存容量不足!" — DEST-SIDE complement
+// to case_decider.ts's source-side cargo sizing (commit c8d2ead, 2026-05-24:
+// case_decider sizes cargo ≤ FLEET capacity using ship_cargo_capacity).
+// case_decider can compute fleet capacity exactly (live harvest from
+// expedition checkTarget), but has no visibility into dest planet/moon
+// storage caps — especially moon storage which is small. So when ogame
+// rejects with 140028 here, it means cargo ≤ fleet capacity but >
+// dest storage cap. Self-heal: peel ONE resource per retry attempt in
+// REVERSE of operator's priority (operator 2026-05-28: "优先装载重氢，
+// 其次晶体，最后金属"). FS save's primary goal is ships off the planet;
+// resource transport is secondary.
 const STORAGE_OVERFLOW_RE = /140028|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage/i;
 
 function buildBody(p: SendFleetParams, token: string): URLSearchParams {

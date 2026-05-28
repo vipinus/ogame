@@ -53,6 +53,9 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
   // with hyperspace tech, class, lifeform bonuses — the only authoritative
   // source is ogame's own `shipsData[id].cargoCapacity`. We cache that on
   // every expedition's checkTarget step in store.server.ship_cargo_capacity.
+  // (DEST-side 140028 — when cargo ≤ fleet capacity but > dest storage cap —
+  // is handled in fleet_api.ts sendFleet's reverse-priority peel retry,
+  // v0.0.397. Two-layer defense: source-side here, dest-side there.)
   //
   // CARGO_BASE is the cold-boot fallback (server.ship_cargo_capacity empty
   // before first expedition harvest). Safe lower bound — under-loads but
