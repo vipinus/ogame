@@ -48,7 +48,10 @@ export class BusyDeferredError extends Error {
 function userBusyNow(): boolean {
   if (!_store) return false;
   const u = (_store.state.server as { user_busy_until?: number } | undefined)?.user_busy_until;
-  return typeof u === "number" && u > Math.floor(Date.now() / 1000);
+  // Operator 2026-05-28: user_busy_until is written as MS timestamp
+  // (boot.ts:322 Date.now() + IDLE_GUARD_MS). Compare with Date.now() ms,
+  // NOT Math.floor(Date.now()/1000) sec — ms always > sec → always busy.
+  return typeof u === "number" && u > Date.now();
 }
 
 function currentOperatorCp(): string | null {
