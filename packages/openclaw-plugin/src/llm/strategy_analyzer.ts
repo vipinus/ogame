@@ -111,7 +111,6 @@ function buildPrompt(input: AnalyzeInput): string {
         enabled: expedition.enabled,
         auto_fill_slots: expedition.auto_fill_slots,
         source_planet: expedition.source_planet,
-        duration: expedition.duration,
         target_position: expedition.target_position,
         galaxy_strategy: expedition.galaxy_strategy,
         cargo_load: expedition.cargo_load,

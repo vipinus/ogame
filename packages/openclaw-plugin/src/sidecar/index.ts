@@ -142,7 +142,6 @@ function bootstrapStrategy(): Strategy {
         enabled: false,
         auto_fill_slots: false,
         source_planet: null,
-        duration: "short",
         target_position: 16,
         fleet_templates: {},
         galaxy_strategy: {

@@ -245,7 +245,6 @@ export interface ExpeditionConfig {
   enabled: boolean;
   auto_fill_slots: boolean;
   source_planet: string | null;
-  duration: "short" | "medium" | "long";
   target_position: number;
   fleet_templates: Record<string, FleetTemplate>;
   galaxy_strategy: {

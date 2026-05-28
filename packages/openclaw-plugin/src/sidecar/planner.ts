@@ -774,7 +774,6 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
     source_planet?: unknown;
     ships?: unknown;
     target_position?: unknown;
-    duration?: unknown;
   };
   const sourcePlanetRaw = typeof target.source_planet === "string" ? target.source_planet : undefined;
   const planet =
@@ -785,7 +784,6 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
 
   const ships = (typeof target.ships === "object" && target.ships !== null ? target.ships : {}) as ShipCount;
   const targetPosition = typeof target.target_position === "number" ? target.target_position : 16;
-  const duration = typeof target.duration === "string" ? target.duration : "short";
 
   const sourceCoordsKey = planet.coords.join(":");
   // No "1 expedition per planet" block — owner runs multiple parallel
@@ -806,7 +804,6 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
       source_coords: sourceCoordsKey,
       ships,
       target_position: targetPosition,
-      duration,
       mission: MISSION_EXPEDITION,
     },
     preconds: [],
@@ -814,7 +811,7 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
     // expire — fleet returns asynchronously and may sit cross-boundary;
     // expiring leads to silent miss + slot underuse.
     expires_at: Number.MAX_SAFE_INTEGER,
-    reason: `expedition from ${sourceCoordsKey} → pos ${targetPosition} (${duration})`,
+    reason: `expedition from ${sourceCoordsKey} → pos ${targetPosition}`,
     goal_id: goal.id,
   };
 }

@@ -54,11 +54,6 @@ const TExpeditionConfig = Type.Object({
   enabled: Type.Boolean(),
   auto_fill_slots: Type.Boolean(),
   source_planet: Type.Union([Type.String(), Type.Null()]),
-  duration: Type.Union([
-    Type.Literal("short"),
-    Type.Literal("medium"),
-    Type.Literal("long"),
-  ]),
   target_position: Type.Integer({ minimum: 1, maximum: 16 }),
   fleet_templates: Type.Record(Type.String(), TFleetTemplate),
   galaxy_strategy: TGalaxyStrategy,
@@ -160,11 +155,6 @@ const TDailyPatch = Type.Partial(
         enabled: Type.Boolean(),
         auto_fill_slots: Type.Boolean(),
         source_planet: Type.Union([Type.String(), Type.Null()]),
-        duration: Type.Union([
-          Type.Literal("short"),
-          Type.Literal("medium"),
-          Type.Literal("long"),
-        ]),
         target_position: Type.Integer({ minimum: 1, maximum: 16 }),
         fleet_templates: Type.Record(Type.String(), TFleetTemplate),
         galaxy_strategy: Type.Partial(

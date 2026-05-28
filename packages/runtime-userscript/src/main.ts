@@ -3,7 +3,6 @@ import { createIndexedKv } from "./store/indexed_db.js";
 import { wireBridge } from "./bridge/wire.js";
 import { wireRuntime } from "./wire_runtime.js";
 import { maybeAutoLoginFromHub } from "./auto_login.js";
-import type { ExpeditionConfig } from "@ogamex/shared";
 
 declare const GM_getValue: ((key: string, def?: string) => string) | undefined;
 
@@ -32,25 +31,6 @@ function readConfig(key: string, def: string): string {
     if (v) return v;
   } catch { /* localStorage may be unavailable in some sandboxes */ }
   return def;
-}
-
-/** Stub config until M5+ pulls from Strategy.daily.expedition. Dormant by default. */
-function defaultExpeditionConfig(): ExpeditionConfig {
-  return {
-    enabled: false,
-    auto_fill_slots: false,
-    source_planet: null,
-    duration: "medium",
-    target_position: 16,
-    fleet_templates: {},
-    galaxy_strategy: {
-      mode: "stats_based",
-      home_galaxy_first: true,
-      switch_threshold: { black_hole_rate_24h: 0.05, sample_size_min: 20 },
-      cross_galaxy_deut_budget: 0,
-    },
-    cargo_load: { smallCargo_capacity_pct: 100, largeCargo_capacity_pct: 100 },
-  };
 }
 
 // Bail early on non-game pages — the userscript's @match is permissive
@@ -117,7 +97,6 @@ if (_inIframe) {
       const goalsPanelBaseUrl = readConfig("OGAMEX_GOALS_PANEL_URL", "https://ogame.anyfq.com");
       const runtime = wireRuntime(handle, {
         ...(wired?.client ? { bridge: wired.client } : {}),
-        expeditionConfig: defaultExpeditionConfig,
         win: window,
         doc: document,
         auditThresholds: {},

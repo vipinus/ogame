@@ -4,23 +4,25 @@
  * Composed:
  *   - TokenManager (CSRF refresh from current document/window)
  *   - Emergency save orchestrator (M2.7) + PriorityGate forwarding
- *   - ExpeditionStore + daily expedition loop (M3.7)
- *   - UiDirectiveExecutor + GoalRunner (M5.5 + M5.6) — only if a bridge is provided
+ *   - GoalRunner + ApiDirectiveExecutor (M5.5+M5.6) — only if a bridge is provided
  *   - Auditor (M6.5)
  *
  * The BootHandle (and any wired bridge) are owned by the caller; `stop()` here
  * only tears down the subsystems this file constructed.
+ *
+ * 2026-05-27 dead-code purge: daily/expedition/loop + slot_filler + pickers
+ * removed (was always-disabled in strategy; actual expedition dispatch lives
+ * in sidecar discord-bridge daemon). directive_executor.ts (UiDirectiveExecutor
+ * DOM-click executor) also removed — ApiDirectiveExecutor was the only
+ * registered executor since v0.0.222.
  */
 
 import type { BootHandle } from "./boot.js";
 import type { BridgeClient } from "./bridge/ws_client.js";
-import type { ExpeditionConfig } from "@ogamex/shared";
 import { startEmergencySave } from "./emergency/save_orchestrator.js";
 import { recallFleet } from "./api/fleet_api.js";
 import { startSpyDetector } from "./emergency/spy_detector.js";
 import { emergencyGate } from "./emergency/priority_gate.js";
-import { startDailyExpeditionLoop } from "./daily/expedition/loop.js";
-import { ExpeditionStore } from "./store/expedition_store.js";
 import { startGoalRunner } from "./goal_runner.js";
 import { ApiDirectiveExecutor } from "./api_executor.js";
 import { startAuditor } from "./auditor.js";
@@ -32,8 +34,6 @@ import { startGoalsPanel, type GoalsPanelHandle } from "./overlay/goals_panel.js
 export interface RuntimeWireOptions {
   /** BridgeClient to bind GoalRunner. Optional — if absent, GoalRunner is not started. */
   bridge?: BridgeClient;
-  /** ExpeditionConfig provider — pulled from current Strategy when daily loop ticks. */
-  expeditionConfig: () => ExpeditionConfig;
   /** Window for DOM clicks (browser injects window; tests inject jsdom). */
   win: Window;
   doc: Document;
@@ -52,13 +52,9 @@ export interface RuntimeWireOptions {
 }
 
 export interface RuntimeWireHandle {
-  /** Stop EVERYTHING (emergency orchestrator + daily loop + GoalRunner + Auditor). Does NOT stop boot. */
+  /** Stop EVERYTHING (emergency orchestrator + GoalRunner + Auditor). Does NOT stop boot. */
   stop(): void;
 }
-
-/** ogame system range is 1..499; the daily loop only uses this when picking
- *  a fresh expedition target system. */
-const OGAME_SYSTEM_COUNT = 499;
 
 export function wireRuntime(
   boot: BootHandle,
@@ -179,40 +175,7 @@ export function wireRuntime(
     boot.bus.emit("emergency.gate.changed", { active });
   });
 
-  // 3. Expedition store. In browser environment, opts.win.indexedDB is the
-  //    real IDBFactory; tests inject fake-indexeddb. Guard against missing.
-  const idbFactory = (opts.win as Window & { indexedDB?: IDBFactory }).indexedDB;
-  const expeditionStore = new ExpeditionStore(
-    idbFactory ? { factory: idbFactory } : {},
-  );
-
-  // 4. Daily expedition loop. Uses a 5-minute fallback tick.
-  const daily = startDailyExpeditionLoop({
-    bus: boot.bus,
-    store: boot.store,
-    expeditionStore,
-    gate: emergencyGate,
-    config: opts.expeditionConfig,
-    send: async (p) => {
-      // Operator 2026-05-27 同族 review: daily expedition 也走 fleet POST + 用
-      // expedition slot. 满槽时 throw 让 daily loop 跳过此 tick (不 fire 一通然后
-      // ogame 140019 reject 浪费 token chain).
-      const srv = (opts.win as Window & { __ogamexStore?: { state: { server?: { used_expedition_slots?: number; max_expedition_slots?: number } } } })
-        .__ogamexStore?.state.server;
-      const usedExp = srv?.used_expedition_slots ?? -1;
-      const maxExp = srv?.max_expedition_slots ?? -1;
-      if (usedExp >= 0 && maxExp > 0 && usedExp >= maxExp) {
-        throw new Error(`daily expedition aborted (slot gate): used_expedition_slots=${usedExp} >= max=${maxExp}`);
-      }
-      const { sendFleet } = await import("./api/fleet_api.js");
-      return sendFleet(p, { fetch: opts.fetch, token: tokenManager });
-    },
-    randomSystem: (_galaxy: number) =>
-      1 + Math.floor(Math.random() * OGAME_SYSTEM_COUNT),
-    fallbackIntervalMs: 5 * 60 * 1000,
-  });
-
-  // 5. UI executor + GoalRunner (only when a bridge is provided).
+  // GoalRunner (only when a bridge is provided).
   let runner: ReturnType<typeof startGoalRunner> | null = null;
   if (opts.bridge) {
     // API executor is the ONLY executor (v0.0.222 — operator "装 A 全 API
@@ -268,11 +231,6 @@ export function wireRuntime(
         offSpyDetector();
       } catch (e) {
         console.warn("[wireRuntime] spy_detector.stop failed", e);
-      }
-      try {
-        daily.stop();
-      } catch (e) {
-        console.warn("[wireRuntime] daily.stop failed", e);
       }
       try {
         runner?.stop();
