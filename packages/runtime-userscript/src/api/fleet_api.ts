@@ -168,13 +168,27 @@ export async function sendFleet(
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
       continue;
     }
-    // 140028 storage overflow — strip cargo and retry with ships only.
-    // Goal of FS save is to get ships off the planet; cargo is incidental.
+    // 140028 storage overflow — peel cargo in REVERSE of operator's
+    // priority (operator 2026-05-28: "优先装载重氢，其次晶体，最后金属").
+    // Drop metal first (lowest priority), then crystal, last deuterium
+    // (highest priority — and also fuel + the fleet's escape oxygen).
+    // Each strip retry gives ogame a fresh attempt with less cargo.
     const isStorageOverflow = STORAGE_OVERFLOW_RE.test(errMsg) || STORAGE_OVERFLOW_RE.test(String(errCode ?? ""));
     if (isStorageOverflow && attempt < 4 && (p.cargo.m > 0 || p.cargo.c > 0 || p.cargo.d > 0)) {
-      console.warn(`[fleet_api/sendFleet] attempt=${attempt} dest storage full (${errMsg.slice(0, 80)}) — strip cargo m/c/d and retry with ships only`);
-      const strippedParams: SendFleetParams = { ...p, cargo: { m: 0, c: 0, d: 0 } };
-      p = strippedParams;
+      const stripped = { ...p.cargo };
+      let peeled = "";
+      if (stripped.m > 0) {
+        peeled = `metal (${stripped.m})`;
+        stripped.m = 0;
+      } else if (stripped.c > 0) {
+        peeled = `crystal (${stripped.c})`;
+        stripped.c = 0;
+      } else if (stripped.d > 0) {
+        peeled = `deuterium (${stripped.d}) — ships only`;
+        stripped.d = 0;
+      }
+      console.warn(`[fleet_api/sendFleet] attempt=${attempt} dest storage full (${errMsg.slice(0, 80)}) — drop ${peeled} and retry`);
+      p = { ...p, cargo: stripped };
       if (json.newAjaxToken) {
         ctx.token.set(json.newAjaxToken);
         token = json.newAjaxToken;
