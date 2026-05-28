@@ -489,14 +489,16 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (usedExp >= 0 && maxExp > 0 && usedExp >= maxExp) {
         throw new Error(`expedition aborted (exp slot gate): used_expedition_slots=${usedExp} >= max_expedition_slots=${maxExp}, no POST`);
       }
-      // Operator 2026-05-28: log evidence — ogame returned 140029 "已達艦隊數
-      // 上限" even when used_expedition_slots < max. Expedition occupies BOTH
-      // an expedition slot AND a fleet slot. Apply same keep-1-empty fleet
-      // gate as colonize/deploy/transport (memory: fleet_slot_gate_invariant).
+      // Operator 2026-05-28: expedition occupies BOTH expedition slot AND
+      // fleet slot. Originally kept 1 fleet slot reserved for emergency FS,
+      // but operator now: "修好远征自动发船,不用管发现任务,发现任务会慢慢
+      // 让出空间". Expedition takes the last slot too — emergency FS goes
+      // through FSM bypass (memory: fleet_slot_gate_invariant says FSM
+      // ignores slot gate to save fleet at all costs).
       const usedFleet = srv?.used_fleet_slots ?? -1;
       const maxFleet = srv?.max_fleet_slots ?? -1;
-      if (usedFleet >= 0 && maxFleet > 0 && usedFleet >= maxFleet - 1) {
-        throw new Error(`expedition aborted (fleet slot gate): used_fleet_slots=${usedFleet} >= max=${maxFleet} keep-1-empty for emergency FS`);
+      if (usedFleet >= 0 && maxFleet > 0 && usedFleet >= maxFleet) {
+        throw new Error(`expedition aborted (fleet slot gate): used_fleet_slots=${usedFleet} >= max=${maxFleet} (all slots occupied, FSM bypass still works for emergency FS)`);
       }
     } catch (e) {
       if (e instanceof Error && e.message.startsWith("expedition aborted (")) throw e;

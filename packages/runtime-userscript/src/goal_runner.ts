@@ -286,14 +286,13 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
           ack(dr.id, { success: false, error: `expedition slots full ${usedExp}/${maxExp} (early skip, not queued)` });
           return;
         }
-        // Operator 2026-05-28 evidence: ogame 140029 "已達艦隊數上限" hit
-        // when expedition slot had room but total fleet slot was full.
-        // Expedition occupies BOTH an exp slot AND a fleet slot. Apply
-        // same keep-1-empty fleet gate here.
+        // Operator 2026-05-28: expedition takes the last fleet slot too —
+        // emergency FS still works via FSM bypass. Gate trips only at
+        // usedFleet >= max (truly no slots), not max-1.
         const usedF1 = srv?.used_fleet_slots ?? -1;
         const maxF1 = srv?.max_fleet_slots ?? -1;
-        if (usedF1 >= 0 && maxF1 > 0 && usedF1 >= maxF1 - 1) {
-          ack(dr.id, { success: false, error: `expedition: fleet slots full ${usedF1}/${maxF1} keep-1-empty (early skip, not queued)` });
+        if (usedF1 >= 0 && maxF1 > 0 && usedF1 >= maxF1) {
+          ack(dr.id, { success: false, error: `expedition: fleet slots full ${usedF1}/${maxF1} (early skip, not queued)` });
           return;
         }
       } else if (dr.action === "colonize" || dr.action === "deploy" || dr.action === "transport") {
