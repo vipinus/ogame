@@ -337,6 +337,100 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   };
   env.doc.addEventListener("mousedown", onUserAct, true);
   env.doc.addEventListener("keydown", onUserAct, true);
+
+  // Operator 2026-05-28 "cp 锁机制": when operator clicks while a background
+  // cp= fetch is in flight, intercept the click in capture phase, await the
+  // session-cp restore, then re-dispatch the click as a synthetic event.
+  // Without this, ogame UI submits with stale session-cp → server race.
+  // Toast gives operator visual feedback that we're syncing.
+  let clickToastEl: HTMLElement | null = null;
+  const showSyncToast = (): void => {
+    if (clickToastEl) return;
+    try {
+      const el = env.doc.createElement("div");
+      el.id = "ogamex-sync-toast";
+      el.textContent = "⏳ 同步星球中…";
+      el.style.cssText = "position:fixed;top:20px;left:50%;transform:translateX(-50%);background:rgba(20,20,30,0.95);color:#fff;padding:6px 14px;border-radius:4px;font:13px sans-serif;z-index:2147483647;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,0.4);";
+      env.doc.body.appendChild(el);
+      clickToastEl = el;
+    } catch { /* */ }
+  };
+  const hideSyncToast = (): void => {
+    if (!clickToastEl) return;
+    try { clickToastEl.remove(); } catch { /* */ }
+    clickToastEl = null;
+  };
+  // Replay flag — when we re-dispatch a synthetic event, mark it so the
+  // capture handler doesn't re-intercept (infinite loop guard).
+  const REPLAY_FLAG = "__ogamexReplay";
+  const clickInterceptHandler = (e: Event): void => {
+    if (!e.isTrusted) return; // synthetic events (replay) pass through
+    const ev = e as Event & { [k: string]: unknown };
+    if (ev[REPLAY_FLAG]) return;
+    void (async (): Promise<void> => {
+      // Import lazily so the listener install doesn't depend on safe_fetch init.
+      const { cpInFlightCount, awaitCpIdle } = await import("./api/safe_fetch.js");
+      if (cpInFlightCount() === 0) return; // nothing in flight, let original fire
+      // BUT we already missed the chance to preventDefault — this async block
+      // ran after the event already bubbled. Need synchronous prevent.
+      // (Handled below — sync prevent + async await + replay.)
+    })();
+  };
+  // Synchronous prevent + async wait + replay implementation.
+  const clickInterceptSync = (e: Event): void => {
+    if (!e.isTrusted) return;
+    const ev = e as Event & { [k: string]: unknown };
+    if (ev[REPLAY_FLAG]) return;
+    // Sync read — must check inFlight count before letting ogame process.
+    // Use a window mirror set by safe_fetch (avoids dynamic import in sync
+    // path). safe_fetch updates window.__ogamexCpInFlight on every fetch.
+    const inFlight = (env.win as Window & { __ogamexCpInFlight?: number }).__ogamexCpInFlight ?? 0;
+    if (inFlight === 0) return; // pass through
+    e.preventDefault();
+    e.stopPropagation();
+    showSyncToast();
+    void (async (): Promise<void> => {
+      try {
+        const { awaitCpIdle } = await import("./api/safe_fetch.js");
+        await awaitCpIdle();
+      } catch { /* */ }
+      hideSyncToast();
+      // Replay the click as a synthetic event with REPLAY_FLAG set.
+      try {
+        const target = e.target as HTMLElement | null;
+        if (!target) return;
+        const me = e as MouseEvent;
+        const synth = new MouseEvent(e.type, {
+          bubbles: true,
+          cancelable: true,
+          view: env.win,
+          button: me.button ?? 0,
+          buttons: me.buttons ?? 0,
+          clientX: me.clientX ?? 0,
+          clientY: me.clientY ?? 0,
+          ctrlKey: me.ctrlKey ?? false,
+          shiftKey: me.shiftKey ?? false,
+          altKey: me.altKey ?? false,
+          metaKey: me.metaKey ?? false,
+        });
+        (synth as unknown as Record<string, unknown>)[REPLAY_FLAG] = true;
+        target.dispatchEvent(synth);
+      } catch (err) {
+        console.warn("[OgameX/click-lock] replay failed", err);
+      }
+    })();
+  };
+  env.doc.addEventListener("click", clickInterceptSync, true);
+  env.doc.addEventListener("mousedown", clickInterceptSync, true);
+  // safe_fetch will keep this mirror count current on each fetch start/end.
+  // Polled here as a cheap fallback in case mirror gets out of sync.
+  setInterval(async () => {
+    try {
+      const { cpInFlightCount } = await import("./api/safe_fetch.js");
+      (env.win as Window & { __ogamexCpInFlight?: number }).__ogamexCpInFlight = cpInFlightCount();
+    } catch { /* */ }
+  }, 200);
+  void clickInterceptHandler; // unused (kept for reference)
   // Operator 2026-05-27 "远征发不出去了" — v0.0.358 加的 mousemove/scroll/wheel/
   // visibility 把"鼠标 hover 在 tab"误判成 active operation, expedition 永远
   // 被 defer 不放行. 真正 active = mousedown/keydown (operator 实际点 / 输入).
@@ -989,7 +1083,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.385";
+  const USERSCRIPT_VERSION = "0.0.386";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema

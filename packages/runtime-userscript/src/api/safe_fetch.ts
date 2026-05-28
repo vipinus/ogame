@@ -45,6 +45,33 @@ export class BusyDeferredError extends Error {
   }
 }
 
+// Operator 2026-05-28: cp lock state — tracks every in-flight cp= fetch
+// + its restore-to-operator-cp phase. click_lock (boot.ts) awaits this so
+// operator clicks can be delayed until session-cp is back to operatorCp,
+// preventing ogame UI race when background dispatch is mid-flight.
+const inFlightCpFetches = new Set<Promise<unknown>>();
+
+function mirrorInFlightCount(): void {
+  if (!_winRef) return;
+  (_winRef as Window & { __ogamexCpInFlight?: number }).__ogamexCpInFlight = inFlightCpFetches.size;
+}
+
+/** How many cp= fetches are currently in flight (including their restore phase). */
+export function cpInFlightCount(): number {
+  return inFlightCpFetches.size;
+}
+
+/** Resolve once all in-flight cp= fetches finish AND session-cp is restored
+ *  to operatorCp. Returns immediately when no fetch is in flight. */
+export async function awaitCpIdle(): Promise<void> {
+  if (inFlightCpFetches.size === 0) return;
+  await Promise.allSettled([...inFlightCpFetches]);
+  // A new fetch may have started; loop once more (bounded to avoid spin).
+  for (let i = 0; i < 4 && inFlightCpFetches.size > 0; i++) {
+    await Promise.allSettled([...inFlightCpFetches]);
+  }
+}
+
 function userBusyNow(): boolean {
   if (!_store) return false;
   const u = (_store.state.server as { user_busy_until?: number } | undefined)?.user_busy_until;
@@ -92,16 +119,28 @@ export async function fetchWithCp(
   const sourceStr = String(sourcePID);
   const sep = baseUrl.includes("?") ? "&" : "?";
   const fullUrl = `${baseUrl}${sep}cp=${encodeURIComponent(sourceStr)}`;
+  // Track this fetch + restore as one in-flight unit so click_lock can
+  // delay operator clicks until session-cp is back to operatorCp.
+  let resolveLock!: () => void;
+  const lockPromise = new Promise<void>((resolve) => { resolveLock = resolve; });
+  inFlightCpFetches.add(lockPromise);
+  mirrorInFlightCount();
   try {
     return await _winRef.fetch(fullUrl, init);
   } finally {
-    if (!opts.skipRestore && operatorCp && operatorCp !== sourceStr) {
-      try {
-        await _winRef.fetch(
-          `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${encodeURIComponent(operatorCp)}`,
-          { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-        );
-      } catch (_) { /* best-effort restore */ }
+    try {
+      if (!opts.skipRestore && operatorCp && operatorCp !== sourceStr) {
+        try {
+          await _winRef.fetch(
+            `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${encodeURIComponent(operatorCp)}`,
+            { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+          );
+        } catch (_) { /* best-effort restore */ }
+      }
+    } finally {
+      inFlightCpFetches.delete(lockPromise);
+      mirrorInFlightCount();
+      resolveLock();
     }
   }
 }
