@@ -58,6 +58,13 @@ const TOKEN_INVALID_RE = /invalid token|csrf|session expired/i;
 // loop instead of bouncing to FSM FALLBACK (which costs 10s reset window
 // while resources sit on planet under hostile incoming).
 const TRANSIENT_RACE_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later/i;
+// Operator 2026-05-28: ogame 140028 "倉存容量不足!" = dest planet/moon
+// storage cap can't accept the cargo we're sending. For emergency FS save,
+// what we ACTUALLY need is to get the SHIPS off the planet — the cargo is
+// only the side-payload. Self-heal: strip metal/crystal/deuterium to 0 and
+// retry, sending only ships. Operator loses the resource transport
+// optimization for this save, but keeps the fleet alive.
+const STORAGE_OVERFLOW_RE = /140028|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage/i;
 
 function buildBody(p: SendFleetParams, token: string): URLSearchParams {
   const body = new URLSearchParams();
@@ -159,6 +166,20 @@ export async function sendFleet(
         body = buildBody(p, token);
       }
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      continue;
+    }
+    // 140028 storage overflow — strip cargo and retry with ships only.
+    // Goal of FS save is to get ships off the planet; cargo is incidental.
+    const isStorageOverflow = STORAGE_OVERFLOW_RE.test(errMsg) || STORAGE_OVERFLOW_RE.test(String(errCode ?? ""));
+    if (isStorageOverflow && attempt < 4 && (p.cargo.m > 0 || p.cargo.c > 0 || p.cargo.d > 0)) {
+      console.warn(`[fleet_api/sendFleet] attempt=${attempt} dest storage full (${errMsg.slice(0, 80)}) — strip cargo m/c/d and retry with ships only`);
+      const strippedParams: SendFleetParams = { ...p, cargo: { m: 0, c: 0, d: 0 } };
+      p = strippedParams;
+      if (json.newAjaxToken) {
+        ctx.token.set(json.newAjaxToken);
+        token = json.newAjaxToken;
+      }
+      body = buildBody(p, token);
       continue;
     }
     throw new FleetApiError(errMsg, json);
