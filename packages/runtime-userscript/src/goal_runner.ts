@@ -113,17 +113,19 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       });
       return;
     }
-    // userBusy DEFER (v0.0.361). Operator 2026-05-27: discover is a
-    // background batch sweep, never touches operator's planet (cp= goes
-    // to source planet of the dispatch, not where operator's viewing).
-    // Discover MUST run regardless of busy — bypass the gate so sweep
-    // throughput stays at ogame's natural pace.
-    // Operator 2026-05-28: expedition has the same nature (cp=source_planet,
-    // fetchWithCpBypassBusy restores session). Without bypass, discover
-    // (which already bypasses) starves expedition by hoarding fleet slots
-    // during the entire window operator is browsing ogame UI.
-    const userBusyBypass = directive.action === "discover" || directive.action === "expedition";
-    if (!userBusyBypass && typeof userBusy === "function" && userBusy()) {
+    // userBusy DEFER (v0.0.361).
+    // 2026-05-28 reversion: previous "discover/expedition bypass userBusy"
+    // logic (v0.0.361 discover, v0.0.377 expedition) optimized for slot
+    // throughput at the cost of cp= session-cp races against operator's
+    // own manual ogame UI sendFleet. Evidence: operator reports "前端操作
+    // 还是有干扰, 服务器无响应". Every background discover/expedition
+    // dispatched during operator activity fires fetchWithCpBypassBusy
+    // → ogame session-cp switches mid-operation → ogame race → 服务器无响应.
+    // Reverted: ALL directives now defer while operator is busy. Emergency
+    // FS save still launches because it goes through a separate path
+    // (fleet_api.sendFleet → fetchWithCpBypassBusy) NOT routed through
+    // GoalRunner, so it bypasses this gate without explicit handling.
+    if (typeof userBusy === "function" && userBusy()) {
       const now = Date.now();
       if (now - lastDeferLogAt > 60_000) {
         console.info(`[GoalRunner] operator busy — deferring ${directive.action} & all queued (single wake when idle, log throttled 60s)`);
