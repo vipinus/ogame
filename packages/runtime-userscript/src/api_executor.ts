@@ -478,18 +478,28 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
 
     // EXPEDITION SLOT GATE — operator 2026-05-27: "远征怎么会有警告？发船之前
     // 没有查看是否有可用的slot？". ogame error 140043/140019 = expedition slots
-    // exhausted (≠ fleet slots). store.server.used_expedition_slots / max_*
-    // is updated by /movement harvest + galaxy fetch. Refuse POST if full.
+    // exhausted; 140029 = TOTAL fleet slot exhausted (expedition fleet ALSO
+    // occupies 1 fleet slot on top of 1 expedition slot). Both checks needed.
+    // store.server.* is updated by /movement harvest + galaxy fetch.
     try {
-      const srv = (this.win as Window & { __ogamexStore?: { state: { server?: { used_expedition_slots?: number; max_expedition_slots?: number } } } })
+      const srv = (this.win as Window & { __ogamexStore?: { state: { server?: { used_expedition_slots?: number; max_expedition_slots?: number; used_fleet_slots?: number; max_fleet_slots?: number } } } })
         .__ogamexStore?.state.server;
       const usedExp = srv?.used_expedition_slots ?? -1;
       const maxExp = srv?.max_expedition_slots ?? -1;
       if (usedExp >= 0 && maxExp > 0 && usedExp >= maxExp) {
-        throw new Error(`expedition aborted (slot gate): used_expedition_slots=${usedExp} >= max_expedition_slots=${maxExp}, no POST`);
+        throw new Error(`expedition aborted (exp slot gate): used_expedition_slots=${usedExp} >= max_expedition_slots=${maxExp}, no POST`);
+      }
+      // Operator 2026-05-28: log evidence — ogame returned 140029 "已達艦隊數
+      // 上限" even when used_expedition_slots < max. Expedition occupies BOTH
+      // an expedition slot AND a fleet slot. Apply same keep-1-empty fleet
+      // gate as colonize/deploy/transport (memory: fleet_slot_gate_invariant).
+      const usedFleet = srv?.used_fleet_slots ?? -1;
+      const maxFleet = srv?.max_fleet_slots ?? -1;
+      if (usedFleet >= 0 && maxFleet > 0 && usedFleet >= maxFleet - 1) {
+        throw new Error(`expedition aborted (fleet slot gate): used_fleet_slots=${usedFleet} >= max=${maxFleet} keep-1-empty for emergency FS`);
       }
     } catch (e) {
-      if (e instanceof Error && e.message.startsWith("expedition aborted (slot gate)")) throw e;
+      if (e instanceof Error && e.message.startsWith("expedition aborted (")) throw e;
       // missing store = skip gate, fall through
     }
 
