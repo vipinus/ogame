@@ -50,6 +50,14 @@ const RECALL_ENDPOINT =
   "/game/index.php?page=ingame&component=movement&action=recallFleetAjax&ajax=1&asJson=1";
 
 const TOKEN_INVALID_RE = /invalid token|csrf|session expired/i;
+// Operator 2026-05-28: ogame 140043 "艦隊派遣失敗:無法派遣艦隊.請稍後再試"
+// is a transient dispatch-race (internal ogame lock contention during burst
+// fleet POSTs, NOT slot-full — slot-full would be a different code path
+// where exp/fleet slot counts are visible to gate). ogame self-describes
+// as "please try again later". For emergency FS save, retry within attempt
+// loop instead of bouncing to FSM FALLBACK (which costs 10s reset window
+// while resources sit on planet under hostile incoming).
+const TRANSIENT_RACE_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later/i;
 
 function buildBody(p: SendFleetParams, token: string): URLSearchParams {
   const body = new URLSearchParams();
@@ -84,7 +92,9 @@ export async function sendFleet(
   let body = buildBody(p, token);
   const { fetchWithCpBypassBusy } = await import("./safe_fetch.js");
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // Operator 2026-05-28: bumped 2 → 4 attempts for emergency FS save. 140043
+  // transient race needs more retry budget than token-invalid edge case.
+  for (let attempt = 1; attempt <= 4; attempt++) {
     const sourcePID = p.sourcePlanetId ?? "";
     console.log(`[fleet_api/sendFleet] attempt=${attempt} POST ${endpoint}${sourcePID ? ` (cp=${sourcePID})` : ""} body=${body.toString().replace(/token=[^&]+/, "token=***")}`);
     const res = sourcePID
@@ -136,6 +146,21 @@ export async function sendFleet(
     const errMsg = json.message
       ?? (Array.isArray(errsField) && errsField[0]?.message)
       ?? `success=${json.success} raw=${rawText.slice(0, 200)}`;
+    // Operator 2026-05-28: 140043 transient race — backoff + retry within
+    // this attempt loop instead of throwing to FSM FALLBACK (10s reset).
+    const errCode = Array.isArray(errsField) ? errsField[0]?.error : undefined;
+    const isTransientRace = TRANSIENT_RACE_RE.test(errMsg) || TRANSIENT_RACE_RE.test(String(errCode ?? ""));
+    if (isTransientRace && attempt < 4) {
+      const backoffMs = 200 * attempt;
+      console.warn(`[fleet_api/sendFleet] attempt=${attempt} transient race (${errMsg.slice(0, 80)}) — backoff ${backoffMs}ms then retry`);
+      if (json.newAjaxToken) {
+        ctx.token.set(json.newAjaxToken);
+        token = json.newAjaxToken;
+        body = buildBody(p, token);
+      }
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      continue;
+    }
     throw new FleetApiError(errMsg, json);
   }
   throw new FleetApiError("retry exhausted");
