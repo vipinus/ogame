@@ -113,28 +113,12 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       });
       return;
     }
-    // userBusy DEFER (v0.0.361).
-    // 2026-05-28 reversion: previous "discover/expedition bypass userBusy"
-    // logic (v0.0.361 discover, v0.0.377 expedition) optimized for slot
-    // throughput at the cost of cp= session-cp races against operator's
-    // own manual ogame UI sendFleet. Evidence: operator reports "前端操作
-    // 还是有干扰, 服务器无响应". Every background discover/expedition
-    // dispatched during operator activity fires fetchWithCpBypassBusy
-    // → ogame session-cp switches mid-operation → ogame race → 服务器无响应.
-    // Reverted: ALL directives now defer while operator is busy. Emergency
-    // FS save still launches because it goes through a separate path
-    // (fleet_api.sendFleet → fetchWithCpBypassBusy) NOT routed through
-    // GoalRunner, so it bypasses this gate without explicit handling.
-    if (typeof userBusy === "function" && userBusy()) {
-      const now = Date.now();
-      if (now - lastDeferLogAt > 60_000) {
-        console.info(`[GoalRunner] operator busy — deferring ${directive.action} & all queued (single wake when idle, log throttled 60s)`);
-        lastDeferLogAt = now;
-      }
-      deferredQueue.push(directive);
-      schedulePollIdle();
-      return;
-    }
+    // Operator 2026-05-28 "删除以前设计的防止和前端冲突的机制": removed
+    // userBusy DEFER branch. Conflict prevention is now handled by:
+    //   1. click intercept (boot.ts clickInterceptSync) — operator clicks
+    //      during in-flight cp= / trackBackgroundOp wait for completion
+    //   2. fleetdispatch page defer (the block below) — full page-aware
+    //      gate while the operator is in the fleet UI
     // Operator 2026-05-28 evidence: ogame's own fleetdispatch UI fires
     // checkTarget POST that shares the global ajax token with our
     // background discover/expedition dispatch. Token race → ogame UI gets
@@ -224,9 +208,9 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     pollIdleTimer = setTimeout(() => {
       pollIdleTimer = null;
       if (stopped) return;
-      // Still busy or still on fleetdispatch page? wait again.
+      // Still on fleetdispatch page? wait again.
       const onFleetDispatchPage = typeof window !== "undefined" && window.location?.search?.includes("component=fleetdispatch");
-      if ((typeof userBusy === "function" && userBusy()) || onFleetDispatchPage) {
+      if (onFleetDispatchPage) {
         schedulePollIdle();
         return;
       }

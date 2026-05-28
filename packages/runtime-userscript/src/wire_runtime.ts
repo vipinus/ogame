@@ -190,10 +190,6 @@ export function wireRuntime(
       executors: [apiExecutor],
       // Operator 2026-05-27: cp=PID shift bounce — defer non-emergency
       // directives while operator is interacting with ogame UI.
-      // Operator 2026-05-28: "取消 userbusy 机制" — GoalRunner no longer
-      // defers on mousedown. Click intercept (boot.ts clickInterceptSync,
-      // v0.0.386) handles operator-vs-background race instead.
-      userBusy: () => false,
     });
   }
 

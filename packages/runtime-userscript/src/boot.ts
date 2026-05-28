@@ -309,34 +309,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     __ogamexIncrementUsedSlot?: typeof incrementUsedSlotFn;
   }).__ogamexIncrementUsedSlot = incrementUsedSlotFn;
 
-  // 1c. Global user-activity tracker — when operator is clicking/typing
-  // in ogame UI, PAUSE all autonomous pollers + POSTs for IDLE_GUARD_MS
-  // to avoid triggering ogame's anti-bot rate limit ("server not responding").
-  // Pollers check `(env.win as any).__ogamexUserBusyUntil > Date.now()`.
-  // Operator: "我操作的时候 userscript 就不要操作前台的网页". 10s gate was
-  // too short — manual workflows often pause > 10s between clicks. 60s gives
-  // operator a real protected window. Background API POSTs (ApiExec) keep
-  // running; foreground DOM/click ops are blocked by additional gates.
-  const IDLE_GUARD_MS = 5_000;  // operator 2026-05-27: 20s → 5s
-  const updateBusy = (): void => {
-    (env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil = Date.now() + IDLE_GUARD_MS;
-  };
-  const onUserAct = (e: Event): void => {
-    if (!e.isTrusted) return;
-    updateBusy();
-    // Write user_busy_until into store IMMEDIATELY + force-push to sidecar.
-    // Closes the 5s mirror-interval gap where merger had stale ubu and kept
-    // dispatching during operator's active session.
-    const until = (env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0;
-    const cur = store.state.server ?? {};
-    if ((cur as { user_busy_until?: number }).user_busy_until !== until) {
-      store.setPartial({ server: { ...cur, user_busy_until: until } as typeof cur });
-    }
-    const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
-    if (typeof pushNow === "function") pushNow();
-  };
-  env.doc.addEventListener("mousedown", onUserAct, true);
-  env.doc.addEventListener("keydown", onUserAct, true);
+  // Operator 2026-05-28 "删除以前设计的防止和前端冲突的机制": removed
+  // the old user-busy gate (mousedown/keydown listeners → __ogamexUser
+  // BusyUntil + user_busy_until store write → consumers SKIP-on-mousedown).
+  // The new conflict-prevention stack is:
+  //   1. v0.0.386 + v0.0.393 click intercept: operator clicks during any
+  //      in-flight background ogame ajax (cp= fetches OR trackBackgroundOp
+  //      leases) get preventDefault + toast + await + replay.
+  //   2. v0.0.392 fleetdispatch page defer: GoalRunner pushes directives
+  //      to deferredQueue when location.search contains component=fleet
+  //      dispatch; resumes when operator navigates away.
+  // These two layers together replace the old userBusy mechanism.
 
   // Operator 2026-05-28 "cp 锁机制": when operator clicks while a background
   // cp= fetch is in flight, intercept the click in capture phase, await the
@@ -451,29 +434,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     } catch { /* */ }
   }, 200);
   void clickInterceptHandler; // unused (kept for reference)
-  // Operator 2026-05-27 "远征发不出去了" — v0.0.358 加的 mousemove/scroll/wheel/
-  // visibility 把"鼠标 hover 在 tab"误判成 active operation, expedition 永远
-  // 被 defer 不放行. 真正 active = mousedown/keydown (operator 实际点 / 输入).
-  // hover 期间允许 backend fire (会有 cp shift 短暂跳闪, 但 expedition 是
-  // background task, 用户预期它跑). REVERTED — keep only真 active inputs.
-  function userBusy(): boolean {
-    // Operator 2026-05-28: "取消 userbusy 机制" — local boot.ts callers
-    // (cargo-probe, jumpgate hydrate) used to skip on mousedown activity.
-    // Click intercept (v0.0.386 clickInterceptSync) now handles the race
-    // at the click layer, so these pollers can run freely.
-    return false;
-  }
-  void userBusy; // used below in pollers
-  // Mirror busy-until into state.server every 5s so sidecar merger can also
-  // skip dispatch while operator is active. Without this, sidecar keeps
-  // emitting directives → GoalRunner DEFER 60s but pile up.
-  setInterval(() => {
-    const until = (env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0;
-    const cur = store.state.server ?? {};
-    if ((cur as { user_busy_until?: number }).user_busy_until !== until) {
-      store.setPartial({ server: { ...cur, user_busy_until: until } as typeof cur });
-    }
-  }, 5000);
+  // userBusy() local helper retained as `() => false` so existing callers
+  // (cargo-probe, jumpgate hydrate) compile without churn. The conflict-
+  // prevention work is now done at the click-intercept layer above.
+  const userBusy = (): boolean => false;
+  void userBusy;
 
   // 2. Wire probes
   const stopMO = startMutationObserver(env.doc, bus, env.win);
@@ -1129,7 +1094,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.393";
+  const USERSCRIPT_VERSION = "0.0.394";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
