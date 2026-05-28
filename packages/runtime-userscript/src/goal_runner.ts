@@ -118,7 +118,12 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     // to source planet of the dispatch, not where operator's viewing).
     // Discover MUST run regardless of busy — bypass the gate so sweep
     // throughput stays at ogame's natural pace.
-    if (directive.action !== "discover" && typeof userBusy === "function" && userBusy()) {
+    // Operator 2026-05-28: expedition has the same nature (cp=source_planet,
+    // fetchWithCpBypassBusy restores session). Without bypass, discover
+    // (which already bypasses) starves expedition by hoarding fleet slots
+    // during the entire window operator is browsing ogame UI.
+    const userBusyBypass = directive.action === "discover" || directive.action === "expedition";
+    if (!userBusyBypass && typeof userBusy === "function" && userBusy()) {
       const now = Date.now();
       if (now - lastDeferLogAt > 60_000) {
         console.info(`[GoalRunner] operator busy — deferring ${directive.action} & all queued (single wake when idle, log throttled 60s)`);
