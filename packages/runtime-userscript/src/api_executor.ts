@@ -1039,16 +1039,29 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
     }
     const positionState = cache?.states.get(position) ?? "";
-    if (cache && cache.states.size > 0 && positionState !== "available") {
-      // Operator 2026-05-27: dump entire system's state into result so
-      // sidecar planner can mark ALL cooled coords done in one ack —
-      // avoid dispatching the remaining 14 cooldown coords this tick.
-      const systemStates: Record<string, "cooldown" | "unavailable"> = {};
+    // Operator 2026-05-28: every return path attaches system_states so sidecar
+    // batch-completes ALL cooldown coords in this system per ack — without
+    // this, sidecar adds 1 coord per dispatch (10s per-goal cooldown ×
+    // ~14 cooldown coords/system = ~140s/system to scan). Batch shaves it
+    // to ~10s per system.
+    const buildSystemStates = (): Record<string, "cooldown" | "unavailable"> | undefined => {
+      if (!cache || cache.states.size === 0) return undefined;
+      const ss: Record<string, "cooldown" | "unavailable"> = {};
       for (const [pos, st] of cache.states) {
-        if (st !== "available") systemStates[`${galaxy}:${system}:${pos}`] = st as "cooldown" | "unavailable";
+        if (st !== "available") ss[`${galaxy}:${system}:${pos}`] = st as "cooldown" | "unavailable";
       }
-      console.info(`[ApiExec/discover] ${galaxy}:${system}:${position} pre-check SKIP (state=${positionState || "unknown"}) — no POST. system batch-skip ${Object.keys(systemStates).length} coords`);
-      return { action: directive.action, clicked: true, system_states: systemStates } as unknown as { action: string; clicked: boolean };
+      return Object.keys(ss).length > 0 ? ss : undefined;
+    };
+    const ackOk = (label: string): { action: string; clicked: boolean } => {
+      const ss = buildSystemStates();
+      if (ss) console.info(`[ApiExec/discover] ${galaxy}:${system}:${position} ${label} — batch ${Object.keys(ss).length} cooldown coords`);
+      return ss
+        ? ({ action: directive.action, clicked: true, system_states: ss } as unknown as { action: string; clicked: boolean })
+        : { action: directive.action, clicked: true };
+    };
+    if (cache && cache.states.size > 0 && positionState !== "available") {
+      console.info(`[ApiExec/discover] ${galaxy}:${system}:${position} pre-check SKIP (state=${positionState || "unknown"}) — no POST`);
+      return ackOk("pre-check skip");
     }
 
     // Slot-gate defense in depth. Galaxy fetch above wrote authoritative
@@ -1168,7 +1181,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       const isCooldown = /再次搜索|再次搜尋|next.*search|cooldown|wait|#time#/i.test(msg);
       if (isCooldown) {
         console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} COOLDOWN — marking attempted, moving to next`);
-        return { action: directive.action, clicked: true };
+        return ackOk("server-cooldown");
       }
       // Operator 2026-05-25 verify: ogame intermittently returns "資源不足/
       // resources insufficient" even when store + ogame top-bar both show
@@ -1211,7 +1224,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
               const incFn = (this.win as Window & { __ogamexIncrementUsedSlot?: () => void }).__ogamexIncrementUsedSlot;
               if (incFn) incFn();
             } catch { /* */ }
-            return { action: directive.action, clicked: true };
+            return ackOk("retry-success");
           }
           const retryMsg = retryParsed?.response?.message ?? retryParsed?.message ?? "unknown";
           throw new Error(`discover ${galaxy}:${system}:${position} rejected after retry: ${retryMsg}`);
@@ -1228,7 +1241,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       const incFn = (this.win as Window & { __ogamexIncrementUsedSlot?: () => void }).__ogamexIncrementUsedSlot;
       if (incFn) incFn();
     } catch (e) { void e; }
-    return { action: directive.action, clicked: true };
+    return ackOk("POST success");
   }
 
   /**
