@@ -437,7 +437,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // hover 期间允许 backend fire (会有 cp shift 短暂跳闪, 但 expedition 是
   // background task, 用户预期它跑). REVERTED — keep only真 active inputs.
   function userBusy(): boolean {
-    return ((env.win as Window & { __ogamexUserBusyUntil?: number }).__ogamexUserBusyUntil ?? 0) > Date.now();
+    // Operator 2026-05-28: "取消 userbusy 机制" — local boot.ts callers
+    // (cargo-probe, jumpgate hydrate) used to skip on mousedown activity.
+    // Click intercept (v0.0.386 clickInterceptSync) now handles the race
+    // at the click layer, so these pollers can run freely.
+    return false;
   }
   void userBusy; // used below in pollers
   // Mirror busy-until into state.server every 5s so sidecar merger can also
@@ -1083,7 +1087,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.387";
+  const USERSCRIPT_VERSION = "0.0.388";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
