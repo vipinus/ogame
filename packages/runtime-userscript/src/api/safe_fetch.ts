@@ -73,12 +73,12 @@ export async function awaitCpIdle(): Promise<void> {
 }
 
 function userBusyNow(): boolean {
-  if (!_store) return false;
-  const u = (_store.state.server as { user_busy_until?: number } | undefined)?.user_busy_until;
-  // Operator 2026-05-28: user_busy_until is written as MS timestamp
-  // (boot.ts:322 Date.now() + IDLE_GUARD_MS). Compare with Date.now() ms,
-  // NOT Math.floor(Date.now()/1000) sec — ms always > sec → always busy.
-  return typeof u === "number" && u > Date.now();
+  // Operator 2026-05-28: "取消 userbusy 机制". Click intercept (boot.ts
+  // v0.0.386 clickInterceptSync) replaces the userBusy gate as the operator-
+  // protection layer. No more fetch deferral based on mousedown activity —
+  // background cp= fetches always proceed, and operator clicks are awaited
+  // via cp lock when a fetch is in flight.
+  return false;
 }
 
 function currentOperatorCp(): string | null {

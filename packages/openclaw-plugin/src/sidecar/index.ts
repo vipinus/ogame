@@ -1040,15 +1040,9 @@ export async function startSidecar(
     // Dispatch active goals (idempotent — already-active rows still get a
     // freshly-planned next step). Wrap in try/catch so a single goal's
     // planning failure does NOT swallow subsequent state.snapshots.
-    // Operator busy guard — when userscript reports the operator is
-    // actively clicking ogame UI (mousedown/keydown within last 60s), pause
-    // ALL autonomous dispatch. Prevents our POSTs from competing with the
-    // operator's own UI actions / triggering ogame's anti-bot rate limit.
-    const userBusyUntil = (msg.snapshot.server as { user_busy_until?: number } | undefined)?.user_busy_until ?? 0;
-    if (userBusyUntil > Date.now()) {
-      console.log(`[merger] SKIP — operator active for ${Math.ceil((userBusyUntil - Date.now())/1000)}s more`);
-      return;
-    }
+    // Operator 2026-05-28: "取消 userbusy 机制" — frontend click intercept
+    // (boot.ts v0.0.386) replaces the busy gate. Sidecar dispatches whenever
+    // a snapshot arrives; cp= races are absorbed by the frontend cp lock.
     try {
       const result = priorityMerger.dispatch(msg.snapshot);
       const actions = result.dispatched.map((d) => {
@@ -1069,8 +1063,6 @@ export async function startSidecar(
   setInterval(() => {
     const snap = stateRef.current;
     if (!snap) return;
-    const userBusyUntil = (snap.server as { user_busy_until?: number } | undefined)?.user_busy_until ?? 0;
-    if (userBusyUntil > Date.now()) return;
     try {
       priorityMerger.dispatch(snap);
     } catch (e) {

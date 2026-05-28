@@ -190,15 +190,10 @@ export function wireRuntime(
       executors: [apiExecutor],
       // Operator 2026-05-27: cp=PID shift bounce — defer non-emergency
       // directives while operator is interacting with ogame UI.
-      userBusy: () => {
-        // Operator 2026-05-28: bug — user_busy_until is written in MS
-        // (Date.now() + IDLE_GUARD_MS at boot.ts:322), but here we compared
-        // against SECONDS (Date.now()/1000). ms > sec → always true →
-        // GoalRunner deferred forever once any mousedown ever happened.
-        // Sidecar (index.ts:1048) compares against Date.now() ms correctly.
-        const u = (boot.store.state.server as { user_busy_until?: number } | undefined)?.user_busy_until;
-        return typeof u === "number" && u > Date.now();
-      },
+      // Operator 2026-05-28: "取消 userbusy 机制" — GoalRunner no longer
+      // defers on mousedown. Click intercept (boot.ts clickInterceptSync,
+      // v0.0.386) handles operator-vs-background race instead.
+      userBusy: () => false,
     });
   }
 
