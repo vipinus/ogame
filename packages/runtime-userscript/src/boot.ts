@@ -819,15 +819,24 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // stage2 chain (fleetSelectionAjax → checkTarget) ABORT 在 stage3 之前.
   // sniffer postMessage 自动 piggyback cache. 不依赖 ogame UI / daemon expedition.
   async function probeShipCargoCap(): Promise<void> {
-    // Operator 2026-05-26: "我在星球上操作会自动切换到其他星球". probe 跑
-    // fleetSelectionAjax + checkTarget 可能触发 ogame internal state redraw.
-    // 即使 cp=current 不切, ogame 内部 fleet form state 改变 (am20X=1 select)
-    // 可能 cause UI ripple. operator userBusy 时推迟.
-    if (userBusy()) {
-      console.info("[OgameX/cargo-probe] operator busy, skip — retry in 10s");
-      setTimeout(() => { void probeShipCargoCap(); }, 10_000);
-      return;
-    }
+    // Operator 2026-05-28 evidence: cargo-probe POSTs fleetSelectionAjax
+    // (am202=1) + checkTarget which MUTATE ogame's server-side fleet
+    // selection state. When operator is on the fleetdispatch page, ogame's
+    // own UI then tries to render with that mutated state and crashes:
+    //   "Uncaught TypeError: Cannot read properties of null (reading
+    //    'baseFuelCapacity')" — FleetHelper.calcFuelCapacity dies.
+    // Fix: skip the probe entirely when operator is on fleetdispatch page.
+    // The probe is for our cargo cache; on other pages there's no UI to
+    // disturb. The state mutation also affects only the active session,
+    // so cp= isolation doesn't help.
+    try {
+      const path = env.win.location?.search ?? "";
+      if (path.includes("component=fleetdispatch")) {
+        console.info("[OgameX/cargo-probe] on fleetdispatch page — skip (would disturb operator fleet UI rendering)");
+        // Retry on next page navigation rather than 10s timer.
+        return;
+      }
+    } catch { /* */ }
     try {
       const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
       if (!planetId) return;
@@ -1120,7 +1129,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.390";
+  const USERSCRIPT_VERSION = "0.0.391";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // (meta-probes / extractProduction / box-title / window.production /
   //  reloadResources extractor traces silenced — extractor stable, schema
