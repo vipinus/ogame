@@ -173,6 +173,21 @@ interface RecallResponse {
 }
 
 export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<void> {
+  // Operator 2026-05-28 "cp 的点击保护机制能不能一起保护 token": recall
+  // POST rotates the global ajax token but goes through raw ctx.fetch
+  // (no cp= injection). Wrap the whole recall sequence in
+  // trackBackgroundOp so click_lock delays operator clicks for the
+  // duration — just like cp= fetches.
+  const { trackBackgroundOp } = await import("./safe_fetch.js");
+  const releaseOp = trackBackgroundOp();
+  try {
+    return await recallFleetInner(fleetId, ctx);
+  } finally {
+    releaseOp();
+  }
+}
+
+async function recallFleetInner(fleetId: number, ctx: SendFleetCtx): Promise<void> {
   let token = ctx.token.getFreshToken();
   // Operator 2026-05-28 evidence: recall POST returned success:false (no
   // errors, no message — just {success:false, components:[], newAjaxToken})

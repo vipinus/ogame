@@ -155,6 +155,18 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     }
     // eslint-disable-next-line no-console
     console.log(`[GoalRunner] executing ${directive.action} via ${chosen.constructor.name}`);
+    // Operator 2026-05-28 "cp 的点击保护机制能不能一起保护 token":
+    // Mark this directive as a background op so click_lock (boot.ts) delays
+    // operator clicks until the entire executor finishes — not just its
+    // cp= sub-fetches. ApiExec's multi-stage chain (token fetch +
+    // fleetSelectionAjax + checkTarget + sendFleet) rotates the global
+    // token; click_lock only seeing cp= fetches would briefly think we're
+    // idle between stages and let operator clicks slip through.
+    let releaseOp: (() => void) | null = null;
+    try {
+      const { trackBackgroundOp } = await import("./api/safe_fetch.js");
+      releaseOp = trackBackgroundOp();
+    } catch { /* */ }
     try {
       const result = await chosen.execute(directive);
       // eslint-disable-next-line no-console
@@ -165,6 +177,8 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       // eslint-disable-next-line no-console
       console.warn(`[GoalRunner] execute FAILED for ${directive.action}:`, msg);
       ack(directive.id, { success: false, error: msg });
+    } finally {
+      if (releaseOp) releaseOp();
     }
   }
 

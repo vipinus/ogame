@@ -61,6 +61,25 @@ export function cpInFlightCount(): number {
   return inFlightCpFetches.size;
 }
 
+/** Operator 2026-05-28 "cp 的点击保护机制能不能一起保护 token": general-
+ *  purpose background-op tracker. Use for ogame ajax that ROTATES THE
+ *  GLOBAL TOKEN but doesn't itself carry cp= (e.g. recallFleet — raw POST
+ *  to /movement). click_lock awaits inFlightCpFetches → so caller pushes
+ *  a placeholder promise here for the entire duration of their op, and
+ *  releases it when done. The placeholder counts toward window.__ogamex
+ *  CpInFlight just like a real cp= fetch. */
+export function trackBackgroundOp(): () => void {
+  let resolve!: () => void;
+  const p = new Promise<void>((res) => { resolve = res; });
+  inFlightCpFetches.add(p);
+  mirrorInFlightCount();
+  return () => {
+    inFlightCpFetches.delete(p);
+    mirrorInFlightCount();
+    resolve();
+  };
+}
+
 /** Resolve once all in-flight cp= fetches finish AND session-cp is restored
  *  to operatorCp. Returns immediately when no fetch is in flight. */
 export async function awaitCpIdle(): Promise<void> {
