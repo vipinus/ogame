@@ -174,7 +174,12 @@ interface RecallResponse {
 
 export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<void> {
   let token = ctx.token.getFreshToken();
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // Operator 2026-05-28 evidence: recall POST returned success:false (no
+  // errors, no message — just {success:false, components:[], newAjaxToken})
+  // while fleet still in outbound. Both FSM-side and bridge-side calls
+  // got same response. ogame transient — single retry with fresh token
+  // recovered in similar cases (sendFleet 140043 pattern). Bumped 2→4.
+  for (let attempt = 1; attempt <= 4; attempt++) {
     const body = new URLSearchParams();
     body.set("fleetId", String(fleetId));
     body.set("token", token);
@@ -214,6 +219,21 @@ export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<v
     const errMsg = json.message
       ?? (Array.isArray(errsField) && errsField[0]?.message)
       ?? `success=${json.success} raw=${rawText.slice(0, 200)}`;
+    // Operator 2026-05-28: recall returning bare {success:false} (no message,
+    // no error code) while fleet still flying = ogame transient state.
+    // Retry with fresh token + backoff before throwing. attempt<4 enforced
+    // by the outer loop bound.
+    const bareFailure = !json.message && (!Array.isArray(errsField) || errsField.length === 0);
+    if (bareFailure && attempt < 4) {
+      const backoffMs = 250 * attempt;
+      console.warn(`[fleet_api/recallFleet] attempt=${attempt} bare success=false — backoff ${backoffMs}ms then retry`);
+      if (json.newAjaxToken) {
+        ctx.token.set(json.newAjaxToken);
+        token = json.newAjaxToken;
+      }
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      continue;
+    }
     throw new FleetApiError(errMsg, json);
   }
 }
