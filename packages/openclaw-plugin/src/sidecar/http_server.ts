@@ -674,7 +674,7 @@ export class HttpServer {
       res.end(JSON.stringify({ ok: false, error: `bad JSON: ${(e as Error).message}` }));
       return;
     }
-    const allowed = new Set(["template", "paused", "enabled", "target_position", "enabled_planets"]);
+    const allowed = new Set(["template", "paused", "enabled", "target_position", "enabled_planets", "auto_build_ships"]);
     try {
       const state = readExpeditionState();
       for (const [k, v] of Object.entries(patch)) {

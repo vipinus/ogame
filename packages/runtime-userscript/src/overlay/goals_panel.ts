@@ -241,7 +241,7 @@ function openExpeditionSettings(
   openSettingsModal(doc, "expedition", "🛸 远征任务设置", placeholder, async (m) => {
     const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
     if (!body) return;
-    let initial: { template?: Record<string, number>; paused?: boolean; enabled?: boolean; enabled_planets?: string[] } = {};
+    let initial: { template?: Record<string, number>; paused?: boolean; enabled?: boolean; enabled_planets?: string[]; auto_build_ships?: boolean } = {};
     try {
       const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, { method: "GET" });
       if (r.ok) initial = await r.json();
@@ -347,6 +347,7 @@ function openExpeditionSettings(
           <div data-exp-fleet-summary style="display:flex; flex-wrap:wrap; gap:6px; min-height:18px;"></div>
           <div data-exp-fleet-total style="color:#7080a0; font-size:10px; padding-top:6px; text-align:right;"></div>
         </div>
+        ${renderToggleRow("船不够自动造船", initial.auto_build_ships === true, "exp-autobuild", "ON = 船数不足的星球自动创建 build_ships 任务 (会按 priority 8 占用 shipyard 资源)")}
         <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">每次派遣的船数 (0 = 不派此类船 · 点击输入框=全选)</div>
         <!-- Operator 2026-05-29: 改成两列 — grid 自动按行填充, 高度对半 -->
         <div style="display:grid; grid-template-columns:1fr 1fr; column-gap:14px;">${shipRows}</div>
@@ -423,6 +424,22 @@ function openExpeditionSettings(
         await fetchFn(`${baseUrl}/ogamex/v1/expedition/${liveExpPaused ? "pause" : "resume"}`, { method: "POST" });
       } catch (e) { console.warn("[panel/expedition-settings] pause/resume failed:", e); }
     });
+    // Auto-build toggle (saved with main 保存 button — no instant POST since
+    // the daemon reads it on next tick anyway, and bundling with save is the
+    // standard pattern for the template tab).
+    let liveAutoBuild = initial.auto_build_ships === true;
+    const reflectAutoBuild = (isOn: boolean): void => {
+      const btn = m.querySelector<HTMLElement>("[data-exp-autobuild]");
+      if (!btn) return;
+      btn.textContent = isOn ? "ON" : "OFF";
+      btn.setAttribute("style", `padding:2px 10px; border-radius:3px; cursor:pointer; font-size:11px; font-weight:bold;${isOn
+        ? "background:#205a20; color:#fff; border:1px solid #408a40;"
+        : "background:#5a2020; color:#fff; border:1px solid #8a4040;"}`);
+    };
+    m.querySelector<HTMLElement>("[data-exp-autobuild]")?.addEventListener("click", () => {
+      liveAutoBuild = !liveAutoBuild;
+      reflectAutoBuild(liveAutoBuild);
+    });
     // Save: POST template + enabled_planets (paused handled by toggle).
     m.querySelector<HTMLElement>("[data-exp-save]")?.addEventListener("click", async () => {
       const status = m.querySelector<HTMLElement>("[data-exp-status]");
@@ -442,7 +459,7 @@ function openExpeditionSettings(
         const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ template, enabled_planets }),
+          body: JSON.stringify({ template, enabled_planets, auto_build_ships: liveAutoBuild }),
         });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         if (status) { status.textContent = "✓ saved"; status.style.color = "#7cfc00"; }
