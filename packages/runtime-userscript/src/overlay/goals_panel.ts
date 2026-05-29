@@ -1005,6 +1005,20 @@ function openTransportSettings(
         sourceInfo.innerHTML = `<span style="color:#d0d8e0;">大运 LT × ${fmt(lt)} · 小运 ST × ${fmt(st)}</span>`;
       });
     }
+    // Operator 2026-05-29: 默认来源 = 当前 ogame 所在 planet. Reads the
+    // ogame-planet-id meta (which ogame keeps in sync with the active
+    // session-cp). Falls back silently if meta missing or planet not in
+    // the grid (e.g. operator on a moon row not exposed).
+    const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
+    if (ogameCurrentPid) {
+      const sourceRadio = m.querySelector<HTMLInputElement>(`input[name="tr-source-radio"][value="${ogameCurrentPid}"]`);
+      if (sourceRadio) {
+        sourceRadio.checked = true;
+        sourceRadio.dispatchEvent(new Event("change", { bubbles: true }));
+        // Scroll the row into view so operator sees the preset selection.
+        sourceRadio.scrollIntoView({ block: "center" });
+      }
+    }
     // Section ② — resource planet → display M/C/D + auto-fill cargo inputs.
     const resInfo = m.querySelector<HTMLElement>("[data-tr-resource-info]");
     const updateShipCount = (): void => {
