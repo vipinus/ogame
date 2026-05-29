@@ -122,23 +122,50 @@ export class PriorityMerger {
       // gets entries from same-tick claims.
     }
 
+    // v0.0.433: per-tick chain-prereq tracking. rows are sorted priority
+    // DESC (compareRows). Within a chain_id, the FIRST row we encounter
+    // (highest priority) is the active leg; any subsequent row with the
+    // same chain_id is a lower-priority leg waiting on the earlier one.
+    // Block lower legs until the higher one completes — operator
+    // 2026-05-29: "为什么 Leg 4 是 active 不是 block?"
+    const chainBlocked = new Set<string>();
     for (const row of rows) {
       // Operator-paused row: skip entirely. Status / reason untouched.
       if (row.status === "blocked" && typeof row.reason === "string" && row.reason.startsWith("PAUSED")) {
         continue;
       }
-      // v0.0.432: stuck-active recovery — if a row sits at "active" without
-      // ack > STUCK_ACTIVE_MS, assume WS-lost or executor crash, downgrade
-      // to pending so next merger tick re-dispatches. updated_at is the
-      // last status-change timestamp; if it predates the cutoff, recover.
-      if (row.status === "active" && now - (row.updated_at ?? row.created_at) > this.STUCK_ACTIVE_MS) {
-        this.store.updateStatus(row.goal.id, "pending", "stuck-active recovery");
-        this.lastDispatchTs.delete(row.goal.id);
-        // Fall through — pick up as pending this same tick.
+      // Chain prereq gate.
+      const chainId = (row.goal.target as { chain_id?: unknown })?.chain_id;
+      if (typeof chainId === "string" && chainId && chainBlocked.has(chainId)) {
+        const reason = "chain prereq: waiting for prior leg";
+        if (row.status !== "blocked" || row.reason !== reason) {
+          this.store.updateStatus(row.goal.id, "blocked", reason);
+        }
+        blocked.push({ goal_id: row.goal.id, reason });
+        continue;
+      }
+      // v0.0.433: active goal — DO NOT re-plan/re-dispatch every cooldown.
+      // Executor is running; spamming duplicates wastes ogame POSTs and
+      // pollutes the goal_runner dedupe table. Just wait for ack. After
+      // STUCK_ACTIVE_MS without ack, assume WS-lost or executor crash and
+      // downgrade to pending so the same tick re-plans.
+      if (row.status === "active") {
+        // Chain peers downstream must wait for this active leg either way.
+        if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
+        const dispatchedAt = this.lastDispatchTs.get(row.goal.id);
+        if (typeof dispatchedAt === "number" && now - dispatchedAt > this.STUCK_ACTIVE_MS) {
+          this.store.updateStatus(row.goal.id, "pending", "stuck-active recovery");
+          this.lastDispatchTs.delete(row.goal.id);
+          // Fall through to re-plan as pending below.
+        } else {
+          continue;
+        }
       }
       // Per-goal cooldown — see lastDispatchTs comment for rationale.
       const lastTs = this.lastDispatchTs.get(row.goal.id) ?? 0;
       if (now - lastTs < this.DISPATCH_COOLDOWN_MS) {
+        // Still mark chain blocked downstream — this leg is occupied.
+        if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
         continue;
       }
       const result = this.planGoal(row.goal, state);
@@ -149,6 +176,8 @@ export class PriorityMerger {
         } else {
           this.store.updateStatus(row.goal.id, "blocked", result.blocked);
           blocked.push({ goal_id: row.goal.id, reason: result.blocked });
+          // v0.0.433: chain prereq — this leg is blocked, downstream waits.
+          if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
         }
         continue;
       }
@@ -191,6 +220,9 @@ export class PriorityMerger {
       this.send({ type: "directive.dispatch", directive: result });
       this.lastDispatchTs.set(row.goal.id, now);
       dispatched.push(result);
+      // v0.0.433: this leg is now active; downstream chain peers must wait.
+      const cid = (row.goal.target as { chain_id?: unknown })?.chain_id;
+      if (typeof cid === "string" && cid) chainBlocked.add(cid);
     }
 
     return { dispatched, blocked, skipped_terminal };
