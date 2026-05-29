@@ -641,23 +641,29 @@ function openGoalsSettings(
     if (!body) return;
     interface StorePlanet { id: string; type?: string; coords?: number[]; name?: string }
     const storeRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, StorePlanet> } } }).__ogamexStore;
-    const planets = Object.values(storeRef?.state?.planets ?? {})
-      .filter((p): p is StorePlanet => !!p?.coords)
-      .sort((a, b) => {
-        const ac = a.coords ?? [0, 0, 0]; const bc = b.coords ?? [0, 0, 0];
-        for (let i = 0; i < 3; i++) {
-          const av = ac[i] ?? 0; const bv = bc[i] ?? 0;
-          if (av !== bv) return av - bv;
-        }
-        // planet before moon at same coords
-        if (a.type !== b.type) return a.type === "planet" ? -1 : 1;
-        return 0;
-      });
-    const planetOpts = `<option value="">(不指定 — 让 planner 默认 planet[0])</option>` + planets.map((p) => {
-      const cs = (p.coords ?? []).join(":");
-      const tag = p.type === "moon" ? "🌙" : "🌍";
-      return `<option value="${escapeHtml(p.id)}">${tag} ${escapeHtml(p.name ?? "?")} [${escapeHtml(cs)}]</option>`;
-    }).join("");
+    // Operator 2026-05-29: "星球选择改成两列 星球在第一列，月球在第二列".
+    // Group by coord G:S:P so each row carries the planet (col 1) and its
+    // sibling moon (col 2). Single radio group across all rows so only one
+    // celestial body is selected at a time.
+    const groupedByCoord = new Map<string, { planet?: StorePlanet; moon?: StorePlanet }>();
+    for (const p of Object.values(storeRef?.state?.planets ?? {})) {
+      const coords = p?.coords;
+      if (!Array.isArray(coords) || coords.length !== 3) continue;
+      const key = coords.join(":");
+      const slot = groupedByCoord.get(key) ?? {};
+      if (p.type === "moon") slot.moon = p;
+      else slot.planet = p;
+      groupedByCoord.set(key, slot);
+    }
+    const sortedCoordKeys = [...groupedByCoord.keys()].sort((a, b) => {
+      const an = a.split(":").map((s) => parseInt(s, 10));
+      const bn = b.split(":").map((s) => parseInt(s, 10));
+      for (let i = 0; i < 3; i++) {
+        const av = an[i] ?? 0; const bv = bn[i] ?? 0;
+        if (av !== bv) return av - bv;
+      }
+      return 0;
+    });
     const typeOpts = GOAL_PRESETS.map((g) => `<option value="${escapeHtml(g.value)}">${escapeHtml(g.label)}</option>`).join("");
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
     body.innerHTML = `
@@ -667,9 +673,43 @@ function openGoalsSettings(
           <span style="color:#d0d8e0; font-size:11px; width:80px;">任务类型</span>
           <select data-goal-type style="${inputStyle} flex:1;">${typeOpts}</select>
         </div>
-        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">星球</span>
-          <select data-goal-planet style="${inputStyle} flex:1;">${planetOpts}</select>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; max-height:180px; overflow-y:auto; background:#06090f;">
+            <div style="padding:4px 8px; display:flex; gap:8px; font-size:10px; color:#7080a0; border-bottom:1px solid #2a3a52; background:#0a1018; position:sticky; top:0;">
+              <span style="width:72px;">坐标</span>
+              <span style="flex:1;">🌍 行星</span>
+              <span style="flex:1;">🌙 月球</span>
+            </div>
+            <label style="padding:4px 8px; display:flex; gap:8px; align-items:center; cursor:pointer; border-bottom:1px solid #1a2030;">
+              <span style="width:72px; color:#7080a0; font-size:11px;">—</span>
+              <span style="flex:1; color:#7080a0; font-size:11px;">
+                <input data-goal-planet type="radio" name="goal-planet-radio" value="" checked style="vertical-align:middle; margin-right:6px;"/>
+                (不指定 — 让 planner 默认)
+              </span>
+              <span style="flex:1;"></span>
+            </label>
+            ${sortedCoordKeys.map((k) => {
+              const { planet, moon } = groupedByCoord.get(k)!;
+              const cellPlanet = planet
+                ? `<label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                    <input data-goal-planet type="radio" name="goal-planet-radio" value="${escapeHtml(planet.id)}" style="vertical-align:middle;"/>
+                    <span>🌍 ${escapeHtml(planet.name ?? "殖民")}</span>
+                  </label>`
+                : `<span style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
+              const cellMoon = moon
+                ? `<label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                    <input data-goal-planet type="radio" name="goal-planet-radio" value="${escapeHtml(moon.id)}" style="vertical-align:middle;"/>
+                    <span>🌙 ${escapeHtml(moon.name ?? "月球")}</span>
+                  </label>`
+                : `<span style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
+              return `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
+                <span style="width:72px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+                ${cellPlanet}
+                ${cellMoon}
+              </div>`;
+            }).join("")}
+          </div>
         </div>
         <div style="padding:6px 0;">
           <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">Target (JSON)</div>
@@ -691,11 +731,10 @@ function openGoalsSettings(
     const typeSel = m.querySelector<HTMLSelectElement>("[data-goal-type]");
     const targetTa = m.querySelector<HTMLTextAreaElement>("[data-goal-target]");
     const targetHint = m.querySelector<HTMLElement>("[data-goal-target-hint]");
-    const planetSel = m.querySelector<HTMLSelectElement>("[data-goal-planet]");
     const refreshPreset = (): void => {
       const t = typeSel?.value ?? "";
       const preset = GOAL_PRESETS.find((p) => p.value === t);
-      if (!preset || !targetTa || !targetHint || !planetSel) return;
+      if (!preset || !targetTa || !targetHint) return;
       targetTa.value = preset.targetPlaceholder;
       targetHint.textContent = preset.planetReq ? "需要选 planet — 该类型必须指定 source" : "可不选 planet — planner 会默认或读 target 内字段";
     };
@@ -704,7 +743,9 @@ function openGoalsSettings(
     m.querySelector<HTMLElement>("[data-goal-create]")?.addEventListener("click", async () => {
       const status = m.querySelector<HTMLElement>("[data-goal-status]");
       const type = typeSel?.value ?? "";
-      const planet = planetSel?.value || undefined;
+      // Operator 2026-05-29: radio-group selection — find the checked one.
+      const checked = m.querySelector<HTMLInputElement>('input[name="goal-planet-radio"]:checked');
+      const planet = checked?.value || undefined;
       const priorityStr = m.querySelector<HTMLInputElement>("[data-goal-priority]")?.value ?? "5";
       const priority = Math.max(1, Math.min(20, parseInt(priorityStr, 10) || 5));
       let target: Record<string, unknown>;
