@@ -152,7 +152,10 @@ export class PriorityMerger {
       if (row.status === "active") {
         // Chain peers downstream must wait for this active leg either way.
         if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
-        const dispatchedAt = this.lastDispatchTs.get(row.goal.id);
+        // v0.0.434: fallback to row.updated_at when lastDispatchTs empty
+        // (sidecar restart wipes the in-memory map; goals already-active in
+        // the DB need this fallback to ever recover).
+        const dispatchedAt = this.lastDispatchTs.get(row.goal.id) ?? row.updated_at ?? row.created_at;
         if (typeof dispatchedAt === "number" && now - dispatchedAt > this.STUCK_ACTIVE_MS) {
           this.store.updateStatus(row.goal.id, "pending", "stuck-active recovery");
           this.lastDispatchTs.delete(row.goal.id);

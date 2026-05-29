@@ -183,7 +183,7 @@ export function wireRuntime(
     // registration. ApiExec covers all actions (build, research,
     // build_ships, expedition, colonize, deploy, transport) as a superset
     // of UiExec's set. No DOM click during operator's active session.
-    const apiExecutor = new ApiDirectiveExecutor({ win: opts.win, doc: opts.doc });
+    const apiExecutor = new ApiDirectiveExecutor({ win: opts.win, doc: opts.doc, tokenManager, fetchFn: opts.fetch });
     runner = startGoalRunner({
       client: opts.bridge,
       gate: emergencyGate,

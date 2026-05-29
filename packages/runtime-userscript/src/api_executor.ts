@@ -24,11 +24,19 @@ import { TECH_ID_BY_NAME } from "@ogamex/shared";
 import type { DirectiveExecutor } from "./directive_executor_iface.js";
 import { cacheShipsData } from "./api/ship_cargo_cache.js";
 import { fetchWithCpBypassBusy, restoreSessionCp } from "./api/safe_fetch.js";
+import { sendFleet as fleetApiSendFleet } from "./api/fleet_api.js";
+import type { TokenManager } from "./api/token_manager.js";
 
 export interface ApiExecutorDeps {
   win: Window;
   doc: Document;
   fetch?: typeof fetch;
+  /** v0.0.436: pass through the wire_runtime tokenManager so execFleetSend
+   *  can delegate to fleet_api.sendFleet (the validated FS path) instead of
+   *  reinventing the 3-stage chain. Optional for back-compat / tests. */
+  tokenManager?: TokenManager;
+  /** Same fetch reference used for FS — also passed to fleet_api.sendFleet. */
+  fetchFn?: typeof fetch;
 }
 
 // Sourced from shared/tech_ids.ts — single source of truth for tech IDs.
@@ -43,13 +51,15 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   private readonly win: Window;
   private readonly doc: Document;
   private readonly fetchFn: typeof fetch;
+  private readonly tokenManager?: TokenManager;
   private lastUserActivityTs = 0;
   private lastNavTs = 0;
 
   constructor(deps: ApiExecutorDeps) {
     this.win = deps.win;
     this.doc = deps.doc;
-    this.fetchFn = deps.fetch ?? deps.win.fetch.bind(deps.win);
+    this.fetchFn = deps.fetchFn ?? deps.fetch ?? deps.win.fetch.bind(deps.win);
+    this.tokenManager = deps.tokenManager;
     const onAct = (e: Event): void => {
       if (!e.isTrusted) return; // ignore synthetic clicks we fire ourselves
       this.lastUserActivityTs = Date.now();
@@ -550,6 +560,65 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const system = parseInt(sStr ?? "0", 10);
     if (!galaxy || !system) throw new Error(`expedition: bad source_coords`);
 
+    // v0.0.439: delegate to fleet_api.sendFleet (mission=15 expedition,
+    // type=1, position=16, holdingtime=1). Operator 2026-05-29 "全改".
+    // Trade-off acknowledged: lose shipsData/cargo capacity harvest that
+    // the old 3-stage checkTarget exposed — capacity will go stale. Worth
+    // it for unified retry + transient detection across all fleet POSTs.
+    if (!this.tokenManager) throw new Error("expedition: no tokenManager wired");
+    console.info(`[ApiExec] expedition delegate→fleet_api.sendFleet ${galaxy}:${system}:16 mission=15 cp=${planetId}`);
+    try {
+      const res = await fleetApiSendFleet(
+        {
+          ships: ships as unknown as import("@ogamex/shared").ShipCount,
+          cargo: { m: 0, c: 0, d: 0 },
+          coords: [galaxy, system, 16],
+          destType: 1,
+          mission: 15 as import("@ogamex/shared").MissionCode,
+          speed: 10,
+          holdingTime: 1,
+          sourcePlanetId: planetId,
+        },
+        { fetch: this.fetchFn, token: this.tokenManager },
+      );
+      console.info(`[ApiExec] expedition OK fleetId=${res.fleetId}`);
+      try {
+        const shipsData = (res.raw as { shipsData?: unknown }).shipsData;
+        if (shipsData) cacheShipsData(shipsData, this.win);
+      } catch (e) {
+        console.warn("[ApiExec/expedition] shipsData cache failed:", e);
+      }
+    } catch (e) {
+      throw new Error(`expedition rejected: ${(e instanceof Error ? e.message : String(e)).slice(0, 250)}`);
+    }
+    // Track successful launch in __ogamexInflightLaunches so the NEXT
+    // preflight for this planet subtracts these ships from empire's
+    // owned-count.
+    try {
+      const w = this.win as Window & {
+        __ogamexInflightLaunches?: Map<string, Array<{ ships: Record<string, number>; ts: number }>>;
+        __ogamexHarvestMovement?: () => Promise<void>;
+        __ogamexPollEmpire?: (opts?: { force?: boolean }) => Promise<void>;
+      };
+      if (!w.__ogamexInflightLaunches) w.__ogamexInflightLaunches = new Map();
+      const arr = w.__ogamexInflightLaunches.get(planetId) ?? [];
+      arr.push({ ships: { ...ships }, ts: Date.now() });
+      w.__ogamexInflightLaunches.set(planetId, arr);
+      if (typeof w.__ogamexHarvestMovement === "function") void w.__ogamexHarvestMovement().catch(() => { /* */ });
+      if (typeof w.__ogamexPollEmpire === "function") void w.__ogamexPollEmpire({ force: true }).catch(() => { /* */ });
+    } catch { /* */ }
+    return { action: "expedition", clicked: true };
+  }
+
+  /* ─── BELOW IS LEGACY 3-stage IMPL kept for reference; unreachable. ─── */
+  private async _execExpeditionLegacy_dead_code_kept_for_reference(
+    directive: Directive,
+    planetId: string,
+  ): Promise<{ action: string; clicked: boolean }> {
+    void directive; void planetId;
+    const ships: Record<string, number> = {};
+    const galaxy = 0, system = 0;
+    void galaxy; void system; void ships;
     // ogame v12 fleet dispatch is a 3-stage AJAX flow. Each stage returns
     // a `newAjaxToken` that MUST be used for the next stage — single-use,
     // single-stage tokens. Reusing the page-1 token for sendFleet returns
@@ -733,52 +802,74 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (Object.values(ships).every((n) => !n)) {
       throw new Error("jumpgate: empty ships payload");
     }
-    // Step 1 — fetch overlay to get token. ogame v12 emits an HTML page with
-    // either an inline token in a <form> input or a JS string literal.
+    // v0.0.437: mirror fleet_api.sendFleet 流程 — 4-attempt retry +
+    // TRANSIENT race detection (140043 / 請稍後再試) + loud raw-body log
+    // + token refresh on TOKEN_INVALID. operator 2026-05-29: "跳跃也走流程".
+    const TRANSIENT_RACE_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet/i;
+    const TOKEN_INVALID_RE = /invalid token|csrf|session expired/i;
     const overlayUrl = `/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1`;
-    const overlayResp = await fetchWithCpBypassBusy(
-      overlayUrl,
-      { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-      sourceMoonId,
-      { skipRestore: true },
-    );
-    if (!overlayResp.ok) throw new Error(`jumpgate overlay HTTP ${overlayResp.status}`);
-    const overlayHtml = await overlayResp.text();
-    const tokenMatch = overlayHtml.match(/name="token"\s+value="([a-f0-9]+)"/i)
-                    ?? overlayHtml.match(/['"]token['"]\s*[:=]\s*['"]([a-f0-9]+)['"]/i);
-    if (!tokenMatch || !tokenMatch[1]) {
-      throw new Error(`jumpgate: token not found in overlay (len=${overlayHtml.length})`);
-    }
-    const token = tokenMatch[1];
+    const fetchOverlayToken = async (): Promise<string> => {
+      const overlayResp = await fetchWithCpBypassBusy(
+        overlayUrl,
+        { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+        sourceMoonId,
+        { skipRestore: true },
+      );
+      if (!overlayResp.ok) throw new Error(`jumpgate overlay HTTP ${overlayResp.status}`);
+      const overlayHtml = await overlayResp.text();
+      const m = overlayHtml.match(/name="token"\s+value="([a-f0-9]+)"/i)
+            ?? overlayHtml.match(/['"]token['"]\s*[:=]\s*['"]([a-f0-9]+)['"]/i);
+      if (!m || !m[1]) throw new Error(`jumpgate: token not found in overlay (len=${overlayHtml.length})`);
+      return m[1];
+    };
+    let token = await fetchOverlayToken();
     console.info(`[ApiExec/jumpgate] overlay token len=${token.length} src=${sourceMoonId} tgt=${targetMoonId} ships=${JSON.stringify(ships)}`);
-    // Step 2 — POST executeJump. Body keys per sniffed pattern.
-    const body = new URLSearchParams();
-    body.append("token", token);
-    body.append("targetSpaceObjectId", targetMoonId);
-    for (const [shipName, n] of Object.entries(ships)) {
-      const numId = OGAME_NUMERIC_ID[shipName];
-      if (!numId || n <= 0) continue;
-      body.append(`ship_${numId}`, String(n));
-    }
-    const r = await fetchWithCpBypassBusy(
-      `/game/index.php?page=componentOnly&component=jumpgate&action=executeJump&asJson=1`,
-      {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body,
-      },
-      sourceMoonId,
-      { skipRestore: true },
-    );
-    const txt = await r.text();
+    const buildJgBody = (tk: string): URLSearchParams => {
+      const b = new URLSearchParams();
+      b.append("token", tk);
+      b.append("targetSpaceObjectId", targetMoonId);
+      for (const [shipName, n] of Object.entries(ships)) {
+        const numId = OGAME_NUMERIC_ID[shipName];
+        if (!numId || n <= 0) continue;
+        b.append(`ship_${numId}`, String(n));
+      }
+      return b;
+    };
     let resp: { status?: boolean; success?: boolean; cooldown?: number; nextActionAt?: number; errors?: unknown; message?: string } = {};
-    try { resp = JSON.parse(txt); } catch {
-      throw new Error(`jumpgate non-JSON response (HTTP ${r.status}): ${txt.slice(0, 200)}`);
-    }
-    const ok = resp.status === true || resp.success === true;
-    if (!ok) {
-      throw new Error(`jumpgate rejected: ${JSON.stringify(resp.errors ?? resp.message ?? txt.slice(0, 200))}`);
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const body = buildJgBody(token);
+      console.log(`[ApiExec/jumpgate] attempt=${attempt} POST cp=${sourceMoonId} body=${body.toString().replace(/token=[^&]+/, "token=***")}`);
+      const r = await fetchWithCpBypassBusy(
+        `/game/index.php?page=componentOnly&component=jumpgate&action=executeJump&asJson=1`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body,
+        },
+        sourceMoonId,
+        { skipRestore: true },
+      );
+      const txt = await r.text();
+      try { resp = JSON.parse(txt); } catch {
+        throw new Error(`jumpgate non-JSON response (HTTP ${r.status}): ${txt.slice(0, 200)}`);
+      }
+      console.log(`[ApiExec/jumpgate] attempt=${attempt} resp status=${resp.status} success=${resp.success} message=${resp.message ?? "<none>"} errors=${JSON.stringify(resp.errors ?? null)} raw[0:300]=${txt.slice(0, 300)}`);
+      const ok = resp.status === true || resp.success === true;
+      if (ok) break;
+      const errMsg = String(resp.message ?? JSON.stringify(resp.errors ?? "") ?? txt.slice(0, 200));
+      if (attempt === 1 && TOKEN_INVALID_RE.test(errMsg)) {
+        token = await fetchOverlayToken();
+        continue;
+      }
+      if (TRANSIENT_RACE_RE.test(errMsg) && attempt < 4) {
+        const backoffMs = 200 * attempt;
+        console.warn(`[ApiExec/jumpgate] attempt=${attempt} transient race — backoff ${backoffMs}ms + token refresh`);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        token = await fetchOverlayToken();
+        continue;
+      }
+      throw new Error(`jumpgate rejected: ${errMsg.slice(0, 200)}`);
     }
     console.info(`[ApiExec/jumpgate] OK src=${sourceMoonId} → tgt=${targetMoonId} cooldown=${resp.cooldown ?? resp.nextActionAt ?? "?"}s`);
     // Refresh state — jumpgate doesn't appear in /movement (instant), so
@@ -796,6 +887,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    *  target slot. WARNING: best-guess body shape — capture real click for
    *  accuracy if first attempt fails. */
   private async execColonize(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
+    // v0.0.438: delegate to fleet_api.sendFleet (mission=7 colonize, type=1
+    // planet). Fixes pre-existing ReferenceError on line 883 (`destType`
+    // undefined in execColonize scope) introduced when execFleetSend was
+    // refactored. Operator 2026-05-29: "需要切cp的都改成 fleet_api.sendFleet
+    // 模式".
+    if (!this.tokenManager) throw new Error("colonize: no tokenManager wired");
     const params = directive.params as { target_coords?: string; ships?: Record<string, number>; cargo?: { metal?: number; crystal?: number; deuterium?: number } };
     const ships = params.ships ?? { colonyShip: 1 };
     const cargo = params.cargo ?? { metal: 5000, crystal: 2500, deuterium: 0 };
@@ -804,90 +901,25 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const tSystem = parseInt(tsStr ?? "0", 10);
     const tPos = parseInt(tpStr ?? "0", 10);
     if (!tGalaxy || !tSystem || !tPos) throw new Error(`colonize: bad target_coords`);
-    // FLEET SLOT GATE — operator 2026-05-27 同族 review: 任何 fleet POST 都
-    // 必经 slot gate. keep-1-empty 跟 discover 同 (留个槽给紧急 FS).
-    {
-      const srv = (this.win as Window & { __ogamexStore?: { state: { server?: { used_fleet_slots?: number; max_fleet_slots?: number } } } })
-        .__ogamexStore?.state.server;
-      const usedNow = srv?.used_fleet_slots ?? -1;
-      const maxNow = srv?.max_fleet_slots ?? -1;
-      if (usedNow >= 0 && maxNow > 0 && usedNow >= maxNow - 1) {
-        throw new Error(`colonize aborted (slot gate): used=${usedNow} max=${maxNow} keep-1-empty for emergency FS`);
-      }
-    }
-    // Operator 2026-05-25: "用 api 实现 不要点网页" — ajax-only token chain.
-    let token: string = await this.bootstrapFleetToken(planetId, "colonize");
-    console.info(`[ApiExec] colonize step1: token len=${token.length}`);
-
-    const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } }> => {
-      const r = await fetchWithCpBypassBusy(
-        `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1`,
-        { method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-          body },
-        planetId,
-        { skipRestore: true },
+    console.info(`[ApiExec] colonize delegate→fleet_api.sendFleet ${tGalaxy}:${tSystem}:${tPos} mission=7 cp=${planetId}`);
+    try {
+      const res = await fleetApiSendFleet(
+        {
+          ships: ships as unknown as import("@ogamex/shared").ShipCount,
+          cargo: { m: cargo.metal ?? 0, c: cargo.crystal ?? 0, d: cargo.deuterium ?? 0 },
+          coords: [tGalaxy, tSystem, tPos],
+          destType: 1,           // colonize always targets uninhabited planet slot
+          mission: 7 as import("@ogamex/shared").MissionCode,
+          speed: 10,
+          sourcePlanetId: planetId,
+        },
+        { fetch: this.fetchFn, token: this.tokenManager },
       );
-      const txt = await r.text();
-      let j: { newAjaxToken?: string; success?: boolean; message?: string; errors?: Array<{ message?: string; error?: number }> } = {};
-      try { j = JSON.parse(txt); }
-      catch { throw new Error(`colonize ${action} non-JSON response: ${txt.slice(0, 200)}`); }
-      return { token: j.newAjaxToken ?? token!, raw: txt, json: j };
-    };
-
-    // Stage 1: ships
-    const stage1Body = new URLSearchParams({ token });
-    for (const [shipName, n] of Object.entries(ships)) {
-      const numId = OGAME_NUMERIC_ID[shipName];
-      if (!numId || n <= 0) continue;
-      stage1Body.append(`am${numId}`, String(n));
+      console.info(`[ApiExec] colonize OK fleetId=${res.fleetId}`);
+      return { action: "colonize", clicked: true };
+    } catch (e) {
+      throw new Error(`colonize rejected: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
     }
-    const stage1 = await POST("fleetSelectionAjax", stage1Body);
-    console.info(`[ApiExec] colonize step2 fleetSel: success=${stage1.json.success}`);
-    if (stage1.json.success === false) throw new Error(`colonize stage1: ${JSON.stringify(stage1.json.errors)}`);
-    token = stage1.token;
-    // Stage 2: target = G:S:P type=1 (planet)
-    const stage2Body = new URLSearchParams({
-      token, galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: destType,
-    });
-    const stage2 = await POST("checkTarget", stage2Body);
-    console.info(`[ApiExec] colonize step3 checkTarget: success=${stage2.json.success}`);
-    if (stage2.json.success === false) throw new Error(`colonize stage2: ${JSON.stringify(stage2.json.errors)}`);
-    token = stage2.token;
-    // Stage 3: send with mission=7 (colonize)
-    const stage3Body = new URLSearchParams({
-      token, mission: "7", speed: "10",
-      galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: "1",
-      metal: String(cargo.metal ?? 0),
-      crystal: String(cargo.crystal ?? 0),
-      deuterium: String(cargo.deuterium ?? 0),
-      holdingtime: "0",
-    });
-    for (const [shipName, n] of Object.entries(ships)) {
-      const numId = OGAME_NUMERIC_ID[shipName];
-      if (!numId || n <= 0) continue;
-      stage3Body.append(`am${numId}`, String(n));
-    }
-    console.info(`[ApiExec] colonize step4: sendFleet target=${tGalaxy}:${tSystem}:${tPos} mission=7`);
-    const r = await fetchWithCpBypassBusy(
-      `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1`,
-      { method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body: stage3Body },
-      planetId,
-      { skipRestore: true },
-    );
-    const txt = await r.text();
-    console.info(`[ApiExec] colonize step5: HTTP ${r.status} body=${txt.slice(0,300)}`);
-    if (!r.ok) throw new Error(`colonize HTTP ${r.status}`);
-    let parsed: { success?: boolean; errors?: Array<{ message?: string; error?: number }> } | null = null;
-    try { parsed = JSON.parse(txt); }
-    catch { throw new Error(`colonize sendFleet non-JSON response: ${txt.slice(0, 200)}`); }
-    if (parsed && (parsed.success === false || parsed.status === "failure")) {
-      const msg = parsed.errors?.[0]?.message ?? "unknown";
-      throw new Error(`colonize rejected: ${msg}`);
-    }
-    return { action: "colonize", clicked: true };
   }
 
   /** Deploy (mission=4, one-way) or Transport (mission=3, round-trip). Same
@@ -932,79 +964,36 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         throw new Error(`${directive.action}: fleet slots full ${usedNow}/${maxNow} ${label}`);
       }
     }
-    // Operator 2026-05-25: ajax-only token bootstrap (no fdHtml).
-    let token: string = await this.bootstrapFleetToken(planetId, directive.action);
-    console.info(`[ApiExec] ${directive.action} step1: token len=${token.length}`);
-
-    const POST = async (action: string, body: URLSearchParams): Promise<{ token: string; raw: string; json: { newAjaxToken?: string; success?: boolean; errors?: Array<{ message?: string; error?: number }> } }> => {
-      const r = await fetchWithCpBypassBusy(
-        `/game/index.php?page=ingame&component=fleetdispatch&action=${action}&ajax=1&asJson=1`,
-        { method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-          body },
-        planetId,
-        { skipRestore: true },
+    // v0.0.436: delegate to fleet_api.sendFleet — the SAME function FS uses
+    // to deploy ships to sibling moon (wire_runtime.ts:103). Operator
+    // 2026-05-29: "复用以前成功的代码,不要每次都调试新代码". This path is
+    // proven on s274-en/ogame v12 (FS works), so it must work for our
+    // chain ferry too. Includes 4-attempt transient retry, storage overflow
+    // self-heal, module-level mutex against concurrent fleet POSTs.
+    if (!this.tokenManager) {
+      throw new Error(`${directive.action}: no tokenManager wired (v0.0.436 delegation needs it)`);
+    }
+    const destTypeNum = destType === "3" ? 3 : destType === "2" ? 2 : 1;
+    console.info(`[ApiExec] ${directive.action} delegate→fleet_api.sendFleet ${tGalaxy}:${tSystem}:${tPos} type=${destType} mission=${mission} cp=${planetId}`);
+    try {
+      const res = await fleetApiSendFleet(
+        {
+          ships: ships as unknown as import("@ogamex/shared").ShipCount,
+          cargo: { m: resources["m"] ?? 0, c: resources["c"] ?? 0, d: resources["d"] ?? 0 },
+          coords: [tGalaxy, tSystem, tPos],
+          destType: destTypeNum as 1 | 2 | 3,
+          mission: mission as 3 | 4,
+          speed: 10,
+          sourcePlanetId: planetId,
+        },
+        { fetch: this.fetchFn, token: this.tokenManager },
       );
-      const txt = await r.text();
-      let j: { newAjaxToken?: string; success?: boolean; errors?: Array<{ message?: string; error?: number }> } = {};
-      try { j = JSON.parse(txt); }
-      catch { throw new Error(`${directive.action} ${action} non-JSON response: ${txt.slice(0, 200)}`); }
-      return { token: j.newAjaxToken ?? token!, raw: txt, json: j };
-    };
-
-    // Stage 1: select ships
-    const stage1Body = new URLSearchParams({ token });
-    for (const [shipName, n] of Object.entries(ships)) {
-      const numId = OGAME_NUMERIC_ID[shipName];
-      if (!numId || n <= 0) continue;
-      stage1Body.append(`am${numId}`, String(n));
+      console.info(`[ApiExec] ${directive.action} OK fleetId=${res.fleetId}`);
+      return { action: directive.action, clicked: true };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`${directive.action} rejected: ${msg.slice(0, 200)}`);
     }
-    const stage1 = await POST("fleetSelectionAjax", stage1Body);
-    console.info(`[ApiExec] ${directive.action} step2 fleetSel: success=${stage1.json.success}`);
-    if (stage1.json.success === false) throw new Error(`${directive.action} stage1: ${JSON.stringify(stage1.json.errors)}`);
-    token = stage1.token;
-    // Stage 2: checkTarget — type=1 (planet)
-    const stage2Body = new URLSearchParams({
-      token, galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: destType,
-    });
-    const stage2 = await POST("checkTarget", stage2Body);
-    console.info(`[ApiExec] ${directive.action} step3 checkTarget: success=${stage2.json.success}`);
-    if (stage2.json.success === false) throw new Error(`${directive.action} stage2: ${JSON.stringify(stage2.json.errors)}`);
-    token = stage2.token;
-    // Stage 3: sendFleet with mission=4 (deploy) or 3 (transport)
-    const stage3Body = new URLSearchParams({
-      token, mission: String(mission), speed: "10",
-      galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: destType,
-      metal: String(resources["m"] ?? 0),
-      crystal: String(resources["c"] ?? 0),
-      deuterium: String(resources["d"] ?? 0),
-      holdingtime: "0",
-    });
-    for (const [shipName, n] of Object.entries(ships)) {
-      const numId = OGAME_NUMERIC_ID[shipName];
-      if (!numId || n <= 0) continue;
-      stage3Body.append(`am${numId}`, String(n));
-    }
-    console.info(`[ApiExec] ${directive.action} step4: sendFleet ${tGalaxy}:${tSystem}:${tPos} mission=${mission}`);
-    const r = await fetchWithCpBypassBusy(
-      `/game/index.php?page=ingame&component=fleetdispatch&action=sendFleet&ajax=1&asJson=1`,
-      { method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body: stage3Body },
-      planetId,
-      { skipRestore: true },
-    );
-    const txt = await r.text();
-    console.info(`[ApiExec] ${directive.action} step5: HTTP ${r.status} body=${txt.slice(0,300)}`);
-    if (!r.ok) throw new Error(`${directive.action} HTTP ${r.status}`);
-    let parsed: { success?: boolean; errors?: Array<{ message?: string; error?: number }> } | null = null;
-    try { parsed = JSON.parse(txt); }
-    catch { throw new Error(`${directive.action} sendFleet non-JSON response: ${txt.slice(0, 200)}`); }
-    if (parsed && (parsed.success === false || parsed.status === "failure")) {
-      const msg = parsed.errors?.[0]?.message ?? "unknown";
-      throw new Error(`${directive.action} rejected: ${msg}`);
-    }
-    return { action: directive.action, clicked: true };
   }
 
   /** Species discovery — Galaxy view DNA icon → sendDiscoveryFleet POST.

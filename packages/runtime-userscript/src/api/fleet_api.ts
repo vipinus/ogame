@@ -71,6 +71,103 @@ const TRANSIENT_RACE_RE = /140043|請稍後再試|请稍后再试|稍後再試|t
 // resource transport is secondary.
 const STORAGE_OVERFLOW_RE = /140028|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage/i;
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * v0.0.438: cpPostWithRetry — generic cp-shift POST with 4-attempt retry,
+ * TRANSIENT_RACE_RE / TOKEN_INVALID_RE handling, loud per-attempt logging.
+ * Operator 2026-05-29 directive: "需要切cp的都改成 fleet_api.sendFleet 模式".
+ * Every exec* in api_executor.ts that does fetchWithCpBypassBusy should
+ * route through this so the retry / token-refresh / transient detection
+ * lives in one place — mirrors what sendFleet does for fleet POSTs.
+ * ───────────────────────────────────────────────────────────────────── */
+export interface CpPostOptions {
+  /** Full ogame URL (including page/component/action/ajax=1). */
+  endpoint: string;
+  /** Source planet/moon PID → cp= URL param + session-cp shift. */
+  sourcePlanetId: string;
+  /** Token manager. cpPostWithRetry refreshes / invalidates as needed. */
+  token: TokenManager;
+  /** Action label for logs. */
+  action: string;
+  /** "GET" for overlay fetches; "POST" (default) for everything else. */
+  method?: "GET" | "POST";
+  /** Body builder — called per attempt with the current token so retries
+   *  pick up refreshed tokens. Return undefined for GET. */
+  buildBody?: (token: string) => URLSearchParams | undefined;
+  /** Max attempts; default 4 (mirrors sendFleet). */
+  maxAttempts?: number;
+  /** Pass-through to fetchWithCpBypassBusy. */
+  skipRestore?: boolean;
+}
+
+export interface CpPostResult {
+  /** Parsed JSON if response was JSON, else null. */
+  json: Record<string, unknown> | null;
+  /** Raw response text (also useful when response is HTML overlay). */
+  raw: string;
+  /** HTTP status code. */
+  status: number;
+}
+
+export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult> {
+  const { fetchWithCpBypassBusy } = await import("./safe_fetch.js");
+  const maxAttempts = opts.maxAttempts ?? 4;
+  const method = opts.method ?? "POST";
+  let token = opts.token.getFreshToken();
+  let lastErrMsg = "";
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const body = opts.buildBody ? opts.buildBody(token) : undefined;
+    const bodyStr = body ? body.toString().replace(/token=[^&]+/, "token=***") : "<no body>";
+    console.log(`[cpPost/${opts.action}] attempt=${attempt} ${method} ${opts.endpoint} cp=${opts.sourcePlanetId} body=${bodyStr}`);
+    const r = await fetchWithCpBypassBusy(
+      opts.endpoint,
+      {
+        method,
+        credentials: "same-origin",
+        headers: method === "POST"
+          ? { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" }
+          : { "X-Requested-With": "XMLHttpRequest" },
+        body: method === "POST" ? body : undefined,
+      },
+      opts.sourcePlanetId,
+      { skipRestore: opts.skipRestore },
+    );
+    const raw = await r.text();
+    let json: Record<string, unknown> | null;
+    try { json = JSON.parse(raw) as Record<string, unknown>; } catch { json = null; }
+    console.log(`[cpPost/${opts.action}] attempt=${attempt} HTTP ${r.status} json=${json ? JSON.stringify(json).slice(0, 200) : "<non-JSON>"} raw[0:200]=${raw.slice(0, 200)}`);
+    // Non-JSON (overlay HTML etc) → return as-is to caller.
+    if (!json) return { json: null, raw, status: r.status };
+    const okFlag = json["success"] === true || json["status"] === true;
+    if (okFlag) {
+      const newToken = (json as { newAjaxToken?: unknown }).newAjaxToken;
+      if (typeof newToken === "string") opts.token.set(newToken);
+      return { json, raw, status: r.status };
+    }
+    const errsField = (json as { errors?: Array<{ message?: string }> }).errors;
+    const errMsgRaw = (json as { message?: unknown }).message;
+    const errMsg = (typeof errMsgRaw === "string" ? errMsgRaw : null)
+      ?? (Array.isArray(errsField) && errsField[0]?.message)
+      ?? `success=${json["success"]} raw=${raw.slice(0, 200)}`;
+    lastErrMsg = errMsg;
+    if (attempt === 1 && TOKEN_INVALID_RE.test(errMsg)) {
+      await opts.token.invalidate();
+      token = opts.token.getFreshToken();
+      continue;
+    }
+    if (TRANSIENT_RACE_RE.test(errMsg) && attempt < maxAttempts) {
+      const backoffMs = 200 * attempt;
+      console.warn(`[cpPost/${opts.action}] attempt=${attempt} transient race (${errMsg.slice(0, 80)}) — backoff ${backoffMs}ms`);
+      const newToken = (json as { newAjaxToken?: unknown }).newAjaxToken;
+      if (typeof newToken === "string") { opts.token.set(newToken); token = newToken; }
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      continue;
+    }
+    // Non-transient failure → return json to caller; caller decides what to do.
+    return { json, raw, status: r.status };
+  }
+  throw new FleetApiError(`${opts.action} failed after ${maxAttempts} attempts: ${lastErrMsg.slice(0, 200)}`);
+}
+
 function buildBody(p: SendFleetParams, token: string): URLSearchParams {
   const body = new URLSearchParams();
   body.set("token", token);
