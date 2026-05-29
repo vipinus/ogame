@@ -348,7 +348,8 @@ function openExpeditionSettings(
           <div data-exp-fleet-total style="color:#7080a0; font-size:10px; padding-top:6px; text-align:right;"></div>
         </div>
         <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">每次派遣的船数 (0 = 不派此类船 · 点击输入框=全选)</div>
-        ${shipRows}
+        <!-- Operator 2026-05-29: 改成两列 — grid 自动按行填充, 高度对半 -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; column-gap:14px;">${shipRows}</div>
       </div>
       <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:12px;">
         <span data-exp-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
