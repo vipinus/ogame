@@ -88,12 +88,50 @@ const PANEL_HOVER_CSS = `
   #ogamex-goals-panel:hover { opacity: 1 !important; }
 `.trim();
 
+// Operator 2026-05-29: semver compare for runtime update detection.
+// Returns positive when a > b, negative when a < b, zero when equal.
+// Forgiving — non-numeric segments compare lexicographically (e.g. dev tags).
+function cmpSemver(a: string, b: string): number {
+  const sa = a.split(".");
+  const sb = b.split(".");
+  const len = Math.max(sa.length, sb.length);
+  for (let i = 0; i < len; i++) {
+    const ax = sa[i] ?? "0";
+    const bx = sb[i] ?? "0";
+    const an = parseInt(ax, 10);
+    const bn = parseInt(bx, 10);
+    if (!isNaN(an) && !isNaN(bn) && an !== bn) return an - bn;
+    if (ax !== bx) return ax < bx ? -1 : 1;
+  }
+  return 0;
+}
+
 export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle {
   const doc = opts.doc ?? document;
   const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
   const baseUrl = opts.httpBaseUrl ?? "https://ogame.anyfq.com";
   const pollMs = opts.pollMs ?? 3000;
   const showTerminal = opts.showTerminal ?? false;
+
+  // Operator 2026-05-29: poll sidecar /v1/runtime-version every 60s; on
+  // newer version, set window.__ogamexLatestVersion + __ogamexDownloadURL
+  // so the next render shows the update button.
+  const checkRuntimeUpdate = async (): Promise<void> => {
+    try {
+      const r = await fetchFn(`${baseUrl}/ogamex/v1/runtime-version`, { method: "GET" });
+      if (!r.ok) return;
+      const j = await r.json() as { version?: string; downloadURL?: string };
+      const win = (typeof window !== "undefined" ? window : globalThis) as {
+        __ogamexVersion?: string;
+        __ogamexLatestVersion?: string;
+        __ogamexDownloadURL?: string;
+      };
+      if (j.version) win.__ogamexLatestVersion = j.version;
+      if (j.downloadURL) win.__ogamexDownloadURL = j.downloadURL;
+    } catch { /* sidecar down or CORS — keep button hidden */ }
+  };
+  void checkRuntimeUpdate();
+  const updateCheckTimer = setInterval(() => { void checkRuntimeUpdate(); }, 60_000);
 
   // Local-storage helpers — persist position + collapse state across page
   // reloads so the operator's preferred layout sticks.
@@ -438,10 +476,20 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     }).join("");
     // Header is the drag handle (cursor:move). Collapse button toggles the
     // body. Close removes the panel entirely.
+    // Operator 2026-05-29 "panel 名称改成 oGame+版本号 添加按钮更新版本":
+    // title shows current runtime version, update button hidden by default,
+    // shown when latestRuntimeVersion (polled from sidecar) > currentVersion.
+    const currentVersion = ((typeof window !== "undefined" ? window : globalThis) as { __ogamexVersion?: string }).__ogamexVersion ?? "?";
+    const latestVersion = ((typeof window !== "undefined" ? window : globalThis) as { __ogamexLatestVersion?: string }).__ogamexLatestVersion ?? "";
+    const hasUpdate = latestVersion !== "" && latestVersion !== currentVersion && cmpSemver(latestVersion, currentVersion) > 0;
+    const updateBtn = hasUpdate
+      ? `<button data-action="update-runtime" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:10px;" title="新版 v${escapeHtml(latestVersion)} 可用 — 点击安装">🔄 v${escapeHtml(latestVersion)}</button>`
+      : "";
     const header = `
       <div data-ogamex-drag="1" style="display:flex; align-items:center; justify-content:space-between; padding-bottom:4px; cursor:move; user-select:none;">
-        <strong style="color:#e0e8f0;">🪐 OgameX goals</strong>
-        <span style="display:flex; gap:4px;">
+        <strong style="color:#e0e8f0;">🪐 oGame v${escapeHtml(currentVersion)}</strong>
+        <span style="display:flex; gap:4px; align-items:center;">
+          ${updateBtn}
           <button data-action="collapse" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "▸" : "▾"}</button>
           <button data-action="close" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="Close (panel will re-mount on next page load)">×</button>
         </span>
@@ -926,6 +974,20 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const closeBtn = panel.querySelector<HTMLElement>("[data-action=\"close\"]");
     closeBtn?.addEventListener("click", () => stop());
 
+    // Operator 2026-05-29: Update runtime button. Hidden by default; the
+    // poll loop below (every 60s) sets window.__ogamexLatestVersion and
+    // re-renders if a newer version is available. Click opens the
+    // downloadURL the sidecar reported — TM intercepts .user.js and prompts.
+    const updateBtnEl = panel.querySelector<HTMLElement>("[data-action=\"update-runtime\"]");
+    updateBtnEl?.addEventListener("click", () => {
+      const url = ((typeof window !== "undefined" ? window : globalThis) as { __ogamexDownloadURL?: string }).__ogamexDownloadURL;
+      if (!url) {
+        console.warn("[panel/update] no downloadURL exposed by sidecar — cannot trigger install");
+        return;
+      }
+      try { window.open(url, "_blank"); } catch { /* */ }
+    });
+
     // Collapse toggle: flip collapsed state + persist + re-render to refresh
     // chevron + body visibility.
     const collapseBtn = panel.querySelector<HTMLElement>("[data-action=\"collapse\"]");
@@ -1180,6 +1242,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     stopped = true;
     if (timer) clearTimeout(timer);
     if (jgTickerId) { clearInterval(jgTickerId); jgTickerId = null; }
+    if (updateCheckTimer) clearInterval(updateCheckTimer);
     stopAlarm();
     panel?.remove();
   }

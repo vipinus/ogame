@@ -320,6 +320,27 @@ export class HttpServer {
       this.handleProviderGet(res, this.opts.expeditionProvider);
       return;
     }
+    // Operator 2026-05-29 "panel 名称改成 oGame+版本号 + 更新按钮 (没有
+    // 更新就隐藏)": panel polls this endpoint, compares with its own boot
+    // version, shows the update button when newer. Returns the @version
+    // line from the served userscript at /tmp/ogame-runtime.user.js.
+    if (method === "GET" && url === "/ogamex/v1/runtime-version") {
+      this.writeCorsHeaders(res);
+      let version = "0.0.0";
+      let downloadURL: string | null = null;
+      try {
+        // `fs` is already imported at the top of this module as a namespace.
+        const txt = fs.readFileSync("/tmp/ogame-runtime.user.js", "utf-8").slice(0, 8000);
+        const vm = txt.match(/@version\s+(\S+)/);
+        if (vm && vm[1]) version = vm[1];
+        const dm = txt.match(/@downloadURL\s+(\S+)/);
+        if (dm && dm[1]) downloadURL = dm[1];
+      } catch (e) { console.warn("[runtime-version] read /tmp/ogame-runtime.user.js failed:", e); }
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ version, downloadURL }));
+      return;
+    }
     if (method === "GET" && url === "/ogamex/v1/emergency") {
       this.handleProviderGet(res, this.opts.emergencyProvider);
       return;
