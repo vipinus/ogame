@@ -1094,7 +1094,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.401";
+  const USERSCRIPT_VERSION = "0.0.402";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1368,7 +1368,19 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (mission === 15 && origin && origin.length === 3) {
           dest = [origin[0]!, origin[1]!, 16] as readonly number[];
         }
-        return { mission, origin, dest, arrival_at, return_at, fleetId };
+        // Operator 2026-05-29: extract origin_type (planet|moon) from
+        // movement row's <span class="originPlanet"><figure class=
+        // "planetIcon planet|moon">. Without this, syntheticFleets writes
+        // fleets_outbound with origin_type=undefined, which breaks the
+        // multi-FSM patchFleetId origin_type gate (v0.0.395) — patcher
+        // skips all candidates → fleetId stays 0 → backend DROPs FS as
+        // unsalvageable → ships never recall. dest_type extracted similarly
+        // for symmetry (case_decider's moon discrimination at dest).
+        const originIconM = inner.match(/<span\s+class="originPlanet"[\s\S]{0,200}?<figure[^>]+class="planetIcon\s+(planet|moon)"/);
+        const origin_type: "planet" | "moon" = originIconM?.[1] === "moon" ? "moon" : "planet";
+        const destIconM = inner.match(/<span\s+class="destinationPlanet"[\s\S]{0,200}?<figure[^>]+class="planetIcon\s+(planet|moon)"/);
+        const dest_type: "planet" | "moon" = destIconM?.[1] === "moon" ? "moon" : "planet";
+        return { mission, origin, origin_type, dest, dest_type, arrival_at, return_at, fleetId };
       });
       // Max slots — operator 2026-05-25: strip HTML tags first so the
       // digit/slash/digit pattern can match across nested <span> wrappers.
@@ -1409,13 +1421,20 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const syntheticFleets = sourceList.map((f, idx) => {
         // Real fleet id preferred over synthetic; fsm.patchFleetId needs it.
         const realId = (f as { fleetId?: number | null }).fleetId;
+        // Operator 2026-05-29: propagate origin_type/dest_type from parser.
+        // Falls back to "planet" only when parser didn't see the icon (legacy
+        // / unparsed row). patchFleetId's origin_type gate (v0.0.395) needs
+        // the real value to match the FSM source's celestial type.
+        const ft = f as { origin_type?: "planet" | "moon"; dest_type?: "planet" | "moon"; arrival_at?: number; return_at?: number | null };
         return {
           id: realId !== null && realId !== undefined ? String(realId) : `mvt-${idx}`,
           mission: f.mission,
           origin: f.origin,
+          origin_type: ft.origin_type ?? "planet",
           dest: f.dest,
-          arrival_at: (f as { arrival_at?: number }).arrival_at ?? 0,
-          return_at: (f as { return_at?: number | null }).return_at ?? null,
+          dest_type: ft.dest_type ?? "planet",
+          arrival_at: ft.arrival_at ?? 0,
+          return_at: ft.return_at ?? null,
           ships: {} as Record<string, number>,
         };
       }) as unknown as typeof cur.fleets_outbound;
