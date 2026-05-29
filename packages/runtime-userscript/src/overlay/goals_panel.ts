@@ -874,6 +874,7 @@ function openTransportSettings(
   doc: Document,
   baseUrl: string,
   fetchFn: typeof fetch,
+  prefill?: { targetPlanetId?: string; cargo?: { m: number; c: number; d: number } },
 ): void {
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading state…</div>`;
   openSettingsModal(doc, "transport", "🚚 运输设置", placeholder, async (m) => {
@@ -1182,6 +1183,22 @@ function openTransportSettings(
         if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
       }
     });
+    // v0.0.449: post-render prefill. Chain shortage button passes
+    // targetPlanetId + cargo; pre-check target radio + fill cargo m/c/d.
+    // Source ships planet auto-defaults to operator's current planet
+    // via the existing tr-source-radio default-checked logic.
+    if (prefill?.targetPlanetId) {
+      const r = m.querySelector<HTMLInputElement>(`input[name="tr-target-radio"][value="${prefill.targetPlanetId}"]`);
+      if (r) r.checked = true;
+    }
+    if (prefill?.cargo) {
+      const cm = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
+      const cc = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
+      const cd = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
+      if (cm && prefill.cargo.m > 0) cm.value = String(prefill.cargo.m);
+      if (cc && prefill.cargo.c > 0) cc.value = String(prefill.cargo.c);
+      if (cd && prefill.cargo.d > 0) cd.value = String(prefill.cargo.d);
+    }
   });
 }
 
@@ -1600,7 +1617,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             };
             const sh = g.resource_shortage;
             const shortageChip = sh && (sh.m + sh.c + sh.d) > 0
-              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title="假设当前产能不变, 这是还需要从其他星球 transport 进来的资源总量">缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span>`
+              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title="假设当前产能不变, 这是还需要从其他星球 transport 进来的资源总量">缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="打开运输 modal 自动填写目的+资源 (源=当前星球)">→ 运输</button>`
               : "";
             const etaHeader = totalEta > 0
               ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${shortageChip}`
@@ -2205,6 +2222,24 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     wireAction("data-action-resume", "resume");
     wireAction("data-action-set-main", "set-main");
     wireAction("data-action-unset-main", "unset-main");
+    // v0.0.449: shortage-chip → 运输 button. Opens transport modal with
+    // target+cargo prefilled. targetCoord is resolved to planet id via
+    // store lookup (goal.planet is the coord string post-idToCoords).
+    for (const btn of panel.querySelectorAll<HTMLElement>("[data-action-fill-shortage]")) {
+      btn.addEventListener("click", () => {
+        const targetCoord = btn.getAttribute("data-fill-target") ?? "";
+        const m = parseInt(btn.getAttribute("data-fill-m") ?? "0", 10);
+        const c = parseInt(btn.getAttribute("data-fill-c") ?? "0", 10);
+        const d = parseInt(btn.getAttribute("data-fill-d") ?? "0", 10);
+        const store = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, { id: string; type?: string; coords?: number[] }> } } }).__ogamexStore;
+        const planets = Object.values(store?.state?.planets ?? {});
+        const targetPlanet = planets.find((p) => p?.type === "planet" && Array.isArray(p.coords) && p.coords.join(":") === targetCoord);
+        openTransportSettings(doc, baseUrl, fetchFn, {
+          ...(targetPlanet?.id ? { targetPlanetId: targetPlanet.id } : {}),
+          cargo: { m, c, d },
+        });
+      });
+    }
     // Prereq tree toggles — flip per-node collapse state + re-render the
     // current goals snapshot (no refetch).
     for (const el of panel.querySelectorAll<HTMLElement>("[data-tree-toggle]")) {
