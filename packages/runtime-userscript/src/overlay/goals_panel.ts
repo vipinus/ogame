@@ -471,6 +471,135 @@ function openExpeditionSettings(
   });
 }
 
+// M3 — discovery settings modal. Mirrors the existing panel inline UI
+// (planet dropdown + range input + Start) into the modal layout and adds a
+// live status block + Stop button when an active species_discovery goal
+// already exists. Posts to /v1/discovery/create on save and to
+// /v1/goals/<id>/cancel for Stop.
+function openDiscoverySettings(
+  doc: Document,
+  baseUrl: string,
+  fetchFn: typeof fetch,
+): void {
+  const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading discovery state…</div>`;
+  openSettingsModal(doc, "discovery", "🧬 发现任务设置", placeholder, async (m) => {
+    const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
+    if (!body) return;
+    // Pull goals list (active species_discovery only) + planet list.
+    type ActiveGoal = { id: string; planet?: string; target?: { source_planet?: string; galaxy?: number; base_system?: number; range?: number; completed?: string[] }; status?: string; progress_pct?: number; current_step?: string };
+    let activeGoal: ActiveGoal | null = null;
+    try {
+      const r = await fetchFn(`${baseUrl}/ogamex/v1/goals`, { method: "GET" });
+      if (r.ok) {
+        const json = await r.json() as { goals?: unknown[] } | unknown[];
+        const list = (Array.isArray(json) ? json : json.goals ?? []) as Array<ActiveGoal & { type?: string }>;
+        activeGoal = list.find((g) => g?.type === "species_discovery" && !["completed", "cancelled"].includes(String(g.status ?? ""))) ?? null;
+      }
+    } catch (e) { console.warn("[panel/discovery-settings] goals GET failed:", e); }
+    interface StorePlanet { id: string; type?: string; coords?: number[]; name?: string }
+    const storeRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, StorePlanet> } } }).__ogamexStore;
+    const planets = Object.values(storeRef?.state?.planets ?? {})
+      .filter((p): p is StorePlanet => p?.type === "planet")
+      .sort((a, b) => {
+        const ac = a.coords ?? [0, 0, 0]; const bc = b.coords ?? [0, 0, 0];
+        for (let i = 0; i < 3; i++) {
+          const av = ac[i] ?? 0; const bv = bc[i] ?? 0;
+          if (av !== bv) return av - bv;
+        }
+        return 0;
+      });
+    const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
+    // Status block (when goal is active).
+    let statusHTML = "";
+    if (activeGoal) {
+      const tgt = activeGoal.target ?? {};
+      const completedCount = Array.isArray(tgt.completed) ? tgt.completed.length : 0;
+      const total = ((tgt.range ?? 10) * 2 + 1) * 15;
+      const pct = total > 0 ? Math.floor((completedCount / total) * 100) : 0;
+      statusHTML = `<div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:10px;">
+        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">当前活跃发现任务</div>
+        <div style="color:#d0d8e0; font-size:11px;">
+          <div>★ 来源星球: <span style="color:#c080ff;">${escapeHtml(String(tgt.source_planet ?? activeGoal.planet ?? "?"))}</span></div>
+          <div>★ 中心系统: <span style="color:#c080ff;">${escapeHtml(String(tgt.galaxy ?? "?"))}:${escapeHtml(String(tgt.base_system ?? "?"))}</span> · 半径 ${escapeHtml(String(tgt.range ?? 10))}</div>
+          <div>★ 进度: ${completedCount} / ${total} (${pct}%)</div>
+          <div>★ 当前步骤: ${escapeHtml(String(activeGoal.current_step ?? "—"))}</div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; padding-top:8px;">
+          <button data-disc-stop="1" data-disc-goal-id="${escapeHtml(activeGoal.id)}" style="background:#5a2020; color:#fff; border:1px solid #8a4040; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">停止当前任务</button>
+        </div>
+      </div>`;
+    }
+    const planetOpts = planets.map((p) => {
+      const cs = (p.coords ?? []).join(":");
+      return `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name ?? "殖民")} [${escapeHtml(cs)}]</option>`;
+    }).join("");
+    body.innerHTML = `
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">物种发现 — 探路者扫描系统物种, 1 个 active goal at a time</div>
+      ${statusHTML}
+      <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px;">
+        <div style="color:#7080a0; font-size:10px; padding-bottom:6px;">${activeGoal ? "替换当前任务 (先 Stop 再 Start, 或直接 Start — 旧 goal 会被替换)" : "创建新发现任务"}</div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">来源星球</span>
+          <select data-disc-planet style="${inputStyle} flex:1;">${planetOpts || `<option value="">(无 planet)</option>`}</select>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">扫描半径</span>
+          <input data-disc-range type="number" min="1" max="20" value="${escapeHtml(String(activeGoal?.target?.range ?? 10))}" onclick="this.select()" style="${inputStyle} width:80px;"/>
+          <span style="color:#7080a0; font-size:10px;">中心 ± N 系统 (1-20), 每个系统扫 15 位置</span>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
+          <span data-disc-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+          <button data-disc-start="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">Start Discovery</button>
+        </div>
+      </div>
+    `;
+    // Wire Stop button.
+    m.querySelector<HTMLElement>("[data-disc-stop]")?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget as HTMLElement;
+      const gid = btn.getAttribute("data-disc-goal-id") ?? "";
+      if (!gid) return;
+      btn.textContent = "stopping…";
+      try {
+        await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(gid)}/cancel`, { method: "POST" });
+        setTimeout(() => m.remove(), 400);
+      } catch (err) {
+        btn.textContent = `× ${(err as Error).message}`;
+      }
+    });
+    // Wire Start button.
+    m.querySelector<HTMLElement>("[data-disc-start]")?.addEventListener("click", async () => {
+      const status = m.querySelector<HTMLElement>("[data-disc-status]");
+      const sel = m.querySelector<HTMLSelectElement>("[data-disc-planet]");
+      const rng = m.querySelector<HTMLInputElement>("[data-disc-range]");
+      const pid = sel?.value ?? "";
+      const range = Math.max(1, Math.min(20, parseInt(rng?.value ?? "10", 10) || 10));
+      if (!pid) {
+        if (status) { status.textContent = "× 请选择来源星球"; status.style.color = "#ff6b6b"; }
+        return;
+      }
+      const planet = planets.find((p) => p.id === pid);
+      const coords = planet?.coords ?? [];
+      const galaxy = coords[0] ?? 0;
+      const baseSystem = coords[1] ?? 0;
+      if (status) { status.textContent = "creating…"; status.style.color = "#7080a0"; }
+      try {
+        const r = await fetchFn(`${baseUrl}/ogamex/v1/discovery/create`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source_planet: pid, galaxy, base_system: baseSystem, range }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json() as { ok?: boolean; reason?: string };
+        if (!j.ok) throw new Error(j.reason ?? "create rejected");
+        if (status) { status.textContent = "✓ created"; status.style.color = "#7cfc00"; }
+        setTimeout(() => m.remove(), 600);
+      } catch (e) {
+        if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
+      }
+    });
+  });
+}
+
 export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle {
   const doc = opts.doc ?? document;
   const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
@@ -995,7 +1124,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   range: <input data-action="discovery-range" type="number" min="1" max="20" value="10" style="width:50px; background:#1a2330; color:#c0d0e0; border:1px solid #354050;">
   <button data-action="discovery-start" style="margin-left:10px; ${btnStyle("#205a20", "#408a40")}">Start Discovery</button>
 </div>`;
-    const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff", discHeaderBtn)}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
+    // M3 — section header ⚙ → openDiscoverySettings modal. Keeps existing
+    // Stop/inline UI intact for backward compat; modal adds rich status +
+    // structured Start form.
+    const discSettingsBtn = `<button data-settings="discovery" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="发现任务设置">⚙</button>`;
+    const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff", `${discHeaderBtn}${discSettingsBtn}`)}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
 
     // Jumpgate cooldown per moon — operator 2026-05-26:
     //   "在月球上显示，跳跃门冷却时间" + "ready 的不用显示，只显示倒计时的，
@@ -1169,6 +1302,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         const feature = btn.getAttribute("data-settings") ?? "";
         if (feature === "emergency") openEmergencySettings(doc);
         else if (feature === "expedition") openExpeditionSettings(doc, baseUrl, fetchFn);
+        else if (feature === "discovery") openDiscoverySettings(doc, baseUrl, fetchFn);
       });
     }
     // Wire spy-triggers-save toggle (emergency section).
