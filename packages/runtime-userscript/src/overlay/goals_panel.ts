@@ -749,6 +749,35 @@ function openGoalsSettings(
     };
     typeSel?.addEventListener("change", refreshPreset);
     refreshPreset();
+    // Operator 2026-05-29: planet radio change → auto-fill the coord prefix
+    // into the NL textarea so the operator can keep typing the rest of the
+    // instruction. Replaces an existing "在 G:S:P " head; otherwise prepends.
+    // "(不指定)" radio strips the prefix entirely.
+    const nlTa = m.querySelector<HTMLTextAreaElement>("[data-goal-nl]");
+    const coordsForId = new Map<string, string>();
+    for (const k of sortedCoordKeys) {
+      const { planet, moon } = groupedByCoord.get(k)!;
+      if (planet) coordsForId.set(planet.id, k);
+      if (moon) coordsForId.set(moon.id, k);
+    }
+    const PREFIX_RE = /^在\s*\d+:\d+:\d+\s*/;
+    for (const r of m.querySelectorAll<HTMLInputElement>('input[name="goal-planet-radio"]')) {
+      r.addEventListener("change", () => {
+        if (!nlTa || !r.checked) return;
+        const coord = coordsForId.get(r.value);
+        if (!coord) {
+          nlTa.value = nlTa.value.replace(PREFIX_RE, "");
+        } else {
+          const newPrefix = `在 ${coord} `;
+          nlTa.value = PREFIX_RE.test(nlTa.value)
+            ? nlTa.value.replace(PREFIX_RE, newPrefix)
+            : newPrefix + nlTa.value;
+        }
+        nlTa.focus();
+        // Cursor to end so operator can keep typing.
+        nlTa.setSelectionRange(nlTa.value.length, nlTa.value.length);
+      });
+    }
     // Operator 2026-05-29: NL parse button — POST description → sidecar
     // Gemini → fill type/planet/target/priority fields with parsed result.
     m.querySelector<HTMLElement>("[data-goal-nl-parse]")?.addEventListener("click", async () => {
