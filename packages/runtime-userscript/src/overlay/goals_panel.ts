@@ -207,18 +207,19 @@ function openEmergencySettings(doc: Document): void {
 }
 
 // M2 — expedition settings modal. Reads the on-disk config via sidecar
-// `GET /v1/expedition/config` and writes back via POST. Ship template
-// fields use number inputs; paused is a toggle. Save validates positive
-// integers, then POSTs and closes the modal on success.
+// `GET /v1/expedition/config` and writes back via POST. Now split into two
+// tabs (operator 2026-05-29: "改成两个 tab"): "发船星球" (per-planet
+// checkboxes for opt-in source pool) and "舰队模板" (per-ship-type number
+// inputs). Target-position removed (always G:S:16). Paused toggle is
+// global, lives above the tabs.
 function openExpeditionSettings(
   doc: Document,
   baseUrl: string,
   fetchFn: typeof fetch,
 ): void {
-  // Operator 2026-05-29: full ship roster (ogame v12 SHIP_IDS order, ascending
-  // by tid). solarSatellite (212) and crawler (217) are stationary — they
-  // cannot be part of a fleet dispatch, so excluded. pathfinder/explorer
-  // share tid 219; we only expose `explorer` (the v12 canonical name).
+  // Full ship roster (ogame v12 SHIP_IDS, ascending tid). solarSatellite
+  // (212) + crawler (217) are stationary — excluded. pathfinder/explorer
+  // share tid 219; only `explorer` (canonical v12 name) is exposed.
   const SHIP_FIELDS: Array<{ key: string; label: string }> = [
     { key: "smallCargo",     label: "小型運輸艦 (ST)" },
     { key: "largeCargo",     label: "大型運輸艦 (LT)" },
@@ -236,20 +237,53 @@ function openExpeditionSettings(
     { key: "reaper",         label: "惡魔飛船 (RIP)" },
     { key: "explorer",       label: "探路者 (PF)" },
   ];
-  // Initial render with "loading…" placeholders; replaced once GET returns.
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading expedition config…</div>`;
   openSettingsModal(doc, "expedition", "🛸 远征任务设置", placeholder, async (m) => {
     const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
     if (!body) return;
-    let initial: { template?: Record<string, number>; paused?: boolean; target_position?: number; enabled?: boolean } = {};
+    let initial: { template?: Record<string, number>; paused?: boolean; enabled?: boolean; enabled_planets?: string[] } = {};
     try {
       const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, { method: "GET" });
       if (r.ok) initial = await r.json();
     } catch (e) { console.warn("[panel/expedition-settings] GET failed:", e); }
+    // Pull live planet list from the frontend store; expedition is launched
+    // from planets only, so filter type=="planet". moons stay out of the
+    // opt-in pool — daemon already skips them via ship-count gates.
+    const storeRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, { id: string; type?: string; coords?: number[]; name?: string }> } } }).__ogamexStore;
+    const planetMap = storeRef?.state?.planets ?? {};
+    const planetEntries = Object.values(planetMap)
+      .filter((p) => p?.type === "planet")
+      .sort((a, b) => {
+        const ac = a.coords ?? [0, 0, 0];
+        const bc = b.coords ?? [0, 0, 0];
+        for (let i = 0; i < 3; i++) {
+          const av = ac[i] ?? 0;
+          const bv = bc[i] ?? 0;
+          if (av !== bv) return av - bv;
+        }
+        return 0;
+      });
     const paused = initial.paused === true;
     const tmpl = (initial.template ?? {}) as Record<string, number>;
-    const targetPos = typeof initial.target_position === "number" ? initial.target_position : 16;
+    // When enabled_planets is empty / unset, treat ALL planets as enabled
+    // (backward compatible — the M1 behaviour before opt-in landed).
+    const cfgEnabled = Array.isArray(initial.enabled_planets) ? initial.enabled_planets : null;
+    const isPlanetEnabled = (pid: string): boolean => (cfgEnabled === null ? true : cfgEnabled.includes(pid));
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; width:90px; font-size:11px; text-align:right;";
+    const tabBtn = (key: string, label: string, active: boolean): string =>
+      `<button data-exp-tab="${escapeHtml(key)}" style="background:${active ? "#1a2840" : "transparent"}; color:${active ? "#e0e8f0" : "#7080a0"}; border:1px solid ${active ? "#2a3a52" : "transparent"}; border-bottom:none; padding:6px 14px; cursor:pointer; font-size:11px; border-radius:4px 4px 0 0;">${escapeHtml(label)}</button>`;
+    const planetRows = planetEntries.length === 0
+      ? `<div style="color:#7080a0; padding:8px 0; font-size:11px;">(无 planet — state 未就绪, 刷新 ogame 页面)</div>`
+      : planetEntries.map((p) => {
+          const coordStr = (p.coords ?? []).join(":");
+          const checked = isPlanetEnabled(p.id);
+          return `<label style="padding:5px 0; border-bottom:1px solid #1a2030; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+            <span style="color:#d0d8e0; font-size:11px;">
+              <input data-exp-planet="${escapeHtml(p.id)}" type="checkbox" ${checked ? "checked" : ""} style="margin-right:8px; vertical-align:middle;"/>
+              ${escapeHtml(p.name ?? "殖民")} <span style="color:#7080a0;">[${escapeHtml(coordStr)}]</span>
+            </span>
+          </label>`;
+        }).join("");
     const shipRows = SHIP_FIELDS.map((f) => {
       const cur = tmpl[f.key] ?? 0;
       return `<div style="padding:6px 0; border-bottom:1px solid #1a2030; display:flex; justify-content:space-between; align-items:center;">
@@ -258,23 +292,58 @@ function openExpeditionSettings(
       </div>`;
     }).join("");
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">远征任务 — 每 planet 自动派遣 + round-robin 公平化</div>
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">远征任务 — 勾选发船星球 + 设置舰队模板</div>
       ${renderToggleRow("整体启用", !paused, "exp-paused", "OFF = daemon 跳过本轮 tick (现有 fleet 不受影响)")}
-      <div style="padding:8px 0; border-bottom:1px solid #1a2030; display:flex; justify-content:space-between; align-items:center;">
-        <span style="color:#d0d8e0;">目标位置</span>
-        <input data-exp-pos type="number" min="1" max="16" step="1" value="${escapeHtml(String(targetPos))}" style="${inputStyle}"/>
+      <div style="padding-top:10px; display:flex; gap:0; border-bottom:1px solid #2a3a52;">
+        ${tabBtn("planets", "发船星球", true)}
+        ${tabBtn("template", "舰队模板", false)}
       </div>
-      <div style="padding-top:10px; color:#a0a8b8; font-size:11px;">舰队模板 (每次派遣的船数)</div>
-      ${shipRows}
+      <div data-exp-pane="planets" style="display:block; padding-top:8px;">
+        <div style="display:flex; justify-content:space-between; padding:4px 0; font-size:10px;">
+          <span style="color:#7080a0;">勾选 = 加入 round-robin 发船池</span>
+          <span>
+            <button data-exp-planet-all="1" style="background:transparent; color:#7cfc00; border:none; cursor:pointer; font-size:10px; padding:0 4px;">全选</button>
+            <button data-exp-planet-none="1" style="background:transparent; color:#ff9b9b; border:none; cursor:pointer; font-size:10px; padding:0 4px;">全清</button>
+          </span>
+        </div>
+        ${planetRows}
+      </div>
+      <div data-exp-pane="template" style="display:none; padding-top:8px;">
+        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">每次派遣的船数 (0 = 不派此类船)</div>
+        ${shipRows}
+      </div>
       <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:12px;">
         <span data-exp-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
         <button data-exp-save="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">保存</button>
       </div>
     `;
-    // Wire paused toggle (immediate, no save needed).
+    // Tab switching.
+    const switchTab = (key: string): void => {
+      m.querySelectorAll<HTMLElement>("[data-exp-tab]").forEach((b) => {
+        const active = b.getAttribute("data-exp-tab") === key;
+        b.style.background = active ? "#1a2840" : "transparent";
+        b.style.color = active ? "#e0e8f0" : "#7080a0";
+        b.style.borderColor = active ? "#2a3a52" : "transparent";
+        b.style.borderBottomColor = "transparent";
+      });
+      m.querySelectorAll<HTMLElement>("[data-exp-pane]").forEach((p) => {
+        p.style.display = p.getAttribute("data-exp-pane") === key ? "block" : "none";
+      });
+    };
+    m.querySelectorAll<HTMLElement>("[data-exp-tab]").forEach((b) => {
+      b.addEventListener("click", () => { switchTab(b.getAttribute("data-exp-tab") ?? "planets"); });
+    });
+    // 全选 / 全清 helpers.
+    m.querySelector<HTMLElement>("[data-exp-planet-all]")?.addEventListener("click", () => {
+      m.querySelectorAll<HTMLInputElement>("[data-exp-planet]").forEach((cb) => { cb.checked = true; });
+    });
+    m.querySelector<HTMLElement>("[data-exp-planet-none]")?.addEventListener("click", () => {
+      m.querySelectorAll<HTMLInputElement>("[data-exp-planet]").forEach((cb) => { cb.checked = false; });
+    });
+    // Paused toggle (immediate, no save needed).
     let liveExpPaused = paused;
-    const reflect = (sel: string, isOn: boolean): void => {
-      const btn = m.querySelector<HTMLElement>(sel);
+    const reflectPaused = (isOn: boolean): void => {
+      const btn = m.querySelector<HTMLElement>("[data-exp-paused]");
       if (!btn) return;
       btn.textContent = isOn ? "ON" : "OFF";
       btn.setAttribute("style", `padding:2px 10px; border-radius:3px; cursor:pointer; font-size:11px; font-weight:bold;${isOn
@@ -282,14 +351,14 @@ function openExpeditionSettings(
         : "background:#5a2020; color:#fff; border:1px solid #8a4040;"}`);
     };
     m.querySelector<HTMLElement>("[data-exp-paused]")?.addEventListener("click", async () => {
-      const nextEnabled = !(!liveExpPaused);  // current ON → click → OFF (paused=true); current OFF → ON (paused=false)
+      const nextEnabled = liveExpPaused;  // current ON (paused=false) → click → OFF (paused=true)
       liveExpPaused = !nextEnabled;
-      reflect("[data-exp-paused]", nextEnabled);
+      reflectPaused(nextEnabled);
       try {
         await fetchFn(`${baseUrl}/ogamex/v1/expedition/${liveExpPaused ? "pause" : "resume"}`, { method: "POST" });
       } catch (e) { console.warn("[panel/expedition-settings] pause/resume failed:", e); }
     });
-    // Save button: POST template + target_position; paused is already persisted by toggle handler.
+    // Save: POST template + enabled_planets (paused handled by toggle).
     m.querySelector<HTMLElement>("[data-exp-save]")?.addEventListener("click", async () => {
       const status = m.querySelector<HTMLElement>("[data-exp-status]");
       const template: Record<string, number> = {};
@@ -299,14 +368,16 @@ function openExpeditionSettings(
         if (!key || !Number.isFinite(n) || n < 0) continue;
         if (n > 0) template[key] = n;
       }
-      const posInput = m.querySelector<HTMLInputElement>("[data-exp-pos]");
-      const target_position = posInput ? Math.max(1, Math.min(16, parseInt(posInput.value, 10) || 16)) : 16;
+      const enabled_planets: string[] = [];
+      for (const cb of m.querySelectorAll<HTMLInputElement>("[data-exp-planet]")) {
+        if (cb.checked) enabled_planets.push(cb.getAttribute("data-exp-planet") ?? "");
+      }
       if (status) { status.textContent = "saving…"; status.style.color = "#7080a0"; }
       try {
         const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ template, target_position }),
+          body: JSON.stringify({ template, enabled_planets }),
         });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         if (status) { status.textContent = "✓ saved"; status.style.color = "#7cfc00"; }
