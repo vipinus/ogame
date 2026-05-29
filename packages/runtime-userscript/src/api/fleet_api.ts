@@ -93,7 +93,37 @@ function buildBody(p: SendFleetParams, token: string): URLSearchParams {
   return body;
 }
 
+// Operator 2026-05-29 evidence: two concurrent FSM sendFleet calls
+// (cp=A then cp=B fired ~100ms apart on parallel spy events) race ogame's
+// global session-cp. ogame's POST handler reads session-cp at response
+// time, so the first POST's response was processed against the SECOND
+// planet's session — yielding "沒有選擇艦船" (140042) on both. Serialize
+// sendFleet at the module level so only one fleet POST is in flight at
+// a time across emergency FSMs, GoalRunner-routed dispatches, and any
+// other path. Recall path uses its own non-cp= endpoint; mutex not
+// shared with recallFleet.
+let sendFleetChain: Promise<unknown> = Promise.resolve();
+async function acquireSendFleetSlot(): Promise<() => void> {
+  const prev = sendFleetChain;
+  let release!: () => void;
+  sendFleetChain = new Promise<void>((resolve) => { release = resolve; });
+  try { await prev; } catch { /* prior failure isn't ours to handle */ }
+  return release;
+}
+
 export async function sendFleet(
+  p: SendFleetParams,
+  ctx: SendFleetCtx,
+): Promise<SendFleetResult> {
+  const release = await acquireSendFleetSlot();
+  try {
+    return await sendFleetInner(p, ctx);
+  } finally {
+    release();
+  }
+}
+
+async function sendFleetInner(
   p: SendFleetParams,
   ctx: SendFleetCtx,
 ): Promise<SendFleetResult> {
