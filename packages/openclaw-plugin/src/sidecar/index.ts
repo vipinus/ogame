@@ -876,7 +876,12 @@ export async function startSidecar(
             // — retrying on next planner tick is correct, NOT a one-shot fail.
             // Cancelling on transient permanently kills a transport chain when
             // its first leg (planet→own moon ferry) races a sibling fleet POST.
-            const TRANSIENT_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet/i;
+            // Operator 2026-05-29: extend to cover goal_runner.ts slot-gate
+            // ack messages "fleet slots full N/M keep-1-empty (early skip, not
+            // queued)". Slot gates are transient by design — they wait for
+            // an expedition return; merger retries fine on next tick. Without
+            // this, a chain's first leg dies the moment expeditions saturate.
+            const TRANSIENT_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued/i;
             const isTransient = TRANSIENT_RE.test(reason);
             const row = goalsStore.list().find((r) => r.goal.id === goalId);
             const type = row?.goal.type;

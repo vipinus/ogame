@@ -322,8 +322,18 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       } else if (dr.action === "colonize" || dr.action === "deploy" || dr.action === "transport") {
         const usedF = srv?.used_fleet_slots ?? -1;
         const maxF = srv?.max_fleet_slots ?? -1;
-        if (usedF >= 0 && maxF > 0 && usedF >= maxF - 1) {
-          ack(dr.id, { success: false, error: `fleet slots full ${usedF}/${maxF} keep-1-empty (early skip, not queued)` });
+        // Operator 2026-05-29: transport chains (action=transport OR chain-bound
+        // deploy leg) bypass keep-1-empty — operator intentionally initiated
+        // the chain, accepts last-slot use; emergency FS recall stays safe via
+        // FSM bypass that doesn't traverse this gate. Standalone colonize and
+        // standalone deploy (no chain_id) still reserve 1 slot for FS recall.
+        const params = dr.params as { chain_id?: string } | undefined;
+        const isChainBound = typeof params?.chain_id === "string" && params.chain_id !== "";
+        const bypassKeepEmpty = dr.action === "transport" || (dr.action === "deploy" && isChainBound);
+        const slotCeiling = bypassKeepEmpty ? maxF : maxF - 1;
+        if (usedF >= 0 && maxF > 0 && usedF >= slotCeiling) {
+          const label = bypassKeepEmpty ? "all slots used" : "keep-1-empty";
+          ack(dr.id, { success: false, error: `fleet slots full ${usedF}/${maxF} ${label} (early skip, not queued)` });
           return;
         }
       }

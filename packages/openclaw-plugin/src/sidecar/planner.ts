@@ -891,12 +891,15 @@ function planColonizeGoal(goal: Goal, state: WorldState): PlanResult {
 function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
   const target = goal.target as {
     target_coords?: unknown;
+    target_type?: unknown;     // v0.0.428: "planet" | "moon" | "debris"
     ships?: unknown;
     resources?: unknown;
+    cargo?: unknown;           // v0.0.428: panel writes `cargo`, accept both
     source_planet?: unknown;
   };
   const targetCoords = typeof target.target_coords === "string" ? target.target_coords : "";
   if (!targetCoords) return { blocked: `${goal.type} goal missing target.target_coords` };
+  const targetType = typeof target.target_type === "string" ? target.target_type : "planet";
 
   const ships = (typeof target.ships === "object" && target.ships !== null ? target.ships : {}) as ShipCount;
   const shipsList = Object.entries(ships).filter(([, n]) => typeof n === "number" && (n as number) > 0);
@@ -904,10 +907,14 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
     return { blocked: `${goal.type} goal: ships map is empty` };
   }
 
+  // v0.0.428: panel writes `cargo` (m/c/d); legacy callers use `resources`.
+  // Accept either; cargo wins if both present.
   const resources =
-    typeof target.resources === "object" && target.resources !== null
-      ? (target.resources as { m?: number; c?: number; d?: number })
-      : undefined;
+    typeof target.cargo === "object" && target.cargo !== null
+      ? (target.cargo as { m?: number; c?: number; d?: number })
+      : typeof target.resources === "object" && target.resources !== null
+        ? (target.resources as { m?: number; c?: number; d?: number })
+        : undefined;
 
   const sourceRaw = typeof target.source_planet === "string" ? target.source_planet : undefined;
   const sourcePlanet =
@@ -949,6 +956,7 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
     action: goal.type, // "deploy" | "transport"
     params: {
       target_coords: targetCoords,
+      target_type: targetType,
       ships,
       ...(resources ? { resources } : {}),
       planet_id: sourcePlanet.id,

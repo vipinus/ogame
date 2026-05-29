@@ -848,7 +848,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     token = stage1.token;
     // Stage 2: target = G:S:P type=1 (planet)
     const stage2Body = new URLSearchParams({
-      token, galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: "1",
+      token, galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: destType,
     });
     const stage2 = await POST("checkTarget", stage2Body);
     console.info(`[ApiExec] colonize step3 checkTarget: success=${stage2.json.success}`);
@@ -895,7 +895,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    *  type=3 for debris field, type=2 for moon — we default to type=1 since
    *  deploy/transport targets are your own colonies. */
   private async execFleetSend(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
-    const params = directive.params as { target_coords?: string; ships?: Record<string, number>; resources?: Record<string, number>; mission?: number };
+    const params = directive.params as { target_coords?: string; target_type?: string; ships?: Record<string, number>; resources?: Record<string, number>; mission?: number };
     const ships = params.ships ?? {};
     const resources = params.resources ?? {};
     const mission = params.mission ?? (directive.action === "deploy" ? 4 : 3);
@@ -905,6 +905,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const tPos = parseInt(tpStr ?? "0", 10);
     if (!tGalaxy || !tSystem || !tPos) throw new Error(`${directive.action}: bad target_coords`);
     if (Object.keys(ships).length === 0) throw new Error(`${directive.action}: no ships`);
+    // v0.0.428: ogame fleet target type — 1=planet, 2=debris, 3=moon.
+    // Operator 2026-05-29: hard-coded type=1 caused JG chain LegA "planet→
+    // own moon" to silently no-op at ogame (same coord, same type=planet →
+    // success-ish response, no fleet launched). Wire target_type through.
+    const destTypeStr = (params.target_type ?? "planet").toLowerCase();
+    const destType = destTypeStr === "moon" ? "3" : destTypeStr === "debris" ? "2" : "1";
     // FLEET SLOT GATE — operator 2026-05-27 同族 review: deploy/transport
     // 也是 fleet POST, 同 keep-1-empty 模式.
     {
@@ -949,7 +955,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     token = stage1.token;
     // Stage 2: checkTarget — type=1 (planet)
     const stage2Body = new URLSearchParams({
-      token, galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: "1",
+      token, galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: destType,
     });
     const stage2 = await POST("checkTarget", stage2Body);
     console.info(`[ApiExec] ${directive.action} step3 checkTarget: success=${stage2.json.success}`);
@@ -958,7 +964,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // Stage 3: sendFleet with mission=4 (deploy) or 3 (transport)
     const stage3Body = new URLSearchParams({
       token, mission: String(mission), speed: "10",
-      galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: "1",
+      galaxy: String(tGalaxy), system: String(tSystem), position: String(tPos), type: destType,
       metal: String(resources["m"] ?? 0),
       crystal: String(resources["c"] ?? 0),
       deuterium: String(resources["d"] ?? 0),

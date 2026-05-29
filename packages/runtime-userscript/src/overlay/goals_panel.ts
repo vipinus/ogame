@@ -1433,9 +1433,26 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
 
   function render(goals: GoalRowFromHttp[], err?: string): void {
     if (!panel) return;
+    // v0.0.426: when a chain has ANY non-terminal leg, keep ALL its legs in
+    // the view so the tree renders end-to-end (operator 2026-05-29: Leg A
+    // completed → panel hid it → jumpgate appeared as "Leg 1 logic error").
+    // Singleton terminal goals still hide as before.
     const filtered = showTerminal
       ? goals
-      : goals.filter((g) => g.status !== "completed" && g.status !== "cancelled");
+      : (() => {
+          const liveChainIds = new Set<string>();
+          for (const g of goals) {
+            const cid = (g.target as Record<string, unknown>)?.chain_id;
+            if (typeof cid === "string" && cid && g.status !== "completed" && g.status !== "cancelled") {
+              liveChainIds.add(cid);
+            }
+          }
+          return goals.filter((g) => {
+            const cid = (g.target as Record<string, unknown>)?.chain_id;
+            if (typeof cid === "string" && cid && liveChainIds.has(cid)) return true;
+            return g.status !== "completed" && g.status !== "cancelled";
+          });
+        })();
     const statusColor: Record<string, string> = {
       pending: "#bdb76b", active: "#7cfc00", blocked: "#ff6b6b",
       completed: "#666", cancelled: "#888",
