@@ -509,17 +509,23 @@ function openDiscoverySettings(
         return 0;
       });
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
-    // Status block (when goal is active).
+    // Status block (when goal is active). Operator 2026-05-29: 来源星球
+    // 显示坐标 (+ name), 不要 internal planet id.
     let statusHTML = "";
     if (activeGoal) {
       const tgt = activeGoal.target ?? {};
       const completedCount = Array.isArray(tgt.completed) ? tgt.completed.length : 0;
       const total = ((tgt.range ?? 10) * 2 + 1) * 15;
       const pct = total > 0 ? Math.floor((completedCount / total) * 100) : 0;
+      const srcId = String(tgt.source_planet ?? activeGoal.planet ?? "");
+      const srcPlanet = srcId ? (storeRef?.state?.planets?.[srcId] ?? null) : null;
+      const srcDisplay = srcPlanet?.coords
+        ? `${srcPlanet.name ?? "殖民"} [${srcPlanet.coords.join(":")}]`
+        : (srcId || "?");
       statusHTML = `<div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:10px;">
         <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">当前活跃发现任务</div>
         <div style="color:#d0d8e0; font-size:11px;">
-          <div>★ 来源星球: <span style="color:#c080ff;">${escapeHtml(String(tgt.source_planet ?? activeGoal.planet ?? "?"))}</span></div>
+          <div>★ 来源星球: <span style="color:#c080ff;">${escapeHtml(srcDisplay)}</span></div>
           <div>★ 中心系统: <span style="color:#c080ff;">${escapeHtml(String(tgt.galaxy ?? "?"))}:${escapeHtml(String(tgt.base_system ?? "?"))}</span> · 半径 ${escapeHtml(String(tgt.range ?? 10))}</div>
           <div>★ 进度: ${completedCount} / ${total} (${pct}%)</div>
           <div>★ 当前步骤: ${escapeHtml(String(activeGoal.current_step ?? "—"))}</div>
