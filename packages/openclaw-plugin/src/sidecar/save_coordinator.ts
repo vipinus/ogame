@@ -118,6 +118,22 @@ export class SaveCoordinator {
         }
       }
       if (cleared && rec.pendingEventIds.size === 0) {
+        // Operator 2026-05-29 evidence: sidecar received LAUNCH with
+        // fleet=0 placeholder and never got the second LAUNCH with the
+        // real fleet id (frontend FSM silent-skipped on 140042 no-ships
+        // so patchFleetId never fired). recall_now with fleet=0 is
+        // useless — frontend's wireBridge handler skips it with
+        // "backend fleet=0 and fsm has no real id either — skip recall".
+        // We then keep re-firing the same useless message every snapshot.
+        // Guard: if fleet_id is still 0/missing after hostiles cleared,
+        // delete the record (the launch never actually committed a fleet,
+        // and frontend can't help us patch it now).
+        if (!rec.fleet_id || rec.fleet_id <= 0) {
+          console.warn(`[save-coord] DROP unsalvageable record planet=${rec.planet_id} fleet=${rec.fleet_id} — never patched real fleet id (frontend silent-skip likely)`);
+          this.recordsByPlanet.delete(rec.planet_id);
+          this.recordsByFleet.delete(rec.fleet_id);
+          continue;
+        }
         // Operator 2026-05-26: "威胁解除立即召回". Skip RECALL_READY +
         // margin tick — instantly emit save.recall_now downstream so
         // userscript fires recall POST without waiting.
