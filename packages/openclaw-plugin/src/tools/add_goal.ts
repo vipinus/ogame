@@ -156,6 +156,58 @@ export interface AddGoalDefinition {
   execute: (params: AddGoalParamsT) => Promise<AddGoalResult | { error: string }>;
 }
 
+/**
+ * M4 — bare NL → goal-shape parse without storing. Reused by the panel's
+ * "自然语言描述" entry point (POST /v1/goals/parse). Returns the same fields
+ * the modal form takes (type / target object / planet id / priority) so the
+ * modal can pre-fill the form for operator review before final submit.
+ */
+export interface ParseGoalFromNLDeps {
+  gemini: GeminiClient;
+  listPlanets?: () => Array<{ id: string; name: string; coords: readonly [number, number, number] | number[]; type: string }>;
+}
+export interface ParseGoalResult {
+  type: GoalType;
+  target: Record<string, unknown>;
+  planet?: string;
+  priority?: number;
+}
+export async function parseGoalFromNL(
+  description: string,
+  deps: ParseGoalFromNLDeps,
+): Promise<ParseGoalResult | { error: string }> {
+  const planets = deps.listPlanets ? deps.listPlanets() : [];
+  const prompt = buildPrompt(description, planets);
+  let parsed: ParsedGoalShape;
+  try {
+    parsed = await deps.gemini.generateJson<ParsedGoalShape>(prompt, GoalJsonSchema);
+  } catch (err) {
+    if (err instanceof GeminiApiError) return { error: `gemini api error: ${err.message}` };
+    if (err instanceof SyntaxError) return { error: `gemini returned malformed JSON: ${err.message}` };
+    return { error: `nl parse failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (!GOAL_TYPES.includes(parsed.type)) {
+    return { error: `unsupported goal type: ${String(parsed.type)}` };
+  }
+  let target: Record<string, unknown>;
+  try {
+    const decoded = JSON.parse(parsed.target_json) as unknown;
+    if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) {
+      return { error: `target_json did not parse to an object: ${parsed.target_json.slice(0, 80)}` };
+    }
+    target = decoded as Record<string, unknown>;
+  } catch (err) {
+    return { error: `target_json malformed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const planetId = resolvePlanet(parsed.planet_coords, planets);
+  return {
+    type: parsed.type,
+    target,
+    ...(planetId !== undefined ? { planet: planetId } : {}),
+    ...(parsed.priority !== undefined ? { priority: parsed.priority } : {}),
+  };
+}
+
 export function makeAddGoalTool(deps: AddGoalDeps): AddGoalDefinition {
   return {
     name: "ogame_add_goal",

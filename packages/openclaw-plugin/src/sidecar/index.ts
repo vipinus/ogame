@@ -33,6 +33,7 @@ import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
 import { GoalsStore } from "./goals_store.js";
 import { GeminiClient } from "./gemini_client.js";
+import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
 import { planGoal } from "./planner.js";
 import { buildHealthReport } from "./health.js";
@@ -700,6 +701,15 @@ export async function startSidecar(
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.setMainGoal(null);
       return { ok: true };
+    },
+    parseGoalNL: async (description) => {
+      if (!apiKey) return { ok: false, reason: "GEMINI_API_KEY not configured" };
+      const planets = Object.values(stateRef.current?.planets ?? {})
+        .filter((p) => p && p.coords && p.coords.length === 3)
+        .map((p) => ({ id: p.id, name: p.name ?? "", coords: p.coords as readonly [number, number, number], type: p.type ?? "planet" }));
+      const result = await parseGoalFromNL(description, { gemini: geminiClient, listPlanets: () => planets });
+      if ("error" in result) return { ok: false, reason: result.error };
+      return { ok: true, parsed: result };
     },
     createGoal: (body) => {
       // M4 — generic goal creation from the panel modal. Trust the body's

@@ -65,6 +65,8 @@ export interface HttpServerOptions {
   unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
   /** M4 — create an arbitrary goal from the panel modal. POST /v1/goals/create. */
   createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string };
+  /** M4 — parse free-form NL into a goal-shape without storing. POST /v1/goals/parse. */
+  parseGoalNL?: (description: string) => Promise<{ ok: boolean; parsed?: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }; reason?: string }>;
   /** Create a species_discovery goal — POST /ogamex/v1/discovery/create. */
   createDiscoveryGoal?: (body: {
     source_planet: string; galaxy: number; base_system: number; range?: number;
@@ -124,6 +126,8 @@ interface ResolvedHttpServerOptions {
   unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
   /** M4 — create an arbitrary goal from the panel modal. POST /v1/goals/create. */
   createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string };
+  /** M4 — parse free-form NL into a goal-shape without storing. POST /v1/goals/parse. */
+  parseGoalNL?: (description: string) => Promise<{ ok: boolean; parsed?: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }; reason?: string }>;
   /** Create a species_discovery goal — POST /ogamex/v1/discovery/create. */
   createDiscoveryGoal?: (body: {
     source_planet: string; galaxy: number; base_system: number; range?: number;
@@ -168,6 +172,7 @@ export class HttpServer {
       ...(opts.unsetMainGoal !== undefined ? { unsetMainGoal: opts.unsetMainGoal } : {}),
       ...(opts.createDiscoveryGoal !== undefined ? { createDiscoveryGoal: opts.createDiscoveryGoal } : {}),
       ...(opts.createGoal !== undefined ? { createGoal: opts.createGoal } : {}),
+      ...(opts.parseGoalNL !== undefined ? { parseGoalNL: opts.parseGoalNL } : {}),
       ...(opts.recordSaveLaunched !== undefined ? { recordSaveLaunched: opts.recordSaveLaunched } : {}),
       ...(opts.recordSaveRecallConfirmed !== undefined ? { recordSaveRecallConfirmed: opts.recordSaveRecallConfirmed } : {}),
       ...(opts.listActiveSaves !== undefined ? { listActiveSaves: opts.listActiveSaves } : {}),
@@ -417,6 +422,12 @@ export class HttpServer {
         void this.handleGoalCreate(req, res);
         return;
       }
+      // M4 — NL parse. Body: { description }. Returns parsed goal shape
+      // WITHOUT storing — operator confirms in the modal before create.
+      if (url === "/ogamex/v1/goals/parse") {
+        void this.handleGoalParse(req, res);
+        return;
+      }
       // Save-coordinator endpoints (operator 2026-05-24 "fsm 可以放后台").
       // Public no-auth like discovery/expedition triggers — LAN-only trust.
       if (url === "/ogamex/v1/save/launched") {
@@ -564,6 +575,41 @@ export class HttpServer {
     res.statusCode = out.ok ? 200 : 400;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(out));
+  }
+
+  /**
+   * M4 — POST /v1/goals/parse. Body: { description: string }. Returns the
+   * parsed goal shape (without storing) so the panel modal can pre-fill the
+   * form for operator review. Delegates to wired parseGoalNL callback.
+   */
+  private async handleGoalParse(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    this.writeCorsHeaders(res);
+    if (!this.opts.parseGoalNL) {
+      res.statusCode = 501;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: false, reason: "parseGoalNL not wired (gemini api key missing?)" }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    let body: { description?: string };
+    try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+    catch { res.statusCode = 400; res.end(JSON.stringify({ ok: false, reason: "bad json" })); return; }
+    if (typeof body.description !== "string" || !body.description.trim()) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, reason: "need description:string" }));
+      return;
+    }
+    try {
+      const out = await this.opts.parseGoalNL(body.description.trim());
+      res.statusCode = out.ok ? 200 : 400;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(out));
+    } catch (e) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: false, reason: (e as Error).message }));
+    }
   }
 
   /** POST /v1/discovery/create — body JSON parsed → callback to sidecar/index. */

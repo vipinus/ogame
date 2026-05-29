@@ -668,6 +668,15 @@ function openGoalsSettings(
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
     body.innerHTML = `
       <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">普通任务 — 创建 build / research / colonize / 等任务. 已有 active goals 在主面板 Goals section 显示</div>
+      <!-- Operator 2026-05-29: 自然语言入口 — Gemini 解析 → 填表单 -->
+      <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
+        <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">自然语言描述 <span style="color:#7080a0; font-size:10px;">(可选 — 让 AI 解析填表单)</span></div>
+        <textarea data-goal-nl rows="2" placeholder="例: 在 3:279:7 建金属矿到 42 级 / 母星出引力 6 / 在 4:241:8 造 500 大型运输舰" style="${inputStyle} width:100%; box-sizing:border-box; resize:vertical;"></textarea>
+        <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:6px;">
+          <span data-goal-nl-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+          <button data-goal-nl-parse="1" style="background:#3a3a5a; color:#fff; border:1px solid #6a6a8a; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">🤖 解析填表单</button>
+        </div>
+      </div>
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px;">
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">任务类型</span>
@@ -740,6 +749,43 @@ function openGoalsSettings(
     };
     typeSel?.addEventListener("change", refreshPreset);
     refreshPreset();
+    // Operator 2026-05-29: NL parse button — POST description → sidecar
+    // Gemini → fill type/planet/target/priority fields with parsed result.
+    m.querySelector<HTMLElement>("[data-goal-nl-parse]")?.addEventListener("click", async () => {
+      const ta = m.querySelector<HTMLTextAreaElement>("[data-goal-nl]");
+      const status = m.querySelector<HTMLElement>("[data-goal-nl-status]");
+      const description = (ta?.value ?? "").trim();
+      if (!description) {
+        if (status) { status.textContent = "× 描述不能为空"; status.style.color = "#ff6b6b"; }
+        return;
+      }
+      if (status) { status.textContent = "parsing…"; status.style.color = "#7080a0"; }
+      try {
+        const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/parse`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description }),
+        });
+        const j = await r.json() as { ok?: boolean; parsed?: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }; reason?: string };
+        if (!r.ok || !j.ok || !j.parsed) throw new Error(j.reason ?? `HTTP ${r.status}`);
+        // Apply parsed → form.
+        if (typeSel && j.parsed.type) {
+          typeSel.value = j.parsed.type;
+          // Trigger placeholder refresh first, then overwrite target.
+          refreshPreset();
+        }
+        if (targetTa) targetTa.value = JSON.stringify(j.parsed.target, null, 2);
+        const prioInput = m.querySelector<HTMLInputElement>("[data-goal-priority]");
+        if (prioInput && typeof j.parsed.priority === "number") prioInput.value = String(j.parsed.priority);
+        if (j.parsed.planet) {
+          const radio = m.querySelector<HTMLInputElement>(`input[name="goal-planet-radio"][value="${j.parsed.planet}"]`);
+          if (radio) radio.checked = true;
+        }
+        if (status) { status.textContent = "✓ 已填入表单, 检查后点击创建任务"; status.style.color = "#7cfc00"; }
+      } catch (e) {
+        if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
+      }
+    });
     m.querySelector<HTMLElement>("[data-goal-create]")?.addEventListener("click", async () => {
       const status = m.querySelector<HTMLElement>("[data-goal-status]");
       const type = typeSel?.value ?? "";
