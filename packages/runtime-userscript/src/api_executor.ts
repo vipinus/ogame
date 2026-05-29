@@ -720,10 +720,29 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       );
       if (!overlayResp.ok) throw new Error(`jumpgate overlay HTTP ${overlayResp.status}`);
       const overlayHtml = await overlayResp.text();
-      const m = overlayHtml.match(/name="token"\s+value="([a-f0-9]+)"/i)
-            ?? overlayHtml.match(/['"]token['"]\s*[:=]\s*['"]([a-f0-9]+)['"]/i);
-      if (!m || !m[1]) throw new Error(`jumpgate: token not found in overlay (len=${overlayHtml.length})`);
-      return m[1];
+      // v0.0.445: ogame v12 uses SINGLE quotes —
+      //   <input type='hidden' name='token' value='4dad2571...' />
+      // verified from operator's console context dump 2026-05-29.
+      // Patterns now accept both ' and " via ["'].
+      const tokenPatterns: RegExp[] = [
+        /name=["']token["']\s+value=["']([a-zA-Z0-9_\-]+)["']/i,      // <input name='token' value='...'>
+        /value=["']([a-zA-Z0-9_\-]{16,})["']\s+name=["']token["']/i,  // reversed attr order
+        /["']token["']\s*[:=]\s*["']([a-zA-Z0-9_\-]+)["']/i,          // js: token: "..."
+        /data-token=["']([a-zA-Z0-9_\-]+)["']/i,                       // data-token attr
+        /var\s+token\s*=\s*["']([a-zA-Z0-9_\-]+)["']/i,                // var token = "..."
+        /ajaxToken\s*=\s*["']([a-zA-Z0-9_\-]+)["']/i,                  // ajaxToken = "..."
+        /["']?ajaxToken["']?\s*:\s*["']([a-zA-Z0-9_\-]+)["']/i,        // "ajaxToken": "..."
+      ];
+      for (const re of tokenPatterns) {
+        const m = overlayHtml.match(re);
+        if (m && m[1]) return m[1];
+      }
+      // No match — dump context around the FIRST occurrence of "token" so
+      // operator can paste the real format and we add a pattern.
+      const idx = overlayHtml.toLowerCase().indexOf("token");
+      const ctx = idx >= 0 ? overlayHtml.slice(Math.max(0, idx - 60), idx + 160) : "<no 'token' substring>";
+      console.warn(`[ApiExec/jumpgate] token regex failed (len=${overlayHtml.length}). Context around "token":`, ctx);
+      throw new Error(`jumpgate: token not found in overlay (len=${overlayHtml.length}) — see console "Context around token" log`);
     };
     let token = await fetchOverlayToken();
     console.info(`[ApiExec/jumpgate] overlay token len=${token.length} src=${sourceMoonId} tgt=${targetMoonId} ships=${JSON.stringify(ships)}`);

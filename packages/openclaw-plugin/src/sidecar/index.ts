@@ -911,7 +911,11 @@ export async function startSidecar(
             // complete those — would lose the higher target.
             const row = goalsStore.list().find((r) => r.goal.id === goalId);
             const type = row?.goal.type;
-            if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport") {
+            if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport" || type === "jumpgate") {
+              // v0.0.446: jumpgate added — operator 2026-05-29 verified
+              // JG dispatch succeeded but goal stuck active because this
+              // list missed it. Now mark completed on ack so chain prereq
+              // unblocks next leg (LegC deploy moon→planet).
               goalsStore.updateStatus(goalId, "completed");
             }
             // species_discovery: ApiExec success = ONE coord done. Append to
