@@ -803,6 +803,8 @@ export class HttpServer {
     res.setHeader("Access-Control-Allow-Private-Network", "true");
     res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Max-Age", "600");
+    res.setHeader("Vary", "Origin");
   }
 
   private checkAuth(req: http.IncomingMessage): boolean {

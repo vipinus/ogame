@@ -1092,91 +1092,72 @@ function openTransportSettings(
       };
       const sourceP = planetsMap[source];
       const resourceP = resourceSrc ? planetsMap[resourceSrc] : sourceP;
-      const sourceMoon = source ? findSiblingMoon(source) : undefined;
-      const targetMoon = findSiblingMoon(target);
-      const useJg = jgEnabled && !!sourceMoon && !!targetMoon;
-      const launchPlanet = resourceP?.id ?? source;
       const goalBodies: Array<{ type: string; target: Record<string, unknown>; planet?: string; priority?: number }> = [];
-      // Stage A: if resource planet ≠ source planet, deploy empty ships
-      // from source over to resource planet first (Phase 2a — no JG path).
+      // v0.0.425: factor the chain into a `genFerry` helper so every leg of
+      // movement (source→resource, resource→target, target→stopover) uses
+      // the same JG-aware decision: when JG is enabled AND both endpoints
+      // have a sibling moon at their own coords, emit a 3-leg ferry
+      // (planet→moon local deploy, moon→moon jumpgate, moon→planet local
+      // deploy). Otherwise emit a single direct hop. Fixes operator's
+      // 2026-05-29 report where Leg 1 was a sublight cross-system deploy.
+      const genFerry = (
+        fromId: string,
+        toId: string,
+        carryCargo: boolean,
+        finalLegType: "deploy" | "transport",
+        phasePrefix: string,
+        basePriority: number,
+      ): typeof goalBodies => {
+        const fromP = planetsMap[fromId];
+        const toP = planetsMap[toId];
+        if (!fromP || !toP || fromP.id === toP.id) return [];
+        const fromCoords = (fromP.coords ?? []).join(":");
+        const toCoords = (toP.coords ?? []).join(":");
+        const fromMoon = findSiblingMoon(fromP.id);
+        const toMoon = findSiblingMoon(toP.id);
+        // Operator 2026-05-29 rule: JG can only carry EMPTY ships. When this
+        // segment is hauling cargo, force the direct sublight hop regardless
+        // of whether both endpoints have moons.
+        const useJgHere = jgEnabled && !!fromMoon && !!toMoon && !carryCargo;
+        const cargoArg = carryCargo ? cargo : undefined;
+        if (useJgHere && fromMoon && toMoon) {
+          const fromMoonCoords = (fromMoon.coords ?? []).join(":");
+          // Leg A: planet → own moon (local micro-deploy, same coord).
+          // Leg B: moon → moon (jumpgate hop).
+          // Leg C: moon → planet at destination (local micro-deploy).
+          return [
+            { type: "deploy",
+              target: { target_coords: fromMoonCoords, target_type: "moon", ships, cargo: cargoArg, source_planet: fromP.id, chain_id: chainId, chain_phase: `${phasePrefix}_load` },
+              planet: fromP.id, priority: basePriority },
+            { type: "jumpgate",
+              target: { source_moon: fromMoon.id, target_moon: toMoon.id, ships, chain_id: chainId, chain_phase: `${phasePrefix}_hop` },
+              planet: fromMoon.id, priority: basePriority - 1 },
+            { type: "deploy",
+              target: { target_coords: toCoords, target_type: toP.type ?? "planet", ships, cargo: cargoArg, source_planet: toMoon.id, chain_id: chainId, chain_phase: `${phasePrefix}_unload` },
+              planet: toMoon.id, priority: basePriority - 2 },
+          ];
+        }
+        // Direct sublight hop — single goal. fromCoords is for debug only
+        // (target stores planet-id refs that resolveCoord can pretty-print).
+        void fromCoords;
+        return [
+          { type: finalLegType,
+            target: { target_coords: toCoords, target_type: toP.type ?? "planet", ships, cargo: cargoArg, source_planet: fromP.id, chain_id: chainId, chain_phase: `${phasePrefix}_direct` },
+            planet: fromP.id, priority: basePriority },
+        ];
+      };
+      // Segment 1: source → resource (ferry empty ships into position).
+      // Skipped when source == resource (ships already at resource).
       if (resourceP && sourceP && resourceP.id !== sourceP.id) {
-        const resCoords = (resourceP.coords ?? []).join(":");
-        goalBodies.push({
-          type: "deploy",
-          target: { target_coords: resCoords, target_type: resourceP.type ?? "planet", ships, source_planet: source, chain_id: chainId },
-          planet: source, priority: 8,
-        });
+        goalBodies.push(...genFerry(sourceP.id, resourceP.id, false, "deploy", "ferry_to_res", 12));
       }
-      // Stage B (JG path): deploy ships+cargo planet→moon at the source-side
-      // of the JG bridge. Then jumpgate. Then deploy moon→target planet.
-      // execJumpgate is not yet wired in api_executor, so the middle leg is
-      // a placeholder goal — operator sees it queued and the planner will
-      // block with "jumpgate dispatch TBD" until Phase 2b lands.
-      if (useJg && sourceMoon && targetMoon) {
-        const srcMoonCoords = (sourceMoon.coords ?? []).join(":");
-        // Stage B1 — deploy planet → source moon (load ships + cargo).
-        goalBodies.push({
-          type: "deploy",
-          target: { target_coords: srcMoonCoords, target_type: "moon", ships, cargo, source_planet: launchPlanet, chain_id: chainId, chain_phase: "jg_load" },
-          planet: launchPlanet, priority: 7,
-        });
-        // Stage B2 — JUMPGATE (sidecar planJumpgateGoal + api_executor.execJumpgate).
-        // Ships hop to target moon instantly; cargo carries through.
-        goalBodies.push({
-          type: "jumpgate",
-          target: { source_moon: sourceMoon.id, target_moon: targetMoon.id, ships, chain_id: chainId, chain_phase: "jg_hop" },
-          planet: sourceMoon.id, priority: 6,
-        });
-        // Stage B3 — deploy target moon → target planet (unload cargo there).
-        goalBodies.push({
-          type: "deploy",
-          target: { target_coords: targetCoords, target_type: targetPlanet?.type ?? "planet", ships, cargo, source_planet: targetMoon.id, chain_id: chainId, chain_phase: "jg_unload" },
-          planet: targetMoon.id, priority: 5,
-        });
-      } else {
-        // Non-JG path — final hop is a single transport from resource → target.
-        goalBodies.push({
-          type: "transport",
-          target: { target_coords: targetCoords, target_type: targetPlanet?.type ?? "planet", ships, cargo, source_planet: launchPlanet, chain_id: chainId },
-          planet: launchPlanet, priority: 6,
-        });
-      }
-      // Operator 2026-05-29: section ④ "最终停泊星球" — if operator picked
-      // a planet/moon different from `target`, append a final deploy leg so
-      // empty ships move from target → stopover after cargo lands.
+      // Segment 2: resource → target (carries cargo). Always fires.
+      const launchPlanetId = resourceP?.id ?? source;
+      goalBodies.push(...genFerry(launchPlanetId, target, true, "transport", "to_target", 9));
+      // Segment 3: target → stopover (empty ferry post-unload), optional.
       const stopover = m.querySelector<HTMLInputElement>('input[name="tr-stopover-radio"]:checked')?.value ?? "";
       if (stopover && stopover !== target) {
-        const stopoverP = planetsMap[stopover];
-        const stopoverCoords = (stopoverP?.coords ?? []).join(":");
-        if (stopoverCoords) {
-          // Stopover-aware JG: if stopover has a sibling moon AND target has
-          // one AND JG enabled, use jumpgate again for the empty-ship ferry.
-          const stopoverMoon = findSiblingMoon(stopover);
-          if (useJg && targetMoon && stopoverMoon && stopover !== target) {
-            goalBodies.push({
-              type: "deploy",
-              target: { target_coords: (targetMoon.coords ?? []).join(":"), target_type: "moon", ships, source_planet: target, chain_id: chainId, chain_phase: "stop_load" },
-              planet: target, priority: 4,
-            });
-            goalBodies.push({
-              type: "jumpgate",
-              target: { source_moon: targetMoon.id, target_moon: stopoverMoon.id, ships, chain_id: chainId, chain_phase: "stop_hop" },
-              planet: targetMoon.id, priority: 3,
-            });
-            goalBodies.push({
-              type: "deploy",
-              target: { target_coords: stopoverCoords, target_type: stopoverP?.type ?? "planet", ships, source_planet: stopoverMoon.id, chain_id: chainId, chain_phase: "stop_unload" },
-              planet: stopoverMoon.id, priority: 2,
-            });
-          } else {
-            // No-JG stopover leg — single deploy target → stopover (empty).
-            goalBodies.push({
-              type: "deploy",
-              target: { target_coords: stopoverCoords, target_type: stopoverP?.type ?? "planet", ships, source_planet: target, chain_id: chainId, chain_phase: "stop_direct" },
-              planet: target, priority: 3,
-            });
-          }
-        }
+        goalBodies.push(...genFerry(target, stopover, false, "deploy", "to_stop", 6));
       }
       if (status) { status.textContent = `creating ${goalBodies.length} goal(s)…`; status.style.color = "#7080a0"; }
       try {
