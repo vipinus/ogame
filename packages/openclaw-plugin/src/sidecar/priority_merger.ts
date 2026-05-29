@@ -75,6 +75,10 @@ export class PriorityMerger {
   // every COOLDOWN_MS to ogame.
   private readonly lastDispatchTs = new Map<string, number>();
   private readonly DISPATCH_COOLDOWN_MS = 10_000;
+  // v0.0.432 stuck-active recovery threshold (90s). Operator 2026-05-29:
+  // "能不能一次拉通" — when WS message drops or executor crashes silently,
+  // goal sits at active forever. Re-emit on timeout so chain progresses.
+  private readonly STUCK_ACTIVE_MS = 90_000;
 
   constructor(deps: PriorityMergerDeps) {
     this.store = deps.store;
@@ -122,6 +126,15 @@ export class PriorityMerger {
       // Operator-paused row: skip entirely. Status / reason untouched.
       if (row.status === "blocked" && typeof row.reason === "string" && row.reason.startsWith("PAUSED")) {
         continue;
+      }
+      // v0.0.432: stuck-active recovery — if a row sits at "active" without
+      // ack > STUCK_ACTIVE_MS, assume WS-lost or executor crash, downgrade
+      // to pending so next merger tick re-dispatches. updated_at is the
+      // last status-change timestamp; if it predates the cutoff, recover.
+      if (row.status === "active" && now - (row.updated_at ?? row.created_at) > this.STUCK_ACTIVE_MS) {
+        this.store.updateStatus(row.goal.id, "pending", "stuck-active recovery");
+        this.lastDispatchTs.delete(row.goal.id);
+        // Fall through — pick up as pending this same tick.
       }
       // Per-goal cooldown — see lastDispatchTs comment for rationale.
       const lastTs = this.lastDispatchTs.get(row.goal.id) ?? 0;

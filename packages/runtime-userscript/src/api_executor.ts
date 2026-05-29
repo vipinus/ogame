@@ -72,7 +72,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   }
 
   canHandle(d: Directive): boolean {
-    return d.method === "ui" && ["build", "research", "build_ships", "expedition", "colonize", "deploy", "transport", "discover"].includes(d.action);
+    return d.method === "ui" && ["build", "research", "build_ships", "expedition", "colonize", "deploy", "transport", "discover", "jumpgate"].includes(d.action);
   }
 
   /** Read persisted ogame API captures from sniffer (cross-context via
@@ -905,21 +905,31 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const tPos = parseInt(tpStr ?? "0", 10);
     if (!tGalaxy || !tSystem || !tPos) throw new Error(`${directive.action}: bad target_coords`);
     if (Object.keys(ships).length === 0) throw new Error(`${directive.action}: no ships`);
-    // v0.0.428: ogame fleet target type — 1=planet, 2=debris, 3=moon.
-    // Operator 2026-05-29: hard-coded type=1 caused JG chain LegA "planet→
-    // own moon" to silently no-op at ogame (same coord, same type=planet →
-    // success-ish response, no fleet launched). Wire target_type through.
+    // v0.0.430: ogame fleet target type — 1=planet, 2=debris, 3=moon
+    // (ground truth from fleet_api.ts:15 SendFleetParams.destType annotation
+    // and wire_runtime.ts:96 FS sibling-moon deploy which is the validated
+    // working path. v0.0.429 incorrectly trusted execFleetSend's stale
+    // comment that swapped 2 and 3 — reverted.) The "出發地和目的地相同"
+    // operator saw was from a goal dispatched by v0.0.427 still hardcoded
+    // type=1 before the v0.0.428 bundle reached the browser.
     const destTypeStr = (params.target_type ?? "planet").toLowerCase();
     const destType = destTypeStr === "moon" ? "3" : destTypeStr === "debris" ? "2" : "1";
-    // FLEET SLOT GATE — operator 2026-05-27 同族 review: deploy/transport
-    // 也是 fleet POST, 同 keep-1-empty 模式.
+    // FLEET SLOT GATE — v0.0.431: aligned with goal_runner.ts gate.
+    // transport AND chain-bound deploy bypass keep-1-empty (operator chain,
+    // intentionally last-slot OK). Standalone colonize/deploy still reserve
+    // 1 slot for emergency FS recall. Throw wording matches TRANSIENT_RE
+    // ("slots full") so sidecar marks blocked → retries next tick.
     {
       const srv = (this.win as Window & { __ogamexStore?: { state: { server?: { used_fleet_slots?: number; max_fleet_slots?: number } } } })
         .__ogamexStore?.state.server;
       const usedNow = srv?.used_fleet_slots ?? -1;
       const maxNow = srv?.max_fleet_slots ?? -1;
-      if (usedNow >= 0 && maxNow > 0 && usedNow >= maxNow - 1) {
-        throw new Error(`${directive.action} aborted (slot gate): used=${usedNow} max=${maxNow} keep-1-empty for emergency FS`);
+      const chainBound = typeof (params as { chain_id?: string }).chain_id === "string" && (params as { chain_id: string }).chain_id !== "";
+      const bypassKeepEmpty = directive.action === "transport" || (directive.action === "deploy" && chainBound);
+      const ceiling = bypassKeepEmpty ? maxNow : maxNow - 1;
+      if (usedNow >= 0 && maxNow > 0 && usedNow >= ceiling) {
+        const label = bypassKeepEmpty ? "all slots used" : "keep-1-empty";
+        throw new Error(`${directive.action}: fleet slots full ${usedNow}/${maxNow} ${label}`);
       }
     }
     // Operator 2026-05-25: ajax-only token bootstrap (no fdHtml).

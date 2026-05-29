@@ -881,7 +881,14 @@ export async function startSidecar(
             // queued)". Slot gates are transient by design — they wait for
             // an expedition return; merger retries fine on next tick. Without
             // this, a chain's first leg dies the moment expeditions saturate.
-            const TRANSIENT_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued/i;
+            // v0.0.429: + 140028 / 倉存容量不足 (target storage cap full) —
+            // operator 2026-05-29 "可以hold 等有槽了再飞" applies symmetrically
+            // to storage hold; blocked retries on each planner tick and
+            // dispatches once destination storage clears.
+            // v0.0.432: + 已達艦隊數上限 / 已达舰队数上限 / fleet count limit /
+            // 140019 (server-side fleet-slot saturation; ogame returns this
+            // when the slot opens between our usedF check and the POST).
+            const TRANSIENT_RE = /140043|140028|140019|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum/i;
             const isTransient = TRANSIENT_RE.test(reason);
             const row = goalsStore.list().find((r) => r.goal.id === goalId);
             const type = row?.goal.type;

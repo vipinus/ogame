@@ -962,6 +962,10 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
       planet_id: sourcePlanet.id,
       source_planet: sourcePlanet.id,
       mission,
+      // v0.0.431: forward chain_id so goal_runner slot-gate + api_executor
+      // slot-gate can detect chain-bound deploy and bypass keep-1-empty.
+      ...(typeof (target as { chain_id?: unknown }).chain_id === "string" && (target as { chain_id?: string }).chain_id
+        ? { chain_id: (target as { chain_id: string }).chain_id } : {}),
     },
     preconds: [],
     expires_at: Date.now() + DIRECTIVE_TTL_MS,
