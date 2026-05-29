@@ -1511,7 +1511,53 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           return JSON.stringify(target);
       }
     };
-    const rows = filtered.map((g) => {
+    // Operator 2026-05-29: chain-aware grouping. Goals carrying the same
+    // target.chain_id (written by the transport modal) collapse under one
+    // synthetic "🚚 运输 chain" parent row, with each leg shown as a
+    // compact "* G:S:P → G:S:P 部署/跳跃/运输" line.
+    const chainStoreRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, { id?: string; coords?: number[] }> } } }).__ogamexStore;
+    const planetCoordMap = chainStoreRef?.state?.planets ?? {};
+    const resolveCoord = (idOrCoord: string): string => {
+      if (!idOrCoord) return "?";
+      if (/^\d+:\d+:\d+$/.test(idOrCoord)) return idOrCoord;
+      const p = planetCoordMap[idOrCoord];
+      return p?.coords ? p.coords.join(":") : idOrCoord;
+    };
+    const actionCN = (type: string): string =>
+      type === "deploy" ? "部署"
+      : type === "jumpgate" ? "跳跃"
+      : type === "transport" ? "运输"
+      : type;
+    const formatChainLeg = (g: GoalRowFromHttp): string => {
+      const tgt = (g.target ?? {}) as Record<string, unknown>;
+      let src = "?", dest = "?";
+      if (g.type === "jumpgate") {
+        src = resolveCoord(String(tgt.source_moon ?? ""));
+        dest = resolveCoord(String(tgt.target_moon ?? ""));
+      } else {
+        src = resolveCoord(String(tgt.source_planet ?? g.planet ?? ""));
+        dest = String(tgt.target_coords ?? "?");
+      }
+      return `${src} → ${dest}  ${actionCN(g.type)}`;
+    };
+    // Partition filtered into chain groups + singletons; sort chain members
+    // by priority DESC so dispatch order matches the visual stack.
+    const chainGroups = new Map<string, GoalRowFromHttp[]>();
+    const singletons: GoalRowFromHttp[] = [];
+    for (const g of filtered) {
+      const cid = (g.target as Record<string, unknown>)?.chain_id;
+      if (typeof cid === "string" && cid) {
+        let arr = chainGroups.get(cid);
+        if (!arr) { arr = []; chainGroups.set(cid, arr); }
+        arr.push(g);
+      } else {
+        singletons.push(g);
+      }
+    }
+    for (const arr of chainGroups.values()) {
+      arr.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+    }
+    const renderSingleGoalRow = (g: GoalRowFromHttp): string => {
       const targetStr = fmtTarget(g.type, g.target as Record<string, unknown>);
       const paused = isPaused(g);
       const isMain = g.is_main_goal === true;
@@ -1585,7 +1631,72 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           ${reasonLine}
           ${treeHtml}
         </div>`;
-    }).join("");
+    };
+    // Chain child row — compact format with leg index + prerequisite hint.
+    const renderChainChildRow = (g: GoalRowFromHttp, idx: number, prevType: string | null, paused: boolean): string => {
+      const leg = formatChainLeg(g);
+      const canAct = g.status === "pending" || g.status === "active" || g.status === "blocked";
+      const cancelBtn = canAct
+        ? `<button data-action-cancel="${escapeHtml(g.id)}" style="${btnStyle("#5a2020", "#8a4040")}">Cancel</button>`
+        : "";
+      const color = paused ? "#8a8aff" : (statusColor[g.status] ?? "#ccc");
+      const displayStatus = paused ? "paused" : g.status;
+      const prereq = idx === 0
+        ? `<span style="color:#7cfc00; font-size:10px;">(无前置 · 立即派遣)</span>`
+        : `<span style="color:#a0a8b8; font-size:10px;">前置: 等 Leg ${idx} (${escapeHtml(actionCN(prevType ?? ""))}) 完成</span>`;
+      const reasonLine = g.reason ? `<div style="color:#a0a0a0; font-size:10px; margin-top:1px; padding-left:18px;">↳ ${escapeHtml(g.reason)}</div>` : "";
+      return `
+        <div style="border-top:1px solid #1a2330; padding:4px 0 4px 18px; display:flex; flex-direction:column; gap:2px;">
+          <div style="display:flex; align-items:center; gap:6px; justify-content:space-between;">
+            <span style="color:#d0d8e0; font-size:11px;"><span style="color:#80a0c8;">Leg ${idx + 1}</span> · ${escapeHtml(leg)} · <span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span></span>
+            <span style="display:flex; gap:4px; align-items:center;">
+              <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
+              ${cancelBtn}
+            </span>
+          </div>
+          ${prereq}
+          ${reasonLine}
+        </div>`;
+    };
+    // Chain parent row — synthetic header summarizing the chain. Click is
+    // not wired to anything yet (each leg has its own Cancel).
+    const renderChainParent = (cid: string, members: GoalRowFromHttp[]): string => {
+      const n = members.length;
+      const first = members[0]!;
+      const last = members[members.length - 1]!;
+      const firstSrc = resolveCoord(String(((first.target ?? {}) as Record<string, unknown>).source_planet ?? first.planet ?? ""));
+      const lastDest = String(((last.target ?? {}) as Record<string, unknown>).target_coords ?? "?");
+      const allDone = members.every((g) => g.status === "completed");
+      const anyActive = members.some((g) => g.status === "active");
+      const status = allDone ? "completed" : (anyActive ? "running" : "queued");
+      const statusColor2 = allDone ? "#7cfc00" : (anyActive ? "#ffd700" : "#80a0c8");
+      const cancelAll = `<button data-action-cancel-chain="${escapeHtml(cid)}" style="${btnStyle("#5a2020", "#8a4040")}" title="cancel all ${n} legs">Cancel chain</button>`;
+      return `
+        <div style="border-top:1px solid #2a3a52; padding:6px 0; background:rgba(60,160,200,0.04);">
+          <div style="display:flex; align-items:center; gap:6px; justify-content:space-between;">
+            <span>
+              <span style="color:#80ffd0; font-weight:bold;">🚚 运输 chain</span>
+              <span style="color:#8090a8; font-size:10px; margin-left:6px;">${n} legs · ${escapeHtml(firstSrc)} → … → ${escapeHtml(lastDest)}</span>
+            </span>
+            <span style="display:flex; gap:4px; align-items:center;">
+              <span style="color:${statusColor2}; font-size:11px; font-weight:bold;">${status}</span>
+              ${cancelAll}
+            </span>
+          </div>
+          <div style="color:#7080a0; font-size:10px; margin-top:2px;">chain id: ${escapeHtml(cid)}</div>
+        </div>`;
+    };
+    // Final assembly: chain groups + singletons. Chains render parent header
+    // + indented children in dispatch order. Singletons render as before.
+    const chainBlocks: string[] = [];
+    for (const [cid, members] of chainGroups) {
+      chainBlocks.push(renderChainParent(cid, members));
+      members.forEach((g, idx) => {
+        chainBlocks.push(renderChainChildRow(g, idx, members[idx - 1]?.type ?? null, isPaused(g)));
+      });
+    }
+    const singletonRows = singletons.map(renderSingleGoalRow).join("");
+    const rows = chainBlocks.join("") + singletonRows;
     // Header is the drag handle (cursor:move). Collapse button toggles the
     // body. Close removes the panel entirely.
     // Operator 2026-05-29 "panel 名称改成 oGame+版本号 添加按钮更新版本":
