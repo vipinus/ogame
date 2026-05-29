@@ -870,9 +870,17 @@ export async function startSidecar(
             // Without cancel, merger flips goal blocked→active each cooldown
             // and re-dispatches → ogame anti-bot trip ("服务器无响应").
             // For BUILD/RESEARCH: blocked is fine (resource shortage recovers).
+            //
+            // Operator 2026-05-29: TRANSIENT 140043 "請稍後再試" is an ogame
+            // dispatch-race / rate-limit (mirrors fleet_api.ts TRANSIENT_RACE_RE)
+            // — retrying on next planner tick is correct, NOT a one-shot fail.
+            // Cancelling on transient permanently kills a transport chain when
+            // its first leg (planet→own moon ferry) races a sibling fleet POST.
+            const TRANSIENT_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet/i;
+            const isTransient = TRANSIENT_RE.test(reason);
             const row = goalsStore.list().find((r) => r.goal.id === goalId);
             const type = row?.goal.type;
-            if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport") {
+            if (!isTransient && (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport")) {
               goalsStore.updateStatus(goalId, "cancelled", reason);
             } else {
               goalsStore.updateStatus(goalId, "blocked", reason);
