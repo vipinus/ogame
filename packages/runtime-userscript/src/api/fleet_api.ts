@@ -118,18 +118,19 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
     const body = opts.buildBody ? opts.buildBody(token) : undefined;
     const bodyStr = body ? body.toString().replace(/token=[^&]+/, "token=***") : "<no body>";
     console.log(`[cpPost/${opts.action}] attempt=${attempt} ${method} ${opts.endpoint} cp=${opts.sourcePlanetId} body=${bodyStr}`);
+    const requestInit: RequestInit = {
+      method,
+      credentials: "same-origin",
+      headers: method === "POST"
+        ? { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" }
+        : { "X-Requested-With": "XMLHttpRequest" },
+    };
+    if (method === "POST" && body) requestInit.body = body;
     const r = await fetchWithCpBypassBusy(
       opts.endpoint,
-      {
-        method,
-        credentials: "same-origin",
-        headers: method === "POST"
-          ? { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" }
-          : { "X-Requested-With": "XMLHttpRequest" },
-        body: method === "POST" ? body : undefined,
-      },
+      requestInit,
       opts.sourcePlanetId,
-      { skipRestore: opts.skipRestore },
+      opts.skipRestore === true ? { skipRestore: true } : {},
     );
     const raw = await r.text();
     let json: Record<string, unknown> | null;

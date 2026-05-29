@@ -24,7 +24,7 @@ import { TECH_ID_BY_NAME } from "@ogamex/shared";
 import type { DirectiveExecutor } from "./directive_executor_iface.js";
 import { cacheShipsData } from "./api/ship_cargo_cache.js";
 import { fetchWithCpBypassBusy, restoreSessionCp } from "./api/safe_fetch.js";
-import { sendFleet as fleetApiSendFleet } from "./api/fleet_api.js";
+import { sendFleet as fleetApiSendFleet, cpPostWithRetry } from "./api/fleet_api.js";
 import type { TokenManager } from "./api/token_manager.js";
 
 export interface ApiExecutorDeps {
@@ -230,13 +230,21 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     planetId: string,
     numericId: number,
   ): Promise<{ token: string; status: string | null; reason: string | null }> {
-    const resp = await fetchWithCpBypassBusy(
-      `/game/index.php?page=ingame&component=${component}`,
-      { credentials: "same-origin" },
-      planetId,
-      { skipRestore: true },  // outer execute() does single restore
-    );
-    const html = await resp.text();
+    // v0.0.441: route through fleet_api.cpPostWithRetry (method=GET) so this
+    // token-page fetch picks up the same cp-shift + transient handling as
+    // every other dispatcher. Returns raw HTML in result.raw (json is null
+    // for non-JSON responses by design).
+    if (!this.tokenManager) throw new Error(`${component}: no tokenManager wired`);
+    const resp = await cpPostWithRetry({
+      endpoint: `/game/index.php?page=ingame&component=${component}`,
+      sourcePlanetId: planetId,
+      token: this.tokenManager,
+      action: `${component}:tokenpage`,
+      method: "GET",
+      maxAttempts: 2,
+      skipRestore: true,
+    });
+    const html = resp.raw;
     // Token can be in: hidden input, meta tag, or inline JS var. Try all.
     const tokenMatch =
       html.match(/<input[^>]*name="token"[^>]*value="([^"]+)"/i)
@@ -293,99 +301,33 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const numericId = (directive.params as { technology_id?: number }).technology_id
       ?? OGAME_NUMERIC_ID[targetName];
     if (!numericId) throw new Error(`api: no numeric id for ${targetName}`);
-    // PURE API — no page fetch. Token sources in order:
-    //   1. dataset.ogamexToken (sniffer writes window.token here every 2s)
-    //   2. live <input name="token">  (some pages have it)
-    //   3. <meta name="ogame-token">
-    //   4. localStorage OGAMEX_TOKEN (last-known good)
-    const datasetTok = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"];
-    const liveInput = this.doc.querySelector<HTMLInputElement>('input[name="token"]');
-    const liveMeta = this.doc.querySelector<HTMLMetaElement>('meta[name="ogame-token"]');
-    let token = datasetTok ?? liveInput?.value ?? liveMeta?.content ?? "";
-    if (!token) {
-      try { token = this.win.localStorage.getItem("OGAMEX_TOKEN") ?? ""; } catch { /* */ }
-    }
-    if (!token) throw new Error(`api: no live token (sniffer hasn't captured window.token yet)`);
-    console.info(`[ApiExec] ${component}:${targetName} POST scheduleEntry token len=${token.length}`);
-    // ogame v12 scheduleEntry — captured from real user click:
-    //   body: technologyId=N&amount=1&mode=1&token=X
-    // cp=<planetId> targets the SPECIFIC planet. Without it ogame defaults
-    // to the user's currently-active planet (whatever browser cp cookie is
-    // on) — causes multi-planet builds to land on home planet by mistake.
-    const body = new URLSearchParams({
-      technologyId: String(numericId),
-      amount: "1",
-      mode: "1",
-      token,
+    // v0.0.442: route through fleet_api.cpPostWithRetry — built-in 4-attempt
+    // + TOKEN_INVALID_RE refresh + TRANSIENT_RACE_RE backoff replaces the
+    // hand-rolled retry block below. tokenManager fallback chain (dataset →
+    // input[name=token] → meta → localStorage) lives inside TokenManager's
+    // extractor callback, no duplication needed here.
+    if (!this.tokenManager) throw new Error(`${component}: no tokenManager wired`);
+    const res = await cpPostWithRetry({
+      endpoint: `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
+      sourcePlanetId: planetId,
+      token: this.tokenManager,
+      action: `${component}:${targetName}:scheduleEntry`,
+      method: "POST",
+      buildBody: (tk) => new URLSearchParams({
+        technologyId: String(numericId),
+        amount: "1",
+        mode: "1",
+        token: tk,
+      }),
+      maxAttempts: 4,
+      skipRestore: true,
     });
-    const r = await fetchWithCpBypassBusy(
-      `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
-      { method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body },
-      planetId,
-      { skipRestore: true },
-    );
-    if (!r.ok) throw new Error(`api: ${component} upgrade HTTP ${r.status}`);
-    const respText = await r.text();
-    let parsed: { success?: boolean; errors?: Array<{ message?: string }>; error?: string; newAjaxToken?: string } | null = null;
-    try { parsed = JSON.parse(respText); }
-    catch {
-      // Operator 2026-05-25 (discover same-source check): explicit error
-      // pages MUST not be silently treated as success. Legacy ogame
-      // sometimes returns HTML redirect on scheduleEntry success, so
-      // only throw when the body actually mentions an error.
-      if (/error|錯誤|错误|failed/i.test(respText.slice(0, 500))) {
-        throw new Error(`${component} upgrade non-JSON error response: ${respText.slice(0, 200)}`);
-      }
+    if (res.json && ((res.json as { success?: boolean }).success === false || (res.json as { status?: string }).status === "failure")) {
+      const errs = (res.json as { errors?: unknown; error?: unknown }).errors ?? (res.json as { error?: unknown }).error;
+      throw new Error(`${component}:${targetName} rejected: ${JSON.stringify(errs)}`);
     }
-    console.info(`[ApiExec] ${component}:${targetName} POST resp HTTP ${r.status} json=${parsed ? "yes" : "no(html)"} body[0:200]=${respText.slice(0, 200).replace(/\s+/g, " ")}`);
-    // Rotate token: ogame single-use tokens. Refresh dataset + localStorage
-    // with response's newAjaxToken so next POST has a fresh one.
-    if (parsed?.newAjaxToken) {
-      (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed.newAjaxToken;
-      try { this.win.localStorage.setItem("OGAMEX_TOKEN", parsed.newAjaxToken); } catch { /* */ }
-    }
-    // Generic "unknown error" usually means token came from wrong page
-    // (e.g. user is on fleetdispatch but scheduleEntry needs supplies-scope
-    // token). Retry ONCE with the freshly-rotated token. Subsequent
-    // directives get specific errors (120016 resource-short etc.).
-    const errMsg = JSON.stringify(parsed?.errors ?? parsed?.error ?? "");
-    const isGenericRetry = parsed?.status === "failure"
-      && /unknown\s+error|未知|未知錯誤/i.test(errMsg)
-      && parsed.newAjaxToken;
-    if (isGenericRetry && parsed?.newAjaxToken) {
-      const retryBody = new URLSearchParams({ ...Object.fromEntries(body), token: parsed.newAjaxToken });
-      console.info(`[ApiExec] ${component}:${targetName} RETRY with rotated token`);
-      const r2 = await fetchWithCpBypassBusy(
-        `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
-        { method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-          body: retryBody },
-        planetId,
-        { skipRestore: true },
-      );
-      const r2Text = await r2.text();
-      let parsed2: { success?: boolean; status?: string; errors?: unknown; newAjaxToken?: string } | null = null;
-      try { parsed2 = JSON.parse(r2Text); }
-      catch {
-        if (/error|錯誤|错误|failed/i.test(r2Text.slice(0, 500))) {
-          throw new Error(`retry non-JSON error response: ${r2Text.slice(0, 200)}`);
-        }
-      }
-      console.info(`[ApiExec] ${component}:${targetName} retry resp body[0:200]=${r2Text.slice(0,200).replace(/\s+/g," ")}`);
-      if (parsed2?.newAjaxToken) {
-        (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed2.newAjaxToken;
-        try { this.win.localStorage.setItem("OGAMEX_TOKEN", parsed2.newAjaxToken); } catch { /* */ }
-      }
-      if (parsed2 && parsed2.success === false) {
-        throw new Error(`${component}:${targetName} rejected (after retry): ${JSON.stringify(parsed2.errors)}`);
-      }
-      return { action: directive.action, clicked: true };
-    }
-    if (parsed && (parsed.success === false || parsed.status === "failure")) {
-      throw new Error(`${component}:${targetName} rejected: ${JSON.stringify(parsed.errors ?? parsed.error)}`);
-    }
+    // HTML response (no JSON) and not flagged as error → treat as success
+    // (legacy ogame redirect-on-success behaviour).
     return { action: directive.action, clicked: true };
   }
 
@@ -410,69 +352,30 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
       throw new Error(`${ship} unavailable: ${reason ?? "disabled"}`);
     }
-    const body = new URLSearchParams({
-      technologyId: String(numericId),
-      amount: String(amount),
-      mode: "1",
-      token,
+    void token;  // legacy local fallback; tokenManager handles refresh now
+    // v0.0.443: route through fleet_api.cpPostWithRetry — same retry / token
+    // refresh pattern as the simpleUpgrade path. Caller-side token kept only
+    // for the status/disabled check above; the POST uses tokenManager's
+    // managed token per attempt.
+    if (!this.tokenManager) throw new Error(`shipyard: no tokenManager wired`);
+    const res = await cpPostWithRetry({
+      endpoint: `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
+      sourcePlanetId: planetId,
+      token: this.tokenManager,
+      action: `shipyard:${ship}×${amount}:scheduleEntry`,
+      method: "POST",
+      buildBody: (tk) => new URLSearchParams({
+        technologyId: String(numericId),
+        amount: String(amount),
+        mode: "1",
+        token: tk,
+      }),
+      maxAttempts: 4,
+      skipRestore: true,
     });
-    const r = await fetchWithCpBypassBusy(
-      `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
-      { method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body },
-      planetId,
-      { skipRestore: true },
-    );
-    if (!r.ok) throw new Error(`api: shipyard build HTTP ${r.status}`);
-    const respText = await r.text();
-    let parsed: { success?: boolean; errors?: Array<{ message?: string }>; error?: string; newAjaxToken?: string } | null = null;
-    try { parsed = JSON.parse(respText); }
-    catch {
-      if (/error|錯誤|错误|failed/i.test(respText.slice(0, 500))) {
-        throw new Error(`shipyard build non-JSON error response: ${respText.slice(0, 200)}`);
-      }
-    }
-    console.info(`[ApiExec] shipyard:${ship}×${amount} POST resp HTTP ${r.status} json=${parsed ? "yes" : "no(html)"} body[0:200]=${respText.slice(0, 200).replace(/\s+/g, " ")}`);
-    // Rotate token from response (ogame single-use anti-replay).
-    if (parsed?.newAjaxToken) {
-      (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed.newAjaxToken;
-      try { this.win.localStorage.setItem("OGAMEX_TOKEN", parsed.newAjaxToken); } catch { /* */ }
-    }
-    // Same retry-on-generic-token-error pattern as execSimpleUpgrade.
-    const errMsg = JSON.stringify(parsed?.errors ?? parsed?.error ?? "");
-    const pStatus = (parsed as { status?: string } | null)?.status;
-    if (pStatus === "failure" && /unknown\s+error|未知|未知錯誤/i.test(errMsg) && parsed?.newAjaxToken) {
-      const retryBody = new URLSearchParams({ ...Object.fromEntries(body), token: parsed.newAjaxToken });
-      console.info(`[ApiExec] shipyard:${ship}×${amount} RETRY with rotated token`);
-      const r2 = await fetchWithCpBypassBusy(
-        `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
-        { method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-          body: retryBody },
-        planetId,
-        { skipRestore: true },
-      );
-      const r2Text = await r2.text();
-      let parsed2: { success?: boolean; status?: string; errors?: unknown; newAjaxToken?: string } | null = null;
-      try { parsed2 = JSON.parse(r2Text); }
-      catch {
-        if (/error|錯誤|错误|failed/i.test(r2Text.slice(0, 500))) {
-          throw new Error(`retry non-JSON error response: ${r2Text.slice(0, 200)}`);
-        }
-      }
-      console.info(`[ApiExec] shipyard:${ship}×${amount} retry resp body[0:200]=${r2Text.slice(0,200).replace(/\s+/g," ")}`);
-      if (parsed2?.newAjaxToken) {
-        (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = parsed2.newAjaxToken;
-        try { this.win.localStorage.setItem("OGAMEX_TOKEN", parsed2.newAjaxToken); } catch { /* */ }
-      }
-      if (parsed2 && parsed2.success === false) {
-        throw new Error(`shipyard:${ship} rejected (after retry): ${JSON.stringify(parsed2.errors)}`);
-      }
-      return { action: directive.action, clicked: true };
-    }
-    if (parsed && (parsed.success === false || parsed.status === "failure")) {
-      throw new Error(`shipyard build rejected: ${JSON.stringify(parsed.errors ?? parsed.error)}`);
+    if (res.json && ((res.json as { success?: boolean }).success === false || (res.json as { status?: string }).status === "failure")) {
+      const errs = (res.json as { errors?: unknown; error?: unknown }).errors ?? (res.json as { error?: unknown }).error;
+      throw new Error(`shipyard build rejected: ${JSON.stringify(errs)}`);
     }
     return { action: directive.action, clicked: true };
   }
@@ -1401,16 +1304,26 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   private async bootstrapFleetToken(planetId: string, action: string): Promise<string> {
     let token: string | null = (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] ?? null;
     if (token && token.length >= 16) return token;
+    // v0.0.440: route through fleet_api.cpPostWithRetry (method=GET) so the
+    // overlay-token fetch picks up the same retry / transient handling as
+    // every other cp-shift POST. Token comes from json.newAjaxToken (no
+    // success flag in fetchEventBox); 1-attempt since caller wraps retry.
+    if (!this.tokenManager) {
+      throw new Error(`${action}: no tokenManager wired (bootstrap needs it)`);
+    }
     try {
-      const ebResp = await fetchWithCpBypassBusy(
-        `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1`,
-        { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-        planetId,
-        { skipRestore: true },
-      );
-      const ebJson = await ebResp.json() as { newAjaxToken?: string };
-      if (ebJson.newAjaxToken && ebJson.newAjaxToken.length >= 16) {
-        token = ebJson.newAjaxToken;
+      const res = await cpPostWithRetry({
+        endpoint: `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1`,
+        sourcePlanetId: planetId,
+        token: this.tokenManager,
+        action: `${action}:bootstrap`,
+        method: "GET",
+        maxAttempts: 1,
+        skipRestore: true,
+      });
+      const newToken = (res.json as { newAjaxToken?: unknown } | null)?.newAjaxToken;
+      if (typeof newToken === "string" && newToken.length >= 16) {
+        token = newToken;
         (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = token;
       }
     } catch (e) {
