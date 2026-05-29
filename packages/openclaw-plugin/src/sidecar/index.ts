@@ -412,9 +412,17 @@ export async function startSidecar(
           return denom > 0 ? ((cost.m + cost.c) / denom) * 3600 : 3600;
         };
         const accumulate = (sec: number) => {
-          bank.m = Math.min(bank.m + prodPerSec.m * sec, caps.m);
-          bank.c = Math.min(bank.c + prodPerSec.c * sec, caps.c);
-          bank.d = Math.min(bank.d + prodPerSec.d * sec, caps.d);
+          // Operator 2026-05-29: pre-existing stockpile MAY exceed storage
+          // cap (transport from other planets, expedition haul, lifeform
+          // perks). Old code truncated `bank.m → cap` on every accumulate,
+          // which made a fresh colony with 60M m + metalStorage L0
+          // (cap=5000) appear to have only 5000 m available for the entire
+          // simulation. Correct ogame semantics: production only accrues
+          // while bank < cap; once over cap, production stops but the
+          // stockpile stays. Existing over-cap reserves are not clobbered.
+          if (bank.m < caps.m) bank.m = Math.min(bank.m + prodPerSec.m * sec, caps.m);
+          if (bank.c < caps.c) bank.c = Math.min(bank.c + prodPerSec.c * sec, caps.c);
+          if (bank.d < caps.d) bank.d = Math.min(bank.d + prodPerSec.d * sec, caps.d);
         };
         const timeToAfford = (cost: { m: number; c: number; d?: number }): number => {
           const sM = Math.max(0, cost.m - bank.m);

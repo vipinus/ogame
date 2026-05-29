@@ -1196,8 +1196,17 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const treeHtml = g.prereq_tree
         ? (() => {
             const totalEta = g.prereq_tree.subtree_eta_seconds ?? 0;
+            // Operator 2026-05-29: ETA > 1y is almost always a "mines too
+            // low" situation — simulate assumes current production stays
+            // flat for the entire chain. Flag it so operator knows to
+            // build metal/crystal mines before queuing the high-tier
+            // goal (the headline number itself stays for diagnostics).
+            const ONE_YEAR_SEC = 365 * 86400;
+            const productionWarn = totalEta > ONE_YEAR_SEC
+              ? ` <span style="color:#ff9b6b; font-size:10px;" title="simulate 假设当前产能不变. 升 metalMine/crystalMine 后 ETA 会大幅下降.">⚠ 产能不足 · 先升矿</span>`
+              : "";
             const etaHeader = totalEta > 0
-              ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>`
+              ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${productionWarn}`
               : `<span style="color:#7cfc00;">all prereqs met — can execute now</span>`;
             return `<div style="margin-top:6px; padding:4px 0 2px; border-top:1px dashed #2a3a52;">
               <div style="font-size:10px; color:#8090a8; margin-bottom:2px;">prereq chain · ${etaHeader}</div>
