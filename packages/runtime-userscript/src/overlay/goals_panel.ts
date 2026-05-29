@@ -106,6 +106,106 @@ function cmpSemver(a: string, b: string): number {
   return 0;
 }
 
+// Operator 2026-05-29: per-feature settings modal infra.
+// Each section (emergency/expedition/discovery/goals) gets its own ⚙️ button
+// in the section header → opens a translucent fullscreen overlay with the
+// feature's config controls. Modal is dismissed by clicking the backdrop,
+// the × close button, or pressing Escape. Layout: fixed inset-0 backdrop
+// (rgba 60% black) with a dark card centered inside.
+function openSettingsModal(
+  doc: Document,
+  feature: string,
+  title: string,
+  bodyHTML: string,
+  wireBody?: (modalEl: HTMLElement) => void,
+): void {
+  // Reject duplicate opens for the same feature — clicking ⚙️ twice should
+  // not stack modals.
+  const existingId = `ogamex-settings-modal-${feature}`;
+  if (doc.getElementById(existingId)) return;
+  const modal = doc.createElement("div");
+  modal.id = existingId;
+  modal.setAttribute("style", [
+    "position:fixed", "inset:0", "z-index:1000000",
+    "background:rgba(8,12,20,0.55)",
+    "backdrop-filter:blur(2px)",
+    "display:flex", "align-items:center", "justify-content:center",
+    "font-family:Tahoma, Arial, sans-serif", "color:#d0d8e0",
+  ].join(";"));
+  modal.innerHTML = `
+    <div role="dialog" aria-label="${escapeHtml(title)}" style="
+      background:#0e1420; border:1px solid #2a3a52; border-radius:6px;
+      min-width:360px; max-width:560px; max-height:80vh; overflow:auto;
+      box-shadow:0 10px 40px rgba(0,0,0,0.6); padding:14px 16px;
+    ">
+      <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:10px; border-bottom:1px solid #2a3a52;">
+        <strong style="color:#e0e8f0; font-size:13px;">${escapeHtml(title)}</strong>
+        <button data-modal-close="1" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:18px; line-height:1; padding:0 4px;" title="Close">×</button>
+      </div>
+      <div style="padding-top:10px; font-size:12px; line-height:1.5;">
+        ${bodyHTML}
+      </div>
+    </div>
+  `;
+  doc.body.appendChild(modal);
+  const close = (): void => { modal.remove(); doc.removeEventListener("keydown", onEsc); };
+  const onEsc = (e: KeyboardEvent): void => { if (e.key === "Escape") close(); };
+  doc.addEventListener("keydown", onEsc);
+  // Backdrop click (but not card click) closes.
+  modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+  modal.querySelector<HTMLElement>("[data-modal-close]")?.addEventListener("click", close);
+  if (wireBody) wireBody(modal);
+}
+
+function renderToggleRow(label: string, isOn: boolean, dataAttr: string, hint?: string): string {
+  const onStyle = "background:#205a20; color:#fff; border:1px solid #408a40;";
+  const offStyle = "background:#5a2020; color:#fff; border:1px solid #8a4040;";
+  const btnStyleS = `padding:2px 10px; border-radius:3px; cursor:pointer; font-size:11px; font-weight:bold;`;
+  return `<div style="padding:8px 0; border-bottom:1px solid #1a2030; display:flex; justify-content:space-between; align-items:center;">
+    <span>
+      <div style="color:#d0d8e0;">${escapeHtml(label)}</div>
+      ${hint ? `<div style="color:#7080a0; font-size:10px; margin-top:2px;">${escapeHtml(hint)}</div>` : ""}
+    </span>
+    <button data-${dataAttr}="1" style="${btnStyleS}${isOn ? onStyle : offStyle}">${isOn ? "ON" : "OFF"}</button>
+  </div>`;
+}
+
+function openEmergencySettings(doc: Document): void {
+  const lsGet = (k: string): string | null => { try { return window.localStorage.getItem(k); } catch { return null; } };
+  const lsSet = (k: string, v: string): void => { try { window.localStorage.setItem(k, v); } catch { /* */ } };
+  // Read current values.
+  const paused = lsGet("ogamex.emergency.paused") === "true";
+  const spyOn = lsGet("OGAMEX_SPY_TRIGGERS_SAVE") !== "off";  // default ON
+  const bodyHTML = `
+    <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">紧急任务 (Fleet Save) — attack/spy 触发自动起飞 + 召回</div>
+    ${renderToggleRow("整体启用", !paused, "em-paused", "OFF = 全局暂停 FS 自动起飞 (手动操作不受影响)")}
+    ${renderToggleRow("侦察触发 FS", spyOn, "em-spy", "ON = spy event 也走 FS 链路 (默认开); OFF = 仅 attack 触发")}
+    <div style="color:#5a7090; font-size:10px; padding-top:10px;">变更立即生效, 无需保存.</div>
+  `;
+  openSettingsModal(doc, "emergency", "🚨 紧急任务设置", bodyHTML, (m) => {
+    const reflect = (sel: string, isOn: boolean): void => {
+      const btn = m.querySelector<HTMLElement>(sel);
+      if (!btn) return;
+      btn.textContent = isOn ? "ON" : "OFF";
+      btn.setAttribute("style", `padding:2px 10px; border-radius:3px; cursor:pointer; font-size:11px; font-weight:bold;${isOn
+        ? "background:#205a20; color:#fff; border:1px solid #408a40;"
+        : "background:#5a2020; color:#fff; border:1px solid #8a4040;"}`);
+    };
+    m.querySelector<HTMLElement>("[data-em-paused]")?.addEventListener("click", () => {
+      const next = !(lsGet("ogamex.emergency.paused") === "true");  // toggle the paused-flag → enabled-flag
+      lsSet("ogamex.emergency.paused", next ? "false" : "true");
+      reflect("[data-em-paused]", next);
+    });
+    m.querySelector<HTMLElement>("[data-em-spy]")?.addEventListener("click", () => {
+      const cur = lsGet("OGAMEX_SPY_TRIGGERS_SAVE") !== "off";
+      const next = !cur;
+      lsSet("OGAMEX_SPY_TRIGGERS_SAVE", next ? "on" : "off");
+      (window as Window & { __ogamexSpyTriggersSave?: boolean }).__ogamexSpyTriggersSave = next;
+      reflect("[data-em-spy]", next);
+    });
+  });
+}
+
 export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle {
   const doc = opts.doc ?? document;
   const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
@@ -547,7 +647,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                 <div style="color:#a0a8b8; font-size:10px;">${escapeHtml(h.from ?? "?")} → ${escapeHtml(h.to ?? "?")} · ships=${escapeHtml(String(h.ships_count))}</div>
               </div>`).join("") + spyToggleRow)
       : "";
-    const emergencySection = `${sectionHeader("emergency", "🚨 Emergency", emCount, emColor)}<div style="display:${emCollapsed ? "none" : "block"};">${emRows}</div>`;
+    // Operator 2026-05-29: ⚙️ button opens emergency-specific settings modal.
+    // Per "每个功能用自己的设置页面" — section header gets a per-feature
+    // settings button instead of a global "AI 设置" tab.
+    const emSettingsBtn = `<button data-settings="emergency" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="紧急任务设置">⚙</button>`;
+    const emergencySection = `${sectionHeader("emergency", "🚨 Emergency", emCount, emColor, emSettingsBtn)}<div style="display:${emCollapsed ? "none" : "block"};">${emRows}</div>`;
 
     // Expedition section
     const exCollapsed = sectionCollapsed.expedition;
@@ -787,6 +891,16 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         if (!gid) return;
         await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(gid)}/cancel`, { method: "POST" });
         await refresh();
+      });
+    }
+    // Wire per-feature settings ⚙️ buttons (operator 2026-05-29).
+    // Each section header carries `data-settings="<feature>"`; click opens
+    // the matching modal. M1 = emergency only; M2/M3/M4 to follow.
+    for (const btn of panel.querySelectorAll<HTMLElement>('[data-settings]')) {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const feature = btn.getAttribute("data-settings") ?? "";
+        if (feature === "emergency") openEmergencySettings(doc);
       });
     }
     // Wire spy-triggers-save toggle (emergency section).
