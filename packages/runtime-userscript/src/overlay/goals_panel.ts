@@ -314,9 +314,12 @@ function openExpeditionSettings(
         }).join("");
     const shipRows = SHIP_FIELDS.map((f) => {
       const cur = tmpl[f.key] ?? 0;
+      // Operator 2026-05-29: ogame jumpgate UX — clicking the input
+      // selects all so typing replaces (no backspace needed).
+      // Both onclick and onfocus to cover keyboard tab-in too.
       return `<div style="padding:6px 0; border-bottom:1px solid #1a2030; display:flex; justify-content:space-between; align-items:center;">
         <span style="color:#d0d8e0;">${escapeHtml(f.label)}</span>
-        <input data-tmpl-key="${escapeHtml(f.key)}" type="number" min="0" step="1" value="${escapeHtml(String(cur))}" style="${inputStyle}"/>
+        <input data-tmpl-key="${escapeHtml(f.key)}" data-tmpl-label="${escapeHtml(f.label)}" type="number" min="0" step="1" value="${escapeHtml(String(cur))}" onclick="this.select()" onfocus="this.select()" style="${inputStyle}"/>
       </div>`;
     }).join("");
     body.innerHTML = `
@@ -337,7 +340,14 @@ function openExpeditionSettings(
         ${planetRows}
       </div>
       <div data-exp-pane="template" style="display:none; padding-top:8px;">
-        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">每次派遣的船数 (0 = 不派此类船)</div>
+        <!-- Operator 2026-05-29: 顶部 chips summary 显示当前舰队组成,
+             跟着 input 变化实时更新. 无船时显 placeholder. -->
+        <div style="padding:6px 8px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
+          <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">当前舰队组成</div>
+          <div data-exp-fleet-summary style="display:flex; flex-wrap:wrap; gap:6px; min-height:18px;"></div>
+          <div data-exp-fleet-total style="color:#7080a0; font-size:10px; padding-top:6px; text-align:right;"></div>
+        </div>
+        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">每次派遣的船数 (0 = 不派此类船 · 点击输入框=全选)</div>
         ${shipRows}
       </div>
       <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:12px;">
@@ -345,6 +355,32 @@ function openExpeditionSettings(
         <button data-exp-save="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">保存</button>
       </div>
     `;
+    // Operator 2026-05-29: live "current fleet composition" summary chips at
+    // the top of the template tab. Updates on every input event so operator
+    // sees the build before pressing 保存.
+    const fmtNum = (n: number): string => n.toLocaleString("en-US");
+    const updateFleetSummary = (): void => {
+      const summary = m.querySelector<HTMLElement>("[data-exp-fleet-summary]");
+      const total = m.querySelector<HTMLElement>("[data-exp-fleet-total]");
+      if (!summary || !total) return;
+      const chips: string[] = [];
+      let totalShips = 0;
+      for (const inp of m.querySelectorAll<HTMLInputElement>("[data-tmpl-key]")) {
+        const n = parseInt(inp.value, 10);
+        if (!Number.isFinite(n) || n <= 0) continue;
+        const label = inp.getAttribute("data-tmpl-label") ?? inp.getAttribute("data-tmpl-key") ?? "?";
+        totalShips += n;
+        chips.push(`<span style="background:#1a2840; color:#d0d8e0; border:1px solid #2a3a52; border-radius:3px; padding:2px 8px; font-size:11px;">${escapeHtml(label)} × ${escapeHtml(fmtNum(n))}</span>`);
+      }
+      summary.innerHTML = chips.length === 0
+        ? `<span style="color:#5a7090; font-size:11px; font-style:italic;">(空 — 至少需 1 艘船才能派遣)</span>`
+        : chips.join("");
+      total.textContent = totalShips > 0 ? `共 ${fmtNum(totalShips)} 艘` : "";
+    };
+    for (const inp of m.querySelectorAll<HTMLInputElement>("[data-tmpl-key]")) {
+      inp.addEventListener("input", updateFleetSummary);
+    }
+    updateFleetSummary();
     // Tab switching.
     const switchTab = (key: string): void => {
       m.querySelectorAll<HTMLElement>("[data-exp-tab]").forEach((b) => {
