@@ -246,43 +246,71 @@ function openExpeditionSettings(
       const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, { method: "GET" });
       if (r.ok) initial = await r.json();
     } catch (e) { console.warn("[panel/expedition-settings] GET failed:", e); }
-    // Pull live planet list from the frontend store; expedition is launched
-    // from planets only, so filter type=="planet". moons stay out of the
-    // opt-in pool — daemon already skips them via ship-count gates.
-    const storeRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, { id: string; type?: string; coords?: number[]; name?: string }> } } }).__ogamexStore;
+    // Pull live planet+moon list from the frontend store. Operator 2026-05-29:
+    // "加上月球列" — moons (mission=15 from a moon is legal in ogame v12)
+    // get their own column next to the parent planet. Both checkboxes write
+    // into the same `enabled_planets` array (id, type-agnostic).
+    interface StorePlanet { id: string; type?: string; coords?: number[]; name?: string }
+    const storeRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, StorePlanet> } } }).__ogamexStore;
     const planetMap = storeRef?.state?.planets ?? {};
-    const planetEntries = Object.values(planetMap)
-      .filter((p) => p?.type === "planet")
-      .sort((a, b) => {
-        const ac = a.coords ?? [0, 0, 0];
-        const bc = b.coords ?? [0, 0, 0];
-        for (let i = 0; i < 3; i++) {
-          const av = ac[i] ?? 0;
-          const bv = bc[i] ?? 0;
-          if (av !== bv) return av - bv;
-        }
-        return 0;
-      });
+    // Group by coord-string so planet + sibling moon render on the same row.
+    const groupedByCoord = new Map<string, { planet?: StorePlanet; moon?: StorePlanet }>();
+    for (const p of Object.values(planetMap)) {
+      const coords = p?.coords;
+      if (!Array.isArray(coords) || coords.length !== 3) continue;
+      const key = coords.join(":");
+      const slot = groupedByCoord.get(key) ?? {};
+      if (p.type === "moon") slot.moon = p;
+      else slot.planet = p;
+      groupedByCoord.set(key, slot);
+    }
+    const sortedCoordKeys = [...groupedByCoord.keys()].sort((a, b) => {
+      const an = a.split(":").map((s) => parseInt(s, 10));
+      const bn = b.split(":").map((s) => parseInt(s, 10));
+      for (let i = 0; i < 3; i++) {
+        const av = an[i] ?? 0;
+        const bv = bn[i] ?? 0;
+        if (av !== bv) return av - bv;
+      }
+      return 0;
+    });
     const paused = initial.paused === true;
     const tmpl = (initial.template ?? {}) as Record<string, number>;
-    // When enabled_planets is empty / unset, treat ALL planets as enabled
-    // (backward compatible — the M1 behaviour before opt-in landed).
-    const cfgEnabled = Array.isArray(initial.enabled_planets) ? initial.enabled_planets : null;
-    const isPlanetEnabled = (pid: string): boolean => (cfgEnabled === null ? true : cfgEnabled.includes(pid));
+    // Operator 2026-05-29: align with daemon — `if (cfg.enabled_planets.length
+    // > 0)` means an empty array OR a missing field both disable the filter
+    // and let every planet through. UI mirrors that: a "blank" config shows
+    // every checkbox as ✓ on (matches what's actually running). Only a non-
+    // empty array makes the unchecked entries truly excluded.
+    const rawEnabled = Array.isArray(initial.enabled_planets) ? initial.enabled_planets : null;
+    const allEnabledFallback = rawEnabled === null || rawEnabled.length === 0;
+    const isPlanetEnabled = (pid: string): boolean => (allEnabledFallback ? true : rawEnabled!.includes(pid));
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; width:90px; font-size:11px; text-align:right;";
     const tabBtn = (key: string, label: string, active: boolean): string =>
       `<button data-exp-tab="${escapeHtml(key)}" style="background:${active ? "#1a2840" : "transparent"}; color:${active ? "#e0e8f0" : "#7080a0"}; border:1px solid ${active ? "#2a3a52" : "transparent"}; border-bottom:none; padding:6px 14px; cursor:pointer; font-size:11px; border-radius:4px 4px 0 0;">${escapeHtml(label)}</button>`;
-    const planetRows = planetEntries.length === 0
+    // Two-column row layout: planet checkbox | moon checkbox per coord.
+    // Coord shown once on the left so operator can scan G:S:P quickly.
+    const cellStyle = "flex:1; display:flex; align-items:center; gap:6px; font-size:11px; color:#d0d8e0;";
+    const emptyCell = `<span style="${cellStyle} color:#3a4658; font-style:italic;">—</span>`;
+    const renderCheckbox = (p: StorePlanet, icon: string): string => {
+      const checked = isPlanetEnabled(p.id);
+      return `<label style="${cellStyle} cursor:pointer;">
+        <input data-exp-planet="${escapeHtml(p.id)}" type="checkbox" ${checked ? "checked" : ""} style="vertical-align:middle;"/>
+        <span>${icon} ${escapeHtml(p.name ?? (p.type === "moon" ? "月球" : "殖民"))}</span>
+      </label>`;
+    };
+    const planetRows = sortedCoordKeys.length === 0
       ? `<div style="color:#7080a0; padding:8px 0; font-size:11px;">(无 planet — state 未就绪, 刷新 ogame 页面)</div>`
-      : planetEntries.map((p) => {
-          const coordStr = (p.coords ?? []).join(":");
-          const checked = isPlanetEnabled(p.id);
-          return `<label style="padding:5px 0; border-bottom:1px solid #1a2030; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
-            <span style="color:#d0d8e0; font-size:11px;">
-              <input data-exp-planet="${escapeHtml(p.id)}" type="checkbox" ${checked ? "checked" : ""} style="margin-right:8px; vertical-align:middle;"/>
-              ${escapeHtml(p.name ?? "殖民")} <span style="color:#7080a0;">[${escapeHtml(coordStr)}]</span>
-            </span>
-          </label>`;
+      : `<div style="padding:4px 0 6px; display:flex; gap:8px; font-size:10px; color:#7080a0; border-bottom:1px solid #2a3a52;">
+          <span style="width:78px;">坐标</span>
+          <span style="flex:1;">🌍 行星</span>
+          <span style="flex:1;">🌙 月球</span>
+        </div>` + sortedCoordKeys.map((k) => {
+          const { planet, moon } = groupedByCoord.get(k)!;
+          return `<div style="padding:5px 0; border-bottom:1px solid #1a2030; display:flex; gap:8px; align-items:center;">
+            <span style="width:78px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+            ${planet ? renderCheckbox(planet, "🌍") : emptyCell}
+            ${moon   ? renderCheckbox(moon,   "🌙") : emptyCell}
+          </div>`;
         }).join("");
     const shipRows = SHIP_FIELDS.map((f) => {
       const cur = tmpl[f.key] ?? 0;
