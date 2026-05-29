@@ -897,16 +897,61 @@ function openTransportSettings(
     const stCap = storeRef?.state?.server?.ship_cargo_capacity?.smallCargo ?? 5000;
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
     const fmt = (n: number): string => n.toLocaleString("en-US");
+    // Operator 2026-05-29: 所有星球选择框统一 2 列 grid (行星 | 月球).
+    // Group by coord key so planet + sibling moon share the same row.
+    const groupedByCoord = new Map<string, { planet?: StorePlanet; moon?: StorePlanet }>();
+    for (const p of allPlanets) {
+      const k = (p.coords ?? []).join(":");
+      if (!k) continue;
+      const slot = groupedByCoord.get(k) ?? {};
+      if (p.type === "moon") slot.moon = p; else slot.planet = p;
+      groupedByCoord.set(k, slot);
+    }
+    const sortedCoordKeys = [...groupedByCoord.keys()].sort((a, b) => {
+      const an = a.split(":").map((s) => parseInt(s, 10));
+      const bn = b.split(":").map((s) => parseInt(s, 10));
+      for (let i = 0; i < 3; i++) {
+        const av = an[i] ?? 0; const bv = bn[i] ?? 0;
+        if (av !== bv) return av - bv;
+      }
+      return 0;
+    });
     const planetSelectHtml = (radioName: string, includeUnset = false): string => {
-      const unset = includeUnset ? `<label style="padding:3px 6px; display:flex; gap:6px; align-items:center; cursor:pointer; color:#7080a0; font-size:11px;"><input type="radio" name="${radioName}" value="" checked/>—</label>` : "";
-      return unset + allPlanets.map((p) => {
-        const cs = (p.coords ?? []).join(":");
-        const tag = p.type === "moon" ? "🌙" : "🌍";
-        return `<label style="padding:3px 6px; display:flex; gap:6px; align-items:center; cursor:pointer; border-top:1px solid #1a2030; font-size:11px;">
-          <input type="radio" name="${radioName}" value="${escapeHtml(p.id)}" data-tr-planet-id="${escapeHtml(p.id)}"/>
-          <span style="color:#d0d8e0;">${tag} ${escapeHtml(p.name ?? "?")} [${escapeHtml(cs)}]</span>
-        </label>`;
+      const header = `<div style="padding:4px 8px; display:flex; gap:8px; font-size:10px; color:#7080a0; border-bottom:1px solid #2a3a52; background:#0a1018; position:sticky; top:0;">
+        <span style="width:72px;">坐标</span>
+        <span style="flex:1;">🌍 行星</span>
+        <span style="flex:1;">🌙 月球</span>
+      </div>`;
+      const unset = includeUnset
+        ? `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
+            <span style="width:72px; color:#7080a0; font-size:11px;">—</span>
+            <label style="flex:1; cursor:pointer; color:#7080a0; font-size:11px;">
+              <input type="radio" name="${radioName}" value="" checked style="margin-right:6px; vertical-align:middle;"/>(不选 — 默认目标)
+            </label>
+            <span style="flex:1;"></span>
+          </div>`
+        : "";
+      const cellPlanet = (p: StorePlanet | undefined): string =>
+        p ? `<label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+              <input type="radio" name="${radioName}" value="${escapeHtml(p.id)}" data-tr-planet-id="${escapeHtml(p.id)}"/>
+              <span>🌍 ${escapeHtml(p.name ?? "殖民")}</span>
+            </label>`
+          : `<span style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
+      const cellMoon = (p: StorePlanet | undefined): string =>
+        p ? `<label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+              <input type="radio" name="${radioName}" value="${escapeHtml(p.id)}" data-tr-planet-id="${escapeHtml(p.id)}"/>
+              <span>🌙 ${escapeHtml(p.name ?? "月球")}</span>
+            </label>`
+          : `<span style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
+      const rows = sortedCoordKeys.map((k) => {
+        const { planet, moon } = groupedByCoord.get(k)!;
+        return `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
+          <span style="width:72px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+          ${cellPlanet(planet)}
+          ${cellMoon(moon)}
+        </div>`;
       }).join("");
+      return header + unset + rows;
     };
     const sectionCard = (title: string, inner: string): string =>
       `<div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
