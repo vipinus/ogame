@@ -33,6 +33,10 @@ export interface GoalRowFromHttp {
    *  show ⭐ on the row currently selected as the player's main objective. */
   is_main_goal?: boolean;
   prereq_tree?: PrereqTreeNode | null;
+  /** M5 — total resource cost across the entire prereq chain. */
+  total_cost?: { m: number; c: number; d: number };
+  /** M5 — max(0, total_cost - planet bank). What operator must still ship in. */
+  resource_shortage?: { m: number; c: number; d: number };
   id: string;
   type: string;
   target: Record<string, unknown>;
@@ -1196,17 +1200,22 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const treeHtml = g.prereq_tree
         ? (() => {
             const totalEta = g.prereq_tree.subtree_eta_seconds ?? 0;
-            // Operator 2026-05-29: ETA > 1y is almost always a "mines too
-            // low" situation — simulate assumes current production stays
-            // flat for the entire chain. Flag it so operator knows to
-            // build metal/crystal mines before queuing the high-tier
-            // goal (the headline number itself stays for diagnostics).
-            const ONE_YEAR_SEC = 365 * 86400;
-            const productionWarn = totalEta > ONE_YEAR_SEC
-              ? ` <span style="color:#ff9b6b; font-size:10px;" title="simulate 假设当前产能不变. 升 metalMine/crystalMine 后 ETA 会大幅下降.">⚠ 产能不足 · 先升矿</span>`
+            // Operator 2026-05-29: shortage chip — "缺 X m / Y c / Z d".
+            // Shows EXACTLY how much operator still needs to transport in
+            // (or accrue locally) to fully execute the chain. 0 across the
+            // board → bank already covers everything; chain only spends
+            // build_time.
+            const fmtRes = (n: number): string => {
+              if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+              if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+              return String(Math.round(n));
+            };
+            const sh = g.resource_shortage;
+            const shortageChip = sh && (sh.m + sh.c + sh.d) > 0
+              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title="假设当前产能不变, 这是还需要从其他星球 transport 进来的资源总量">缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span>`
               : "";
             const etaHeader = totalEta > 0
-              ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${productionWarn}`
+              ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${shortageChip}`
               : `<span style="color:#7cfc00;">all prereqs met — can execute now</span>`;
             return `<div style="margin-top:6px; padding:4px 0 2px; border-top:1px dashed #2a3a52;">
               <div style="font-size:10px; color:#8090a8; margin-bottom:2px;">prereq chain · ${etaHeader}</div>

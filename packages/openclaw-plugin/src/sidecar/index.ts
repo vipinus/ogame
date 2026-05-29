@@ -381,7 +381,7 @@ export async function startSidecar(
       // levels' waits already accumulated future needs.
       const universeSpeed = stateRef.current?.server?.speed ?? 1;
       const researchSpeed = stateRef.current?.server?.research_speed ?? universeSpeed;
-      function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number } {
+      function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number } } {
         const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
         // Initial bank — REAL planet resources at this moment.
         const bank: { m: number; c: number; d: number } = {
@@ -400,15 +400,25 @@ export async function startSidecar(
           c: 5000 * Math.pow(2.5, planet?.buildings?.["crystalStorage"] ?? 0),
           d: 5000 * Math.pow(2.5, planet?.buildings?.["deuteriumTank"] ?? 0),
         };
-        const robotics = planet?.buildings?.["roboticsFactory"] ?? 0;
-        const nanite = planet?.buildings?.["naniteFactory"] ?? 0;
-        const lab = planet?.buildings?.["researchLab"] ?? 0;
+        // Operator 2026-05-29: track ACCELERATOR levels as a mutable
+        // baseline so subsequent build-self iterations and dependent
+        // subtrees see freshly upgraded robotics/nanite/researchLab.
+        // The old code captured these once at simulate-init and used the
+        // stale value for every level of every node — so 7 levels of
+        // naniteFactory all paid the L0 build-time (no 2× per-level
+        // speedup), turning each level into ~6.8h * 2^L instead of the
+        // ~6.8h-flat the real game gives once the previous level lands.
+        const levels = {
+          robotics: planet?.buildings?.["roboticsFactory"] ?? 0,
+          nanite:   planet?.buildings?.["naniteFactory"]   ?? 0,
+          lab:      planet?.buildings?.["researchLab"]     ?? 0,
+        };
         const buildSec = (cost: { m: number; c: number }, nodeKind: string): number => {
           if (nodeKind === "research") {
-            const denom = 1000 * (1 + lab) * Math.max(1, researchSpeed);
+            const denom = 1000 * (1 + levels.lab) * Math.max(1, researchSpeed);
             return denom > 0 ? ((cost.m + cost.c) / denom) * 3600 : 3600;
           }
-          const denom = 2500 * (1 + robotics) * Math.pow(2, nanite) * Math.max(1, universeSpeed);
+          const denom = 2500 * (1 + levels.robotics) * Math.pow(2, levels.nanite) * Math.max(1, universeSpeed);
           return denom > 0 ? ((cost.m + cost.c) / denom) * 3600 : 3600;
         };
         const accumulate = (sec: number) => {
@@ -434,6 +444,12 @@ export async function startSidecar(
           return Math.max(tM, tC, tD, 0);
         };
         let total = 0;
+        // Operator 2026-05-29: track total resource cost across the entire
+        // chain (self + all prereq levels). Panel subtracts current planet
+        // bank to render a "缺 m/c/d" badge so operator knows exactly how
+        // much to transport in.
+        const totalCost = { m: 0, c: 0, d: 0 };
+        const bankAtStart = { m: bank.m, c: bank.c, d: bank.d };
         // Walk and build the tree node objects. Each node gets eta_seconds
         // = its contribution (wait + build for its own levels), and
         // subtree_eta_seconds = total time from start through this node.
@@ -474,6 +490,12 @@ export async function startSidecar(
           if (current < targetLevel && typeof costFn === "function") {
             for (let l = current + 1; l <= targetLevel; l++) {
               const cost = costFn(l);
+              // Operator 2026-05-29: accumulate the level cost into the
+              // chain-wide total BEFORE bank subtraction so the panel can
+              // show "缺 X 资源" regardless of what production trickled in.
+              totalCost.m += cost.m;
+              totalCost.c += cost.c;
+              totalCost.d += cost.d ?? 0;
               const wait = timeToAfford(cost);
               if (!isFinite(wait)) { total = Infinity; break; }
               accumulate(wait);
@@ -486,6 +508,15 @@ export async function startSidecar(
               const step = wait + build;
               selfEta += step;
               total += step;
+              // Operator 2026-05-29: each completed level of an accelerator
+              // speeds up every subsequent buildSec call (its own next
+              // levels AND any sibling/parent that recurses through these
+              // mutables). robotics +1 → divisor (1+robotics) grows;
+              // naniteFactory +1 → divisor 2^nanite doubles; researchLab
+              // +1 → research divisor (1+lab) grows.
+              if (techName === "roboticsFactory") levels.robotics = l;
+              else if (techName === "naniteFactory") levels.nanite = l;
+              else if (techName === "researchLab")  levels.lab = l;
             }
           }
           return {
@@ -497,7 +528,7 @@ export async function startSidecar(
           };
         }
         const tree = buildAndSimulate(rootTechName, rootTargetLevel, rootKind);
-        return { tree, total };
+        return { tree, total, totalCost, bankAtStart };
       }
       // Build prereq tree for a goal. Walks TECH_TREE (regular) or
       // LIFEFORM_TECH.<species>.buildings (lifeform). Each node carries
@@ -576,6 +607,8 @@ export async function startSidecar(
         const target = r.goal.target as { tech?: string; building?: string; level?: number; target_level?: number };
         const lvl = target.target_level ?? target.level ?? 1;
         let prereq_tree: PrereqTreeNode | null = null;
+        let totalCost: { m: number; c: number; d: number } = { m: 0, c: 0, d: 0 };
+        let bankAtStart: { m: number; c: number; d: number } = { m: 0, c: 0, d: 0 };
         const planetRef = typeof r.goal.planet === "string" ? r.goal.planet : undefined;
         // Resolve planet ref (id-or-coord) to id for tree lookup.
         let resolvedPlanetId = planetRef;
@@ -586,18 +619,31 @@ export async function startSidecar(
             }
           }
         }
+        const captureSim = (sim: { tree: PrereqTreeNode | null; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number } }): void => {
+          prereq_tree = sim.tree;
+          totalCost = sim.totalCost;
+          bankAtStart = sim.bankAtStart;
+        };
         if (r.goal.type === "research" && target.tech) {
-          prereq_tree = simulate(target.tech, lvl, "research", resolvedPlanetId, "regular").tree;
+          captureSim(simulate(target.tech, lvl, "research", resolvedPlanetId, "regular"));
         } else if (r.goal.type === "build" && target.building) {
-          prereq_tree = simulate(target.building, lvl, "building", resolvedPlanetId, "regular").tree;
+          captureSim(simulate(target.building, lvl, "building", resolvedPlanetId, "regular"));
         } else if (r.goal.type === "lifeform_building" && target.building) {
-          prereq_tree = simulate(target.building, lvl, "building", resolvedPlanetId, "lifeform").tree;
+          captureSim(simulate(target.building, lvl, "building", resolvedPlanetId, "lifeform"));
         } else if (r.goal.type === "build_ships") {
           const shipTarget = r.goal.target as { ship?: string; amount?: number };
           if (shipTarget.ship) {
-            prereq_tree = simulate(shipTarget.ship, shipTarget.amount ?? 1, "building", resolvedPlanetId, "regular").tree;
+            captureSim(simulate(shipTarget.ship, shipTarget.amount ?? 1, "building", resolvedPlanetId, "regular"));
           }
         }
+        // Operator 2026-05-29: panel renders "缺 X m / Y c / Z d" chip.
+        // shortage = max(0, totalCost - planetBank) — only what operator
+        // still needs to ship in (or accrue) on top of current stockpile.
+        const resourceShortage = {
+          m: Math.max(0, totalCost.m - bankAtStart.m),
+          c: Math.max(0, totalCost.c - bankAtStart.c),
+          d: Math.max(0, totalCost.d - bankAtStart.d),
+        };
         return {
           id: r.goal.id,
           type: r.goal.type,
@@ -615,6 +661,8 @@ export async function startSidecar(
             return computeEta(r.goal as { type: string; target: unknown; planet?: unknown }, names);
           })(),
           prereq_tree,
+          total_cost: totalCost,
+          resource_shortage: resourceShortage,
         };
       });
     },
