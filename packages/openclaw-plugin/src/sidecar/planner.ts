@@ -590,14 +590,51 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   if (ctx.depth > MAX_RECURSION_DEPTH) {
     return { blocked: `recursion depth exceeded while planning build ${building}` };
   }
-  const entry = TECH_TREE[building];
+  // v0.0.453: alias map — operator types common alternative names.
+  // moonBase → lunarBase, moon_base → lunarBase, lunar_base → lunarBase.
+  const BUILDING_ALIASES: Record<string, string> = {
+    moonBase: "lunarBase",
+    moon_base: "lunarBase",
+    lunar_base: "lunarBase",
+    sensor_phalanx: "sensorPhalanx",
+    sensorphalanx: "sensorPhalanx",
+    jump_gate: "jumpgate",
+  };
+  const canonical = BUILDING_ALIASES[building] ?? BUILDING_ALIASES[building.toLowerCase()] ?? building;
+  const entry = TECH_TREE[canonical];
   if (!entry) return { blocked: `unknown tech: ${building}` };
+  building = canonical;
   if (entry.kind !== "building") {
     return { blocked: `tech ${building} is not a building (kind=${entry.kind})` };
   }
 
   const planet = Object.values(ctx.state.planets ?? {}).find((p) => p.id === planetId);
   if (!planet) return { blocked: `planet not found: ${planetId}` };
+
+  // v0.0.452: moon-fields gate. Operator 2026-05-29 rule "月球只剩一个
+  // 空间的时候必须先造月球基地,再建其他建筑". When the target body is
+  // a moon and the requested building is NOT lunarBase, check whether
+  // remaining fields ≤ 1; if so, block with a directive to operator to
+  // build lunarBase first. fields_max = 1 + 3 × lunarBase_level (ogame
+  // v12 standard); fields_used = sum of all moon-building levels.
+  if (planet.type === "moon" && building !== "lunarBase") {
+    const b = (planet.buildings as Record<string, number | undefined>) ?? {};
+    const MOON_BUILDING_NAMES = [
+      "metalStorage", "crystalStorage", "deuteriumTank",
+      "roboticsFactory", "shipyard", "lunarBase",
+      "sensorPhalanx", "jumpgate", "missileSilo",
+    ] as const;
+    let usedFields = 0;
+    for (const name of MOON_BUILDING_NAMES) usedFields += (b[name] ?? 0);
+    const lunarBaseLevel = b["lunarBase"] ?? 0;
+    const maxFields = 1 + 3 * lunarBaseLevel;
+    const free = maxFields - usedFields;
+    if (free <= 1) {
+      return {
+        blocked: `moon fields nearly full (used=${usedFields}/${maxFields}, free=${free}) — build lunarBase first to extend slots before ${building}`,
+      };
+    }
+  }
 
   const current = planet.buildings?.[building] ?? 0;
   if (current >= targetLevel) {

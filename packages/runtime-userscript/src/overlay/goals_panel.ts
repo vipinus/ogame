@@ -694,14 +694,17 @@ function openGoalsSettings(
               <span style="flex:1;">🌍 行星</span>
               <span style="flex:1;">🌙 月球</span>
             </div>
-            <label style="padding:4px 8px; display:flex; gap:8px; align-items:center; cursor:pointer; border-bottom:1px solid #1a2030;">
+            <div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
               <span style="width:72px; color:#7080a0; font-size:11px;">—</span>
-              <span style="flex:1; color:#7080a0; font-size:11px;">
-                <input data-goal-planet type="radio" name="goal-planet-radio" value="" checked style="vertical-align:middle; margin-right:6px;"/>
-                (不指定 — 让 planner 默认)
-              </span>
-              <span style="flex:1;"></span>
-            </label>
+              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                <input data-goal-planet type="radio" name="goal-planet-radio" value="all-planets" checked style="vertical-align:middle;"/>
+                <span>🌍 所有星球 (扇出每个星球各建一个)</span>
+              </label>
+              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                <input data-goal-planet type="radio" name="goal-planet-radio" value="all-moons" style="vertical-align:middle;"/>
+                <span>🌙 所有月球 (扇出每个月球各建一个)</span>
+              </label>
+            </div>
             ${sortedCoordKeys.map((k) => {
               const { planet, moon } = groupedByCoord.get(k)!;
               const cellPlanet = planet
@@ -822,9 +825,8 @@ function openGoalsSettings(
     m.querySelector<HTMLElement>("[data-goal-create]")?.addEventListener("click", async () => {
       const status = m.querySelector<HTMLElement>("[data-goal-status]");
       const type = typeSel?.value ?? "";
-      // Operator 2026-05-29: radio-group selection — find the checked one.
       const checked = m.querySelector<HTMLInputElement>('input[name="goal-planet-radio"]:checked');
-      const planet = checked?.value || undefined;
+      const planetSel = checked?.value || "";
       const priorityStr = m.querySelector<HTMLInputElement>("[data-goal-priority]")?.value ?? "5";
       const priority = Math.max(1, Math.min(20, parseInt(priorityStr, 10) || 5));
       let target: Record<string, unknown>;
@@ -838,23 +840,62 @@ function openGoalsSettings(
         if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
         return;
       }
-      if (status) { status.textContent = "creating…"; status.style.color = "#7080a0"; }
-      try {
-        const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/create`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type, target, planet, priority }),
-        });
-        if (!r.ok) {
-          const j = await r.json().catch(() => ({ reason: `HTTP ${r.status}` })) as { reason?: string };
-          throw new Error(j.reason ?? `HTTP ${r.status}`);
+      // v0.0.451: fanout — "all-planets" / "all-moons" iterates every
+      // matching body and POSTs one goal per. Single-planet radio still
+      // sends one POST. Operator 2026-05-29: "不指定 — 让 planner 默认"
+      // 改成"所有星球",并加"所有月球"扇出。
+      const planetIds: (string | undefined)[] = [];
+      if (planetSel === "all-planets") {
+        for (const k of sortedCoordKeys) {
+          const p = groupedByCoord.get(k)?.planet;
+          if (p) planetIds.push(p.id);
         }
-        const j = await r.json() as { ok?: boolean; goal_id?: string; reason?: string };
-        if (!j.ok) throw new Error(j.reason ?? "create rejected");
-        if (status) { status.textContent = `✓ created ${j.goal_id ?? ""}`; status.style.color = "#7cfc00"; }
-        setTimeout(() => m.remove(), 800);
-      } catch (e) {
-        if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
+        if (planetIds.length === 0) {
+          if (status) { status.textContent = "× 没有 planet 可扇出"; status.style.color = "#ff6b6b"; }
+          return;
+        }
+      } else if (planetSel === "all-moons") {
+        for (const k of sortedCoordKeys) {
+          const mn = groupedByCoord.get(k)?.moon;
+          if (mn) planetIds.push(mn.id);
+        }
+        if (planetIds.length === 0) {
+          if (status) { status.textContent = "× 没有 moon 可扇出"; status.style.color = "#ff6b6b"; }
+          return;
+        }
+      } else {
+        planetIds.push(planetSel || undefined);
+      }
+      if (status) { status.textContent = `creating ${planetIds.length} goal(s)…`; status.style.color = "#7080a0"; }
+      const created: string[] = [];
+      const errors: string[] = [];
+      for (const pid of planetIds) {
+        try {
+          const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/create`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ type, target, planet: pid, priority }),
+          });
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({ reason: `HTTP ${r.status}` })) as { reason?: string };
+            throw new Error(j.reason ?? `HTTP ${r.status}`);
+          }
+          const j = await r.json() as { ok?: boolean; goal_id?: string; reason?: string };
+          if (!j.ok) throw new Error(j.reason ?? "rejected");
+          if (j.goal_id) created.push(j.goal_id);
+        } catch (e) {
+          errors.push(`${pid ?? "(default)"}: ${(e as Error).message}`);
+        }
+      }
+      if (status) {
+        if (errors.length === 0) {
+          status.textContent = `✓ created ${created.length} goal(s)`;
+          status.style.color = "#7cfc00";
+          setTimeout(() => m.remove(), 800);
+        } else {
+          status.textContent = `partial: ${created.length} OK, ${errors.length} fail — ${errors[0]}`;
+          status.style.color = "#ff9b6b";
+        }
       }
     });
   });
@@ -1183,13 +1224,29 @@ function openTransportSettings(
         if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
       }
     });
-    // v0.0.449: post-render prefill. Chain shortage button passes
-    // targetPlanetId + cargo; pre-check target radio + fill cargo m/c/d.
-    // Source ships planet auto-defaults to operator's current planet
-    // via the existing tr-source-radio default-checked logic.
+    // v0.0.449 + v0.0.450: post-render prefill. Chain shortage button
+    // passes targetPlanetId + cargo. Apply order:
+    //   ① target radio pre-check
+    //   ② resource radio pre-check = current planet (operator 2026-05-29
+    //      "源地址和船所在的星球地址 用我的当前星球"). Set .checked = true
+    //      WITHOUT firing change event — the change handler auto-fills
+    //      cargo from resource planet's stockpile, which would overwrite
+    //      the shortage cargo we want.
+    //   ③ cargo inputs filled with shortage amounts
+    //   ④ call updateShipCount() so 大运数量 auto-computes (input event
+    //      doesn't fire when setting .value programmatically).
+    // Source ships planet auto-defaults to current planet via the
+    // existing tr-source-radio default-checked logic.
     if (prefill?.targetPlanetId) {
       const r = m.querySelector<HTMLInputElement>(`input[name="tr-target-radio"][value="${prefill.targetPlanetId}"]`);
       if (r) r.checked = true;
+    }
+    if (prefill) {
+      const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
+      if (ogameCurrentPid) {
+        const rr = m.querySelector<HTMLInputElement>(`input[name="tr-resource-radio"][value="${ogameCurrentPid}"]`);
+        if (rr) rr.checked = true;
+      }
     }
     if (prefill?.cargo) {
       const cm = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
@@ -1198,6 +1255,7 @@ function openTransportSettings(
       if (cm && prefill.cargo.m > 0) cm.value = String(prefill.cargo.m);
       if (cc && prefill.cargo.c > 0) cc.value = String(prefill.cargo.c);
       if (cd && prefill.cargo.d > 0) cd.value = String(prefill.cargo.d);
+      updateShipCount();
     }
   });
 }

@@ -27,6 +27,12 @@ export const BUILDING_IDS = {
   researchLab: 31,
   allianceDepot: 34,
   missileSilo: 44,
+  // v0.0.452: moon-only buildings. operator 2026-05-29 rule "月球只剩
+  // 一个空间的时候必须先造月球基地" — needs lunarBase tracking to
+  // compute used / max fields. lunarBase=41, sensorPhalanx=42, jumpgate=43.
+  lunarBase: 41,
+  sensorPhalanx: 42,
+  jumpgate: 43,
 } as const;
 
 // ─── Research (player-global) ─────────────────────────────────────────────

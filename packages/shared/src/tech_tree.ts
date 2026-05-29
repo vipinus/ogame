@@ -110,6 +110,28 @@ const buildings: Record<string, TechEntry> = {
     requires: { roboticsFactory: 10, computerTech: 10 },
     cost_at: (l) => res(pow(1_000_000, 2)(l), pow(500_000, 2)(l), pow(100_000, 2)(l)),
   },
+  // v0.0.453: moon-only buildings (id 41/42/43 in shared/tech_ids.ts).
+  // Operator 2026-05-29 rule "月球只剩一个空间的时候必须先造月球基地"
+  // → planner needs TECH_TREE entry to (a) compute cost (b) resolve via
+  // resolveBuilding for fanout / single goal. Costs from ogame v12 wiki.
+  lunarBase: {
+    id: "lunarBase",
+    kind: "building",
+    requires: {},
+    cost_at: (l) => res(pow(20000, 2)(l), pow(40000, 2)(l), pow(20000, 2)(l)),
+  },
+  sensorPhalanx: {
+    id: "sensorPhalanx",
+    kind: "building",
+    requires: { lunarBase: 1 },
+    cost_at: (l) => res(pow(20000, 2)(l), pow(40000, 2)(l), pow(20000, 2)(l)),
+  },
+  jumpgate: {
+    id: "jumpgate",
+    kind: "building",
+    requires: { lunarBase: 1, hyperspaceDrive: 7 },
+    cost_at: (l) => res(pow(2_000_000, 2)(l), pow(4_000_000, 2)(l), pow(2_000_000, 2)(l)),
+  },
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
