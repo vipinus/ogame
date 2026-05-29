@@ -860,6 +860,197 @@ function openGoalsSettings(
   });
 }
 
+// M5 — Transport settings modal. Operator 2026-05-29 spec:
+//   1. 选择运输舰的来源星球 (displays LT/ST counts on that planet),
+//      checkbox "空船跳跃门可用时 是否使用跳跃门".
+//   2. 资源所在星球 — pick planet, shows M/C/D, lets operator override
+//      the amount to ship per resource, computes needed LT vs ST.
+//   3. 目标星球.
+//   4. 选 LT or ST → 自动填入数量 = ceil(total_res / ship_cap).
+// Submit: Phase 1 POSTs a single `transport` goal (sidecar's existing
+// type). Phase 2 will add the JG-aware multi-hop chain (deploy →
+// jumpgate → deploy → transport).
+function openTransportSettings(
+  doc: Document,
+  baseUrl: string,
+  fetchFn: typeof fetch,
+): void {
+  const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading state…</div>`;
+  openSettingsModal(doc, "transport", "🚚 运输设置", placeholder, async (m) => {
+    const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
+    if (!body) return;
+    interface StorePlanet { id: string; type?: string; coords?: number[]; name?: string; resources?: { m?: number; c?: number; d?: number }; ships?: Record<string, number> }
+    const storeRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, StorePlanet>; server?: { ship_cargo_capacity?: Record<string, number> } } } }).__ogamexStore;
+    const planetsMap = storeRef?.state?.planets ?? {};
+    const allPlanets = Object.values(planetsMap)
+      .filter((p): p is StorePlanet => Array.isArray(p?.coords) && p.coords.length === 3)
+      .sort((a, b) => {
+        const ac = a.coords ?? [0, 0, 0]; const bc = b.coords ?? [0, 0, 0];
+        for (let i = 0; i < 3; i++) {
+          const av = ac[i] ?? 0; const bv = bc[i] ?? 0;
+          if (av !== bv) return av - bv;
+        }
+        if (a.type !== b.type) return a.type === "planet" ? -1 : 1;
+        return 0;
+      });
+    const ltCap = storeRef?.state?.server?.ship_cargo_capacity?.largeCargo ?? 25000;
+    const stCap = storeRef?.state?.server?.ship_cargo_capacity?.smallCargo ?? 5000;
+    const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
+    const fmt = (n: number): string => n.toLocaleString("en-US");
+    const planetSelectHtml = (radioName: string, includeUnset = false): string => {
+      const unset = includeUnset ? `<label style="padding:3px 6px; display:flex; gap:6px; align-items:center; cursor:pointer; color:#7080a0; font-size:11px;"><input type="radio" name="${radioName}" value="" checked/>—</label>` : "";
+      return unset + allPlanets.map((p) => {
+        const cs = (p.coords ?? []).join(":");
+        const tag = p.type === "moon" ? "🌙" : "🌍";
+        return `<label style="padding:3px 6px; display:flex; gap:6px; align-items:center; cursor:pointer; border-top:1px solid #1a2030; font-size:11px;">
+          <input type="radio" name="${radioName}" value="${escapeHtml(p.id)}" data-tr-planet-id="${escapeHtml(p.id)}"/>
+          <span style="color:#d0d8e0;">${tag} ${escapeHtml(p.name ?? "?")} [${escapeHtml(cs)}]</span>
+        </label>`;
+      }).join("");
+    };
+    const sectionCard = (title: string, inner: string): string =>
+      `<div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
+        <div style="color:#7080a0; font-size:10px; padding-bottom:6px; border-bottom:1px solid #1a2030; margin-bottom:6px;">${title}</div>
+        ${inner}
+      </div>`;
+    body.innerHTML = `
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">三步选择: 运输舰来源 → 资源所在 → 目标. Phase 1 单段 transport; JG 多跳链 Phase 2.</div>
+      ${sectionCard("① 运输舰来源星球",
+        `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-source-radio")}</div>
+        <div data-tr-source-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(选择来源星球后显示船数)</div>
+        <label style="display:flex; gap:6px; align-items:center; padding-top:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+          <input type="checkbox" data-tr-jg-enable checked/>
+          <span>空船跳跃门可用时 → 使用跳跃门 (Phase 2 生效)</span>
+        </label>`)}
+      ${sectionCard("② 资源所在星球",
+        `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-resource-radio")}</div>
+        <div data-tr-resource-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(选择后显示当前资源)</div>
+        <div style="display:grid; grid-template-columns:50px 1fr; gap:6px; padding-top:6px; align-items:center; font-size:11px;">
+          <span style="color:#d0d8e0;">金属 M</span><input data-tr-cargo="m" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle}"/>
+          <span style="color:#d0d8e0;">晶体 C</span><input data-tr-cargo="c" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle}"/>
+          <span style="color:#d0d8e0;">重氢 D</span><input data-tr-cargo="d" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle}"/>
+        </div>`)}
+      ${sectionCard("③ 目标星球",
+        `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-target-radio")}</div>`)}
+      ${sectionCard("④ 选船类型 + 数量",
+        `<div style="display:flex; gap:12px; padding-bottom:6px;">
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> 大运 LT (cap ${fmt(ltCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小运 ST (cap ${fmt(stCap)})</label>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding-top:4px;">
+          <span style="color:#d0d8e0; font-size:11px; width:60px;">数量</span>
+          <input data-tr-ship-count type="number" min="0" step="1" value="0" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span data-tr-ship-need style="color:#7cfc00; font-size:10px;">(改 ②/④ 后自动算)</span>
+        </div>`)}
+      <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
+        <span data-tr-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+        <button data-tr-submit style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建运输任务</button>
+      </div>
+    `;
+    // Section ① — source planet → display ship counts.
+    const sourceInfo = m.querySelector<HTMLElement>("[data-tr-source-info]");
+    for (const r of m.querySelectorAll<HTMLInputElement>('input[name="tr-source-radio"]')) {
+      r.addEventListener("change", () => {
+        if (!r.checked || !sourceInfo) return;
+        const p = planetsMap[r.value];
+        const lt = p?.ships?.largeCargo ?? 0;
+        const st = p?.ships?.smallCargo ?? 0;
+        sourceInfo.innerHTML = `<span style="color:#d0d8e0;">大运 LT × ${fmt(lt)} · 小运 ST × ${fmt(st)}</span>`;
+      });
+    }
+    // Section ② — resource planet → display M/C/D + auto-fill cargo inputs.
+    const resInfo = m.querySelector<HTMLElement>("[data-tr-resource-info]");
+    const updateShipCount = (): void => {
+      const cm = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0;
+      const cc = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0;
+      const cd = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0;
+      const total = cm + cc + cd;
+      const ship = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
+      const cap = ship === "smallCargo" ? stCap : ltCap;
+      const needed = total > 0 ? Math.ceil(total / cap) : 0;
+      const countInput = m.querySelector<HTMLInputElement>("[data-tr-ship-count]");
+      if (countInput) countInput.value = String(needed);
+      const needSpan = m.querySelector<HTMLElement>("[data-tr-ship-need]");
+      if (needSpan) needSpan.textContent = `需 ${needed} 艘 · 总载 ${fmt(total)} (cap ${fmt(cap)})`;
+    };
+    for (const r of m.querySelectorAll<HTMLInputElement>('input[name="tr-resource-radio"]')) {
+      r.addEventListener("change", () => {
+        if (!r.checked || !resInfo) return;
+        if (!r.value) { resInfo.textContent = "—"; return; }
+        const p = planetsMap[r.value];
+        const m_v = p?.resources?.m ?? 0;
+        const c_v = p?.resources?.c ?? 0;
+        const d_v = p?.resources?.d ?? 0;
+        resInfo.innerHTML = `<span style="color:#d0d8e0;">M ${fmt(m_v)} · C ${fmt(c_v)} · D ${fmt(d_v)}</span>`;
+        // Auto-prefill cargo inputs with the full stockpile for convenience.
+        const mi = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
+        const ci = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
+        const di = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
+        if (mi) mi.value = String(m_v);
+        if (ci) ci.value = String(c_v);
+        if (di) di.value = String(d_v);
+        updateShipCount();
+      });
+    }
+    // Cargo amount inputs → recompute ship count live.
+    for (const ci of m.querySelectorAll<HTMLInputElement>("[data-tr-cargo]")) {
+      ci.addEventListener("input", updateShipCount);
+    }
+    for (const sr of m.querySelectorAll<HTMLInputElement>('input[name="tr-ship"]')) {
+      sr.addEventListener("change", updateShipCount);
+    }
+    // Submit — POST /v1/goals/create with a transport goal.
+    m.querySelector<HTMLElement>("[data-tr-submit]")?.addEventListener("click", async () => {
+      const status = m.querySelector<HTMLElement>("[data-tr-status]");
+      const source = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
+      const resourceSrc = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio"]:checked')?.value ?? "";
+      const target = m.querySelector<HTMLInputElement>('input[name="tr-target-radio"]:checked')?.value ?? "";
+      const ship = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
+      const shipCount = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
+      const cargoM = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0;
+      const cargoC = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0;
+      const cargoD = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0;
+      if (!source) { if (status) { status.textContent = "× 选 ① 来源星球"; status.style.color = "#ff6b6b"; } return; }
+      if (!target) { if (status) { status.textContent = "× 选 ③ 目标星球"; status.style.color = "#ff6b6b"; } return; }
+      if (shipCount <= 0) { if (status) { status.textContent = "× 数量必须 > 0"; status.style.color = "#ff6b6b"; } return; }
+      const targetPlanet = planetsMap[target];
+      const targetCoords = (targetPlanet?.coords ?? []).join(":");
+      // Phase 1 — single-leg transport. Phase 2 will multi-hop via JG.
+      const launchPlanet = resourceSrc || source;
+      const goalBody = {
+        type: "transport",
+        target: {
+          target_coords: targetCoords,
+          target_type: targetPlanet?.type ?? "planet",
+          ships: { [ship]: shipCount },
+          cargo: { m: cargoM, c: cargoC, d: cargoD },
+          source_planet: launchPlanet,
+        },
+        planet: launchPlanet,
+        priority: 6,
+      };
+      if (status) { status.textContent = "creating…"; status.style.color = "#7080a0"; }
+      try {
+        const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/create`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(goalBody),
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({ reason: `HTTP ${r.status}` })) as { reason?: string };
+          throw new Error(j.reason ?? `HTTP ${r.status}`);
+        }
+        const j = await r.json() as { ok?: boolean; goal_id?: string; reason?: string };
+        if (!j.ok) throw new Error(j.reason ?? "rejected");
+        if (status) { status.textContent = `✓ created ${j.goal_id ?? ""}`; status.style.color = "#7cfc00"; }
+        setTimeout(() => m.remove(), 700);
+      } catch (e) {
+        if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
+      }
+    });
+  });
+}
+
 export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle {
   const doc = opts.doc ?? document;
   const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
@@ -1498,7 +1689,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const shipsNeeded = total > 0 && cap > 0 ? Math.ceil(total / cap) : 0;
       const lbl = (v: number): string => v.toLocaleString();
       const cargoCollapsed = sectionCollapsed.cargo;
-      cargoSection = `${sectionHeader("cargo", "🧮 Cargo Calc", shipsNeeded, "#80ffd0", "")}
+      const cargoSettingsBtn = `<button data-settings="transport" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="运输设置">⚙</button>`;
+      cargoSection = `${sectionHeader("cargo", "🚚 运输", shipsNeeded, "#80ffd0", cargoSettingsBtn)}
 <div style="display:${cargoCollapsed ? "none" : "block"}; padding:6px 10px; color:#c0d0e0; font-size:11px;">
   <div style="margin-bottom:4px;">
     Planet: <select data-action="cargo-planet" style="background:#1a2330; color:#c0d0e0; border:1px solid #354050; width:auto;">${planetOptsCargo}</select>
@@ -1580,6 +1772,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         else if (feature === "expedition") openExpeditionSettings(doc, baseUrl, fetchFn);
         else if (feature === "discovery") openDiscoverySettings(doc, baseUrl, fetchFn);
         else if (feature === "goals") openGoalsSettings(doc, baseUrl, fetchFn);
+        else if (feature === "transport") openTransportSettings(doc, baseUrl, fetchFn);
       });
     }
     // Wire spy-triggers-save toggle (emergency section).
