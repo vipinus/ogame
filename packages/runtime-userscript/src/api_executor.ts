@@ -135,6 +135,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         return this.execFleetSend(directive, planetId);
       }
       if (directive.action === "discover") return this.execDiscover(directive, planetId);
+      if (directive.action === "jumpgate") return this.execJumpgate(directive, planetId);
       return this.execLegacy(directive, planetId);
     };
     try {
@@ -707,6 +708,86 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (typeof w.__ogamexPollEmpire === "function") void w.__ogamexPollEmpire({ force: true }).catch(() => { /* */ });
     } catch { /* */ }
     return { action: "expedition", clicked: true };
+  }
+
+  /**
+   * Jumpgate dispatch (operator 2026-05-29 Phase 2b). Real ogame v12 endpoint
+   * sniffed by boot.ts:670+:
+   *   POST /game/index.php?page=componentOnly&component=jumpgate&action=executeJump&asJson=1
+   *   body: token + targetSpaceObjectId + ship_<id> counts
+   *   resp: { status:true, cooldown:<sec>, ... }
+   * The overlay GET (page=ajax&component=jumpgate&overlay=1&ajax=1) is hit
+   * first to harvest the token from the HTML form. session-cp must point at
+   * the source moon (cp=<moonId>).
+   */
+  private async execJumpgate(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
+    const params = directive.params as {
+      source_moon_id?: string;
+      target_moon_id?: string;
+      ships?: Record<string, number>;
+    };
+    const sourceMoonId = params.source_moon_id ?? planetId;
+    const targetMoonId = params.target_moon_id;
+    if (!targetMoonId) throw new Error("jumpgate: missing target_moon_id");
+    const ships = params.ships ?? {};
+    if (Object.values(ships).every((n) => !n)) {
+      throw new Error("jumpgate: empty ships payload");
+    }
+    // Step 1 — fetch overlay to get token. ogame v12 emits an HTML page with
+    // either an inline token in a <form> input or a JS string literal.
+    const overlayUrl = `/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1`;
+    const overlayResp = await fetchWithCpBypassBusy(
+      overlayUrl,
+      { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+      sourceMoonId,
+      { skipRestore: true },
+    );
+    if (!overlayResp.ok) throw new Error(`jumpgate overlay HTTP ${overlayResp.status}`);
+    const overlayHtml = await overlayResp.text();
+    const tokenMatch = overlayHtml.match(/name="token"\s+value="([a-f0-9]+)"/i)
+                    ?? overlayHtml.match(/['"]token['"]\s*[:=]\s*['"]([a-f0-9]+)['"]/i);
+    if (!tokenMatch || !tokenMatch[1]) {
+      throw new Error(`jumpgate: token not found in overlay (len=${overlayHtml.length})`);
+    }
+    const token = tokenMatch[1];
+    console.info(`[ApiExec/jumpgate] overlay token len=${token.length} src=${sourceMoonId} tgt=${targetMoonId} ships=${JSON.stringify(ships)}`);
+    // Step 2 — POST executeJump. Body keys per sniffed pattern.
+    const body = new URLSearchParams();
+    body.append("token", token);
+    body.append("targetSpaceObjectId", targetMoonId);
+    for (const [shipName, n] of Object.entries(ships)) {
+      const numId = OGAME_NUMERIC_ID[shipName];
+      if (!numId || n <= 0) continue;
+      body.append(`ship_${numId}`, String(n));
+    }
+    const r = await fetchWithCpBypassBusy(
+      `/game/index.php?page=componentOnly&component=jumpgate&action=executeJump&asJson=1`,
+      {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+        body,
+      },
+      sourceMoonId,
+      { skipRestore: true },
+    );
+    const txt = await r.text();
+    let resp: { status?: boolean; success?: boolean; cooldown?: number; nextActionAt?: number; errors?: unknown; message?: string } = {};
+    try { resp = JSON.parse(txt); } catch {
+      throw new Error(`jumpgate non-JSON response (HTTP ${r.status}): ${txt.slice(0, 200)}`);
+    }
+    const ok = resp.status === true || resp.success === true;
+    if (!ok) {
+      throw new Error(`jumpgate rejected: ${JSON.stringify(resp.errors ?? resp.message ?? txt.slice(0, 200))}`);
+    }
+    console.info(`[ApiExec/jumpgate] OK src=${sourceMoonId} → tgt=${targetMoonId} cooldown=${resp.cooldown ?? resp.nextActionAt ?? "?"}s`);
+    // Refresh state — jumpgate doesn't appear in /movement (instant), so
+    // pollEmpire is the only path to see ships now on target moon.
+    try {
+      const w = (this.win as Window & { __ogamexPollEmpire?: (opts: { force?: boolean }) => Promise<void> });
+      if (typeof w.__ogamexPollEmpire === "function") void w.__ogamexPollEmpire({ force: true }).catch(() => { /* */ });
+    } catch { /* */ }
+    return { action: "jumpgate", clicked: true };
   }
 
   /** Colonize fleet dispatch — mirrors execExpedition's 3-step token chain

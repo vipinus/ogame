@@ -190,6 +190,8 @@ export function planGoal(goal: Goal, state: WorldState): PlanResult {
       return planLifeformBuildingGoal(goal, state);
     case "species_discovery":
       return planSpeciesDiscoveryGoal(goal, state);
+    case "jumpgate":
+      return planJumpgateGoal(goal, state);
     default:
       return { blocked: `goal type ${goal.type} not implemented` };
   }
@@ -956,6 +958,65 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
     preconds: [],
     expires_at: Date.now() + DIRECTIVE_TTL_MS,
     reason: `${goal.type} from ${srcKey} → ${targetCoords}`,
+    goal_id: goal.id,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// jumpgate (Phase 2b — sibling-moon hop via ogame /component=jumpgate)
+// ────────────────────────────────────────────────────────────────────────────
+
+function planJumpgateGoal(goal: Goal, state: WorldState): PlanResult {
+  const target = goal.target as {
+    source_moon?: string;          // moon planet_id where the JG fires
+    target_moon?: string;          // sibling moon planet_id to land on
+    ships?: unknown;               // ShipCount of what to send
+    chain_id?: string;             // forwarded to bridge for debug
+  };
+  const sourceMoonId = typeof target.source_moon === "string" ? target.source_moon : undefined;
+  const targetMoonId = typeof target.target_moon === "string" ? target.target_moon : undefined;
+  if (!sourceMoonId) return { blocked: "jumpgate: missing source_moon" };
+  if (!targetMoonId) return { blocked: "jumpgate: missing target_moon" };
+  const srcMoon = state.planets?.[sourceMoonId];
+  const tgtMoon = state.planets?.[targetMoonId];
+  if (!srcMoon) return { blocked: `jumpgate: source_moon ${sourceMoonId} not in state` };
+  if (tgtMoon === undefined) return { blocked: `jumpgate: target_moon ${targetMoonId} not in state` };
+  // Cooldown check — frontend captures jumpgate_cooldown_sec on each click;
+  // we treat absence as "ready" (operator's overlay GET will refresh).
+  const cdSec = (srcMoon as { jumpgate_cooldown_sec?: number | null }).jumpgate_cooldown_sec;
+  const harvestedAt = (srcMoon as { jumpgate_harvested_at?: number | null }).jumpgate_harvested_at;
+  if (typeof cdSec === "number" && cdSec > 0 && typeof harvestedAt === "number") {
+    const elapsedSec = Math.floor((Date.now() - harvestedAt) / 1000);
+    const remaining = cdSec - elapsedSec;
+    if (remaining > 0) {
+      return { blocked: `jumpgate: cooldown ${remaining}s remaining on ${sourceMoonId}` };
+    }
+  }
+  // Ship availability gate — sum of requested ships vs source-moon current.
+  const ships = (typeof target.ships === "object" && target.ships !== null ? target.ships : {}) as ShipCount;
+  const onMoon = srcMoon.ships ?? {};
+  for (const [name, n] of Object.entries(ships)) {
+    if ((n ?? 0) <= 0) continue;
+    if ((onMoon[name as keyof ShipCount] ?? 0) < (n ?? 0)) {
+      return { blocked: `jumpgate: source_moon ${sourceMoonId} only has ${onMoon[name as keyof ShipCount] ?? 0}× ${name}, needs ${n}` };
+    }
+  }
+  return {
+    id: `dir-${randomUUID()}`,
+    source: "goal",
+    method: "ui",
+    priority: goal.priority,
+    action: "jumpgate",
+    params: {
+      planet_id: sourceMoonId,            // session-cp source for the POST
+      source_moon_id: sourceMoonId,
+      target_moon_id: targetMoonId,
+      ships,
+      chain_id: target.chain_id ?? "",
+    },
+    preconds: [],
+    expires_at: Date.now() + DIRECTIVE_TTL_MS,
+    reason: `jumpgate ${sourceMoonId} → ${targetMoonId}`,
     goal_id: goal.id,
   };
 }

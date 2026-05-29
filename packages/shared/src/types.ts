@@ -185,7 +185,10 @@ export type GoalType =
   | "lifeform_building"
   // 种族发现 (Galaxy view 紫色 DNA → 派遣探索飛船)
   // POST .../action=sendDiscoveryFleet body=galaxy/system/position/token
-  | "species_discovery";
+  | "species_discovery"
+  // 跳跃门 (sibling-moon hop, instant)
+  // POST .../component=jumpgate&action=executeJump body=token+targetSpaceObjectId+ship counts
+  | "jumpgate";
 
 export type GoalStatus = "pending" | "active" | "blocked" | "completed" | "cancelled" | "pending_confirm";
 

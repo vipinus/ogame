@@ -932,7 +932,9 @@ function openTransportSettings(
         </div>`)}
       ${sectionCard("③ 目标星球",
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-target-radio")}</div>`)}
-      ${sectionCard("④ 选船类型 + 数量",
+      ${sectionCard("④ 最终停泊星球 <span style='color:#7080a0; font-weight:normal;'>(不选 = 停在目标 / 选另一处 = 卸完资源用 deploy 飞过去)</span>",
+        `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
+      ${sectionCard("⑤ 选船类型 + 数量",
         `<div style="display:flex; gap:12px; padding-bottom:6px;">
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> 大运 LT (cap ${fmt(ltCap)})</label>
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小运 ST (cap ${fmt(stCap)})</label>
@@ -1053,17 +1055,20 @@ function openTransportSettings(
       // block with "jumpgate dispatch TBD" until Phase 2b lands.
       if (useJg && sourceMoon && targetMoon) {
         const srcMoonCoords = (sourceMoon.coords ?? []).join(":");
-        const tgtMoonCoords = (targetMoon.coords ?? []).join(":");
+        // Stage B1 — deploy planet → source moon (load ships + cargo).
         goalBodies.push({
           type: "deploy",
           target: { target_coords: srcMoonCoords, target_type: "moon", ships, cargo, source_planet: launchPlanet, chain_id: chainId, chain_phase: "jg_load" },
           planet: launchPlanet, priority: 7,
         });
+        // Stage B2 — JUMPGATE (sidecar planJumpgateGoal + api_executor.execJumpgate).
+        // Ships hop to target moon instantly; cargo carries through.
         goalBodies.push({
-          type: "deploy",
-          target: { target_coords: tgtMoonCoords, target_type: "moon", ships, cargo, source_planet: sourceMoon.id, chain_id: chainId, chain_phase: "jg_hop", via_jumpgate: true },
+          type: "jumpgate",
+          target: { source_moon: sourceMoon.id, target_moon: targetMoon.id, ships, chain_id: chainId, chain_phase: "jg_hop" },
           planet: sourceMoon.id, priority: 6,
         });
+        // Stage B3 — deploy target moon → target planet (unload cargo there).
         goalBodies.push({
           type: "deploy",
           target: { target_coords: targetCoords, target_type: targetPlanet?.type ?? "planet", ships, cargo, source_planet: targetMoon.id, chain_id: chainId, chain_phase: "jg_unload" },
@@ -1076,6 +1081,43 @@ function openTransportSettings(
           target: { target_coords: targetCoords, target_type: targetPlanet?.type ?? "planet", ships, cargo, source_planet: launchPlanet, chain_id: chainId },
           planet: launchPlanet, priority: 6,
         });
+      }
+      // Operator 2026-05-29: section ④ "最终停泊星球" — if operator picked
+      // a planet/moon different from `target`, append a final deploy leg so
+      // empty ships move from target → stopover after cargo lands.
+      const stopover = m.querySelector<HTMLInputElement>('input[name="tr-stopover-radio"]:checked')?.value ?? "";
+      if (stopover && stopover !== target) {
+        const stopoverP = planetsMap[stopover];
+        const stopoverCoords = (stopoverP?.coords ?? []).join(":");
+        if (stopoverCoords) {
+          // Stopover-aware JG: if stopover has a sibling moon AND target has
+          // one AND JG enabled, use jumpgate again for the empty-ship ferry.
+          const stopoverMoon = findSiblingMoon(stopover);
+          if (useJg && targetMoon && stopoverMoon && stopover !== target) {
+            goalBodies.push({
+              type: "deploy",
+              target: { target_coords: (targetMoon.coords ?? []).join(":"), target_type: "moon", ships, source_planet: target, chain_id: chainId, chain_phase: "stop_load" },
+              planet: target, priority: 4,
+            });
+            goalBodies.push({
+              type: "jumpgate",
+              target: { source_moon: targetMoon.id, target_moon: stopoverMoon.id, ships, chain_id: chainId, chain_phase: "stop_hop" },
+              planet: targetMoon.id, priority: 3,
+            });
+            goalBodies.push({
+              type: "deploy",
+              target: { target_coords: stopoverCoords, target_type: stopoverP?.type ?? "planet", ships, source_planet: stopoverMoon.id, chain_id: chainId, chain_phase: "stop_unload" },
+              planet: stopoverMoon.id, priority: 2,
+            });
+          } else {
+            // No-JG stopover leg — single deploy target → stopover (empty).
+            goalBodies.push({
+              type: "deploy",
+              target: { target_coords: stopoverCoords, target_type: stopoverP?.type ?? "planet", ships, source_planet: target, chain_id: chainId, chain_phase: "stop_direct" },
+              planet: target, priority: 3,
+            });
+          }
+        }
       }
       if (status) { status.textContent = `creating ${goalBodies.length} goal(s)…`; status.style.color = "#7080a0"; }
       try {
