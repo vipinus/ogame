@@ -701,6 +701,32 @@ export async function startSidecar(
       goalsStore.setMainGoal(null);
       return { ok: true };
     },
+    createGoal: (body) => {
+      // M4 — generic goal creation from the panel modal. Trust the body's
+      // type/target/planet/priority fields and write straight to goals_store.
+      // Validation is intentionally minimal (operator-only LAN UI); the
+      // planner will surface bad targets via "blocked: …" on first tick.
+      const SUPPORTED = new Set([
+        "research", "build", "build_universal", "colonize",
+        "build_ships", "build_defense", "terraformer_to", "expedition",
+        "deploy", "transport", "pick_lifeform", "lifeform_level_to",
+        "lifeform_research", "lifeform_building",
+      ]);
+      if (!SUPPORTED.has(body.type)) return { ok: false, reason: `unsupported goal type: ${body.type}` };
+      const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      goalsStore.add({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        id, type: body.type as any,
+        target: body.target,
+        ...(body.planet ? { planet: body.planet } : { planet: "" }),
+        priority: typeof body.priority === "number" ? body.priority : 5,
+        is_main_goal: false,
+        status: "pending", created_at: Date.now(),
+        progress_pct: 0, current_step: "queued", eta_at: null,
+      });
+      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5}`);
+      return { ok: true, goal_id: id };
+    },
     createDiscoveryGoal: (body) => {
       const planet = stateRef.current?.planets?.[body.source_planet];
       if (!planet) return { ok: false, reason: `unknown planet ${body.source_planet}` };

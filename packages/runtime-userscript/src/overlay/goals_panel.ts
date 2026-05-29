@@ -606,6 +606,140 @@ function openDiscoverySettings(
   });
 }
 
+// M4 — generic goals settings modal. Adds an entry point to create any
+// supported goal type (build/research/colonize/build_ships/...) via the
+// sidecar's new POST /v1/goals/create. The active goals list itself stays
+// in the main panel's Goals section — this modal focuses on creation.
+function openGoalsSettings(
+  doc: Document,
+  baseUrl: string,
+  fetchFn: typeof fetch,
+): void {
+  // Each entry: goal type + the target-shape placeholder shown in the
+  // textarea. Operator can edit / paste / rewrite freely. Submit just sends
+  // whatever JSON is in the textarea — sidecar validates type, planner
+  // surfaces target-shape issues via "blocked: …".
+  const GOAL_PRESETS: Array<{ value: string; label: string; planetReq: boolean; targetPlaceholder: string }> = [
+    { value: "build",             label: "build · 建造",           planetReq: true,  targetPlaceholder: `{"building":"metalMine","level":42}` },
+    { value: "research",          label: "research · 科研",         planetReq: true,  targetPlaceholder: `{"tech":"astrophysics","level":18}` },
+    { value: "build_universal",   label: "build_universal · 全部统一建", planetReq: false, targetPlaceholder: `{"building":"shipyard","level":12}` },
+    { value: "build_ships",       label: "build_ships · 造舰",      planetReq: true,  targetPlaceholder: `{"ship":"largeCargo","amount":500}` },
+    { value: "build_defense",     label: "build_defense · 造防",    planetReq: true,  targetPlaceholder: `{"defense":"rocketLauncher","amount":1000}` },
+    { value: "colonize",          label: "colonize · 殖民",         planetReq: true,  targetPlaceholder: `{"target_coords":"3:280:7"}` },
+    { value: "lifeform_building", label: "lifeform_building · 生命形式建筑", planetReq: true,  targetPlaceholder: `{"building":"residentialSector","level":40}` },
+    { value: "lifeform_research", label: "lifeform_research · 生命形式科研", planetReq: true,  targetPlaceholder: `{"tech":"intergalacticEnvoys","level":10}` },
+    { value: "lifeform_level_to", label: "lifeform_level_to · 生命形式等级", planetReq: true,  targetPlaceholder: `{"level":3}` },
+    { value: "pick_lifeform",     label: "pick_lifeform · 选生命形式", planetReq: true,  targetPlaceholder: `{"species":"kaelesh"}` },
+    { value: "terraformer_to",    label: "terraformer_to · 地形改造", planetReq: true,  targetPlaceholder: `{"level":8}` },
+    { value: "expedition",        label: "expedition · 远征",       planetReq: false, targetPlaceholder: `{"source_planet":"<id>","ships":{"largeCargo":1600,"explorer":1000}}` },
+    { value: "deploy",            label: "deploy · 部署",           planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","target_type":"moon","ships":{"largeCargo":100}}` },
+    { value: "transport",         label: "transport · 运输",        planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","ships":{"largeCargo":100},"cargo":{"m":1000000,"c":0,"d":0}}` },
+  ];
+  const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading planet list…</div>`;
+  openSettingsModal(doc, "goals", "🪐 普通任务设置", placeholder, async (m) => {
+    const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
+    if (!body) return;
+    interface StorePlanet { id: string; type?: string; coords?: number[]; name?: string }
+    const storeRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, StorePlanet> } } }).__ogamexStore;
+    const planets = Object.values(storeRef?.state?.planets ?? {})
+      .filter((p): p is StorePlanet => !!p?.coords)
+      .sort((a, b) => {
+        const ac = a.coords ?? [0, 0, 0]; const bc = b.coords ?? [0, 0, 0];
+        for (let i = 0; i < 3; i++) {
+          const av = ac[i] ?? 0; const bv = bc[i] ?? 0;
+          if (av !== bv) return av - bv;
+        }
+        // planet before moon at same coords
+        if (a.type !== b.type) return a.type === "planet" ? -1 : 1;
+        return 0;
+      });
+    const planetOpts = `<option value="">(不指定 — 让 planner 默认 planet[0])</option>` + planets.map((p) => {
+      const cs = (p.coords ?? []).join(":");
+      const tag = p.type === "moon" ? "🌙" : "🌍";
+      return `<option value="${escapeHtml(p.id)}">${tag} ${escapeHtml(p.name ?? "?")} [${escapeHtml(cs)}]</option>`;
+    }).join("");
+    const typeOpts = GOAL_PRESETS.map((g) => `<option value="${escapeHtml(g.value)}">${escapeHtml(g.label)}</option>`).join("");
+    const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
+    body.innerHTML = `
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">普通任务 — 创建 build / research / colonize / 等任务. 已有 active goals 在主面板 Goals section 显示</div>
+      <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px;">
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">任务类型</span>
+          <select data-goal-type style="${inputStyle} flex:1;">${typeOpts}</select>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">星球</span>
+          <select data-goal-planet style="${inputStyle} flex:1;">${planetOpts}</select>
+        </div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">Target (JSON)</div>
+          <textarea data-goal-target rows="3" onclick="this.select()" style="${inputStyle} width:100%; box-sizing:border-box; font-family:monospace; font-size:11px;"></textarea>
+          <div data-goal-target-hint style="color:#5a7090; font-size:10px; padding-top:2px;"></div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <input data-goal-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
+          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
+          <span data-goal-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+          <button data-goal-create="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+        </div>
+      </div>
+    `;
+    // Sync textarea placeholder with selected type.
+    const typeSel = m.querySelector<HTMLSelectElement>("[data-goal-type]");
+    const targetTa = m.querySelector<HTMLTextAreaElement>("[data-goal-target]");
+    const targetHint = m.querySelector<HTMLElement>("[data-goal-target-hint]");
+    const planetSel = m.querySelector<HTMLSelectElement>("[data-goal-planet]");
+    const refreshPreset = (): void => {
+      const t = typeSel?.value ?? "";
+      const preset = GOAL_PRESETS.find((p) => p.value === t);
+      if (!preset || !targetTa || !targetHint || !planetSel) return;
+      targetTa.value = preset.targetPlaceholder;
+      targetHint.textContent = preset.planetReq ? "需要选 planet — 该类型必须指定 source" : "可不选 planet — planner 会默认或读 target 内字段";
+    };
+    typeSel?.addEventListener("change", refreshPreset);
+    refreshPreset();
+    m.querySelector<HTMLElement>("[data-goal-create]")?.addEventListener("click", async () => {
+      const status = m.querySelector<HTMLElement>("[data-goal-status]");
+      const type = typeSel?.value ?? "";
+      const planet = planetSel?.value || undefined;
+      const priorityStr = m.querySelector<HTMLInputElement>("[data-goal-priority]")?.value ?? "5";
+      const priority = Math.max(1, Math.min(20, parseInt(priorityStr, 10) || 5));
+      let target: Record<string, unknown>;
+      try {
+        const raw = (targetTa?.value ?? "").trim();
+        if (!raw) throw new Error("target JSON 不能为空");
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("target 必须是 object");
+        target = parsed;
+      } catch (e) {
+        if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
+        return;
+      }
+      if (status) { status.textContent = "creating…"; status.style.color = "#7080a0"; }
+      try {
+        const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/create`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type, target, planet, priority }),
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({ reason: `HTTP ${r.status}` })) as { reason?: string };
+          throw new Error(j.reason ?? `HTTP ${r.status}`);
+        }
+        const j = await r.json() as { ok?: boolean; goal_id?: string; reason?: string };
+        if (!j.ok) throw new Error(j.reason ?? "create rejected");
+        if (status) { status.textContent = `✓ created ${j.goal_id ?? ""}`; status.style.color = "#7cfc00"; }
+        setTimeout(() => m.remove(), 800);
+      } catch (e) {
+        if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
+      }
+    });
+  });
+}
+
 export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle {
   const doc = opts.doc ?? document;
   const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
@@ -1080,7 +1214,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // Goals section — wraps existing goal rows with a collapsible header.
     const goalsCollapsed = sectionCollapsed.goals;
     const goalsBody = !goalsCollapsed ? `${empty}${rows}` : "";
-    const goalsSection = `${sectionHeader("goals", "🪐 Goals", filtered.length, "#e0e8f0")}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody}</div>`;
+    // M4 — Goals section ⚙ → openGoalsSettings modal (create new goal form).
+    const goalsSettingsBtn = `<button data-settings="goals" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="普通任务设置 — 创建新任务">⚙</button>`;
+    const goalsSection = `${sectionHeader("goals", "🪐 Goals", filtered.length, "#e0e8f0", goalsSettingsBtn)}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody}</div>`;
 
     // Species Discovery section — operator's new task type (Galaxy view DNA).
     const discCollapsed = sectionCollapsed.discovery ?? false;
@@ -1309,6 +1445,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         if (feature === "emergency") openEmergencySettings(doc);
         else if (feature === "expedition") openExpeditionSettings(doc, baseUrl, fetchFn);
         else if (feature === "discovery") openDiscoverySettings(doc, baseUrl, fetchFn);
+        else if (feature === "goals") openGoalsSettings(doc, baseUrl, fetchFn);
       });
     }
     // Wire spy-triggers-save toggle (emergency section).

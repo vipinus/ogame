@@ -63,6 +63,8 @@ export interface HttpServerOptions {
   resumeGoal?: (id: string) => { ok: boolean; reason?: string };
   setMainGoal?: (id: string) => { ok: boolean; reason?: string };
   unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
+  /** M4 — create an arbitrary goal from the panel modal. POST /v1/goals/create. */
+  createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string };
   /** Create a species_discovery goal — POST /ogamex/v1/discovery/create. */
   createDiscoveryGoal?: (body: {
     source_planet: string; galaxy: number; base_system: number; range?: number;
@@ -120,6 +122,8 @@ interface ResolvedHttpServerOptions {
   resumeGoal?: (id: string) => { ok: boolean; reason?: string };
   setMainGoal?: (id: string) => { ok: boolean; reason?: string };
   unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
+  /** M4 — create an arbitrary goal from the panel modal. POST /v1/goals/create. */
+  createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string };
   /** Create a species_discovery goal — POST /ogamex/v1/discovery/create. */
   createDiscoveryGoal?: (body: {
     source_planet: string; galaxy: number; base_system: number; range?: number;
@@ -163,6 +167,7 @@ export class HttpServer {
       ...(opts.setMainGoal !== undefined ? { setMainGoal: opts.setMainGoal } : {}),
       ...(opts.unsetMainGoal !== undefined ? { unsetMainGoal: opts.unsetMainGoal } : {}),
       ...(opts.createDiscoveryGoal !== undefined ? { createDiscoveryGoal: opts.createDiscoveryGoal } : {}),
+      ...(opts.createGoal !== undefined ? { createGoal: opts.createGoal } : {}),
       ...(opts.recordSaveLaunched !== undefined ? { recordSaveLaunched: opts.recordSaveLaunched } : {}),
       ...(opts.recordSaveRecallConfirmed !== undefined ? { recordSaveRecallConfirmed: opts.recordSaveRecallConfirmed } : {}),
       ...(opts.listActiveSaves !== undefined ? { listActiveSaves: opts.listActiveSaves } : {}),
@@ -407,6 +412,11 @@ export class HttpServer {
         void this.handleDiscoveryCreate(req, res);
         return;
       }
+      // M4 — generic goal creation. Body: { type, target, planet?, priority? }.
+      if (url === "/ogamex/v1/goals/create") {
+        void this.handleGoalCreate(req, res);
+        return;
+      }
       // Save-coordinator endpoints (operator 2026-05-24 "fsm 可以放后台").
       // Public no-auth like discovery/expedition triggers — LAN-only trust.
       if (url === "/ogamex/v1/save/launched") {
@@ -515,6 +525,45 @@ export class HttpServer {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ ok: false, reason: (e as Error).message }));
     }
+  }
+
+  /**
+   * M4 — POST /v1/goals/create. Body JSON: { type: string, target: object,
+   * planet?: string, priority?: number }. Delegates to wired createGoal
+   * callback. No auth (LAN-only trust like discovery/expedition triggers).
+   */
+  private async handleGoalCreate(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    this.writeCorsHeaders(res);
+    if (!this.opts.createGoal) {
+      res.statusCode = 501;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: false, reason: "createGoal not wired" }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    let body: { type?: string; target?: unknown; planet?: string; priority?: number };
+    try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+    catch { res.statusCode = 400; res.end(JSON.stringify({ ok: false, reason: "bad json" })); return; }
+    if (typeof body.type !== "string" || !body.type) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, reason: "need type:string" }));
+      return;
+    }
+    if (!body.target || typeof body.target !== "object" || Array.isArray(body.target)) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, reason: "need target:object" }));
+      return;
+    }
+    const out = this.opts.createGoal({
+      type: body.type,
+      target: body.target as Record<string, unknown>,
+      ...(typeof body.planet === "string" ? { planet: body.planet } : {}),
+      ...(typeof body.priority === "number" ? { priority: body.priority } : {}),
+    });
+    res.statusCode = out.ok ? 200 : 400;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(out));
   }
 
   /** POST /v1/discovery/create — body JSON parsed → callback to sidecar/index. */
