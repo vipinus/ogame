@@ -112,21 +112,31 @@ export function startEmergencySave(
   // a failed POST means backend won't auto-recall, but frontend's own FSM
   // tick is still in place as fallback (won't break the save chain).
   const reportLaunchToBackend = async (sourceId: string, fsm: SaveStateMachine): Promise<void> => {
-    // Operator 2026-05-26: sendFleet response has no fleetIdToReturn, so
-    // fsm enters IN_FLIGHT with fleetId=0. Force a movement harvest right
-    // after launch so the patchFleetId hook fires on the next state.updated
-    // tick (without waiting for the next periodic harvest cycle).
+    // Operator 2026-05-29: race fix — previously this fired
+    // __ogamexHarvestMovement() fire-and-forget, then immediately POSTed
+    // /v1/save/launched with fleetId=0 placeholder. When spy ETA < harvest
+    // duration (~1s), hostile cleared → fsm transitioned IN_FLIGHT →
+    // RECALLING with fleetId still 0 → recall POST skipped → ships stuck
+    // at deploy destination. Now: SYNCHRONOUSLY await the harvest (capped
+    // at 3s) so patchFleetId fires BEFORE backend report + RECALLING gate.
     try {
       const harvestFn = (typeof window !== "undefined"
         ? (window as Window & { __ogamexHarvestMovement?: () => Promise<void> })
         : null);
       if (harvestFn?.__ogamexHarvestMovement) {
-        void harvestFn.__ogamexHarvestMovement().catch(() => { /* */ });
+        const HARVEST_TIMEOUT_MS = 3000;
+        await Promise.race([
+          harvestFn.__ogamexHarvestMovement().catch(() => { /* swallow */ }),
+          new Promise<void>((resolve) => setTimeout(resolve, HARVEST_TIMEOUT_MS)),
+        ]);
       }
     } catch { /* */ }
     if (!opts.sidecarBaseUrl) return;
     const snap = fsm.snapshot();
     if (snap.state !== "IN_FLIGHT" || snap.fleetId === null) return;
+    if (!snap.fleetId || snap.fleetId === 0) {
+      console.warn(`[orchestrator] post-harvest fleetId still 0 for ${sourceId} — backend will be told 0; recall will rely on later harvest tick`);
+    }
     try {
       await opts.fetch(`${opts.sidecarBaseUrl}/ogamex/v1/save/launched`, {
         method: "POST",

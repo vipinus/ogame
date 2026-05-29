@@ -5,7 +5,7 @@ import commonjs from "@rollup/plugin-commonjs";
 const banner = `// ==UserScript==
 // @name         OgameX Runtime
 // @namespace    https://github.com/ddxs/ogamex
-// @version      0.0.400
+// @version      0.0.401
 // @match        *://*.ogame.org/*
 // @match        *://*.ogame.gameforge.com/*
 // @match        *://lobby.ogame.gameforge.com/*
@@ -18,8 +18,8 @@ const banner = `// ==UserScript==
 // @connect      192.168.2.100
 // @connect      ogame.anyfq.com
 // @connect      *
-// @updateURL    http://127.0.0.1:8765/ogame-runtime.user.js
-// @downloadURL  http://127.0.0.1:8765/ogame-runtime.user.js
+// @updateURL    https://ogame.anyfq.com/dl/ogame-runtime.user.js
+// @downloadURL  https://ogame.anyfq.com/dl/ogame-runtime.user.js
 // ==/UserScript==
 `;
 
