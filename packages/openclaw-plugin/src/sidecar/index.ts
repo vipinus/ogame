@@ -772,11 +772,15 @@ export async function startSidecar(
       // type/target/planet/priority fields and write straight to goals_store.
       // Validation is intentionally minimal (operator-only LAN UI); the
       // planner will surface bad targets via "blocked: …" on first tick.
+      // Operator 2026-05-29: mirrors shared/types.ts GoalType union — keep
+      // these in sync. "jumpgate" (v0.0.421 Phase 2b), "species_discovery"
+      // both added so frontend modals can create them via this endpoint.
       const SUPPORTED = new Set([
         "research", "build", "build_universal", "colonize",
         "build_ships", "build_defense", "terraformer_to", "expedition",
         "deploy", "transport", "pick_lifeform", "lifeform_level_to",
         "lifeform_research", "lifeform_building",
+        "species_discovery", "jumpgate",
       ]);
       if (!SUPPORTED.has(body.type)) return { ok: false, reason: `unsupported goal type: ${body.type}` };
       const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
