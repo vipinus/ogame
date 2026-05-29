@@ -1015,35 +1015,87 @@ function openTransportSettings(
       if (shipCount <= 0) { if (status) { status.textContent = "× 数量必须 > 0"; status.style.color = "#ff6b6b"; } return; }
       const targetPlanet = planetsMap[target];
       const targetCoords = (targetPlanet?.coords ?? []).join(":");
-      // Phase 1 — single-leg transport. Phase 2 will multi-hop via JG.
-      const launchPlanet = resourceSrc || source;
-      const goalBody = {
-        type: "transport",
-        target: {
-          target_coords: targetCoords,
-          target_type: targetPlanet?.type ?? "planet",
-          ships: { [ship]: shipCount },
-          cargo: { m: cargoM, c: cargoC, d: cargoD },
-          source_planet: launchPlanet,
-        },
-        planet: launchPlanet,
-        priority: 6,
+      const jgEnabled = (m.querySelector<HTMLInputElement>("[data-tr-jg-enable]")?.checked) ?? false;
+      // Build the chain: depending on (source vs resource) and (JG) we emit
+      // 1-3 goals with a shared chain id + priority ladder so the planner
+      // dispatches them in order as ships arrive at each waypoint.
+      const chainId = `txc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const ships = { [ship]: shipCount };
+      const cargo = { m: cargoM, c: cargoC, d: cargoD };
+      // Find moon siblings (operator 2026-05-29 spec uses JG between sibling moons).
+      const findSiblingMoon = (planetId: string): StorePlanet | undefined => {
+        const p = planetsMap[planetId];
+        if (!p?.coords) return undefined;
+        const key = p.coords.join(":");
+        return Object.values(planetsMap).find((q): q is StorePlanet => q?.type === "moon" && Array.isArray(q.coords) && q.coords.join(":") === key);
       };
-      if (status) { status.textContent = "creating…"; status.style.color = "#7080a0"; }
-      try {
-        const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/create`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(goalBody),
+      const sourceP = planetsMap[source];
+      const resourceP = resourceSrc ? planetsMap[resourceSrc] : sourceP;
+      const sourceMoon = source ? findSiblingMoon(source) : undefined;
+      const targetMoon = findSiblingMoon(target);
+      const useJg = jgEnabled && !!sourceMoon && !!targetMoon;
+      const launchPlanet = resourceP?.id ?? source;
+      const goalBodies: Array<{ type: string; target: Record<string, unknown>; planet?: string; priority?: number }> = [];
+      // Stage A: if resource planet ≠ source planet, deploy empty ships
+      // from source over to resource planet first (Phase 2a — no JG path).
+      if (resourceP && sourceP && resourceP.id !== sourceP.id) {
+        const resCoords = (resourceP.coords ?? []).join(":");
+        goalBodies.push({
+          type: "deploy",
+          target: { target_coords: resCoords, target_type: resourceP.type ?? "planet", ships, source_planet: source, chain_id: chainId },
+          planet: source, priority: 8,
         });
-        if (!r.ok) {
-          const j = await r.json().catch(() => ({ reason: `HTTP ${r.status}` })) as { reason?: string };
-          throw new Error(j.reason ?? `HTTP ${r.status}`);
+      }
+      // Stage B (JG path): deploy ships+cargo planet→moon at the source-side
+      // of the JG bridge. Then jumpgate. Then deploy moon→target planet.
+      // execJumpgate is not yet wired in api_executor, so the middle leg is
+      // a placeholder goal — operator sees it queued and the planner will
+      // block with "jumpgate dispatch TBD" until Phase 2b lands.
+      if (useJg && sourceMoon && targetMoon) {
+        const srcMoonCoords = (sourceMoon.coords ?? []).join(":");
+        const tgtMoonCoords = (targetMoon.coords ?? []).join(":");
+        goalBodies.push({
+          type: "deploy",
+          target: { target_coords: srcMoonCoords, target_type: "moon", ships, cargo, source_planet: launchPlanet, chain_id: chainId, chain_phase: "jg_load" },
+          planet: launchPlanet, priority: 7,
+        });
+        goalBodies.push({
+          type: "deploy",
+          target: { target_coords: tgtMoonCoords, target_type: "moon", ships, cargo, source_planet: sourceMoon.id, chain_id: chainId, chain_phase: "jg_hop", via_jumpgate: true },
+          planet: sourceMoon.id, priority: 6,
+        });
+        goalBodies.push({
+          type: "deploy",
+          target: { target_coords: targetCoords, target_type: targetPlanet?.type ?? "planet", ships, cargo, source_planet: targetMoon.id, chain_id: chainId, chain_phase: "jg_unload" },
+          planet: targetMoon.id, priority: 5,
+        });
+      } else {
+        // Non-JG path — final hop is a single transport from resource → target.
+        goalBodies.push({
+          type: "transport",
+          target: { target_coords: targetCoords, target_type: targetPlanet?.type ?? "planet", ships, cargo, source_planet: launchPlanet, chain_id: chainId },
+          planet: launchPlanet, priority: 6,
+        });
+      }
+      if (status) { status.textContent = `creating ${goalBodies.length} goal(s)…`; status.style.color = "#7080a0"; }
+      try {
+        const ids: string[] = [];
+        for (const body of goalBodies) {
+          const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/create`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({ reason: `HTTP ${r.status}` })) as { reason?: string };
+            throw new Error(j.reason ?? `HTTP ${r.status}`);
+          }
+          const j = await r.json() as { ok?: boolean; goal_id?: string; reason?: string };
+          if (!j.ok) throw new Error(j.reason ?? "rejected");
+          if (j.goal_id) ids.push(j.goal_id);
         }
-        const j = await r.json() as { ok?: boolean; goal_id?: string; reason?: string };
-        if (!j.ok) throw new Error(j.reason ?? "rejected");
-        if (status) { status.textContent = `✓ created ${j.goal_id ?? ""}`; status.style.color = "#7cfc00"; }
-        setTimeout(() => m.remove(), 700);
+        if (status) { status.textContent = `✓ chain ${chainId} created (${ids.length} goals)`; status.style.color = "#7cfc00"; }
+        setTimeout(() => m.remove(), 900);
       } catch (e) {
         if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
       }
