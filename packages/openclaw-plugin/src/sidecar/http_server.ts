@@ -320,6 +320,18 @@ export class HttpServer {
       this.handleProviderGet(res, this.opts.expeditionProvider);
       return;
     }
+    // Operator 2026-05-29: M2 expedition settings modal — panel reads/writes
+    // the full /tmp/ogamex-expedition.json (template + paused + enabled +
+    // target_position). Public no-auth like discovery/expedition triggers
+    // (LAN-only trust). Daemon reloads the file every expeditionTick via
+    // loadExpeditionConfig() so writes take effect on the next tick.
+    if (method === "GET" && url === "/ogamex/v1/expedition/config") {
+      this.writeCorsHeaders(res);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(readExpeditionState()));
+      return;
+    }
     // Operator 2026-05-29 "panel 名称改成 oGame+版本号 + 更新按钮 (没有
     // 更新就隐藏)": panel polls this endpoint, compares with its own boot
     // version, shows the update button when newer. Returns the @version
@@ -414,6 +426,14 @@ export class HttpServer {
       }
       if (url === EXPEDITION_RESUME_PATH) {
         this.handleExpeditionFlag(res, false);
+        return;
+      }
+      // Operator 2026-05-29: M2 expedition settings modal — POST full config
+      // (template + paused + enabled + target_position) and persist. Body is
+      // shallow-merged into the existing state so callers can send partial
+      // updates without clobbering fields they don't touch.
+      if (url === "/ogamex/v1/expedition/config") {
+        void this.handleExpeditionConfigPost(req, res);
         return;
       }
     }
@@ -626,6 +646,52 @@ export class HttpServer {
     res.statusCode = ok ? 200 : 500;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(ok ? { ok: true, paused } : { ok: false, error }));
+  }
+
+  /**
+   * M2 — accept partial JSON config and shallow-merge into the on-disk
+   * expedition state file. Acceptable keys: `template` (ShipCount map),
+   * `paused` (bool), `enabled` (bool), `target_position` (1-16).
+   * Daemon's expeditionTick re-reads the file on every tick.
+   */
+  private async handleExpeditionConfigPost(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    let bodyStr = "";
+    try {
+      for await (const chunk of req) bodyStr += String(chunk);
+    } catch {
+      this.writeCorsHeaders(res);
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, error: "body read failed" }));
+      return;
+    }
+    let patch: Record<string, unknown>;
+    try {
+      patch = JSON.parse(bodyStr || "{}") as Record<string, unknown>;
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("not an object");
+    } catch (e) {
+      this.writeCorsHeaders(res);
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, error: `bad JSON: ${(e as Error).message}` }));
+      return;
+    }
+    const allowed = new Set(["template", "paused", "enabled", "target_position"]);
+    try {
+      const state = readExpeditionState();
+      for (const [k, v] of Object.entries(patch)) {
+        if (!allowed.has(k)) continue;
+        state[k] = v;
+      }
+      state["updated_at"] = Date.now();
+      writeExpeditionState(state);
+      this.writeCorsHeaders(res);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: true, state }));
+    } catch (e) {
+      this.writeCorsHeaders(res);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+    }
   }
 
   private writeCorsHeaders(res: http.ServerResponse): void {

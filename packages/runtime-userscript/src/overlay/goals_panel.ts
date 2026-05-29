@@ -206,6 +206,105 @@ function openEmergencySettings(doc: Document): void {
   });
 }
 
+// M2 — expedition settings modal. Reads the on-disk config via sidecar
+// `GET /v1/expedition/config` and writes back via POST. Ship template
+// fields use number inputs; paused is a toggle. Save validates positive
+// integers, then POSTs and closes the modal on success.
+function openExpeditionSettings(
+  doc: Document,
+  baseUrl: string,
+  fetchFn: typeof fetch,
+): void {
+  const SHIP_FIELDS: Array<{ key: string; label: string }> = [
+    { key: "largeCargo", label: "大型運輸艦 (LT)" },
+    { key: "smallCargo", label: "小型運輸艦 (ST)" },
+    { key: "explorer", label: "探路者 (PF)" },
+    { key: "reaper", label: "惡魔飛船 (RIP)" },
+    { key: "espionageProbe", label: "間諜衛星 (EP)" },
+    { key: "recycler", label: "回收船 (RC)" },
+  ];
+  // Initial render with "loading…" placeholders; replaced once GET returns.
+  const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading expedition config…</div>`;
+  openSettingsModal(doc, "expedition", "🛸 远征任务设置", placeholder, async (m) => {
+    const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
+    if (!body) return;
+    let initial: { template?: Record<string, number>; paused?: boolean; target_position?: number; enabled?: boolean } = {};
+    try {
+      const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, { method: "GET" });
+      if (r.ok) initial = await r.json();
+    } catch (e) { console.warn("[panel/expedition-settings] GET failed:", e); }
+    const paused = initial.paused === true;
+    const tmpl = (initial.template ?? {}) as Record<string, number>;
+    const targetPos = typeof initial.target_position === "number" ? initial.target_position : 16;
+    const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; width:90px; font-size:11px; text-align:right;";
+    const shipRows = SHIP_FIELDS.map((f) => {
+      const cur = tmpl[f.key] ?? 0;
+      return `<div style="padding:6px 0; border-bottom:1px solid #1a2030; display:flex; justify-content:space-between; align-items:center;">
+        <span style="color:#d0d8e0;">${escapeHtml(f.label)}</span>
+        <input data-tmpl-key="${escapeHtml(f.key)}" type="number" min="0" step="1" value="${escapeHtml(String(cur))}" style="${inputStyle}"/>
+      </div>`;
+    }).join("");
+    body.innerHTML = `
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">远征任务 — 每 planet 自动派遣 + round-robin 公平化</div>
+      ${renderToggleRow("整体启用", !paused, "exp-paused", "OFF = daemon 跳过本轮 tick (现有 fleet 不受影响)")}
+      <div style="padding:8px 0; border-bottom:1px solid #1a2030; display:flex; justify-content:space-between; align-items:center;">
+        <span style="color:#d0d8e0;">目标位置</span>
+        <input data-exp-pos type="number" min="1" max="16" step="1" value="${escapeHtml(String(targetPos))}" style="${inputStyle}"/>
+      </div>
+      <div style="padding-top:10px; color:#a0a8b8; font-size:11px;">舰队模板 (每次派遣的船数)</div>
+      ${shipRows}
+      <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:12px;">
+        <span data-exp-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+        <button data-exp-save="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">保存</button>
+      </div>
+    `;
+    // Wire paused toggle (immediate, no save needed).
+    let liveExpPaused = paused;
+    const reflect = (sel: string, isOn: boolean): void => {
+      const btn = m.querySelector<HTMLElement>(sel);
+      if (!btn) return;
+      btn.textContent = isOn ? "ON" : "OFF";
+      btn.setAttribute("style", `padding:2px 10px; border-radius:3px; cursor:pointer; font-size:11px; font-weight:bold;${isOn
+        ? "background:#205a20; color:#fff; border:1px solid #408a40;"
+        : "background:#5a2020; color:#fff; border:1px solid #8a4040;"}`);
+    };
+    m.querySelector<HTMLElement>("[data-exp-paused]")?.addEventListener("click", async () => {
+      const nextEnabled = !(!liveExpPaused);  // current ON → click → OFF (paused=true); current OFF → ON (paused=false)
+      liveExpPaused = !nextEnabled;
+      reflect("[data-exp-paused]", nextEnabled);
+      try {
+        await fetchFn(`${baseUrl}/ogamex/v1/expedition/${liveExpPaused ? "pause" : "resume"}`, { method: "POST" });
+      } catch (e) { console.warn("[panel/expedition-settings] pause/resume failed:", e); }
+    });
+    // Save button: POST template + target_position; paused is already persisted by toggle handler.
+    m.querySelector<HTMLElement>("[data-exp-save]")?.addEventListener("click", async () => {
+      const status = m.querySelector<HTMLElement>("[data-exp-status]");
+      const template: Record<string, number> = {};
+      for (const inp of m.querySelectorAll<HTMLInputElement>("[data-tmpl-key]")) {
+        const key = inp.getAttribute("data-tmpl-key") ?? "";
+        const n = parseInt(inp.value, 10);
+        if (!key || !Number.isFinite(n) || n < 0) continue;
+        if (n > 0) template[key] = n;
+      }
+      const posInput = m.querySelector<HTMLInputElement>("[data-exp-pos]");
+      const target_position = posInput ? Math.max(1, Math.min(16, parseInt(posInput.value, 10) || 16)) : 16;
+      if (status) { status.textContent = "saving…"; status.style.color = "#7080a0"; }
+      try {
+        const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ template, target_position }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        if (status) { status.textContent = "✓ saved"; status.style.color = "#7cfc00"; }
+        setTimeout(() => m.remove(), 600);
+      } catch (e) {
+        if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
+      }
+    });
+  });
+}
+
 export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle {
   const doc = opts.doc ?? document;
   const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
@@ -673,7 +772,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                 <div style="color:#8090a8; font-size:10px;">${escapeHtml(f.origin ?? "?")} → ${escapeHtml(f.dest ?? "?")}</div>
               </div>`).join(""))
       : "";
-    const expeditionSection = `${sectionHeader("expedition", exLabel, ex?.active.length ?? 0, "#8a8aff")}<div style="display:${exCollapsed ? "none" : "block"};">${exRows}</div>`;
+    // M2 — expedition section ⚙ button → openExpeditionSettings modal.
+    const exSettingsBtn = `<button data-settings="expedition" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="远征任务设置">⚙</button>`;
+    const expeditionSection = `${sectionHeader("expedition", exLabel, ex?.active.length ?? 0, "#8a8aff", exSettingsBtn)}<div style="display:${exCollapsed ? "none" : "block"};">${exRows}</div>`;
 
     // Goals section — wraps existing goal rows with a collapsible header.
     const goalsCollapsed = sectionCollapsed.goals;
@@ -901,6 +1002,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         e.stopPropagation();
         const feature = btn.getAttribute("data-settings") ?? "";
         if (feature === "emergency") openEmergencySettings(doc);
+        else if (feature === "expedition") openExpeditionSettings(doc, baseUrl, fetchFn);
       });
     }
     // Wire spy-triggers-save toggle (emergency section).
