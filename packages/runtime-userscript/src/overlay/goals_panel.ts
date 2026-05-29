@@ -215,13 +215,26 @@ function openExpeditionSettings(
   baseUrl: string,
   fetchFn: typeof fetch,
 ): void {
+  // Operator 2026-05-29: full ship roster (ogame v12 SHIP_IDS order, ascending
+  // by tid). solarSatellite (212) and crawler (217) are stationary — they
+  // cannot be part of a fleet dispatch, so excluded. pathfinder/explorer
+  // share tid 219; we only expose `explorer` (the v12 canonical name).
   const SHIP_FIELDS: Array<{ key: string; label: string }> = [
-    { key: "largeCargo", label: "大型運輸艦 (LT)" },
-    { key: "smallCargo", label: "小型運輸艦 (ST)" },
-    { key: "explorer", label: "探路者 (PF)" },
-    { key: "reaper", label: "惡魔飛船 (RIP)" },
+    { key: "smallCargo",     label: "小型運輸艦 (ST)" },
+    { key: "largeCargo",     label: "大型運輸艦 (LT)" },
+    { key: "lightFighter",   label: "輕型戰鬥機 (LF)" },
+    { key: "heavyFighter",   label: "重型戰鬥機 (HF)" },
+    { key: "cruiser",        label: "巡洋艦 (Cr)" },
+    { key: "battleship",     label: "戰鬥艦 (BS)" },
+    { key: "colonyShip",     label: "殖民船 (CS)" },
+    { key: "recycler",       label: "回收船 (RC)" },
     { key: "espionageProbe", label: "間諜衛星 (EP)" },
-    { key: "recycler", label: "回收船 (RC)" },
+    { key: "bomber",         label: "轟炸機 (Bom)" },
+    { key: "destroyer",      label: "驅逐艦 (Des)" },
+    { key: "deathstar",      label: "死星 (DS)" },
+    { key: "battlecruiser",  label: "戰巡艦 (BC)" },
+    { key: "reaper",         label: "惡魔飛船 (RIP)" },
+    { key: "explorer",       label: "探路者 (PF)" },
   ];
   // Initial render with "loading…" placeholders; replaced once GET returns.
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading expedition config…</div>`;
