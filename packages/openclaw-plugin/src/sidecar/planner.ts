@@ -681,9 +681,12 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   // v0.0.452: moon-fields gate. Operator 2026-05-29 rule "月球只剩一个
   // 空间的时候必须先造月球基地,再建其他建筑". When the target body is
   // a moon and the requested building is NOT lunarBase, check whether
-  // remaining fields ≤ 1; if so, block with a directive to operator to
-  // build lunarBase first. fields_max = 1 + 3 × lunarBase_level (ogame
-  // v12 standard); fields_used = sum of all moon-building levels.
+  // remaining fields ≤ 1; if so, AUTO-RECURSE into lunarBase upgrade as
+  // a prereq (operator 2026-05-29 "按照最优解走就好了，最终目标只有一
+  // 个"). v0.0.468: instead of returning blocked, emit a planBuild
+  // directive for lunarBase L+1 so the single user goal drives its own
+  // fields-expansion prereqs across multiple dispatch ticks — no need for
+  // operator to manually create separate lunarBase goals.
   if (planet.type === "moon" && building !== "lunarBase") {
     const b = (planet.buildings as Record<string, number | undefined>) ?? {};
     let usedFields = 0;
@@ -692,9 +695,7 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
     const maxFields = 1 + 3 * lunarBaseLevel;
     const free = maxFields - usedFields;
     if (free <= 1) {
-      return {
-        blocked: `moon fields nearly full (used=${usedFields}/${maxFields}, free=${free}) — build lunarBase first to extend slots before ${building}`,
-      };
+      return planBuild("lunarBase", lunarBaseLevel + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
     }
   }
 
@@ -1103,8 +1104,24 @@ function planJumpgateGoal(goal: Goal, state: WorldState): PlanResult {
       return { blocked: `jumpgate: cooldown ${remaining}s remaining on ${sourceMoonId}` };
     }
   }
+  // v0.0.469: take-all-ships mode (operator 2026-05-30 "用跳跃门往回走的
+  // 时候带走月球上所有的船"). When target.take_all is true OR ships ==="all",
+  // SUBSTITUTE the static ships count with whatever is currently on the
+  // source moon at dispatch time. JG ferry leg sweeps up everything, not
+  // just what operator originally configured. Static ship count still
+  // supported for fine-grained chains.
+  const takeAll = (target as { take_all?: unknown }).take_all === true || target.ships === "all";
+  let ships: ShipCount;
+  if (takeAll) {
+    const onMoonAll = srcMoon.ships ?? {};
+    ships = {} as ShipCount;
+    for (const [name, n] of Object.entries(onMoonAll)) {
+      if ((n ?? 0) > 0) (ships as Record<string, number>)[name] = n as number;
+    }
+  } else {
+    ships = (typeof target.ships === "object" && target.ships !== null ? target.ships : {}) as ShipCount;
+  }
   // Ship availability gate — sum of requested ships vs source-moon current.
-  const ships = (typeof target.ships === "object" && target.ships !== null ? target.ships : {}) as ShipCount;
   const onMoon = srcMoon.ships ?? {};
   for (const [name, n] of Object.entries(ships)) {
     if ((n ?? 0) <= 0) continue;

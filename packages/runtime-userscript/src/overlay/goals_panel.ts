@@ -1139,7 +1139,21 @@ function openTransportSettings(
       // dispatches them in order as ships arrive at each waypoint.
       const chainId = `txc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const ships = { [ship]: shipCount };
-      const cargo = { m: cargoM, c: cargoC, d: cargoD };
+      // v0.0.466: moon-source deuterium reserve (operator 2026-05-29 "从月球
+      // 装载资源的时候留500000重氢在月球上"). When the resource source body
+      // is a moon, automatically cap deuterium cargo to leave 500k on the
+      // moon — moons don't produce, those 500k are the recall-fuel +
+      // JG-cooldown safety reserve. Doesn't touch planet-sourced d.
+      const resourceSourceId = resourceSrc ?? source;
+      const resourceSourceP = planetsMap[resourceSourceId];
+      const MOON_D_RESERVE = 500_000;
+      let cargoDFinal = cargoD;
+      if (resourceSourceP?.type === "moon") {
+        const sourceD = (resourceSourceP as { resources?: { d?: number } }).resources?.d ?? 0;
+        const sourceDMax = Math.max(0, sourceD - MOON_D_RESERVE);
+        cargoDFinal = Math.min(cargoD, sourceDMax);
+      }
+      const cargo = { m: cargoM, c: cargoC, d: cargoDFinal };
       // Find moon siblings (operator 2026-05-29 spec uses JG between sibling moons).
       const findSiblingMoon = (planetId: string): StorePlanet | undefined => {
         const p = planetsMap[planetId];
@@ -1199,7 +1213,13 @@ function openTransportSettings(
               target: { target_coords: fromMoonCoords, target_type: "moon", ships, cargo: cargoArg, source_planet: fromP.id, chain_id: chainId, chain_phase: `${phasePrefix}_load` },
               planet: fromP.id, priority: basePriority },
             { type: "jumpgate",
-              target: { source_moon: fromMoon.id, target_moon: toMoon.id, ships, chain_id: chainId, chain_phase: `${phasePrefix}_hop` },
+              // v0.0.469: take_all=true → planner reads source moon's
+              // ships at dispatch time and ferries EVERYTHING, not just
+              // the chain's nominal ship count. Operator 2026-05-30:
+              // "用跳跃门往回走的时候带走月球上所有的船" — JG hop is empty
+              // ferry between siblings, sweep up any ships that have
+              // arrived via Leg 1+2 since chain creation.
+              target: { source_moon: fromMoon.id, target_moon: toMoon.id, ships, take_all: true, chain_id: chainId, chain_phase: `${phasePrefix}_hop` },
               planet: fromMoon.id, priority: basePriority - 1 },
             { type: "deploy",
               target: { target_coords: toCoords, target_type: toP.type ?? "planet", ships, cargo: cargoArg, source_planet: toMoon.id, chain_id: chainId, chain_phase: `${phasePrefix}_unload` },
@@ -1221,8 +1241,12 @@ function openTransportSettings(
         goalBodies.push(...genFerry(sourceP.id, resourceP.id, false, "deploy", "ferry_to_res", 12));
       }
       // Segment 2: resource → target (carries cargo). Always fires.
+      // v0.0.465: operator 2026-05-29 rule "运输里面不要有运输 全部都用部署".
+      // Changed from "transport" (mission=3, ships return) to "deploy"
+      // (mission=4, ships stay). Whole chain now uses deploy consistently —
+      // ships propagate along the path, no return leg. cargo still goes.
       const launchPlanetId = resourceP?.id ?? source;
-      goalBodies.push(...genFerry(launchPlanetId, target, true, "transport", "to_target", 9));
+      goalBodies.push(...genFerry(launchPlanetId, target, true, "deploy", "to_target", 9));
       // Segment 3: target → stopover (empty ferry post-unload), optional.
       const stopover = m.querySelector<HTMLInputElement>('input[name="tr-stopover-radio"]:checked')?.value ?? "";
       if (stopover && stopover !== target) {

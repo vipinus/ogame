@@ -86,6 +86,14 @@ export class PriorityMerger {
   // exits active. NOT timer-based — counts snapshot events.
   private readonly stuckCounter = new Map<string, number>();
   private readonly STUCK_DEMOTE_AT = 2;
+  // v0.0.469: atomic fleet ops need more patience — sendFleet POST itself
+  // takes 1-3s, fleet doesn't register in state.fleets_outbound until next
+  // /movement scrape (~5-10s after dispatch). With STUCK_DEMOTE_AT=2 and
+  // snapshot rate ~7.5s, the demote window collided with fleet's "in
+  // flight but not yet visible" gap → false-positive demote → re-dispatch
+  // → DUPLICATE fleet launched (operator 2026-05-30 "重复发运输船了").
+  // Atomic types use 4-snapshot patience (~30s) to let fleet land in state.
+  private readonly STUCK_DEMOTE_AT_ATOMIC = 4;
 
   constructor(deps: PriorityMergerDeps) {
     this.store = deps.store;
@@ -246,7 +254,9 @@ export class PriorityMerger {
         const snapshotFresher = (state.last_update ?? 0) > (row.updated_at ?? 0);
         if (slotEmpty && snapshotFresher) {
           const cnt = (this.stuckCounter.get(row.goal.id) ?? 0) + 1;
-          if (cnt >= this.STUCK_DEMOTE_AT) {
+          const isAtomic = goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport";
+          const demoteAt = isAtomic ? this.STUCK_DEMOTE_AT_ATOMIC : this.STUCK_DEMOTE_AT;
+          if (cnt >= demoteAt) {
             this.stuckCounter.delete(row.goal.id);
             this.store.updateStatus(row.goal.id, "pending", `stuck-recovery: empty slot ${cnt} snapshots, directive presumed lost`);
             // fall through — re-plan as pending below
