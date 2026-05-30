@@ -345,6 +345,17 @@ export async function startSidecar(
 
   // --- Transports ----------------------------------------------------------
   const ws = new WsServer({ port: config.wsPort, token: config.bridgeToken });
+  // v0.0.459 forward-decl: priorityMerger is constructed later (after planner
+  // + saveCoordinator wiring) but HttpServer's CRUD endpoints (cancelGoal,
+  // resumeGoal, etc.) close over it for event-triggered dispatch. Holds the
+  // ref so closures stay typesafe; assigned at line ~1055 just after
+  // `new PriorityMerger(...)`.
+  let priorityMergerRef: PriorityMerger | null = null;
+  const triggerDispatch = (): void => {
+    if (!priorityMergerRef) return;
+    try { priorityMergerRef.dispatch(stateRef.current ?? emptyWorldState()); }
+    catch (e) { console.error("[merger] triggerDispatch threw", e); }
+  };
   // The HttpServer's /v1/health route delegates to buildHealthReport via a
   // thunk closure — needs `stateRef`, `lastSeen`, and the `ws.clients` set,
   // all of which exist before this point. The thunk is invoked per-request.
@@ -381,7 +392,7 @@ export async function startSidecar(
       // levels' waits already accumulated future needs.
       const universeSpeed = stateRef.current?.server?.speed ?? 1;
       const researchSpeed = stateRef.current?.server?.research_speed ?? universeSpeed;
-      function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number } } {
+      function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number }; currentStep: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null } {
         const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
         // Initial bank — REAL planet resources at this moment.
         const bank: { m: number; c: number; d: number } = {
@@ -450,6 +461,12 @@ export async function startSidecar(
         // much to transport in.
         const totalCost = { m: 0, c: 0, d: 0 };
         const bankAtStart = { m: bank.m, c: bank.c, d: bank.d };
+        // v0.0.461: capture FIRST-to-execute (deepest unmet leaf) step cost.
+        // Operator 2026-05-29 "同时显示当前要做的任务缺多少资源" — total
+        // shortage tells "how much to ship for full chain", current step
+        // tells "what's blocking the very next dispatch". Filled by the
+        // post-order visit in buildAndSimulate; only set ONCE (first hit).
+        let currentStep: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null = null;
         // Walk and build the tree node objects. Each node gets eta_seconds
         // = its contribution (wait + build for its own levels), and
         // subtree_eta_seconds = total time from start through this node.
@@ -472,9 +489,41 @@ export async function startSidecar(
             if (!tech) return null;
             const techKind = tech.kind ?? "";
             const research = stateRef.current?.research?.levels ?? {};
+            // v0.0.456: when goal target body is a moon and the prereq is a
+            // PLANET-ONLY building (researchLab, naniteFactory, terraformer,
+            // mines, ...), fall back to highest level across all planets —
+            // operator rule "星球上的研究所有效". Moon-allowed buildings
+            // (roboticsFactory, shipyard, sensorPhalanx, jumpgate, lunarBase,
+            // storage, missileSilo) MUST keep body-local lookup or robo L12
+            // climb goal reads operator main planet's R12 as the moon's R →
+            // shows 0h ETA (regression v0.0.456 first cut).
+            const MOON_ALLOWED = new Set([
+              "metalStorage", "crystalStorage", "deuteriumTank",
+              "roboticsFactory", "shipyard", "lunarBase",
+              "sensorPhalanx", "jumpgate", "missileSilo",
+            ]);
+            const lookupBuildingLevel = (bld: string): number => {
+              const direct = planet?.buildings?.[bld] ?? 0;
+              // v0.0.456 (refined): TWO independent network-wide cases:
+              //   1) body=moon + building is planet-only → moon can't host, scan network
+              //   2) building is researchLab → research-network-wide regardless of
+              //      body type (operator 2026-05-29 issue: planet 4:299:8 has lab=0
+              //      but operator's main planet has lab=15, computerTech research
+              //      validated against that lab globally, panel showed phantom 0/1)
+              const moonNeedsNetwork = planet?.type === "moon" && !MOON_ALLOWED.has(bld);
+              const labAlwaysNetwork = bld === "researchLab";
+              if (!moonNeedsNetwork && !labAlwaysNetwork) return direct;
+              let best = direct;
+              for (const p of Object.values(planets)) {
+                if (p?.type !== "planet") continue;
+                const lvl = p.buildings?.[bld] ?? 0;
+                if (lvl > best) best = lvl;
+              }
+              return best;
+            };
             current = kind === "research" ? (research[techName] ?? 0)
                     : techKind === "ship" || techKind === "defense" ? ((planet?.ships as Record<string, number> | undefined)?.[techName] ?? 0)
-                    : (planet?.buildings?.[techName] ?? 0);
+                    : lookupBuildingLevel(techName);
             costFn = tech.cost_at as typeof costFn;
           }
           const children: PrereqTreeNode[] = [];
@@ -490,6 +539,18 @@ export async function startSidecar(
           if (current < targetLevel && typeof costFn === "function") {
             for (let l = current + 1; l <= targetLevel; l++) {
               const cost = costFn(l);
+              // v0.0.461: first unmet leaf's first level = "current step" —
+              // capture only once (deepest leaf reached first in post-order
+              // traversal). This is the cost ogame will charge for the very
+              // next dispatched directive on this goal.
+              if (currentStep === null) {
+                currentStep = {
+                  tech: techName,
+                  kind,
+                  level: l,
+                  cost: { m: cost.m, c: cost.c, d: cost.d ?? 0 },
+                };
+              }
               // Operator 2026-05-29: accumulate the level cost into the
               // chain-wide total BEFORE bank subtraction so the panel can
               // show "缺 X 资源" regardless of what production trickled in.
@@ -528,7 +589,62 @@ export async function startSidecar(
           };
         }
         const tree = buildAndSimulate(rootTechName, rootTargetLevel, rootKind);
-        return { tree, total, totalCost, bankAtStart };
+        // v0.0.465: moon-fields-aware lunarBase prereq surface (operator
+        // 2026-05-29 "free 1 的时候就必须是月球基地"). When goal targets a
+        // moon body and current free fields <= 1, the next build MUST be
+        // lunarBase to expand the slot pool (each LB level grants 3 fields).
+        // Surface this dynamic prereq in the tree by promoting the lunarBase
+        // child node's targetLevel to LB_now + 1 (the next-level expansion).
+        // Without this, panel just shows lunarBase L?/1 ✓ and operator can't
+        // see WHY the moon build is wedged.
+        const MOON_BUILDINGS_FOR_FIELDS = [
+          "lunarBase", "roboticsFactory", "shipyard", "sensorPhalanx",
+          "jumpgate", "missileSilo", "metalStorage", "crystalStorage",
+          "deuteriumTank",
+        ];
+        if (tree && planet?.type === "moon" && rootTechName !== "lunarBase") {
+          const b = (planet?.buildings as Record<string, number | undefined>) ?? {};
+          const lbCurrent = b["lunarBase"] ?? 0;
+          const usedFields = MOON_BUILDINGS_FOR_FIELDS.reduce((s, n) => s + (b[n] ?? 0), 0);
+          const maxFields = 1 + 3 * lbCurrent;
+          const free = maxFields - usedFields;
+          if (free <= 1) {
+            const lbNeeded = lbCurrent + 1;
+            const existingLb = tree.children.find((c) => c.tech === "lunarBase");
+            if (existingLb) {
+              existingLb.targetLevel = lbNeeded;
+              existingLb.met = lbCurrent >= lbNeeded;
+            } else {
+              tree.children.unshift({
+                tech: "lunarBase",
+                kind: "building",
+                currentLevel: lbCurrent,
+                targetLevel: lbNeeded,
+                met: false,
+                children: [],
+                eta_seconds: 0,
+                subtree_eta_seconds: 0,
+              });
+            }
+            // v0.0.466: synthetic lunarBase becomes the new "current step".
+            // Without this, panel still shows old current_step (the original
+            // root next-level cost) — operator can't see how much resource
+            // to ship in for the actual blocking lunarBase upgrade. Override
+            // currentStep with lunarBase L_needed's cost from TECH_TREE.
+            const lbEntry = (TECH_TREE as unknown as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)["lunarBase"];
+            const lbCostFn = lbEntry?.cost_at;
+            if (typeof lbCostFn === "function") {
+              const lbCost = lbCostFn(lbNeeded);
+              currentStep = {
+                tech: "lunarBase",
+                kind: "building",
+                level: lbNeeded,
+                cost: { m: lbCost.m, c: lbCost.c, d: lbCost.d ?? 0 },
+              };
+            }
+          }
+        }
+        return { tree, total, totalCost, bankAtStart, currentStep };
       }
       // Build prereq tree for a goal. Walks TECH_TREE (regular) or
       // LIFEFORM_TECH.<species>.buildings (lifeform). Each node carries
@@ -609,6 +725,10 @@ export async function startSidecar(
         let prereq_tree: PrereqTreeNode | null = null;
         let totalCost: { m: number; c: number; d: number } = { m: 0, c: 0, d: 0 };
         let bankAtStart: { m: number; c: number; d: number } = { m: 0, c: 0, d: 0 };
+        // v0.0.461: per-goal "current step" — operator 2026-05-29 "同时显示
+        // 当前要做的任务缺多少资源". Pulled from simulate's leftmost-leaf
+        // capture so panel can render "下一步: lunarBase L4 缺 m=80k".
+        let currentStepCapture: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null = null;
         const planetRef = typeof r.goal.planet === "string" ? r.goal.planet : undefined;
         // Resolve planet ref (id-or-coord) to id for tree lookup.
         let resolvedPlanetId = planetRef;
@@ -619,10 +739,11 @@ export async function startSidecar(
             }
           }
         }
-        const captureSim = (sim: { tree: PrereqTreeNode | null; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number } }): void => {
+        const captureSim = (sim: { tree: PrereqTreeNode | null; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number }; currentStep?: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null }): void => {
           prereq_tree = sim.tree;
           totalCost = sim.totalCost;
           bankAtStart = sim.bankAtStart;
+          currentStepCapture = sim.currentStep ?? null;
         };
         if (r.goal.type === "research" && target.tech) {
           captureSim(simulate(target.tech, lvl, "research", resolvedPlanetId, "regular"));
@@ -663,6 +784,28 @@ export async function startSidecar(
           prereq_tree,
           total_cost: totalCost,
           resource_shortage: resourceShortage,
+          // v0.0.461: current-step shortage. The deepest unmet leaf's NEXT
+          // level cost minus current planet bank — exactly what's blocking
+          // the next dispatch attempt. Panel renders "↳ 当前: lunarBase L4
+          // 缺 m=80k" so operator can see what to transport in for the
+          // immediate work, not just the full chain.
+          current_step: currentStepCapture ? {
+            tech: (currentStepCapture as { tech: string }).tech,
+            kind: (currentStepCapture as { kind: string }).kind,
+            level: (currentStepCapture as { level: number }).level,
+            cost: (currentStepCapture as { cost: { m: number; c: number; d: number } }).cost,
+            shortage: {
+              m: Math.max(0, (currentStepCapture as { cost: { m: number } }).cost.m - bankAtStart.m),
+              c: Math.max(0, (currentStepCapture as { cost: { c: number } }).cost.c - bankAtStart.c),
+              d: Math.max(0, (currentStepCapture as { cost: { d: number } }).cost.d - bankAtStart.d),
+            },
+          } : null,
+          // v0.0.459: event-triggered awaiting set — empty/missing means
+          // "ready to dispatch on next event". Non-empty means goal is
+          // waiting for one of these event types before merger will try.
+          awaiting_events: priorityMergerRef
+            ? Array.from(priorityMergerRef.getAwaiting(r.goal.id))
+            : [],
         };
       });
     },
@@ -736,26 +879,35 @@ export async function startSidecar(
     cancelGoal: (id) => {
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.updateStatus(id, "cancelled", "via /v1/goals/{id}/cancel");
+      priorityMergerRef?.clearAwaiting(id);
+      triggerDispatch();
       return { ok: true };
     },
     pauseGoal: (id) => {
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.updateStatus(id, "blocked", "paused by operator");
+      triggerDispatch();
       return { ok: true };
     },
     resumeGoal: (id) => {
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.updateStatus(id, "pending", "resumed by operator");
+      // v0.0.459: operator-triggered retry — clear awaiting so this goal
+      // is eligible for dispatch on the immediate triggerDispatch below.
+      priorityMergerRef?.clearAwaiting(id);
+      triggerDispatch();
       return { ok: true };
     },
     setMainGoal: (id) => {
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.setMainGoal(id);
+      triggerDispatch();
       return { ok: true };
     },
     unsetMainGoal: (id) => {
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.setMainGoal(null);
+      triggerDispatch();
       return { ok: true };
     },
     parseGoalNL: async (description) => {
@@ -795,6 +947,7 @@ export async function startSidecar(
         progress_pct: 0, current_step: "queued", eta_at: null,
       });
       console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5}`);
+      triggerDispatch();
       return { ok: true, goal_id: id };
     },
     createDiscoveryGoal: (body) => {
@@ -894,10 +1047,18 @@ export async function startSidecar(
             const type = row?.goal.type;
             if (!isTransient && (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport")) {
               goalsStore.updateStatus(goalId, "cancelled", reason);
+              priorityMergerRef?.clearAwaiting(goalId);
             } else {
               goalsStore.updateStatus(goalId, "blocked", reason);
+              // v0.0.459: event-triggered gate — goal stays blocked until
+              // empire_poll snapshot OR operator_retry (resume) clears the
+              // awaiting set. Without this, every snapshot would re-dispatch
+              // the same failed directive in a tight loop.
+              priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "operator_retry"]);
             }
           } else if (result?.success === true) {
+            // Success → clear any awaiting set so next dispatch can fire.
+            priorityMergerRef?.clearAwaiting(goalId);
             // ATOMIC actions (expedition / colonize / deploy / transport):
             // ApiExec's success means the fleet launched. Goal is terminal —
             // mark completed immediately. Without this, expedition goals
@@ -974,6 +1135,11 @@ export async function startSidecar(
             // planner detects terminal next tick.
           }
         }
+        // v0.0.459: directive ack is a planner-eligible event — re-dispatch
+        // so any unblocked / next-chain-leg goal fires immediately. Without
+        // this, the 500ms tick (removed) used to absorb the gap; now must be
+        // explicit.
+        triggerDispatch();
       }
       for (const h of set) {
         try { h(m); } catch { /* handler errors must not crash the relay */ }
@@ -1020,7 +1186,7 @@ export async function startSidecar(
   });
 
   // --- PriorityMerger ------------------------------------------------------
-  const priorityMerger = new PriorityMerger({
+  const priorityMerger: PriorityMerger = new PriorityMerger({
     store: goalsStore,
     planGoal,
     send: (msg: DownstreamMsg) => {
@@ -1065,6 +1231,11 @@ export async function startSidecar(
       http.queueDownstream(msg);
     },
   });
+  // v0.0.459 forward-ref assignment — CRUD endpoints + directive_completed
+  // handler use priorityMergerRef + triggerDispatch via closure (declared
+  // above ws/http setup). Without this assignment, those closures see null
+  // and noop on every CRUD call → no dispatch → goal stuck pending forever.
+  priorityMergerRef = priorityMerger;
   // Directive → goal mapping (in-memory). Trimmed when ack arrives.
   const directiveToGoal = new Map<string, string>();
   // species_discovery: stamp dispatched coord per directive_id (NOT on row,
@@ -1157,12 +1328,15 @@ export async function startSidecar(
       goals: goalsStore.listActive(),
       strategy: strategyManager.load(),
     });
+    // v0.0.459: clear empire_poll awaiting for ALL goals — empire snapshot
+    // arrived means underlying ogame state may have changed; previously-failed
+    // goals get one more chance. Operator-retry awaiting NOT cleared (that
+    // requires explicit operator action via /goals/{id}/resume).
+    try { priorityMerger.clearAwaiting("*", "empire_poll"); }
+    catch (e) { console.error("[ogamex/sidecar] clearAwaiting threw", e); }
     // Dispatch active goals (idempotent — already-active rows still get a
     // freshly-planned next step). Wrap in try/catch so a single goal's
     // planning failure does NOT swallow subsequent state.snapshots.
-    // Operator 2026-05-28: "取消 userbusy 机制" — frontend click intercept
-    // (boot.ts v0.0.386) replaces the busy gate. Sidecar dispatches whenever
-    // a snapshot arrives; cp= races are absorbed by the frontend cp lock.
     try {
       const result = priorityMerger.dispatch(msg.snapshot);
       const actions = result.dispatched.map((d) => {
@@ -1176,19 +1350,14 @@ export async function startSidecar(
     }
   });
 
-  // Aggressive merger tick — 500ms. Most ticks are no-ops (dispatched=0)
-  // when no new goals added. The cost is tiny (a few ms each) and the win
-  // is sub-second dispatch latency once a goal is added. Operator wants
-  // "中间不要等" — chain expeditions back-to-back through ApiExec.
-  setInterval(() => {
-    const snap = stateRef.current;
-    if (!snap) return;
-    try {
-      priorityMerger.dispatch(snap);
-    } catch (e) {
-      console.error("[ogamex/sidecar] periodic merger threw", e);
-    }
-  }, 500);
+  // v0.0.459: removed 500ms merger tick (operator 2026-05-29 "基本原则就是
+  // 只用事件触发"). Dispatch is now triggered exclusively by:
+  //   - ws.on("state.snapshot")        ← empire poll arrived
+  //   - event.directive_completed      ← directive ack from userscript
+  //   - createGoal/cancelGoal/...      ← operator goal mutation
+  //   - resumeGoal                     ← operator manual retry
+  // Goals that failed are held via priorityMerger.markAwaiting until one of
+  // {empire_poll, operator_retry} clears their awaiting set.
 
   ws.on("event.daily_failure", (msg) => {
     // record() is async; fire-and-forget. We attach a catch so a stuck

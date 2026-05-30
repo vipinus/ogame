@@ -36,6 +36,32 @@ const ENERGY_GATED_BUILDINGS: ReadonlySet<string> = new Set([
   "deuteriumSynth",
 ]);
 
+// Ogame v12 — list of buildings that can physically exist on a moon. Anything
+// not in this set is planet-only (naniteFactory, terraformer, spaceDock, mines,
+// solar/fusion, research lab, allianceDepot, etc.) and must be rejected when a
+// goal targets a moon body, before any chain/fields work runs.
+const MOON_ALLOWED_BUILDINGS: ReadonlySet<string> = new Set([
+  "metalStorage",
+  "crystalStorage",
+  "deuteriumTank",
+  "roboticsFactory",
+  "shipyard",
+  "lunarBase",
+  "sensorPhalanx",
+  "jumpgate",
+  "missileSilo",
+]);
+
+// Reverse of MOON_ALLOWED: buildings that physically CANNOT exist on a planet,
+// only on moons. Operator 2026-05-29 evidence: GoalRunner dispatched
+// `lunarBase L1 planet_id=33637366` (a planet, not the matching moon) → ogame
+// returned error 100001 "未知的錯誤". planner should reject before dispatch.
+const MOON_ONLY_BUILDINGS: ReadonlySet<string> = new Set([
+  "lunarBase",
+  "sensorPhalanx",
+  "jumpgate",
+]);
+
 /**
  * Resolve a planet reference. Accepts either an ogame numeric planet ID
  * ("33657770") or canonical coord string ("1:190:6"). Falls back to undefined
@@ -517,10 +543,24 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
       return { blocked: `unknown prereq tech: ${reqTech} (required by ${tech})` };
     }
     if (reqEntry.kind === "building") {
-      const planet = Object.values(ctx.state.planets ?? {}).find((p) => p.id === ctx.sourcePlanetId);
-      const actual = planet?.buildings?.[reqTech] ?? 0;
+      // v0.0.456: research's building prereqs (researchLab, etc.) are
+      // network-wide — operator rule "星球上的研究所有效，月球不需要建研究所".
+      // Scan all planets, pick the highest level. If sourcePlanetId is a moon
+      // and the building is planet-only, the moon lookup would be 0 → planner
+      // tries to build planet-only on moon → blocked by planet-only gate.
+      // Fix: use highest-level planet for both the level check and the upgrade
+      // target. Buildings allowed on moons (rare for research prereqs) still
+      // fall through to the global scan since planet-network is the canonical
+      // truth for research requirements.
+      let bestPlanetId = ctx.sourcePlanetId;
+      let actual = 0;
+      for (const p of Object.values(ctx.state.planets ?? {})) {
+        if (p.type !== "planet") continue;
+        const lvl = p.buildings?.[reqTech] ?? 0;
+        if (lvl > actual) { actual = lvl; bestPlanetId = p.id; }
+      }
       if (actual < reqLevel) {
-        return planBuild(reqTech, reqLevel, ctx.sourcePlanetId, { ...ctx, depth: ctx.depth + 1 });
+        return planBuild(reqTech, reqLevel, bestPlanetId, { ...ctx, depth: ctx.depth + 1, sourcePlanetId: bestPlanetId });
       }
     } else if (reqEntry.kind === "research") {
       const actual = ctx.state.research.levels[reqTech] ?? 0;
@@ -611,6 +651,33 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   const planet = Object.values(ctx.state.planets ?? {}).find((p) => p.id === planetId);
   if (!planet) return { blocked: `planet not found: ${planetId}` };
 
+  // v0.0.455: planet-only gate — reject up-front if the goal asks for a
+  // building that physically can't exist on a moon. Catches optimizer
+  // mistakes like naniteFactory L7 on a moon (operator hit this 2026-05-29,
+  // goal stuck active forever). Whitelist is MOON_ALLOWED_BUILDINGS.
+  if (planet.type === "moon" && !MOON_ALLOWED_BUILDINGS.has(building)) {
+    return {
+      blocked: `planet-only building ${building} cannot be built on moon (${planet.id}); allowed on moon: ${Array.from(MOON_ALLOWED_BUILDINGS).join(", ")}`,
+    };
+  }
+
+  // v0.0.456: moon-only gate (reverse direction) — reject up-front if the goal
+  // asks for a moon-only building (lunarBase / sensorPhalanx / jumpgate) on a
+  // planet body. Operator 2026-05-29 evidence: `lunarBase L1 planet_id=33637366
+  // → error 100001 "未知的錯誤"`. Suggest the matching moon's id in the
+  // blocked reason so the optimizer or operator can re-target cleanly.
+  if (planet.type === "planet" && MOON_ONLY_BUILDINGS.has(building)) {
+    const coord = planet.coords?.join(":") ?? "?";
+    const matchingMoon = Object.values(ctx.state.planets ?? {})
+      .find((p) => p.type === "moon" && p.coords?.join(":") === coord);
+    const moonHint = matchingMoon
+      ? ` — re-target to moon at same coord (id=${matchingMoon.id})`
+      : ` — no moon found at ${coord}, build a moon first`;
+    return {
+      blocked: `moon-only building ${building} cannot be built on planet (${planet.id} @ ${coord})${moonHint}`,
+    };
+  }
+
   // v0.0.452: moon-fields gate. Operator 2026-05-29 rule "月球只剩一个
   // 空间的时候必须先造月球基地,再建其他建筑". When the target body is
   // a moon and the requested building is NOT lunarBase, check whether
@@ -619,13 +686,8 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   // v12 standard); fields_used = sum of all moon-building levels.
   if (planet.type === "moon" && building !== "lunarBase") {
     const b = (planet.buildings as Record<string, number | undefined>) ?? {};
-    const MOON_BUILDING_NAMES = [
-      "metalStorage", "crystalStorage", "deuteriumTank",
-      "roboticsFactory", "shipyard", "lunarBase",
-      "sensorPhalanx", "jumpgate", "missileSilo",
-    ] as const;
     let usedFields = 0;
-    for (const name of MOON_BUILDING_NAMES) usedFields += (b[name] ?? 0);
+    for (const name of MOON_ALLOWED_BUILDINGS) usedFields += (b[name] ?? 0);
     const lunarBaseLevel = b["lunarBase"] ?? 0;
     const maxFields = 1 + 3 * lunarBaseLevel;
     const free = maxFields - usedFields;

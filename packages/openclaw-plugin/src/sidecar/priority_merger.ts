@@ -67,18 +67,25 @@ export class PriorityMerger {
   private readonly store: GoalsStore;
   private readonly planGoal: (goal: Goal, state: WorldState) => Directive | { blocked: string };
   private readonly send: (msg: DownstreamMsg) => void;
-  // Per-goal dispatch rate limit. Without this, a 500ms merger tick combined
-  // with a goal that keeps planning the same directive (e.g., resource
-  // shortfall returns the same crystalMine each plan call) results in
-  // hundreds of `dir-<uuid>` per minute — GoalRunner queue overflow + ApiExec
-  // POST spam against ogame. Each goal can dispatch at most 1 directive
-  // every COOLDOWN_MS to ogame.
-  private readonly lastDispatchTs = new Map<string, number>();
-  private readonly DISPATCH_COOLDOWN_MS = 10_000;
-  // v0.0.432 stuck-active recovery threshold (90s). Operator 2026-05-29:
-  // "能不能一次拉通" — when WS message drops or executor crashes silently,
-  // goal sits at active forever. Re-emit on timeout so chain progresses.
-  private readonly STUCK_ACTIVE_MS = 90_000;
+  // v0.0.459: pure event-driven gate (operator 2026-05-29 "基本原则就是只用
+  // 事件触发"). All timer-based cooldowns / stuck-recovery removed:
+  //   - removed DISPATCH_COOLDOWN_MS (10s rate limit) — pure event triggers
+  //   - removed STUCK_ACTIVE_MS (90s recovery) — operator-resume only
+  // Per-goal awaiting-event Set: when directive fails → mark this goal as
+  // waiting for one of {empire_poll, operator_retry}. dispatch() skips such
+  // goals. Cleared on state.snapshot arrival (empire_poll) or operator
+  // pause+resume (operator_retry).
+  private readonly awaitingEvents = new Map<string, Set<string>>();
+  // v0.0.463: event-driven stuck recovery (operator 2026-05-29 "N=2 落地").
+  // When a goal sits "active" for N consecutive snapshots WHERE the ogame
+  // slot it would occupy is empty AND the snapshot's last_update is newer
+  // than row.updated_at, the dispatched directive is presumed lost (WS drop,
+  // network hiccup, page reload during dispatch). Counter increments per
+  // qualifying snapshot; demote to pending when it hits STUCK_DEMOTE_AT.
+  // Counter zeroes when slot becomes busy (directive succeeded) or goal
+  // exits active. NOT timer-based — counts snapshot events.
+  private readonly stuckCounter = new Map<string, number>();
+  private readonly STUCK_DEMOTE_AT = 2;
 
   constructor(deps: PriorityMergerDeps) {
     this.store = deps.store;
@@ -86,9 +93,43 @@ export class PriorityMerger {
     this.send = deps.send;
   }
 
-  /** Reset per-goal cooldown — invoked on client reconnect. */
+  /** Mark a goal as awaiting one of the given events. Called when a directive
+   *  fails — goal stays blocked until one of those events arrives. */
+  markAwaiting(goalId: string, events: string[]): void {
+    const set = this.awaitingEvents.get(goalId) ?? new Set<string>();
+    for (const e of events) set.add(e);
+    this.awaitingEvents.set(goalId, set);
+  }
+
+  /** Clear awaiting for a goal+event combo. If event is "*" or omitted, clear
+   *  all awaitings for that goal. If goalId is "*", clear that event across
+   *  ALL goals. */
+  clearAwaiting(goalId: string, event?: string): void {
+    if (goalId === "*") {
+      if (!event || event === "*") { this.awaitingEvents.clear(); return; }
+      for (const [g, set] of this.awaitingEvents) {
+        set.delete(event);
+        if (set.size === 0) this.awaitingEvents.delete(g);
+      }
+      return;
+    }
+    if (!event || event === "*") { this.awaitingEvents.delete(goalId); return; }
+    const set = this.awaitingEvents.get(goalId);
+    if (!set) return;
+    set.delete(event);
+    if (set.size === 0) this.awaitingEvents.delete(goalId);
+  }
+
+  /** Read-only access for /v1/goals to expose awaiting set per goal. Returns
+   *  empty set when none set (allocator-free common path). */
+  getAwaiting(goalId: string): ReadonlySet<string> {
+    return this.awaitingEvents.get(goalId) ?? new Set<string>();
+  }
+
+  /** Reset awaiting + all internal state — invoked on client reconnect. */
   resetCooldown(): void {
-    this.lastDispatchTs.clear();
+    this.awaitingEvents.clear();
+    this.stuckCounter.clear();
   }
 
   /**
@@ -144,30 +185,88 @@ export class PriorityMerger {
         blocked.push({ goal_id: row.goal.id, reason });
         continue;
       }
-      // v0.0.433: active goal — DO NOT re-plan/re-dispatch every cooldown.
-      // Executor is running; spamming duplicates wastes ogame POSTs and
-      // pollutes the goal_runner dedupe table. Just wait for ack. After
-      // STUCK_ACTIVE_MS without ack, assume WS-lost or executor crash and
-      // downgrade to pending so the same tick re-plans.
+      // v0.0.463: pure-event stuck recovery. Operator's directive may have
+      // been dispatched but lost (WS drop / page reload / etc.). For build/
+      // research goals, the ogame slot it would occupy is the diagnostic:
+      // empty slot + snapshot newer than dispatch = directive presumed lost.
+      // After STUCK_DEMOTE_AT consecutive qualifying snapshots → demote.
       if (row.status === "active") {
-        // Chain peers downstream must wait for this active leg either way.
-        if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
-        // v0.0.434: fallback to row.updated_at when lastDispatchTs empty
-        // (sidecar restart wipes the in-memory map; goals already-active in
-        // the DB need this fallback to ever recover).
-        const dispatchedAt = this.lastDispatchTs.get(row.goal.id) ?? row.updated_at ?? row.created_at;
-        if (typeof dispatchedAt === "number" && now - dispatchedAt > this.STUCK_ACTIVE_MS) {
-          this.store.updateStatus(row.goal.id, "pending", "stuck-active recovery");
-          this.lastDispatchTs.delete(row.goal.id);
-          // Fall through to re-plan as pending below.
+        const goalType = row.goal.type;
+        const planetIdRaw = typeof row.goal.planet === "string" ? row.goal.planet : "";
+        // Resolve planet ref (coord or id) to actual planet object for slot probe
+        const planet = planetIdRaw
+          ? (Object.values(state.planets ?? {}).find((p) => p.id === planetIdRaw)
+             ?? Object.values(state.planets ?? {}).find((p) => Array.isArray(p.coords) && p.coords.join(":") === planetIdRaw))
+          : undefined;
+        let slotEmpty = false;
+        if (goalType === "build" || goalType === "build_universal") {
+          const bq = planet?.build_q as { ends_at?: number } | null;
+          slotEmpty = !bq || (bq.ends_at ?? 0) <= now;
+        } else if (goalType === "research") {
+          const rq = state.research?.queue as { ends_at?: number } | null;
+          slotEmpty = !rq || (rq.ends_at ?? 0) <= now;
+        } else if (goalType === "build_ships" || goalType === "build_defense") {
+          const sq = planet?.shipyard_q as { ends_at?: number } | null;
+          slotEmpty = !sq || (sq.ends_at ?? 0) <= now;
+        } else if (goalType === "lifeform_building") {
+          const lfq = (planet as { lf_build_q?: { ends_at?: number } | null } | undefined)?.lf_build_q;
+          slotEmpty = !lfq || (lfq.ends_at ?? 0) <= now;
+        } else if (goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport") {
+          // v0.0.466 + v0.0.467: atomic fleet ops stuck recovery. Operator
+          // 2026-05-29 "do" → extend pattern from expedition to colonize/
+          // deploy/transport. Signal = "no outbound fleet of matching
+          // mission originating from this goal's source planet". If zero
+          // matching fleets and snapshot newer than dispatch → directive
+          // presumed lost. Same N=2 demote logic shared with build/research.
+          const missionByType: Record<string, number> = {
+            expedition: 15,
+            colonize: 7,
+            deploy: 4,
+            transport: 3,
+          };
+          const expectedMission = missionByType[goalType];
+          const targetParams = row.goal.target as { source_planet?: string };
+          const srcId = targetParams.source_planet ?? (typeof row.goal.planet === "string" ? row.goal.planet : "");
+          const srcPlanet = srcId
+            ? (Object.values(state.planets ?? {}).find((p) => p.id === srcId)
+               ?? Object.values(state.planets ?? {}).find((p) => Array.isArray(p.coords) && p.coords.join(":") === srcId))
+            : undefined;
+          const srcCoordStr = Array.isArray(srcPlanet?.coords) ? srcPlanet.coords.join(":") : "";
+          const myOutbound = (state.fleets_outbound ?? []).filter((f) => {
+            if (f.mission !== expectedMission) return false;
+            const orig = Array.isArray(f.origin) ? f.origin.join(":") : "";
+            return orig === srcCoordStr;
+          });
+          slotEmpty = myOutbound.length === 0;
+        }
+        // jumpgate is the remaining atomic op without a fleet signal — JG
+        // POSTs to ogame's jumpgate endpoint; success = instant ship swap
+        // between moons with no outbound fleet visible. Needs cooldown
+        // detection (separate enhancement) — left for operator pause+resume.
+        const snapshotFresher = (state.last_update ?? 0) > (row.updated_at ?? 0);
+        if (slotEmpty && snapshotFresher) {
+          const cnt = (this.stuckCounter.get(row.goal.id) ?? 0) + 1;
+          if (cnt >= this.STUCK_DEMOTE_AT) {
+            this.stuckCounter.delete(row.goal.id);
+            this.store.updateStatus(row.goal.id, "pending", `stuck-recovery: empty slot ${cnt} snapshots, directive presumed lost`);
+            // fall through — re-plan as pending below
+          } else {
+            this.stuckCounter.set(row.goal.id, cnt);
+            if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
+            continue;
+          }
         } else {
+          // slot busy (directive working) OR same snapshot — reset counter
+          this.stuckCounter.delete(row.goal.id);
+          if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
           continue;
         }
       }
-      // Per-goal cooldown — see lastDispatchTs comment for rationale.
-      const lastTs = this.lastDispatchTs.get(row.goal.id) ?? 0;
-      if (now - lastTs < this.DISPATCH_COOLDOWN_MS) {
-        // Still mark chain blocked downstream — this leg is occupied.
+      // v0.0.459: per-goal awaiting-event gate. After a directive failed for
+      // this goal, sidecar marks awaiting={"empire_poll","operator_retry"}.
+      // Skip until one of those events arrives and clears the awaiting set.
+      const awaiting = this.awaitingEvents.get(row.goal.id);
+      if (awaiting && awaiting.size > 0) {
         if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
         continue;
       }
@@ -221,7 +320,6 @@ export class PriorityMerger {
       }
       this.store.updateStatus(row.goal.id, "active");
       this.send({ type: "directive.dispatch", directive: result });
-      this.lastDispatchTs.set(row.goal.id, now);
       dispatched.push(result);
       // v0.0.433: this leg is now active; downstream chain peers must wait.
       const cid = (row.goal.target as { chain_id?: unknown })?.chain_id;

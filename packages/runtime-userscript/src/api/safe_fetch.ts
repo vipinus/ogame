@@ -134,34 +134,86 @@ export async function fetchWithCp(
   if (!opts.bypassBusy && userBusyNow()) {
     throw new BusyDeferredError();
   }
-  const operatorCp = currentOperatorCp();
-  const sourceStr = String(sourcePID);
-  const sep = baseUrl.includes("?") ? "&" : "?";
-  const fullUrl = `${baseUrl}${sep}cp=${encodeURIComponent(sourceStr)}`;
-  // Track this fetch + restore as one in-flight unit so click_lock can
-  // delay operator clicks until session-cp is back to operatorCp.
+  // v0.0.461: register THIS fetch as in-flight BEFORE acquiring the cp slot.
+  // Operator 2026-05-29 "我点击的时候正好去建造也能拦住吗?" — without
+  // pre-mutex registration, two queued cp= fetches (A running, B awaiting
+  // mutex) create a microsecond gap mirror=0 between A's release and B's
+  // start. A click in that gap slipped through. Registering up front means
+  // mirror reflects pending+running total — click intercept sees nonzero
+  // for the ENTIRE pending+running lifetime of every cp= fetch.
   let resolveLock!: () => void;
   const lockPromise = new Promise<void>((resolve) => { resolveLock = resolve; });
   inFlightCpFetches.add(lockPromise);
   mirrorInFlightCount();
+  // v0.0.456: acquire global cp slot BEFORE capturing operatorCp — mirror of
+  // sendFleet's acquireSendFleetSlot. Forces strict serialization of all cp=
+  // fetches so session-cp can't race between concurrent dispatchers (build A
+  // and build B for different planets used to interleave → operator UI bouncing).
+  const releaseSlot = await acquireCpSlot();
+  const operatorCp = currentOperatorCp();
+  const sourceStr = String(sourcePID);
+  const sep = baseUrl.includes("?") ? "&" : "?";
+  const fullUrl = `${baseUrl}${sep}cp=${encodeURIComponent(sourceStr)}`;
   try {
     return await _winRef.fetch(fullUrl, init);
   } finally {
     try {
       if (!opts.skipRestore && operatorCp && operatorCp !== sourceStr) {
+        // v0.0.457: switched restore endpoint from eventList → overview ajax.
+        // Evidence (operator 2026-05-29 morning DevTools probe): fetchEventBox
+        // cp=moon does NOT actually switch server session-cp — server fell
+        // back to operator's main planet. eventList is a body-agnostic feed;
+        // overview is the canonical body-aware ajax (same URL ogame's own
+        // sidebar moonlink/planetlink resolves to with ajax=1). Also capture
+        // newAjaxToken from response — fire-and-forget was leaking token
+        // rotations to global ogame state without our tokenManager learning
+        // about them (operator: "没有恢复cp和token").
         try {
-          await _winRef.fetch(
-            `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${encodeURIComponent(operatorCp)}`,
-            { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-          );
+          const restoreUrl = `/game/index.php?page=componentOnly&component=overview&ajax=1&cp=${encodeURIComponent(operatorCp)}`;
+          const restoreRes = await _winRef.fetch(restoreUrl, {
+            credentials: "same-origin",
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+          });
+          // Surface restore-side newAjaxToken on documentElement.dataset so
+          // tokenManager.refresh() (which reads dataset.ogamexToken) picks it
+          // up on next read. fire-and-forget body parse — must not throw.
+          try {
+            const text = await restoreRes.text();
+            const m = text.match(/["']newAjaxToken["']\s*:\s*["']([a-zA-Z0-9_-]+)["']/);
+            if (m && _docRef) {
+              (_docRef.documentElement as HTMLElement).dataset["ogamexToken"] = m[1]!;
+            }
+          } catch (_) { /* token capture is best-effort */ }
         } catch (_) { /* best-effort restore */ }
       }
     } finally {
       inFlightCpFetches.delete(lockPromise);
       mirrorInFlightCount();
       resolveLock();
+      releaseSlot();
     }
   }
+}
+
+// v0.0.456: module-level mutex serializing ALL cp= fetches — mirrors
+// fleet_api.ts sendFleetChain pattern (operator 2026-05-29 "照着发船的接口
+// 改"). Without this, two concurrent cp= POSTs race ogame's session-cp:
+//   T0: build A starts cp=planetX, captures operatorCp=Y
+//   T0+ε: build B starts cp=planetZ, captures operatorCp=Y
+//   T1: A done, restore cp=Y starts
+//   T2: B done, server session now Z, restore cp=Y starts
+//   T3: operator sees session bouncing X→Z→Y
+// Mutex ensures: A's full lifecycle (fetch + restore) completes before B
+// starts. sendFleet already has its own per-feature mutex; this gate adds
+// the same guarantee to scheduleEntry / discover / jumpgate / every cp=
+// site.
+let cpFetchChain: Promise<unknown> = Promise.resolve();
+async function acquireCpSlot(): Promise<() => void> {
+  const prev = cpFetchChain;
+  let release!: () => void;
+  cpFetchChain = new Promise<void>((resolve) => { release = resolve; });
+  try { await prev; } catch { /* prior failure isn't ours to handle */ }
+  return release;
 }
 
 /** Convenience: emergency.* path (FS save, recall) — always fire, no busy gate. */
@@ -182,10 +234,20 @@ export function fetchWithCpBypassBusy(
 export async function restoreSessionCp(targetCp: string | null): Promise<void> {
   if (!_winRef || !targetCp) return;
   try {
-    await _winRef.fetch(
-      `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1&cp=${encodeURIComponent(targetCp)}`,
+    // v0.0.457: switched eventList → overview ajax (body-aware) for same
+    // reason as fetchWithCp inline restore. Also capture newAjaxToken into
+    // documentElement.dataset for tokenManager pickup.
+    const res = await _winRef.fetch(
+      `/game/index.php?page=componentOnly&component=overview&ajax=1&cp=${encodeURIComponent(targetCp)}`,
       { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
     );
+    try {
+      const text = await res.text();
+      const m = text.match(/["']newAjaxToken["']\s*:\s*["']([a-zA-Z0-9_-]+)["']/);
+      if (m && _docRef) {
+        (_docRef.documentElement as HTMLElement).dataset["ogamexToken"] = m[1]!;
+      }
+    } catch (_) { /* */ }
   } catch (_) { /* */ }
 }
 

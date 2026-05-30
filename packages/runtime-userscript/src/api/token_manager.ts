@@ -18,7 +18,12 @@ export class TokenManager {
     private readonly refresh: () => string,
     opts: TokenManagerOptions = {},
   ) {
-    this.ttlMs = opts.ttlMs ?? 30 * 60 * 1000;
+    // v0.0.464: TTL collapsed from 30min → 0 (operator 2026-05-29 found
+    // root cause: stale 30min cache held an old token through hundreds of
+    // build POSTs, ogame returning 100001 "未知错误" for every one because
+    // restore-captured newAjaxToken was sitting in dataset but TokenManager
+    // never re-read it. DOM read is cheap; correctness > micro-perf.
+    this.ttlMs = opts.ttlMs ?? 0;
   }
 
   /**

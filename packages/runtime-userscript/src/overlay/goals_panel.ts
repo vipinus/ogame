@@ -47,6 +47,21 @@ export interface GoalRowFromHttp {
   created_at: number;
   updated_at: number;
   eta_at?: number | null;
+  /** v0.0.460: event-triggered awaiting set from sidecar. Empty → ready to
+   *  dispatch on next event. Non-empty → goal waits for one of these events
+   *  (e.g. "empire_poll" arrives via state.snapshot, "operator_retry" via
+   *  /v1/goals/{id}/resume). Rendered as ⏸ chip with hint. */
+  awaiting_events?: string[];
+  /** v0.0.461: deepest-leaf next-step cost + shortage. Tells operator what's
+   *  blocking RIGHT NOW (vs total_cost which is the full chain). Rendered
+   *  next to chain shortage chip. */
+  current_step?: {
+    tech: string;
+    kind: "research" | "building";
+    level: number;
+    cost: { m: number; c: number; d: number };
+    shortage: { m: number; c: number; d: number };
+  } | null;
 }
 
 export interface GoalsPanelOptions {
@@ -1155,6 +1170,18 @@ function openTransportSettings(
         if (!fromP || !toP || fromP.id === toP.id) return [];
         const fromCoords = (fromP.coords ?? []).join(":");
         const toCoords = (toP.coords ?? []).join(":");
+        // v0.0.462: same-coord shortcut (operator 2026-05-29 "运到本星球的
+        // 月球 任务规划的不对"). When fromCoords === toCoords (planet↔moon
+        // at same G:S:P), there's no long-distance to bridge — JG hop would
+        // be moon→itself (nonsense). Emit ONE direct deploy and bail out
+        // before the JG-vs-direct decision.
+        if (fromCoords && fromCoords === toCoords) {
+          return [{
+            type: finalLegType,
+            target: { target_coords: toCoords, target_type: toP.type ?? "planet", ships, cargo: carryCargo ? cargo : undefined, source_planet: fromP.id, chain_id: chainId, chain_phase: `${phasePrefix}_local` },
+            planet: fromP.id, priority: basePriority,
+          }];
+        }
         const fromMoon = findSiblingMoon(fromP.id);
         const toMoon = findSiblingMoon(toP.id);
         // Operator 2026-05-29 rule: JG can only carry EMPTY ships. When this
@@ -1638,6 +1665,18 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const color = paused ? "#8a8aff" : (statusColor[g.status] ?? "#ccc");
       const reasonLine = g.reason ? `<div style="color:#a0a0a0; font-size:10px; margin-top:2px;">↳ ${escapeHtml(g.reason)}</div>` : "";
       const canAct = g.status === "pending" || g.status === "active" || g.status === "blocked";
+      // v0.0.460: awaiting-event chip + Retry button. Only show on blocked
+      // goals that have a non-empty awaiting set (the new pure event-driven
+      // gate — operator 2026-05-29). Retry button calls /v1/goals/{id}/resume
+      // which clears awaiting + immediately re-dispatches.
+      const awaitingArr = Array.isArray(g.awaiting_events) ? g.awaiting_events : [];
+      const isAwaiting = g.status === "blocked" && awaitingArr.length > 0;
+      const awaitingChip = isAwaiting
+        ? `<span style="color:#80c0ff; font-size:10px; margin-left:6px; background:#1a3a5a; padding:1px 5px; border-radius:8px;" title="goal blocked until one of these events fires">⏸ awaiting ${awaitingArr.join("/")}</span>`
+        : "";
+      const retryBtn = isAwaiting
+        ? `<button data-action-resume="${escapeHtml(g.id)}" style="${btnStyle("#205a40", "#408a60")}" title="clear awaiting + immediate re-dispatch">↻ Retry</button>`
+        : "";
       // Active / pending → Pause + Cancel. Paused → Resume + Cancel.
       const pauseOrResume = !canAct ? ""
         : paused
@@ -1675,13 +1714,41 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             };
             const sh = g.resource_shortage;
             const shortageChip = sh && (sh.m + sh.c + sh.d) > 0
-              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title="假设当前产能不变, 这是还需要从其他星球 transport 进来的资源总量">缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="打开运输 modal 自动填写目的+资源 (源=当前星球)">→ 运输</button>`
+              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title="假设当前产能不变, 这是还需要从其他星球 transport 进来的资源总量">缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="打开运输 modal 自动填写目的+资源 (源=当前星球)">→ 运输</button>`
               : "";
+            // v0.0.456: decouple shortageChip from totalEta — moons return
+            // ETA=∞ (no local production for deuterium etc.), JSON serializes
+            // to null, ?? 0 collapses to 0, fallback path was hiding the
+            // shortage chip + 运输 button. Render shortage whenever it's
+            // positive regardless of whether ETA is computable.
+            const hasShortage = sh && (sh.m + sh.c + sh.d) > 0;
             const etaHeader = totalEta > 0
               ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${shortageChip}`
-              : `<span style="color:#7cfc00;">all prereqs met — can execute now</span>`;
+              : hasShortage
+                ? `<span style="color:#ffaa55;">awaiting transport (ETA n/a — moon local prod = 0)</span>${shortageChip}`
+                : `<span style="color:#7cfc00;">all prereqs met — can execute now</span>`;
+            // v0.0.461: current-step row — "↳ 当前步骤: lunarBase L4 缺 ..."
+            // separate line below the chain summary so operator sees what
+            // the bot is RIGHT NOW trying to fire, and how short on cash.
+            const cs = g.current_step;
+            const csLine = cs ? (() => {
+              const csh = cs.shortage;
+              const csTotal = csh.m + csh.c + csh.d;
+              const stepLabel = `${cs.tech} L${cs.level}`;
+              if (csTotal === 0) {
+                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ 当前: ${escapeHtml(stepLabel)} · ✅ 资源够, 立即可派</div>`;
+              }
+              const shortageBits = [
+                csh.m > 0 ? `${fmtRes(csh.m)} m` : "",
+                csh.c > 0 ? `${fmtRes(csh.c)} c` : "",
+                csh.d > 0 ? `${fmtRes(csh.d)} d` : "",
+              ].filter(Boolean).join(" · ");
+              const stepFillBtn = `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="按当前步骤缺口装运">→ 运输</button>`;
+              return `<div style="font-size:10px; color:#ffaa55; margin-bottom:2px;">↳ 当前: ${escapeHtml(stepLabel)} 缺 ${shortageBits}${stepFillBtn}</div>`;
+            })() : "";
             return `<div style="margin-top:6px; padding:4px 0 2px; border-top:1px dashed #2a3a52;">
               <div style="font-size:10px; color:#8090a8; margin-bottom:2px;">prereq chain · ${etaHeader}</div>
+              ${csLine}
               ${renderTreeNode(g.prereq_tree)}
             </div>`;
           })()
@@ -1695,9 +1762,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       return `
         <div style="${mainBg}border-top: 1px solid #2a3a52; padding: 6px 0;">
           <div style="display:flex; align-items:center; gap:6px; justify-content:space-between;">
-            <span>${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${etaAtBadge}</span>
+            <span>${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${etaAtBadge}${awaitingChip}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
-            <span style="display:flex; gap:4px; flex-wrap:wrap;">${mainBtn}${pauseOrResume}${cancelBtn}</span>
+            <span style="display:flex; gap:4px; flex-wrap:wrap;">${retryBtn}${mainBtn}${pauseOrResume}${cancelBtn}</span>
           </div>
           <div style="margin-top:2px;"><strong style="color:#e0e8f0;">${escapeHtml(g.type)}</strong> ${escapeHtml(targetStr)}</div>
           ${g.planet ? `<div style="color:#8090a8; font-size:10px;">@ ${escapeHtml(g.planet)}</div>` : ""}
@@ -1878,7 +1945,13 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const goalsBody = !goalsCollapsed ? `${empty}${rows}` : "";
     // M4 — Goals section ⚙ → openGoalsSettings modal (create new goal form).
     const goalsSettingsBtn = `<button data-settings="goals" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="普通任务设置 — 创建新任务">⚙</button>`;
-    const goalsSection = `${sectionHeader("goals", "🪐 Goals", filtered.length, "#e0e8f0", goalsSettingsBtn)}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody}</div>`;
+    // v0.0.460: awaiting count badge — operator sees at a glance how many
+    // goals are quiet because they're waiting for empire_poll / operator_retry.
+    const awaitingCount = filtered.filter((g) => g.status === "blocked" && Array.isArray(g.awaiting_events) && g.awaiting_events.length > 0).length;
+    const awaitingBadge = awaitingCount > 0
+      ? `<span style="color:#80c0ff; font-size:10px; background:#1a3a5a; padding:1px 6px; border-radius:8px; margin-left:6px;" title="goals quietly waiting for an event before next dispatch attempt">⏸ ${awaitingCount} awaiting</span>`
+      : "";
+    const goalsSection = `${sectionHeader("goals", "🪐 Goals", filtered.length, "#e0e8f0", awaitingBadge + goalsSettingsBtn)}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody}</div>`;
 
     // Species Discovery section — operator's new task type (Galaxy view DNA).
     const discCollapsed = sectionCollapsed.discovery ?? false;
@@ -2286,14 +2359,23 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     for (const btn of panel.querySelectorAll<HTMLElement>("[data-action-fill-shortage]")) {
       btn.addEventListener("click", () => {
         const targetCoord = btn.getAttribute("data-fill-target") ?? "";
+        const targetBuilding = btn.getAttribute("data-fill-building") ?? "";
         const m = parseInt(btn.getAttribute("data-fill-m") ?? "0", 10);
         const c = parseInt(btn.getAttribute("data-fill-c") ?? "0", 10);
         const d = parseInt(btn.getAttribute("data-fill-d") ?? "0", 10);
         const store = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, { id: string; type?: string; coords?: number[] }> } } }).__ogamexStore;
         const planets = Object.values(store?.state?.planets ?? {});
-        const targetPlanet = planets.find((p) => p?.type === "planet" && Array.isArray(p.coords) && p.coords.join(":") === targetCoord);
+        const matches = planets.filter((p): p is { id: string; type?: string; coords?: number[] } => !!p && Array.isArray(p.coords) && p.coords.join(":") === targetCoord);
+        // v0.0.454: moon-only buildings → prefer the moon at this coord so
+        // the "→ 运输" shortcut on a moon goal (lunarBase / jumpgate /
+        // sensorPhalanx shortage) targets the moon, not the same-coord planet.
+        const MOON_ONLY = new Set(["lunarBase","sensorPhalanx","jumpgate","moonBase","moon_base","lunar_base","sensor_phalanx","jump_gate"]);
+        const wantMoon = MOON_ONLY.has(targetBuilding);
+        const targetBody = (wantMoon ? matches.find((p) => p?.type === "moon") : matches.find((p) => p?.type === "planet"))
+          ?? matches.find((p) => p?.type === "planet")
+          ?? matches[0];
         openTransportSettings(doc, baseUrl, fetchFn, {
-          ...(targetPlanet?.id ? { targetPlanetId: targetPlanet.id } : {}),
+          ...(targetBody?.id ? { targetPlanetId: targetBody.id } : {}),
           cargo: { m, c, d },
         });
       });
