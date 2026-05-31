@@ -777,8 +777,35 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         throw new Error(`jumpgate non-JSON response (HTTP ${r.status}): ${txt.slice(0, 200)}`);
       }
       console.log(`[ApiExec/jumpgate] attempt=${attempt} resp status=${resp.status} success=${resp.success} message=${resp.message ?? "<none>"} errors=${JSON.stringify(resp.errors ?? null)} raw[0:300]=${txt.slice(0, 300)}`);
-      const ok = resp.status === true || resp.success === true;
+      // v0.0.546 forensic — mirror full JG response to sidecar journal.
+      // Operator 2026-05-31 "JG 没有跳" → ghost ack suspected: ogame says
+      // success but JG didn't fire. Full response often has a discriminator
+      // (errors array, cooldown=0, message text) we need to see to fix.
+      try {
+        const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+        void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tag: "JG-RESP",
+            text: `attempt=${attempt} src=${sourceMoonId} → tgt=${targetMoonId} status=${resp.status} success=${resp.success} cooldown=${resp.cooldown ?? "<none>"} keys=[${Object.keys(resp).join(",")}] raw=${txt.slice(0, 1500)}`,
+          }),
+        }).catch(() => { /* */ });
+      } catch { /* */ }
+      // v0.0.546 — ghost-ack defense (operator 2026-05-31 "JG 没有跳"):
+      // ogame can return success=true while errors[] is populated. Don't
+      // trust success flag alone; require errors[] to be empty too.
+      // (We do NOT also require cooldown — that field's presence varies by
+      // skin/version; can't safely use as a discriminator without ground
+      // truth from journal forensic.)
+      const rawOk = resp.status === true || resp.success === true;
+      const errsArr = Array.isArray(resp.errors) ? resp.errors : [];
+      const ok = rawOk && errsArr.length === 0;
       if (ok) break;
+      if (rawOk && errsArr.length > 0) {
+        throw new Error(`jumpgate ghost-ack: success flag set but errors=${JSON.stringify(errsArr).slice(0, 200)}`);
+      }
       const errMsg = String(resp.message ?? JSON.stringify(resp.errors ?? "") ?? txt.slice(0, 200));
       if (attempt === 1 && TOKEN_INVALID_RE.test(errMsg)) {
         token = await fetchOverlayToken();
