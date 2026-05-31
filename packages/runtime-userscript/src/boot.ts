@@ -1143,7 +1143,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.555";
+  const USERSCRIPT_VERSION = "0.0.556";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2209,7 +2209,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   }
   async function pollEmpireForType(typeLabel: "planet" | "moon", planetTypeParam: number): Promise<void> {
     try {
-      const url = `/game/index.php?page=standalone&component=empire&planetType=${planetTypeParam}`;
+      // v0.0.556 — operator 2026-05-31 "sidecar empire 数据陈旧". ogame's
+      // standalone&component=empire response is server-cached for a few
+      // seconds → eventbox_hook fires pollEmpire after fleet arrival but
+      // gets the SAME stale numbers (e.g. operator's planet 33666823 真实
+      // LC=3092 vs sidecar LC=600 even after force refresh). Append a
+      // cache-bust param so each force-refresh actually hits a fresh
+      // backend computation.
+      const url = `/game/index.php?page=standalone&component=empire&planetType=${planetTypeParam}&_=${Date.now()}`;
       const r = await env.win.fetch(url, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
       if (!r.ok) return;
       const html = await r.text();
