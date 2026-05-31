@@ -1677,13 +1677,18 @@ export async function startSidecar(
   });
 
   ws.on("hello", () => {
-    // On reconnect, flush ANY queued downstream messages — stale directives
-    // accumulated during the disconnect window are useless and would
-    // overwhelm the userscript on resume (manifested as a queue of ~1000
-    // crystalMine/solarPlant/residentialSector POSTs against ogame).
-    if (http && typeof (http as unknown as { flushQueue?: () => void }).flushQueue === "function") {
-      (http as unknown as { flushQueue: () => void }).flushQueue();
-    }
+    // v0.0.551 — operator 2026-05-31: HTTP-only mode means EVERY ogame page
+    // navigation re-runs the userscript (@run-at=document-end) → new hello.
+    // The old flushQueue-on-hello call (designed for WS reconnect to drop
+    // stale directives from the disconnect window) becomes destructive here:
+    // chain leg 2 directives queued for the next long-poll were being nuked
+    // by the operator clicking Overview / Fleet / Galaxy. Operator hit chain
+    // txc-mpucf2xr-84vt leg 2 "deploying" stuck because 11 page navs in 5
+    // min flushed the directive each time before the long-poll picked it up.
+    // For HTTP long-poll the queue should PERSIST across page navigations —
+    // it's a session-level resource, not a WS-connection resource.
+    // (If needed later we can detect "real reconnect" vs "page nav" by
+    //  checking time-since-last-hello, but for now: don't flush.)
     // Also reset merger's per-goal cooldown — fresh client deserves fresh
     // dispatch cycle, not silence because lastDispatchTs is from before
     // disconnect.
