@@ -1160,6 +1160,15 @@ function planJumpgateGoal(goal: Goal, state: WorldState): PlanResult {
   } else {
     ships = (typeof target.ships === "object" && target.ships !== null ? target.ships : {}) as ShipCount;
   }
+  // v0.0.547 — operator 2026-05-31 "JG 没有跳" → take_all JG with 0 ships on
+  // source moon → dispatched ships={} → userscript throws "empty ships payload"
+  // → ack failure → WS-flap loses ack → goal stuck active → stuck-recovery
+  // re-dispatches in a loop. Fix: refuse to dispatch JG with empty ships.
+  // Wait for upstream ferry to actually deliver ships before generating the
+  // JG directive.
+  if (Object.values(ships).every((n) => !(n as number) || (n as number) <= 0)) {
+    return { blocked: `jumpgate: source_moon ${sourceMoonId} has no ships available yet (waiting for upstream ferry)` };
+  }
   // Ship availability gate — sum of requested ships vs source-moon current.
   const onMoon = srcMoon.ships ?? {};
   for (const [name, n] of Object.entries(ships)) {
