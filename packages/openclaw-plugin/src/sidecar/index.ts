@@ -1232,17 +1232,20 @@ export async function startSidecar(
             priorityMergerRef?.clearAwaiting(goalId);
             // v0.0.478: clear dispatch stamp so next leg/level can dispatch.
             priorityMergerRef?.clearDispatched(goalId);
-            // v0.0.535 — record the ogame fleetId returned by sendFleet.
-            // Architectural fix for "fleet sent twice": once a goal has a
-            // dispatched_fleet_id, planner.plan() short-circuits to blocked
-            // until the field clears (goal cancelled / fleet returns / chain
-            // leg advances). sendFleet's return value IS the dispatch ledger.
+            // v0.0.535 — record "dispatched" marker on goal so planner gate
+            // refuses to re-plan it. Architectural fix for "fleet sent twice".
+            // v0.0.536 — ogame v12 sendFleet response has NO fleetIdToReturn
+            // (verified fleet_api.ts:292). userscript returns fleetId=0 from
+            // sendFleet. Real fleet_id is harvested LATER by boot.ts:1380
+            // /movement scrape parsing `id="timer_N"`. So we MUST NOT filter
+            // on `fleetId > 0` — fleetId of 0 is a perfectly valid "dispatched
+            // OK" signal. Store it; /movement scrape can overwrite with real
+            // id later if it becomes wired.
             const inner = (m as { result?: { result?: { fleetId?: number } } }).result?.result;
-            const fleetIdNum = typeof inner?.fleetId === "number" && inner.fleetId > 0 ? inner.fleetId : null;
-            if (fleetIdNum !== null) {
+            if (typeof inner?.fleetId === "number") {
               try {
-                goalsStore.setFleetId(goalId, fleetIdNum);
-                console.log(`[ack] goal=${goalId} → fleet_id=${fleetIdNum} recorded`);
+                goalsStore.setFleetId(goalId, inner.fleetId);
+                console.log(`[ack] goal=${goalId} → dispatched_fleet_id=${inner.fleetId} recorded`);
               } catch (e) {
                 console.warn(`[ack] setFleetId failed for ${goalId}: ${String(e).slice(0, 200)}`);
               }
