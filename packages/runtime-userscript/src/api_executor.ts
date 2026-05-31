@@ -783,15 +783,17 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       // (errors array, cooldown=0, message text) we need to see to fix.
       try {
         const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
-        void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
-          method: "POST", credentials: "omit",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            tag: "JG-RESP",
-            text: `attempt=${attempt} src=${sourceMoonId} → tgt=${targetMoonId} status=${resp.status} success=${resp.success} cooldown=${resp.cooldown ?? "<none>"} keys=[${Object.keys(resp).join(",")}] raw=${txt.slice(0, 1500)}`,
-          }),
-        }).catch(() => { /* */ });
+        if (ctxWin.localStorage?.getItem("OGAMEX_FORENSIC") === "1") {
+          const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+          void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+            method: "POST", credentials: "omit",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              tag: "JG-RESP",
+              text: `attempt=${attempt} src=${sourceMoonId} → tgt=${targetMoonId} status=${resp.status} success=${resp.success} cooldown=${resp.cooldown ?? "<none>"} keys=[${Object.keys(resp).join(",")}] raw=${txt.slice(0, 1500)}`,
+            }),
+          }).catch(() => { /* */ });
+        }
       } catch { /* */ }
       // v0.0.546 — ghost-ack defense (operator 2026-05-31 "JG 没有跳"):
       // ogame can return success=true while errors[] is populated. Don't
@@ -835,17 +837,10 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
           void w.__ogamexPollEmpire!({ force: true }).catch(() => { /* */ });
         }, 3000);
       }
-      const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
-      void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
-        method: "POST", credentials: "omit",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tag: "JG-OK",
-          text: `src_moon=${sourceMoonId} → tgt_moon=${targetMoonId} ships=${JSON.stringify(ships)} pollEmpire fired (immediate + 3s)`,
-        }),
-      }).catch(() => { /* */ });
     } catch { /* */ }
+    // v0.0.553 — JG-OK forensic mirror removed; JG infrequent enough that
+    // sidecar journal [merger] DISPATCH + goal status transitions are
+    // sufficient to trace.
     return { action: "jumpgate", clicked: true };
   }
 
@@ -942,25 +937,22 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       throw new Error(`${directive.action}: no tokenManager wired (v0.0.436 delegation needs it)`);
     }
     const destTypeNum = destType === "3" ? 3 : destType === "2" ? 2 : 1;
-    // v0.0.537 forensic — 1:486:7 chain leg-2 ran with leg-1 shape; log
-    // the actual params we hand to fleet_api.sendFleet so we can compare
-    // goal.target vs real POST. directive.goal_id is the chain leg id;
-    // directive.id is per-tick directive id. Both printed for cross-ref
-    // against sidecar [merger] DISPATCH lines.
+    // v0.0.553 — POST-IN forensic gated behind localStorage flag. Was always
+    // on, sidecar journal grew + browser fetch queue + console spam. Default
+    // off; turn on for debugging: localStorage.setItem("OGAMEX_FORENSIC","1").
     const _cargo = { m: resources["m"] ?? 0, c: resources["c"] ?? 0, d: resources["d"] ?? 0 };
-    const _postInText = `${directive.action} goal_id=${(directive as { goal_id?: string }).goal_id ?? "?"} dirId=${directive.id} cp=${planetId} → ${tGalaxy}:${tSystem}:${tPos}(type=${destType}) mission=${mission} ships=${JSON.stringify(ships)} cargo=${JSON.stringify(_cargo)}`;
-    console.warn(`[ApiExec/POST-IN] ${_postInText}`);
-    // v0.0.540 — mirror to sidecar so journal captures forensic even after
-    // browser reload. Console alone is unreliable (operator reload wiped
-    // the 19:41 chain trace before paste). Fire-and-forget.
     try {
       const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
-      void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
-        method: "POST", credentials: "omit",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tag: "POST-IN", text: _postInText }),
-      }).catch(() => { /* */ });
+      if (ctxWin.localStorage?.getItem("OGAMEX_FORENSIC") === "1") {
+        const _postInText = `${directive.action} goal_id=${(directive as { goal_id?: string }).goal_id ?? "?"} dirId=${directive.id} cp=${planetId} → ${tGalaxy}:${tSystem}:${tPos}(type=${destType}) mission=${mission} ships=${JSON.stringify(ships)} cargo=${JSON.stringify(_cargo)}`;
+        console.warn(`[ApiExec/POST-IN] ${_postInText}`);
+        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+        void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tag: "POST-IN", text: _postInText }),
+        }).catch(() => { /* */ });
+      }
     } catch { /* */ }
     console.info(`[ApiExec] ${directive.action} delegate→fleet_api.sendFleet ${tGalaxy}:${tSystem}:${tPos} type=${destType} mission=${mission} cp=${planetId}`);
     try {

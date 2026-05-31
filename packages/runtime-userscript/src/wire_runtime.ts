@@ -18,7 +18,7 @@
  */
 
 import type { BootHandle } from "./boot.js";
-import type { BridgeClient } from "./bridge/ws_client.js";
+import type { HttpBridgeClient } from "./bridge/http_client.js";
 import { startEmergencySave } from "./emergency/save_orchestrator.js";
 import { recallFleet } from "./api/fleet_api.js";
 import { startSpyDetector } from "./emergency/spy_detector.js";
@@ -32,8 +32,8 @@ import type { StateRef } from "./emergency/attack_detector.js";
 import { startGoalsPanel, type GoalsPanelHandle } from "./overlay/goals_panel.js";
 
 export interface RuntimeWireOptions {
-  /** BridgeClient to bind GoalRunner. Optional — if absent, GoalRunner is not started. */
-  bridge?: BridgeClient;
+  /** HttpBridgeClient to bind GoalRunner. Optional — if absent, GoalRunner is not started. */
+  bridge?: HttpBridgeClient;
   /** Window for DOM clicks (browser injects window; tests inject jsdom). */
   win: Window;
   doc: Document;

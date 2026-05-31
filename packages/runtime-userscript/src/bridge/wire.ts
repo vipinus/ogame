@@ -1,9 +1,8 @@
 import type { BootHandle } from "../boot.js";
-import { BridgeClient } from "./ws_client.js";
 import { HttpBridgeClient } from "./http_client.js";
 
 /**
- * M4.7 — wire BridgeClient into the userscript boot lifecycle.
+ * M4.7 — wire HttpBridgeClient into the userscript boot lifecycle.
  *
  * Extracted from main.ts so it's testable. main.ts wraps this with
  * Tampermonkey GM_getValue config; tests drive it directly.
@@ -24,13 +23,13 @@ export interface WireBridgeOptions {
   userscriptVersion?: string;
   /** Strategy version mirror (placeholder until M5). Default 0. */
   strategyVersion?: number;
-  /** Optional: inject a custom BridgeClient (tests). Otherwise constructs a default one. */
-  client?: BridgeClient;
+  /** Optional: inject a custom HttpBridgeClient (tests). Otherwise constructs a default one. */
+  client?: HttpBridgeClient;
 }
 
 export interface WireBridgeHandle {
-  /** Reference to the BridgeClient (constructed or injected). */
-  client: BridgeClient;
+  /** Reference to the HttpBridgeClient (constructed or injected). */
+  client: HttpBridgeClient;
   /** Stop timers + bus subscriptions; does NOT call client.stop() — caller owns the client lifecycle. */
   stop(): void;
 }
@@ -48,7 +47,7 @@ export async function wireBridge(
   opts: WireBridgeOptions,
 ): Promise<WireBridgeHandle> {
   // v0.0.549 — operator 2026-05-31 "没用过 ws 就删了吧". HTTP long-poll only.
-  // WS branch (BridgeClient) retired: 100s CF idle timeout, browser inactive-
+  // WS branch (HttpBridgeClient) retired: 100s CF idle timeout, browser inactive-
   // tab throttle, and zombie sockets all caused phantom reconnects without
   // adding any latency benefit for this game-automation workload (planner
   // ticks every 5s anyway). HttpBridgeClient covers all transport now:
@@ -56,8 +55,7 @@ export async function wireBridge(
   const url = opts.bridgeUrl;
   const isHttp = /^https?:\/\//.test(url);
   void isHttp; // retained for ad-hoc diagnostics; client is always HTTP now
-  const client = opts.client
-    ?? (new HttpBridgeClient() as unknown as BridgeClient);
+  const client = opts.client ?? new HttpBridgeClient();
   const base = opts.pushIntervalMs ?? DEFAULT_PUSH_INTERVAL_MS;
   const jit = opts.jitterMs ?? DEFAULT_JITTER_MS;
   const userscriptVersion = opts.userscriptVersion ?? DEFAULT_USERSCRIPT_VERSION;

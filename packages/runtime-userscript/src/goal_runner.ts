@@ -1,4 +1,4 @@
-import type { BridgeClient } from "./bridge/ws_client.js";
+import type { HttpBridgeClient } from "./bridge/http_client.js";
 import type { PriorityGate } from "./emergency/priority_gate.js";
 import type { DirectiveExecutor } from "./directive_executor_iface.js";
 import type { Directive } from "@ogamex/shared";
@@ -14,7 +14,7 @@ import type { Directive } from "@ogamex/shared";
  * with a console.warn (the upstream scheduler will reissue if needed).
  */
 export interface GoalRunnerDeps {
-  client: BridgeClient;
+  client: HttpBridgeClient;
   gate: PriorityGate;
   /** One or more executors; first whose `canHandle(directive)===true` wins. */
   executors: DirectiveExecutor[];
