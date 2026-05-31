@@ -344,7 +344,23 @@ export async function startSidecar(
   const debug = new DebugBuffer();
 
   // --- Transports ----------------------------------------------------------
-  const ws = new WsServer({ port: config.wsPort, token: config.bridgeToken });
+  // v0.0.549 — operator 2026-05-31 "没用过 ws 就删了吧". WS path was never
+  // actually used in production (operator's localStorage OGAMEX_BRIDGE_URL
+  // defaults to https:// → HttpBridgeClient long-poll). WsServer kept causing
+  // false "connected=false" health reports and WS-specific debugging cycles.
+  // Replace with a no-op stub that satisfies the type but doesn't bind any
+  // port or accept connections. All `ws.send(...)` writes are paired with
+  // `http.queueDownstream(...)` already — HTTP path is the single source of
+  // delivery. `ws.on = wrapOn` mutation below still works (assigns to stub
+  // method, harmless).
+  const ws = {
+    on: () => { /* */ },
+    send: () => { /* */ },
+    start: async () => { /* */ },
+    stop: async () => { /* */ },
+    port: () => 0,
+    clients: new Set<unknown>(),
+  } as unknown as WsServer;
   // v0.0.459 forward-decl: priorityMerger is constructed later (after planner
   // + saveCoordinator wiring) but HttpServer's CRUD endpoints (cancelGoal,
   // resumeGoal, etc.) close over it for event-triggered dispatch. Holds the
@@ -378,7 +394,12 @@ export async function startSidecar(
       // WsServer.clients is private; we read it via a structural cast. This
       // matches the comment in the M8.1 spec — we don't want to break the
       // WsServer encapsulation by adding a public method just for health.
-      bridgeOpen: () => (ws as unknown as { clients: Set<unknown> }).clients.size > 0,
+      // v0.0.549 — HTTP-only mode: "bridge open" means we saw an upstream
+       // message from the userscript within the last 60s. last_seen is
+       // bumped whenever any upstream msg (state.snapshot / event.* / hello)
+       // arrives via /ogamex/v1/push. Replaces the prior ws.clients.size>0
+       // check which was always false in HTTP-only mode.
+      bridgeOpen: () => lastSeen.at !== null && Date.now() - lastSeen.at < 60_000,
       llmPing: () => pingGemini(geminiClient),
       stateRef,
       strategyVersion: () => strategyManager.load().version,
@@ -1679,11 +1700,9 @@ export async function startSidecar(
 
   // --- Online banner -------------------------------------------------------
   if (reporter !== null) {
-    const wsPort = ws.port();
     const httpPort = http.port();
     const banner =
-      `OgameX online — sidecar listening on ws://127.0.0.1:${wsPort}` +
-      ` + http://127.0.0.1:${httpPort}`;
+      `OgameX online — sidecar listening on http://127.0.0.1:${httpPort}`;
     // Failure to send the banner must not abort sidecar boot — the bridge
     // itself is healthy; the operator just won't see the online ping.
     try {

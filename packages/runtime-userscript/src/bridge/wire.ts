@@ -47,24 +47,28 @@ export async function wireBridge(
   boot: BootHandle,
   opts: WireBridgeOptions,
 ): Promise<WireBridgeHandle> {
-  // Pick transport from URL scheme. http(s):// → HttpBridgeClient (long-poll);
-  // ws(s):// → WebSocket BridgeClient. Operators on networks where the cloud
-  // router can't proxy WebSocket can flip OGAMEX_BRIDGE_URL to https:// for
-  // the same protocol envelopes via /v1/push + /v1/poll instead.
+  // v0.0.549 — operator 2026-05-31 "没用过 ws 就删了吧". HTTP long-poll only.
+  // WS branch (BridgeClient) retired: 100s CF idle timeout, browser inactive-
+  // tab throttle, and zombie sockets all caused phantom reconnects without
+  // adding any latency benefit for this game-automation workload (planner
+  // ticks every 5s anyway). HttpBridgeClient covers all transport now:
+  // /ogamex/v1/push for upstream, /ogamex/v1/poll for downstream long-poll.
   const url = opts.bridgeUrl;
   const isHttp = /^https?:\/\//.test(url);
+  void isHttp; // retained for ad-hoc diagnostics; client is always HTTP now
   const client = opts.client
-    ?? (isHttp
-      ? (new HttpBridgeClient() as unknown as BridgeClient)
-      : new BridgeClient({ reconnectOnLoss: true }));
+    ?? (new HttpBridgeClient() as unknown as BridgeClient);
   const base = opts.pushIntervalMs ?? DEFAULT_PUSH_INTERVAL_MS;
   const jit = opts.jitterMs ?? DEFAULT_JITTER_MS;
   const userscriptVersion = opts.userscriptVersion ?? DEFAULT_USERSCRIPT_VERSION;
   const strategyVersion = opts.strategyVersion ?? DEFAULT_STRATEGY_VERSION;
 
   // For HTTP transport, strip any trailing /push or /poll; HttpBridgeClient
-  // appends /ogamex/v1/push and /ogamex/v1/poll automatically.
-  const connectUrl = isHttp ? url.replace(/\/(push|poll|ws)\/?$/, "") : url;
+  // appends /ogamex/v1/push and /ogamex/v1/poll automatically. Also coerce
+  // wss:// / ws:// → https:// / http:// (operators with stale localStorage
+  // URLs from the WS era are now silently upgraded to HTTP).
+  const httpUrl = url.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://");
+  const connectUrl = httpUrl.replace(/\/(push|poll|ws)\/?$/, "");
   await client.connect(connectUrl, opts.bridgeToken);
 
   // Hello — fired immediately after the open event resolves.
