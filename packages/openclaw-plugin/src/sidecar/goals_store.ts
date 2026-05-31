@@ -154,6 +154,19 @@ export class GoalsStore {
   }
 
   /**
+   * Return rows whose Goal.parent_goal_id == parentId. Implemented as a
+   * full scan + filter on goal_json — Goal is stored as JSON blob and
+   * parent_goal_id is a recent addition that isn't a SQL column. For
+   * typical goal-count (<100), the scan is cheap; if growth pressures
+   * this we can promote parent_goal_id to a real column with index.
+   *
+   * Includes terminal children — caller filters if it only wants live ones.
+   */
+  listChildren(parentId: string): GoalRow[] {
+    return this.list().filter((r) => r.goal.parent_goal_id === parentId);
+  }
+
+  /**
    * Replace `target` on the stored Goal by MERGING newTarget into the
    * existing target object, then writing the updated goal_json back. Used by
    * the build_ships progress watcher to decrement remaining amount as units

@@ -57,7 +57,14 @@ const TOKEN_INVALID_RE = /invalid token|csrf|session expired/i;
 // as "please try again later". For emergency FS save, retry within attempt
 // loop instead of bouncing to FSM FALLBACK (which costs 10s reset window
 // while resources sit on planet under hostile incoming).
-const TRANSIENT_RACE_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later/i;
+// v0.0.469: + 100001 + 未知错误 (operator 2026-05-30 "build naniteFactory 7
+// ↳ rejected: error 100001 未知错误"). 100001 is ogame's catch-all "未知错
+// 误" — it can be token desync, internal race, transient state mismatch.
+// Treating as transient is safe: retry with backoff + fresh token refresh
+// (cpPostWithRetry rotates newAjaxToken between attempts). If 4 retries all
+// fail, falls through to caller. Most observed 100001 cases have resolved
+// on attempt 2.
+const TRANSIENT_RACE_RE = /140043|100001|請稍後再試|请稍后再试|稍後再試|未知的錯誤|未知的错误|try again later/i;
 // Operator 2026-05-28: ogame 140028 "倉存容量不足!" — DEST-SIDE complement
 // to case_decider.ts's source-side cargo sizing (commit c8d2ead, 2026-05-24:
 // case_decider sizes cargo ≤ FLEET capacity using ship_cargo_capacity).
@@ -237,6 +244,23 @@ async function sendFleetInner(
   for (let attempt = 1; attempt <= 4; attempt++) {
     const sourcePID = p.sourcePlanetId ?? "";
     console.log(`[fleet_api/sendFleet] attempt=${attempt} POST ${endpoint}${sourcePID ? ` (cp=${sourcePID})` : ""} body=${body.toString().replace(/token=[^&]+/, "token=***")}`);
+    // v0.0.506 forensic — gated off in v0.0.508 (operator 2026-05-31 chrome
+    // 崩, stuck-recovery 风暴时一波派 6-10 sendFleet → forensic POST 堆 → 助推
+    // 浏览器内存压力)。 留 fleet-strip POST (罕见, 真有 strip 时才发) 跟
+    // empire-dump (一次性). 这条 sendFleet-post 暂时 mute, 真要查再开。
+    if (false as boolean) {
+    try {
+      const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+      void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+        method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tag: "sendFleet-post",
+          text: `attempt=${attempt} cp=${sourcePID} dest=${p.coords.join(":")}(type=${p.destType}) mission=${p.mission} ships=${JSON.stringify(p.ships)} cargo=${JSON.stringify(p.cargo)}`,
+        }),
+      }).catch(() => {});
+    } catch { /* */ }
+    }
     const res = sourcePID
       ? await fetchWithCpBypassBusy(endpoint, {
           method: "POST",
@@ -321,6 +345,20 @@ async function sendFleetInner(
         stripped.d = 0;
       }
       console.warn(`[fleet_api/sendFleet] attempt=${attempt} dest storage full (${errMsg.slice(0, 80)}) — drop ${peeled} and retry`);
+      // v0.0.503 — forward strip event to sidecar so journal can show it.
+      // operator 2026-05-30 实证: 多次 transport 漏 m, console.warn 看不到,
+      // 没人知道 silent strip 发生了。
+      try {
+        const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+        void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+          method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tag: "fleet-strip",
+            text: `attempt=${attempt} src=${p.sourcePlanetId} dest=${p.coords.join(":")}(type=${p.destType}) mission=${p.mission} dropped=${peeled} prev_cargo=${JSON.stringify(p.cargo)} new_cargo=${JSON.stringify(stripped)} ogame_err=${errMsg.slice(0, 120)}`,
+          }),
+        }).catch(() => {});
+      } catch { /* */ }
       p = { ...p, cargo: stripped };
       if (json.newAjaxToken) {
         ctx.token.set(json.newAjaxToken);

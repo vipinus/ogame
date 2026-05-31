@@ -65,6 +65,9 @@ export function wireRuntime(
     const tok = extractToken(opts.doc, opts.win as OgameWindow);
     return tok ?? "";
   });
+  // v0.0.472: expose tokenManager to wire.ts for expedition.debris_check
+  // handler (sends explorer fleet via fleet_api.sendFleet which needs token).
+  (opts.win as Window & { __ogamexTokenManager?: TokenManager }).__ogamexTokenManager = tokenManager;
 
   // 2. Emergency orchestrator. The state ref reads `current` lazily, so each
   //    consultation sees the latest StateStore snapshot.

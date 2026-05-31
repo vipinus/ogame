@@ -32,6 +32,14 @@ export interface GoalRowFromHttp {
   /** Sidecar's listGoals enriches each row with this flag so the panel can
    *  show ⭐ on the row currently selected as the player's main objective. */
   is_main_goal?: boolean;
+  /** v0.0.481 architecture B: parent-child sub-goal relationship. When set,
+   *  this row renders nested under its parent and shares cascade-cancel. */
+  parent_goal_id?: string;
+  /** v0.0.483 — body's currently-active queue snapshot (any tech building on
+   *  this goal's body, regardless of whether it serves this goal's target).
+   *  Panel uses this as TOP-priority display override so "building lunarBase
+   *  L7" shows for jumpgate L2 goal on same moon. */
+  body_build_q?: { queue: "build" | "lf_build" | "shipyard"; tech: string; level: number | null; ends_at: number } | null;
   prereq_tree?: PrereqTreeNode | null;
   /** M5 — total resource cost across the entire prereq chain. */
   total_cost?: { m: number; c: number; d: number };
@@ -973,42 +981,45 @@ function openTransportSettings(
       }
       return 0;
     });
+    // v0.0.512 — operator 2026-05-31: 改成 type 切换 + 2 列 coord cells.
+    // 头排 radio "🌍 星球 / 🌙 月球" 切类型, 下面 coord cells 2 列, 每 cell
+    // 是 [G:S:P] + 选择 radio. 切换 type 时显示对应类型的 cells。
+    // v0.0.519 — empire-wide moon count, drives type-toggle moon disable.
+    const hasAnyMoon = sortedCoordKeys.some(k => !!groupedByCoord.get(k)?.moon);
     const planetSelectHtml = (radioName: string, includeUnset = false): string => {
-      const header = `<div style="padding:4px 8px; display:flex; gap:8px; font-size:10px; color:#7080a0; border-bottom:1px solid #2a3a52; background:#0a1018; position:sticky; top:0;">
-        <span style="width:72px;">坐标</span>
-        <span style="flex:1;">🌍 行星</span>
-        <span style="flex:1;">🌙 月球</span>
+      const moonAttrs = hasAnyMoon
+        ? `data-tr-type-toggle="${radioName}"`
+        : `data-tr-type-toggle="${radioName}" disabled`;
+      const moonLabelStyle = hasAnyMoon ? "cursor:pointer;" : "cursor:not-allowed; opacity:0.4;";
+      const typeRadio = `<div style="padding:6px 8px; display:flex; gap:14px; font-size:11px; color:#d0d8e0; border-bottom:1px solid #2a3a52; background:#0a1018; position:sticky; top:0;">
+        <label style="cursor:pointer;"><input type="radio" name="${radioName}-type" value="planet" checked data-tr-type-toggle="${radioName}" style="margin-right:4px; vertical-align:middle;"/>🌍 星球</label>
+        <label style="${moonLabelStyle}" title="${hasAnyMoon ? "" : "empire 无任何月球, 不可选"}"><input type="radio" name="${radioName}-type" value="moon" ${moonAttrs} style="margin-right:4px; vertical-align:middle;"/>🌙 月球</label>
       </div>`;
       const unset = includeUnset
-        ? `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
-            <span style="width:72px; color:#7080a0; font-size:11px;">—</span>
-            <label style="flex:1; cursor:pointer; color:#7080a0; font-size:11px;">
+        ? `<div style="padding:4px 8px; border-bottom:1px solid #1a2030;">
+            <label style="cursor:pointer; color:#7080a0; font-size:11px;">
               <input type="radio" name="${radioName}" value="" checked style="margin-right:6px; vertical-align:middle;"/>(不选 — 默认目标)
             </label>
-            <span style="flex:1;"></span>
           </div>`
         : "";
-      const cellPlanet = (p: StorePlanet | undefined): string =>
-        p ? `<label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
-              <input type="radio" name="${radioName}" value="${escapeHtml(p.id)}" data-tr-planet-id="${escapeHtml(p.id)}"/>
-              <span>🌍 ${escapeHtml(p.name ?? "殖民")}</span>
-            </label>`
-          : `<span style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
-      const cellMoon = (p: StorePlanet | undefined): string =>
-        p ? `<label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
-              <input type="radio" name="${radioName}" value="${escapeHtml(p.id)}" data-tr-planet-id="${escapeHtml(p.id)}"/>
-              <span>🌙 ${escapeHtml(p.name ?? "月球")}</span>
-            </label>`
-          : `<span style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
-      const rows = sortedCoordKeys.map((k) => {
-        const { planet, moon } = groupedByCoord.get(k)!;
-        return `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
-          <span style="width:72px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
-          ${cellPlanet(planet)}
-          ${cellMoon(moon)}
-        </div>`;
-      }).join("");
-      return header + unset + rows;
+      // Build cells: 2-col flex grid, each cell = one body of selected type.
+      // Render BOTH types up front, toggle visibility via data attr + JS.
+      const buildCells = (kind: "planet" | "moon"): string => {
+        const cells = sortedCoordKeys.map((k) => {
+          const { planet, moon } = groupedByCoord.get(k)!;
+          const body = kind === "planet" ? planet : moon;
+          if (!body) {
+            return `<div style="flex:0 0 50%; padding:3px 6px; box-sizing:border-box; color:#3a4658; font-size:11px; font-style:italic;">[${escapeHtml(k)}] —</div>`;
+          }
+          const icon = kind === "planet" ? "🌍" : "🌙";
+          return `<label style="flex:0 0 50%; padding:3px 6px; box-sizing:border-box; cursor:pointer; color:#d0d8e0; font-size:11px; display:inline-flex; align-items:center; gap:4px;">
+            <input type="radio" name="${radioName}" value="${escapeHtml(body.id)}" data-tr-planet-id="${escapeHtml(body.id)}" data-tr-body-kind="${kind}" style="margin:0;"/>
+            <span>${icon}[${escapeHtml(k)}]</span>
+          </label>`;
+        }).join("");
+        return `<div data-tr-body-section="${kind}" style="display:${kind === "planet" ? "flex" : "none"}; flex-wrap:wrap;">${cells}</div>`;
+      };
+      return typeRadio + unset + buildCells("planet") + buildCells("moon");
     };
     const sectionCard = (title: string, inner: string): string =>
       `<div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
@@ -1016,41 +1027,156 @@ function openTransportSettings(
         ${inner}
       </div>`;
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">三步选择: 运输舰来源 → 资源所在 → 目标. Phase 1 单段 transport; JG 多跳链 Phase 2.</div>
-      ${sectionCard("① 运输舰来源星球",
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">三步选择: 舰船 → 资源 → 目标 (→ 停泊). JG 多跳链需选停泊星球.</div>
+      ${sectionCard("① 舰船星球",
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-source-radio")}</div>
         <div data-tr-source-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(选择来源星球后显示船数)</div>
         <label style="display:flex; gap:6px; align-items:center; padding-top:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
           <input type="checkbox" data-tr-jg-enable checked/>
           <span>空船跳跃门可用时 → 使用跳跃门 (Phase 2 生效)</span>
         </label>`)}
-      ${sectionCard("② 资源所在星球",
-        `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-resource-radio")}</div>
-        <div data-tr-resource-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(选择后显示当前资源)</div>
-        <div style="display:grid; grid-template-columns:50px 1fr; gap:6px; padding-top:6px; align-items:center; font-size:11px;">
-          <span style="color:#d0d8e0;">金属 M</span><input data-tr-cargo="m" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle}"/>
-          <span style="color:#d0d8e0;">晶体 C</span><input data-tr-cargo="c" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle}"/>
-          <span style="color:#d0d8e0;">重氢 D</span><input data-tr-cargo="d" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle}"/>
-        </div>`)}
+      ${sectionCard("② 资源星球",
+        `<label style="display:block; cursor:pointer; color:#d0d8e0; font-size:11px; padding-bottom:6px;">
+          <input type="checkbox" data-tr-resource-sameas-ship checked style="margin-right:6px; vertical-align:middle;"/>同 ① 舰船星球
+        </label>
+        <div data-tr-resource-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-resource-radio")}</div>
+        <div data-tr-resource-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(选择后显示当前资源)</div>`)}
       ${sectionCard("③ 目标星球",
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-target-radio")}</div>`)}
-      ${sectionCard("④ 最终停泊星球 <span style='color:#7080a0; font-weight:normal;'>(不选 = 停在目标 / 选另一处 = 卸完资源用 deploy 飞过去)</span>",
-        `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
-      ${sectionCard("⑤ 选船类型 + 数量",
+      ${sectionCard("④ 停泊星球 <span style='color:#7080a0; font-weight:normal;'>(不选 = 停在目标 / 选另一处 = 卸完资源用 deploy 飞过去)</span>",
+        `<div style="display:flex; gap:14px; flex-wrap:wrap; padding-bottom:6px; font-size:11px; color:#d0d8e0;">
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="ship" data-tr-stopover-shortcut checked style="margin-right:4px; vertical-align:middle;"/>舰船星球</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="resource" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>资源星球</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="target" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>目标星球</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="other" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>其他星球</label>
+        </div>
+        <div data-tr-stopover-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
+      ${sectionCard("⑤ 选船类型 + 资源装载 + 数量",
         `<div style="display:flex; gap:12px; padding-bottom:6px;">
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> 大运 LT (cap ${fmt(ltCap)})</label>
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小运 ST (cap ${fmt(stCap)})</label>
+        </div>
+        <div style="display:flex; gap:10px; padding:4px 0; align-items:center; font-size:11px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
+            <input type="checkbox" data-tr-cargo-enable="m" checked style="margin:0;"/>
+            <span>金属 M</span>
+            <input data-tr-cargo="m" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
+          </label>
+          <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
+            <input type="checkbox" data-tr-cargo-enable="c" checked style="margin:0;"/>
+            <span>晶体 C</span>
+            <input data-tr-cargo="c" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
+          </label>
+          <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
+            <input type="checkbox" data-tr-cargo-enable="d" checked style="margin:0;"/>
+            <span>重氢 D</span>
+            <input data-tr-cargo="d" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
+          </label>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding-top:4px;">
           <span style="color:#d0d8e0; font-size:11px; width:60px;">数量</span>
           <input data-tr-ship-count type="number" min="0" step="1" value="0" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span data-tr-ship-need style="color:#7cfc00; font-size:10px;">(改 ②/④ 后自动算)</span>
         </div>`)}
+      ${sectionCard("⑥ 跳跃门返程选项",
+        `<label style="cursor:pointer; color:#d0d8e0; font-size:11px; display:block;">
+          <input type="checkbox" data-tr-jg-take-all checked/>
+          <span style="margin-left:4px;">用跳跃门往回走的时候带回月球上所有的船</span>
+          <span style="color:#7080a0; font-size:10px; display:block; margin-left:20px; margin-top:2px;">勾选 = JG 那一段动态带走源月球当时所有 ships (LC/SC/其他)<br/>不勾选 = JG 只带配置的 ships, 其他留在月球</span>
+        </label>`)}
       <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
         <span data-tr-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
         <button data-tr-submit style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建运输任务</button>
       </div>
     `;
+    // v0.0.518 — section ②/④ shortcut wiring (operator 2026-05-31).
+    // ② 同 ① 舰船 checkbox (默认勾选, 折叠 picker; ship!=resource 时自动展开):
+    const resourceSameAsShipCb = m.querySelector<HTMLInputElement>("[data-tr-resource-sameas-ship]");
+    const resourcePickerWrap = m.querySelector<HTMLElement>("[data-tr-resource-picker-wrap]");
+    const syncResourceFromShip = (): void => {
+      if (!resourceSameAsShipCb?.checked) return;
+      const sourcePid = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
+      if (!sourcePid) return;
+      const rr = m.querySelector<HTMLInputElement>(`input[name="tr-resource-radio"][value="${sourcePid}"]`);
+      if (rr) {
+        rr.checked = true;
+        rr.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    };
+    resourceSameAsShipCb?.addEventListener("change", () => {
+      if (resourcePickerWrap) resourcePickerWrap.style.display = resourceSameAsShipCb.checked ? "none" : "block";
+      if (resourceSameAsShipCb.checked) syncResourceFromShip();
+    });
+    // When ship planet changes AND "same as ship" still ticked → sync resource;
+    // when user manually picks a different resource → uncheck "same as ship".
+    for (const sr of m.querySelectorAll<HTMLInputElement>('input[name="tr-source-radio"]')) {
+      sr.addEventListener("change", () => { if (resourceSameAsShipCb?.checked) syncResourceFromShip(); });
+    }
+    for (const rr of m.querySelectorAll<HTMLInputElement>('input[name="tr-resource-radio"]')) {
+      rr.addEventListener("change", () => {
+        if (!rr.checked) return;
+        const sourcePid = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
+        if (rr.value !== sourcePid && resourceSameAsShipCb?.checked) {
+          resourceSameAsShipCb.checked = false;
+          if (resourcePickerWrap) resourcePickerWrap.style.display = "block";
+        }
+      });
+    }
+    // ④ stopover shortcut wiring: 舰船/资源/目标/其他 → 自动设 tr-stopover-radio
+    // 到对应 body id; "其他" 才显 picker。
+    const stopoverPickerWrap = m.querySelector<HTMLElement>("[data-tr-stopover-picker-wrap]");
+    const applyStopoverShortcut = (val: string): void => {
+      if (stopoverPickerWrap) stopoverPickerWrap.style.display = val === "other" ? "block" : "none";
+      let targetPid = "";
+      if (val === "ship") targetPid = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
+      else if (val === "resource") targetPid = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio"]:checked')?.value ?? "";
+      else if (val === "target") targetPid = m.querySelector<HTMLInputElement>('input[name="tr-target-radio"]:checked')?.value ?? "";
+      if (val !== "other") {
+        // Set the underlying tr-stopover-radio to picked id (or unset radio if empty)
+        const unsetRadio = m.querySelector<HTMLInputElement>('input[name="tr-stopover-radio"][value=""]');
+        const targetRadio = targetPid ? m.querySelector<HTMLInputElement>(`input[name="tr-stopover-radio"][value="${targetPid}"]`) : null;
+        if (targetRadio) targetRadio.checked = true;
+        else if (unsetRadio) unsetRadio.checked = true;
+      }
+    };
+    for (const sh of m.querySelectorAll<HTMLInputElement>("[data-tr-stopover-shortcut]")) {
+      sh.addEventListener("change", () => { if (sh.checked) applyStopoverShortcut(sh.value); });
+    }
+    // Re-apply on upstream radio changes (ship/resource/target) so shortcut value stays in sync.
+    for (const upstreamName of ["tr-source-radio", "tr-resource-radio", "tr-target-radio"]) {
+      for (const r of m.querySelectorAll<HTMLInputElement>(`input[name="${upstreamName}"]`)) {
+        r.addEventListener("change", () => {
+          const cur = m.querySelector<HTMLInputElement>('input[name="tr-stopover-shortcut"]:checked')?.value ?? "ship";
+          if (cur !== "other") applyStopoverShortcut(cur);
+        });
+      }
+    }
+    // v0.0.512 — type toggle wiring: switch 🌍 星球 ↔ 🌙 月球 sections.
+    // Selecting a type swaps visible body cells. Existing body radio
+    // selection is cleared if the body's kind no longer matches.
+    for (const tt of m.querySelectorAll<HTMLInputElement>("[data-tr-type-toggle]")) {
+      tt.addEventListener("change", () => {
+        if (!tt.checked) return;
+        const radioName = tt.getAttribute("data-tr-type-toggle");
+        if (!radioName) return;
+        const kind = tt.value; // "planet" | "moon"
+        // Toggle visibility of body cell sections under this radioName.
+        // Each section is uniquely identified by its data-tr-body-section,
+        // scoped to the closest container (radio name shared per modal so
+        // we filter by adjacent siblings to the type radio's parent).
+        const ttParent = tt.closest("div");
+        const container = ttParent?.parentElement;
+        if (!container) return;
+        for (const sec of container.querySelectorAll<HTMLElement>("[data-tr-body-section]")) {
+          sec.style.display = sec.getAttribute("data-tr-body-section") === kind ? "flex" : "none";
+        }
+        // If currently-checked body radio has wrong kind, uncheck it.
+        const checked = container.querySelector<HTMLInputElement>(`input[name="${radioName}"]:checked`);
+        if (checked && checked.getAttribute("data-tr-body-kind") !== kind && checked.value !== "") {
+          checked.checked = false;
+        }
+      });
+    }
     // Section ① — source planet → display ship counts.
     const sourceInfo = m.querySelector<HTMLElement>("[data-tr-source-info]");
     for (const r of m.querySelectorAll<HTMLInputElement>('input[name="tr-source-radio"]')) {
@@ -1068,6 +1194,22 @@ function openTransportSettings(
     // the grid (e.g. operator on a moon row not exposed).
     const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
     if (ogameCurrentPid) {
+      // v0.0.521 — operator 2026-05-31 "我在月球时默认舰船星球不对". 之前只
+      // setChecked 但 type toggle 默认 "星球" mode, 月球 radio 在隐藏 section。
+      // 现在: 先判断当前 body type, 把 type toggle 切到对应 mode, 再 set radio。
+      const currentBody = planetsMap[ogameCurrentPid];
+      const currentKind: "planet" | "moon" = currentBody?.type === "moon" ? "moon" : "planet";
+      const switchTypeToggle = (radioName: string, kind: "planet" | "moon"): void => {
+        const tt = m.querySelector<HTMLInputElement>(`input[name="${radioName}-type"][value="${kind}"]`);
+        if (tt && !tt.checked) {
+          tt.checked = true;
+          tt.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      };
+      switchTypeToggle("tr-source-radio", currentKind);
+      switchTypeToggle("tr-resource-radio", currentKind);
+      switchTypeToggle("tr-target-radio", currentKind);
+      switchTypeToggle("tr-stopover-radio", currentKind);
       const sourceRadio = m.querySelector<HTMLInputElement>(`input[name="tr-source-radio"][value="${ogameCurrentPid}"]`);
       if (sourceRadio) {
         sourceRadio.checked = true;
@@ -1075,22 +1217,87 @@ function openTransportSettings(
         // Scroll the row into view so operator sees the preset selection.
         sourceRadio.scrollIntoView({ block: "center" });
       }
+      // v0.0.518 — section ③ 目标默认也 = 当前星球 (operator 2026-05-31).
+      const targetRadioDefault = m.querySelector<HTMLInputElement>(`input[name="tr-target-radio"][value="${ogameCurrentPid}"]`);
+      if (targetRadioDefault) {
+        targetRadioDefault.checked = true;
+        targetRadioDefault.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      // v0.0.518 — section ② "同上" 默认勾选, 同步 resource = ship。
+      const resCb = m.querySelector<HTMLInputElement>("[data-tr-resource-sameas-ship]");
+      if (resCb?.checked) {
+        const rr = m.querySelector<HTMLInputElement>(`input[name="tr-resource-radio"][value="${ogameCurrentPid}"]`);
+        if (rr) {
+          rr.checked = true;
+          rr.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      // v0.0.518 — section ④ shortcut 默认 "舰船星球", stopover = ship planet。
+      const stopRadio = m.querySelector<HTMLInputElement>(`input[name="tr-stopover-radio"][value="${ogameCurrentPid}"]`);
+      if (stopRadio) stopRadio.checked = true;
+      // v0.0.521 — operator "显示当前资源部分默认显示舰船星球资源"
+      // 同上模式下虽然 resource radio 已经 set + dispatched change, 但如果 resInfo
+      // 元素查询发生在这之前就漏了。 这里直接强制更新一次。
+      const resInfo2 = m.querySelector<HTMLElement>("[data-tr-resource-info]");
+      const currentP = planetsMap[ogameCurrentPid];
+      if (resInfo2 && currentP) {
+        const m_v = currentP.resources?.m ?? 0;
+        const c_v = currentP.resources?.c ?? 0;
+        const d_v = currentP.resources?.d ?? 0;
+        resInfo2.innerHTML = `<span style="color:#d0d8e0;">M ${fmt(m_v)} · C ${fmt(c_v)} · D ${fmt(d_v)}</span>`;
+        // v0.0.523 — operator 2026-05-31 "资源没有自动填入输入框". 真因:
+        // boot 时 dispatch change 比 resource radio listener 注册早, change 事件
+        // 没人接 → cargo auto-fill 路径漏了。 这里直接强制把当前星球 bank
+        // 写到 cargo input (curM === 0 时), 跟正常 change handler 行为对齐。
+        const cmEl = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
+        const ccEl = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
+        const cdEl = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
+        if (cmEl && (parseInt(cmEl.value || "0", 10) || 0) === 0) cmEl.value = String(m_v);
+        if (ccEl && (parseInt(ccEl.value || "0", 10) || 0) === 0) ccEl.value = String(c_v);
+        if (cdEl && (parseInt(cdEl.value || "0", 10) || 0) === 0) cdEl.value = String(d_v);
+        // v0.0.530 — operator 2026-05-31 "第一次进入页面没有和资源联动".
+        // 填完 cargo 后强制 updateShipCount, 不再等 input 事件。
+        updateShipCount();
+      }
     }
     // Section ② — resource planet → display M/C/D + auto-fill cargo inputs.
     const resInfo = m.querySelector<HTMLElement>("[data-tr-resource-info]");
-    const updateShipCount = (): void => {
-      const cm = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0;
-      const cc = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0;
-      const cd = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0;
-      const total = cm + cc + cd;
+    function cargoEnabled(key: "m" | "c" | "d"): boolean {
+      const cb = m.querySelector<HTMLInputElement>(`[data-tr-cargo-enable="${key}"]`);
+      return cb ? cb.checked : true;
+    }
+    function updateShipCount(): void {
+      // v0.0.531 — 未勾选的资源视为 0
+      const cm = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
+      const cc = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
+      const cd = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
+      // v0.0.505 — moon target buffer 改 50K (operator 2026-05-30 "500K 太多")
+      const targetVal = m.querySelector<HTMLInputElement>('input[name="tr-target-radio"]:checked')?.value ?? "";
+      const targetP = targetVal ? planetsMap[targetVal] : null;
+      const moonBufferD = targetP?.type === "moon" ? 50_000 : 0;
+      const total = cm + cc + cd + moonBufferD;
       const ship = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
       const cap = ship === "smallCargo" ? stCap : ltCap;
       const needed = total > 0 ? Math.ceil(total / cap) : 0;
       const countInput = m.querySelector<HTMLInputElement>("[data-tr-ship-count]");
       if (countInput) countInput.value = String(needed);
+      // v0.0.530 — operator 2026-05-31 "船不够显示红色". 比对 ① 舰船星球 的
+      // 真实船数 (LC 或 SC) vs needed, 不够 → 数量输入框 + 旁边提示 红字。
+      const sourceVal = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
+      const sourceP = sourceVal ? planetsMap[sourceVal] : null;
+      const shipKey = ship === "smallCargo" ? "smallCargo" : "largeCargo";
+      const haveShips = (sourceP?.ships as Record<string, number | undefined> | undefined)?.[shipKey] ?? 0;
+      const isShort = needed > haveShips;
+      if (countInput) {
+        countInput.style.color = isShort ? "#ff6b6b" : "#e0e8f0";
+        countInput.style.borderColor = isShort ? "#ff6b6b" : "#2a3a52";
+      }
       const needSpan = m.querySelector<HTMLElement>("[data-tr-ship-need]");
-      if (needSpan) needSpan.textContent = `需 ${needed} 艘 · 总载 ${fmt(total)} (cap ${fmt(cap)})`;
-    };
+      if (needSpan) {
+        const shortNote = isShort ? ` <span style="color:#ff6b6b; font-weight:bold;">船不够 (有 ${fmt(haveShips)})</span>` : "";
+        needSpan.innerHTML = `需 ${needed} 艘 · 总载 ${fmt(total)}${moonBufferD ? ` (含 +50K d 月球 buffer)` : ""} (cap ${fmt(cap)})${shortNote}`;
+      }
+    }
     for (const r of m.querySelectorAll<HTMLInputElement>('input[name="tr-resource-radio"]')) {
       r.addEventListener("change", () => {
         if (!r.checked || !resInfo) return;
@@ -1100,22 +1307,87 @@ function openTransportSettings(
         const c_v = p?.resources?.c ?? 0;
         const d_v = p?.resources?.d ?? 0;
         resInfo.innerHTML = `<span style="color:#d0d8e0;">M ${fmt(m_v)} · C ${fmt(c_v)} · D ${fmt(d_v)}</span>`;
-        // Auto-prefill cargo inputs with the full stockpile for convenience.
+        // v0.0.504 — operator 2026-05-30 "提交后数据不对". Original logic
+        // auto-overwrote cargo with source planet bank on EVERY radio change,
+        // clobbering user's careful prefill from "→ 运输" shortage button.
+        // New rule: only auto-fill when cargo input is empty/0 (first time).
+        // Operator's manual edit + shortage prefill ALWAYS preserved.
         const mi = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
         const ci = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
         const di = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
-        if (mi) mi.value = String(m_v);
-        if (ci) ci.value = String(c_v);
-        if (di) di.value = String(d_v);
+        const curM = parseInt(mi?.value || "0", 10) || 0;
+        const curC = parseInt(ci?.value || "0", 10) || 0;
+        const curD = parseInt(di?.value || "0", 10) || 0;
+        if (mi && curM === 0) mi.value = String(m_v);
+        if (ci && curC === 0) ci.value = String(c_v);
+        if (di && curD === 0) di.value = String(d_v);
         updateShipCount();
       });
     }
-    // Cargo amount inputs → recompute ship count live.
+    // v0.0.477: cargo overflow indicator (operator 2026-05-30 "如果填的资源
+    // 大于星球有的资源，资源显示红字"). Each input compares against the
+    // CURRENT resource-source planet's bank; if user-typed value exceeds,
+    // paint the input text red. Reads from radio selection live.
+    const refreshCargoOverflowColors = (): void => {
+      const sel = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio"]:checked')?.value ?? "";
+      const src = sel ? planetsMap[sel] : null;
+      const bank = {
+        m: src?.resources?.m ?? Infinity,
+        c: src?.resources?.c ?? Infinity,
+        d: src?.resources?.d ?? Infinity,
+      };
+      for (const ci of m.querySelectorAll<HTMLInputElement>("[data-tr-cargo]")) {
+        const key = ci.getAttribute("data-tr-cargo") as "m" | "c" | "d";
+        const val = parseInt(ci.value || "0", 10) || 0;
+        const cap = bank[key];
+        if (val > cap) {
+          ci.style.color = "#ff6b6b";
+          ci.style.borderColor = "#ff6b6b";
+          ci.title = `超出: 源 ${key.toUpperCase()} 只有 ${fmt(cap)}, 你填了 ${fmt(val)}`;
+        } else {
+          // v0.0.504 — operator 2026-05-30: setting style.color="" wiped the
+          // inline style attr color (#e0e8f0), letting browser default win
+          // (usually dark on dark bg → 文字不可见). Restore explicit values.
+          ci.style.color = "#e0e8f0";
+          ci.style.borderColor = "#2a3a52";
+          ci.title = "";
+        }
+      }
+    };
+    // Cargo amount inputs → recompute ship count + overflow colors live.
     for (const ci of m.querySelectorAll<HTMLInputElement>("[data-tr-cargo]")) {
-      ci.addEventListener("input", updateShipCount);
+      ci.addEventListener("input", () => { updateShipCount(); refreshCargoOverflowColors(); });
+    }
+    // v0.0.531 — operator 2026-05-31: cargo enable checkbox (M/C/D 各一个).
+    // 默认勾选, 不勾时该资源不装船 (cargo 视为 0)。 同时灰禁对应 input。
+    const updateCargoEnabledState = (key: "m" | "c" | "d"): void => {
+      const cb = m.querySelector<HTMLInputElement>(`[data-tr-cargo-enable="${key}"]`);
+      const inp = m.querySelector<HTMLInputElement>(`[data-tr-cargo="${key}"]`);
+      if (!cb || !inp) return;
+      const enabled = cb.checked;
+      inp.disabled = !enabled;
+      inp.style.opacity = enabled ? "1" : "0.4";
+    };
+    for (const key of ["m", "c", "d"] as const) {
+      const cb = m.querySelector<HTMLInputElement>(`[data-tr-cargo-enable="${key}"]`);
+      cb?.addEventListener("change", () => {
+        updateCargoEnabledState(key);
+        updateShipCount();
+        refreshCargoOverflowColors();
+      });
+      updateCargoEnabledState(key);
+    }
+    // Also re-check overflow when resource-source radio changes.
+    for (const rr of m.querySelectorAll<HTMLInputElement>('input[name="tr-resource-radio"]')) {
+      rr.addEventListener("change", refreshCargoOverflowColors);
     }
     for (const sr of m.querySelectorAll<HTMLInputElement>('input[name="tr-ship"]')) {
       sr.addEventListener("change", updateShipCount);
+    }
+    // v0.0.504 — also recompute on target radio change (moon target adds
+    // 500K d buffer → ship count needs to include it).
+    for (const tr of m.querySelectorAll<HTMLInputElement>('input[name="tr-target-radio"]')) {
+      tr.addEventListener("change", updateShipCount);
     }
     // Submit — POST /v1/goals/create with a transport goal.
     m.querySelector<HTMLElement>("[data-tr-submit]")?.addEventListener("click", async () => {
@@ -1125,15 +1397,21 @@ function openTransportSettings(
       const target = m.querySelector<HTMLInputElement>('input[name="tr-target-radio"]:checked')?.value ?? "";
       const ship = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
       const shipCount = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
-      const cargoM = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0;
-      const cargoC = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0;
-      const cargoD = parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0;
+      // v0.0.531 — 未勾选的资源 cargo = 0
+      const cargoM = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
+      const cargoC = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
+      const cargoD = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
       if (!source) { if (status) { status.textContent = "× 选 ① 来源星球"; status.style.color = "#ff6b6b"; } return; }
       if (!target) { if (status) { status.textContent = "× 选 ③ 目标星球"; status.style.color = "#ff6b6b"; } return; }
       if (shipCount <= 0) { if (status) { status.textContent = "× 数量必须 > 0"; status.style.color = "#ff6b6b"; } return; }
       const targetPlanet = planetsMap[target];
       const targetCoords = (targetPlanet?.coords ?? []).join(":");
       const jgEnabled = (m.querySelector<HTMLInputElement>("[data-tr-jg-enable]")?.checked) ?? false;
+      // v0.0.468: operator-controlled take_all per chain (operator 2026-05-30
+      // "默认勾选"). Modal checkbox → checked=true means JG hop legs do dynamic
+      // ship sweep on dispatch; unchecked means JG hop carries only configured
+      // ships count. Default checked.
+      const jgTakeAll = (m.querySelector<HTMLInputElement>("[data-tr-jg-take-all]")?.checked) ?? true;
       // Build the chain: depending on (source vs resource) and (JG) we emit
       // 1-3 goals with a shared chain id + priority ladder so the planner
       // dispatches them in order as ships arrive at each waypoint.
@@ -1146,12 +1424,17 @@ function openTransportSettings(
       // JG-cooldown safety reserve. Doesn't touch planet-sourced d.
       const resourceSourceId = resourceSrc ?? source;
       const resourceSourceP = planetsMap[resourceSourceId];
-      const MOON_D_RESERVE = 500_000;
+      const MOON_SOURCE_D_RESERVE = 500_000;   // 月球出发, 留 500K 应急 (operator 2026-05-29 拍板, 不变)
+      const MOON_TARGET_D_BUFFER = 50_000;     // v0.0.505 — operator 2026-05-30: 500K 太多, 改 50K
+      // v0.0.494 — TARGET 月球时加 buffer 给到货后做 build 留底。
       let cargoDFinal = cargoD;
+      if (targetPlanet?.type === "moon") {
+        cargoDFinal += MOON_TARGET_D_BUFFER;
+      }
       if (resourceSourceP?.type === "moon") {
         const sourceD = (resourceSourceP as { resources?: { d?: number } }).resources?.d ?? 0;
-        const sourceDMax = Math.max(0, sourceD - MOON_D_RESERVE);
-        cargoDFinal = Math.min(cargoD, sourceDMax);
+        const sourceDMax = Math.max(0, sourceD - MOON_SOURCE_D_RESERVE);
+        cargoDFinal = Math.min(cargoDFinal, sourceDMax);
       }
       const cargo = { m: cargoM, c: cargoC, d: cargoDFinal };
       // Find moon siblings (operator 2026-05-29 spec uses JG between sibling moons).
@@ -1205,26 +1488,35 @@ function openTransportSettings(
         const cargoArg = carryCargo ? cargo : undefined;
         if (useJgHere && fromMoon && toMoon) {
           const fromMoonCoords = (fromMoon.coords ?? []).join(":");
-          // Leg A: planet → own moon (local micro-deploy, same coord).
-          // Leg B: moon → moon (jumpgate hop).
-          // Leg C: moon → planet at destination (local micro-deploy).
-          return [
-            { type: "deploy",
+          // Leg A: planet → own moon (local micro-deploy, same coord). When
+          // fromP IS ALREADY a moon (Seg 3 target→stopover where target=moon),
+          // ships are already on the moon — Leg A would emit moon→itself
+          // which sendFleet either rejects or fallback-rewrites to planet,
+          // causing a duplicate of the Seg 2 cargo fleet. Skip Leg A in this
+          // case. (operator 2026-05-30 — saw 2 fleets 殖民 3:260:9 → 月球
+          // 1:486:7 24s apart; Seg 3 leg A was the second fleet.)
+          const legs: typeof goalBodies = [];
+          if (fromP.type !== "moon") {
+            legs.push({ type: "deploy",
               target: { target_coords: fromMoonCoords, target_type: "moon", ships, cargo: cargoArg, source_planet: fromP.id, chain_id: chainId, chain_phase: `${phasePrefix}_load` },
-              planet: fromP.id, priority: basePriority },
-            { type: "jumpgate",
-              // v0.0.469: take_all=true → planner reads source moon's
-              // ships at dispatch time and ferries EVERYTHING, not just
-              // the chain's nominal ship count. Operator 2026-05-30:
-              // "用跳跃门往回走的时候带走月球上所有的船" — JG hop is empty
-              // ferry between siblings, sweep up any ships that have
-              // arrived via Leg 1+2 since chain creation.
-              target: { source_moon: fromMoon.id, target_moon: toMoon.id, ships, take_all: true, chain_id: chainId, chain_phase: `${phasePrefix}_hop` },
-              planet: fromMoon.id, priority: basePriority - 1 },
-            { type: "deploy",
+              planet: fromP.id, priority: basePriority });
+          }
+          // Leg B: moon → moon (jumpgate hop).
+          legs.push({ type: "jumpgate",
+            // v0.0.468: take_all is now per-chain (modal checkbox). When
+            // true, planner reads source moon's current ships at dispatch
+            // time and sweeps EVERYTHING. When false, only the configured
+            // ships count flies through JG.
+            target: { source_moon: fromMoon.id, target_moon: toMoon.id, ships, take_all: jgTakeAll, chain_id: chainId, chain_phase: `${phasePrefix}_hop` },
+            planet: fromMoon.id, priority: basePriority - 1 });
+          // Leg C: moon → planet at destination (local micro-deploy). Skip
+          // symmetrically when toP IS already a moon (ships stay on moon).
+          if (toP.type !== "moon") {
+            legs.push({ type: "deploy",
               target: { target_coords: toCoords, target_type: toP.type ?? "planet", ships, cargo: cargoArg, source_planet: toMoon.id, chain_id: chainId, chain_phase: `${phasePrefix}_unload` },
-              planet: toMoon.id, priority: basePriority - 2 },
-          ];
+              planet: toMoon.id, priority: basePriority - 2 });
+          }
+          return legs;
         }
         // Direct sublight hop — single goal. fromCoords is for debug only
         // (target stores planet-id refs that resolveCoord can pretty-print).
@@ -1289,14 +1581,41 @@ function openTransportSettings(
     // Source ships planet auto-defaults to current planet via the
     // existing tr-source-radio default-checked logic.
     if (prefill?.targetPlanetId) {
+      // v0.0.522 — goals 的 → 运输 按钮过来时, prefill.targetPlanetId 可能
+      // 是 moon (lunarBase / jumpgate goal). 之前只 setChecked 但 type toggle
+      // 默认 "星球" → moon radio 在隐藏 section, submit 读不到正确 body。
+      // 现在: 判 target body 的 type → 切 target type toggle 到对应 mode → 再 set radio。
+      const tgtBody = planetsMap[prefill.targetPlanetId];
+      if (tgtBody?.type === "moon") {
+        const tt = m.querySelector<HTMLInputElement>('input[name="tr-target-radio-type"][value="moon"]');
+        if (tt && !tt.checked) {
+          tt.checked = true;
+          tt.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
       const r = m.querySelector<HTMLInputElement>(`input[name="tr-target-radio"][value="${prefill.targetPlanetId}"]`);
-      if (r) r.checked = true;
+      if (r) {
+        r.checked = true;
+        r.dispatchEvent(new Event("change", { bubbles: true }));
+      }
     }
     if (prefill) {
       const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
       if (ogameCurrentPid) {
+        // v0.0.522 — 同 v0.0.521, 资源 radio 在 hidden moon section 时切 type toggle
+        const curBody2 = planetsMap[ogameCurrentPid];
+        if (curBody2?.type === "moon") {
+          const tt = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio-type"][value="moon"]');
+          if (tt && !tt.checked) {
+            tt.checked = true;
+            tt.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        }
         const rr = m.querySelector<HTMLInputElement>(`input[name="tr-resource-radio"][value="${ogameCurrentPid}"]`);
-        if (rr) rr.checked = true;
+        if (rr) {
+          rr.checked = true;
+          rr.dispatchEvent(new Event("change", { bubbles: true }));
+        }
       }
     }
     if (prefill?.cargo) {
@@ -1308,6 +1627,10 @@ function openTransportSettings(
       if (cd && prefill.cargo.d > 0) cd.value = String(prefill.cargo.d);
       updateShipCount();
     }
+    // v0.0.522 — prefill 来源是 goals "→ 运输" 按钮 (有 targetPlanetId), 这意味着
+    // 操作员要 ship → 目标, 跟"同上"语义不冲突, resource 仍然 = ship 默认对。
+    // 但 stopover shortcut 默认 ship 也对 (operator 想运到目标, 然后船回舰船星球
+    // 是合理的)。 这里不强制改 shortcut, 让 v0.0.518 默认 = ship 生效。
   });
 }
 
@@ -1407,6 +1730,20 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   // Last fetched goals — used so tree-toggle clicks can re-render without
   // hitting /v1/goals again.
   let lastGoals: GoalRowFromHttp[] | null = null;
+  // v0.0.487 accordion — operator 2026-05-30 "panel goals 全部展开太长了, 改
+  // 成手风琴". Only one goal expanded at a time; click row header to toggle.
+  // null = all collapsed. Persists in localStorage so panel re-mounts (page
+  // reload, panel close+open) keep the same row open.
+  let expandedGoalId: string | null = (() => {
+    try { return localStorage.getItem("ogamex.panel.expanded") || null; } catch { return null; }
+  })();
+  const setExpandedGoalId = (id: string | null): void => {
+    expandedGoalId = id;
+    try {
+      if (id) localStorage.setItem("ogamex.panel.expanded", id);
+      else localStorage.removeItem("ogamex.panel.expanded");
+    } catch { /* private mode */ }
+  };
   let lastEmergency: EmergencyPayload | null = null;
   let lastExpedition: ExpeditionPayload | null = null;
   // Persisted section-level collapse state.
@@ -1503,9 +1840,137 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     return g.status === "blocked" && (g.reason ?? "").startsWith("PAUSED");
   }
 
-  // Tree-collapsed state — keyed by node "tech:targetLevel" so persists
-  // across re-renders during the same panel session.
-  const treeCollapsed = new Set<string>();
+  // v0.0.474: derive panel display status from goal status+reason+type.
+  // Operator 2026-05-30: "停下的时候不要都显示block 添加 building reseaching
+  // 可以反映真实的状态". Maps raw "blocked" + reason text into specific
+  // sub-states so operator can see WHY a goal isn't progressing at a glance.
+  function deriveDisplayStatus(g: GoalRowFromHttp, allGoals: GoalRowFromHttp[] = []): { label: string; color: string } {
+    // v0.0.484 — operator 2026-05-30 "统一检查所有任务状态". Single unified
+    // priority ladder, top to bottom. Every layer carries current_step or
+    // body_build_q specificity (not just generic "blocked / waiting"). The
+    // ladder is documented inline so future edits don't drift.
+    //
+    // Priority ladder (high → low):
+    //   L1.  paused                                       ★ operator override
+    //   L2.  ogame build_q in flight on this body         ★ ground truth (any tech)
+    //   L3.  goal.eta_at > now (planner says we're building)
+    //   L4.  status === "active" — by type sub-label
+    //   L5.  current_step shortage AND body has no prod   → "awaiting transport: <cs.tech>"
+    //   L6.  current_step shortage AND body has prod      → "waiting resources: <cs.tech>"
+    //   L7.  same-family sibling active                    → "queued · waiting <sib.tech>"
+    //   L8.  blocked — reason pattern → friendly label
+    //   L9.  pending / completed / cancelled fallback
+    const reason = g.reason ?? "";
+    const goalType = g.type;
+    const cs = g.current_step;
+    const stepLabel = cs ? `${cs.tech} L${cs.level}` : "";
+    const now = Date.now();
+
+    // L1
+    if (isPaused(g)) return { label: "paused", color: "#8a8aff" };
+    // L2 — body's ogame queue is ground truth FOR BUILD/RESEARCH FAMILY ONLY.
+    // v0.0.510 — operator 2026-05-31: deploy/transport/jumpgate chain leg
+    // 误显示 "building <body's tech>" 因为 body_build_q 跟 deploy 语义无关。
+    // fleet/jg goals 走自己 status 路径, 不蹭 body 的 build_q。
+    const isBuildFamily = goalType === "build" || goalType === "build_universal"
+      || goalType === "research" || goalType === "build_ships" || goalType === "build_defense"
+      || goalType === "lifeform_building";
+    const bq = g.body_build_q;
+    if (isBuildFamily && bq && bq.ends_at > now) {
+      const lvLabel = bq.level !== null && bq.level !== undefined ? ` L${bq.level}` : "";
+      const etaMin = Math.max(0, Math.round((bq.ends_at - now) / 60_000));
+      const queueLabel = bq.queue === "lf_build" ? "building (lifeform)" : bq.queue === "shipyard" ? "constructing" : "building";
+      return { label: `${queueLabel} ${bq.tech}${lvLabel} (~${etaMin}m)`, color: "#7cfc00" };
+    }
+    // L3 — planner's eta_at for this goal's tech is in the future
+    if (typeof g.eta_at === "number" && g.eta_at > now) {
+      const slot = cs ? stepLabel : "in queue";
+      if (cs?.kind === "research") return { label: `researching ${slot}`, color: "#7cc0ff" };
+      if (goalType === "build_ships" || goalType === "build_defense") return { label: `building ships`, color: "#7cfc00" };
+      if (goalType === "lifeform_building") return { label: `building (lifeform) ${slot}`, color: "#7cfc00" };
+      return { label: `building ${slot}`, color: "#7cfc00" };
+    }
+    // L4 — active status without eta_at (fleet ops or initial dispatch)
+    if (g.status === "active") {
+      if (goalType === "research") return { label: cs ? `researching ${stepLabel}` : "researching", color: "#7cc0ff" };
+      if (goalType === "build" || goalType === "build_universal") return { label: cs ? `building ${stepLabel}` : "building", color: "#7cfc00" };
+      if (goalType === "build_ships" || goalType === "build_defense") return { label: "constructing ships", color: "#7cfc00" };
+      if (goalType === "lifeform_building") return { label: cs ? `building (lifeform) ${stepLabel}` : "building (lifeform)", color: "#7cfc00" };
+      if (goalType === "expedition") return { label: "expedition flying", color: "#80c0ff" };
+      if (goalType === "colonize") return { label: "colonizing", color: "#80c0ff" };
+      if (goalType === "deploy") return { label: "deploying", color: "#80c0ff" };
+      if (goalType === "transport") return { label: "transporting", color: "#80c0ff" };
+      if (goalType === "jumpgate") return { label: "jumping", color: "#80c0ff" };
+      return { label: "active", color: "#7cfc00" };
+    }
+    // L5 + L6 — blocked on resources. Use current_step for specificity.
+    // Body has no production (moon or 0-prod planet) → must be operator-fed
+    // via transport. Body has production → just waiting for natural fill.
+    const csShortageSum = cs ? cs.shortage.m + cs.shortage.c + cs.shortage.d : 0;
+    const goalShortage = g.resource_shortage;
+    const hasShortage = csShortageSum > 0 || !!(goalShortage && (goalShortage.m + goalShortage.c + goalShortage.d) > 0);
+    const subtreeEta = g.prereq_tree?.subtree_eta_seconds ?? 0;
+    if (g.status === "blocked" && hasShortage && /waiting.*resources|waiting \d+s for resources/i.test(reason)) {
+      const target = cs ? stepLabel : "";
+      // L5 — no local production → awaiting transport
+      if (subtreeEta <= 0) {
+        return { label: target ? `awaiting transport · ${target}` : "awaiting transport", color: "#ffaa55" };
+      }
+      // L6 — has production, just need to fill up
+      return { label: target ? `waiting resources · ${target}` : "waiting resources", color: "#ff9b6b" };
+    }
+    // L7 — same slot-family sibling currently building (queued behind)
+    const slotFamily = (gg: GoalRowFromHttp): string | null => {
+      const t = gg.type;
+      if (t === "research") return "research:*";
+      if (t === "build_ships" || t === "build_defense") return gg.planet ? `shipyard:${gg.planet}` : null;
+      if (t === "lifeform_building") return gg.planet ? `lf:${gg.planet}` : null;
+      if (t === "build" || t === "build_universal") return gg.planet ? `build:${gg.planet}` : null;
+      return null;
+    };
+    const myFamily = slotFamily(g);
+    if (myFamily) {
+      const sibling = allGoals.find((o) =>
+        o.id !== g.id &&
+        slotFamily(o) === myFamily &&
+        o.status === "active" &&
+        typeof o.eta_at === "number" &&
+        (o.eta_at ?? 0) > now,
+      );
+      if (sibling) {
+        const sib = sibling.current_step;
+        const sibLabel = sib ? `${sib.tech} L${sib.level}` : sibling.type;
+        const etaMin = Math.max(0, Math.round(((sibling.eta_at ?? 0) - now) / 60_000));
+        return { label: `queued · waiting ${sibLabel} (~${etaMin}m)`, color: "#bdb76b" };
+      }
+    }
+    // L8 — blocked with other reason patterns
+    if (g.status === "blocked") {
+      if (/build slot.*in use|shipyard slot.*in use|research slot.*in use|lf build slot.*in use/i.test(reason)) return { label: "queued (slot busy)", color: "#bdb76b" };
+      if (/moon fields nearly full/i.test(reason)) return { label: "fields full → LB", color: "#ff9b6b" };
+      if (/chain prereq.*waiting/i.test(reason)) return { label: "chain wait", color: "#bdb76b" };
+      if (/has \d+× .*, need \d+|insufficient.*ship|0× .*, need/i.test(reason)) return { label: "ships short", color: "#ff9b6b" };
+      if (/expedition slots full|fleet slots full|early skip, not queued/i.test(reason)) return { label: "slots full", color: "#bdb76b" };
+      if (/storage.*insufficient|insufficient.*storage|倉存容量不足|仓存容量不足|140028/i.test(reason)) return { label: "dest storage full", color: "#ff9b6b" };
+      if (/transient race|140043|請稍後再試|请稍后再试|try again later/i.test(reason)) return { label: "ogame race, retrying", color: "#bdb76b" };
+      if (/100001|未知的錯誤|未知的错误/i.test(reason)) return { label: "ogame error 100001", color: "#ff6b6b" };
+      if (/120023|沒有空間|没有空间|月球上.*空間|月球上.*空间/i.test(reason)) return { label: "moon space full", color: "#ff6b6b" };
+      if (/cooldown.*remaining/i.test(reason)) return { label: "cooldown", color: "#bdb76b" };
+      if (/jumpgate.*not on moon|missing source_moon|missing target_moon/i.test(reason)) return { label: "JG misconfig", color: "#ff6b6b" };
+      if (/planet-only building.*cannot.*moon|moon-only building.*cannot.*planet/i.test(reason)) return { label: "body type mismatch", color: "#ff6b6b" };
+      if (/awaiting.*event|awaiting empire_poll|awaiting operator_retry/i.test(reason)) return { label: "awaiting event", color: "#80c0ff" };
+      return { label: "blocked", color: "#bdb76b" };
+    }
+    if (g.status === "pending") return { label: "pending", color: "#80c0ff" };
+    if (g.status === "completed") return { label: "completed", color: "#888" };
+    if (g.status === "cancelled") return { label: "cancelled", color: "#888" };
+    return { label: g.status, color: "#ccc" };
+  }
+
+  // v0.0.526 — operator 2026-05-31 "这部分为什么不折叠?". 翻转默认:
+  // tree node 默认全部折叠, 点击 chevron 才展开 (而不是默认全展开)。
+  // treeExpanded Set 装当前展开的 node key, 没在 set 里的就是折叠。
+  const treeExpanded = new Set<string>();
   function treeKey(n: PrereqTreeNode): string { return `${n.tech}:${n.targetLevel}`; }
 
   /**
@@ -1527,7 +1992,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const indent = depth * 14;
     const hasChildren = n.children.length > 0;
     const key = treeKey(n);
-    const collapsed = treeCollapsed.has(key);
+    const collapsed = !treeExpanded.has(key); // v0.0.526 默认折叠
     const chev = hasChildren
       ? `<span data-tree-toggle="${escapeHtml(key)}" style="display:inline-block; width:12px; cursor:pointer; color:#8090a8; user-select:none;">${collapsed ? "▸" : "▾"}</span>`
       : `<span style="display:inline-block; width:12px;"></span>`;
@@ -1681,12 +2146,33 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     for (const arr of chainGroups.values()) {
       arr.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
     }
+    // v0.0.481 architecture B: parent_goal_id graph. Children render nested
+    // under their parent; we pre-compute the children map then hide children
+    // from top-level singletons so they don't render twice.
+    const childrenByParent = new Map<string, GoalRowFromHttp[]>();
+    for (const g of filtered) {
+      const pid = (g as { parent_goal_id?: string }).parent_goal_id;
+      if (typeof pid === "string" && pid) {
+        let arr = childrenByParent.get(pid);
+        if (!arr) { arr = []; childrenByParent.set(pid, arr); }
+        arr.push(g);
+      }
+    }
+    for (const arr of childrenByParent.values()) {
+      arr.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+    }
+    // Remove children from singletons (they render under their parent).
+    const singletonsTopLevel = singletons.filter((g) => {
+      const pid = (g as { parent_goal_id?: string }).parent_goal_id;
+      return !pid || !filtered.some((p) => p.id === pid);
+    });
     const renderSingleGoalRow = (g: GoalRowFromHttp): string => {
       const targetStr = fmtTarget(g.type, g.target as Record<string, unknown>);
       const paused = isPaused(g);
       const isMain = g.is_main_goal === true;
-      const displayStatus = paused ? "paused" : g.status;
-      const color = paused ? "#8a8aff" : (statusColor[g.status] ?? "#ccc");
+      const derived = deriveDisplayStatus(g, goals);
+      const displayStatus = derived.label;
+      const color = derived.color;
       const reasonLine = g.reason ? `<div style="color:#a0a0a0; font-size:10px; margin-top:2px;">↳ ${escapeHtml(g.reason)}</div>` : "";
       const canAct = g.status === "pending" || g.status === "active" || g.status === "blocked";
       // v0.0.460: awaiting-event chip + Retry button. Only show on blocked
@@ -1746,11 +2232,23 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             // shortage chip + 运输 button. Render shortage whenever it's
             // positive regardless of whether ETA is computable.
             const hasShortage = sh && (sh.m + sh.c + sh.d) > 0;
-            const etaHeader = totalEta > 0
-              ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${shortageChip}`
-              : hasShortage
-                ? `<span style="color:#ffaa55;">awaiting transport (ETA n/a — moon local prod = 0)</span>${shortageChip}`
-                : `<span style="color:#7cfc00;">all prereqs met — can execute now</span>`;
+            // v0.0.486 — if body's build_q is currently building the
+            // deepest-unmet step (current_step), no need to show "awaiting
+            // transport" or shortage chip — that step's resources have
+            // already been paid. Replace with "building <step>" + ETA from
+            // ogame queue.
+            const cs2 = g.current_step;
+            const bqMatchesCS_outer = cs2 && g.body_build_q
+              && g.body_build_q.tech === cs2.tech
+              && g.body_build_q.level === cs2.level
+              && g.body_build_q.ends_at > Date.now();
+            const etaHeader = bqMatchesCS_outer
+              ? `<span style="color:#7cfc00;">building ${escapeHtml(cs2.tech)} L${cs2.level} (~${fmtSeconds(Math.floor((g.body_build_q!.ends_at - Date.now())/1000))})</span>`
+              : totalEta > 0
+                ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${shortageChip}`
+                : hasShortage
+                  ? `<span style="color:#ffaa55;">awaiting transport (ETA n/a — moon local prod = 0)</span>${shortageChip}`
+                  : `<span style="color:#7cfc00;">all prereqs met — can execute now</span>`;
             // v0.0.461: current-step row — "↳ 当前步骤: lunarBase L4 缺 ..."
             // separate line below the chain summary so operator sees what
             // the bot is RIGHT NOW trying to fire, and how short on cash.
@@ -1759,6 +2257,18 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
               const csh = cs.shortage;
               const csTotal = csh.m + csh.c + csh.d;
               const stepLabel = `${cs.tech} L${cs.level}`;
+              // v0.0.486 — operator 2026-05-30: jumpgate L1 已在 build_q,
+              // current_step 还说"缺 X 资源"是逻辑错。 当 body_build_q 跟
+              // current_step 同 tech+level → 这级钱已付, 不再 emit 缺口,
+              // 改显示"在造中, ~Xm 后完工"。
+              const bqMatchesCS = g.body_build_q
+                && g.body_build_q.tech === cs.tech
+                && g.body_build_q.level === cs.level
+                && g.body_build_q.ends_at > Date.now();
+              if (bqMatchesCS) {
+                const etaMin = Math.max(0, Math.round((g.body_build_q!.ends_at - Date.now()) / 60_000));
+                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ 当前: ${escapeHtml(stepLabel)} · 🏗 在造中 (~${etaMin}m 完工)</div>`;
+              }
               if (csTotal === 0) {
                 return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ 当前: ${escapeHtml(stepLabel)} · ✅ 资源够, 立即可派</div>`;
               }
@@ -1770,8 +2280,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
               const stepFillBtn = `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="按当前步骤缺口装运">→ 运输</button>`;
               return `<div style="font-size:10px; color:#ffaa55; margin-bottom:2px;">↳ 当前: ${escapeHtml(stepLabel)} 缺 ${shortageBits}${stepFillBtn}</div>`;
             })() : "";
+            // v0.0.527 — operator 2026-05-31 "前置链都要归入主链 tree".
+            // 去掉独立 "prereq chain" label, etaHeader 直接挂在 tree 顶部,
+            // 整段就是这一个 goal 的主链 (前置 + 当前 step + 自身).
             return `<div style="margin-top:6px; padding:4px 0 2px; border-top:1px dashed #2a3a52;">
-              <div style="font-size:10px; color:#8090a8; margin-bottom:2px;">prereq chain · ${etaHeader}</div>
+              <div style="font-size:10px; color:#8090a8; margin-bottom:2px;">${etaHeader}</div>
               ${csLine}
               ${renderTreeNode(g.prereq_tree)}
             </div>`;
@@ -1783,17 +2296,29 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const etaAtBadge = (typeof g.eta_at === "number" && g.eta_at > Date.now())
         ? `<span style="color:#ffd700; font-size:10px; margin-left:6px;" title="next step finishes at ${new Date(g.eta_at).toLocaleTimeString()}">⏱ ${fmtSeconds(Math.floor((g.eta_at - Date.now()) / 1000))}</span>`
         : "";
+      // v0.0.487 accordion — header row is clickable to toggle expansion.
+      // Detail block (reason + prereq tree + current_step + buttons) only
+      // renders for the currently-expanded goal. Chevron indicates state.
+      // v0.0.488 — operator 2026-05-30 "bar 上要显示星球坐标". Coord shows
+      // inline on the bar even when collapsed, so operator can scan moons
+      // without expanding.
+      const isExpanded = expandedGoalId === g.id;
+      const chevron = `<span style="color:#8090a8; font-size:10px; width:10px; display:inline-block; user-select:none;">${isExpanded ? "▾" : "▸"}</span>`;
+      const coordChip = g.planet
+        ? `<span style="color:#a0b0c8; font-size:10px; margin-left:4px;" title="${escapeHtml(g.planet)}">@${escapeHtml(g.planet)}</span>`
+        : "";
+      const detailBlock = isExpanded
+        ? `${reasonLine}${treeHtml}`
+        : "";
       return `
         <div style="${mainBg}border-top: 1px solid #2a3a52; padding: 6px 0;">
-          <div style="display:flex; align-items:center; gap:6px; justify-content:space-between;">
-            <span>${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${etaAtBadge}${awaitingChip}</span>
+          <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? "点击折叠" : "点击展开详情"}">
+            <span>${chevron}${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${coordChip}${etaAtBadge}${awaitingChip}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
-            <span style="display:flex; gap:4px; flex-wrap:wrap;">${retryBtn}${mainBtn}${pauseOrResume}${cancelBtn}</span>
+            <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${mainBtn}${pauseOrResume}${cancelBtn}</span>
           </div>
-          <div style="margin-top:2px;"><strong style="color:#e0e8f0;">${escapeHtml(g.type)}</strong> ${escapeHtml(targetStr)}</div>
-          ${g.planet ? `<div style="color:#8090a8; font-size:10px;">@ ${escapeHtml(g.planet)}</div>` : ""}
-          ${reasonLine}
-          ${treeHtml}
+          <div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer;"><strong style="color:#e0e8f0;">${escapeHtml(g.type)}</strong> ${escapeHtml(targetStr)}</div>
+          ${detailBlock}
         </div>`;
     };
     // Chain child row — compact format with leg index + prerequisite hint.
@@ -1803,8 +2328,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const cancelBtn = canAct
         ? `<button data-action-cancel="${escapeHtml(g.id)}" style="${btnStyle("#5a2020", "#8a4040")}">Cancel</button>`
         : "";
-      const color = paused ? "#8a8aff" : (statusColor[g.status] ?? "#ccc");
-      const displayStatus = paused ? "paused" : g.status;
+      const derivedLeg = deriveDisplayStatus(g);
+      const color = derivedLeg.color;
+      const displayStatus = derivedLeg.label;
       const prereq = idx === 0
         ? `<span style="color:#7cfc00; font-size:10px;">(无前置 · 立即派遣)</span>`
         : `<span style="color:#a0a8b8; font-size:10px;">前置: 等 Leg ${idx} (${escapeHtml(actionCN(prevType ?? ""))}) 完成</span>`;
@@ -1859,8 +2385,42 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         chainBlocks.push(renderChainChildRow(g, idx, members[idx - 1]?.type ?? null, isPaused(g)));
       });
     }
-    const singletonRows = singletons.map(renderSingleGoalRow).join("");
+    // v0.0.481 — render top-level singletons + their nested children. depth
+    // bounded by recursion of renderWithChildren; children get a left indent
+    // marker so visual hierarchy is clear.
+    const renderWithChildren = (g: GoalRowFromHttp, depth: number): string => {
+      const indent = depth * 16;
+      const body = renderSingleGoalRow(g);
+      const childRows = (childrenByParent.get(g.id) ?? [])
+        .map((c) => `<div style="margin-left:${indent + 16}px; border-left:2px solid #3a4a60; padding-left:6px;"><span style="color:#80a8d0; font-size:10px;">↳ sub</span>${renderWithChildren(c, depth + 1)}</div>`)
+        .join("");
+      if (depth === 0) {
+        return childRows ? body + childRows : body;
+      }
+      return body + childRows;
+    };
+    const singletonRows = singletonsTopLevel.map((g) => renderWithChildren(g, 0)).join("");
     const rows = chainBlocks.join("") + singletonRows;
+    // v0.0.529 — operator 2026-05-31 "把运输任务从 goals 移到这里 (cargo 位置)".
+    // 拆 rows: 运输系 (deploy/transport/jumpgate, 含 chain) 单独到 cargoSection,
+    // 其它 (build/research/expedition 等) 留在 goalsSection.
+    const isTransportType = (t: string): boolean => t === "deploy" || t === "transport" || t === "jumpgate";
+    const transportChainBlocks_v529: string[] = [];
+    const restChainBlocks_v529: string[] = [];
+    for (const [cid, members] of chainGroups) {
+      const isTransport = members.some(g => isTransportType(g.type));
+      const bucket = isTransport ? transportChainBlocks_v529 : restChainBlocks_v529;
+      bucket.push(renderChainParent(cid, members));
+      members.forEach((g, idx) => {
+        bucket.push(renderChainChildRow(g, idx, members[idx - 1]?.type ?? null, isPaused(g)));
+      });
+    }
+    const transportSingletonsHtml_v529 = singletonsTopLevel.filter(g => isTransportType(g.type)).map(g => renderWithChildren(g, 0)).join("");
+    const restSingletonsHtml_v529 = singletonsTopLevel.filter(g => !isTransportType(g.type)).map(g => renderWithChildren(g, 0)).join("");
+    const transportRowsHtml_v529 = transportChainBlocks_v529.join("") + transportSingletonsHtml_v529;
+    const restRowsHtml_v529 = restChainBlocks_v529.join("") + restSingletonsHtml_v529;
+    const transportGoalCount_v529 = filtered.filter(g => isTransportType(g.type)).length;
+    const restGoalCount_v529 = filtered.length - transportGoalCount_v529;
     // Header is the drag handle (cursor:move). Collapse button toggles the
     // body. Close removes the panel entirely.
     // Operator 2026-05-29 "panel 名称改成 oGame+版本号 添加按钮更新版本":
@@ -1975,7 +2535,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const awaitingBadge = awaitingCount > 0
       ? `<span style="color:#80c0ff; font-size:10px; background:#1a3a5a; padding:1px 6px; border-radius:8px; margin-left:6px;" title="goals quietly waiting for an event before next dispatch attempt">⏸ ${awaitingCount} awaiting</span>`
       : "";
-    const goalsSection = `${sectionHeader("goals", "🪐 Goals", filtered.length, "#e0e8f0", awaitingBadge + goalsSettingsBtn)}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody}</div>`;
+    // v0.0.529 — goalsSection 只装非运输 goals (运输移到 cargoSection)
+    const goalsBody_v529 = !goalsCollapsed ? `${empty}${restRowsHtml_v529}` : "";
+    const goalsSection = `${sectionHeader("goals", "🪐 Goals", restGoalCount_v529, "#e0e8f0", awaitingBadge + goalsSettingsBtn)}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody_v529}</div>`;
 
     // Species Discovery section — operator's new task type (Galaxy view DNA).
     const discCollapsed = sectionCollapsed.discovery ?? false;
@@ -2038,54 +2600,81 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // 1-second ticker (#jg-cd-N spans) updates display without re-rendering whole panel.
     let moonsSection = "";
     try {
-      const st = (window as Window & { __ogamexStore?: { state: { planets?: Record<string, { id?: string; type?: string; coords?: number[]; jumpgate_cooldown_sec?: number | null; jumpgate_harvested_at?: number | null; jumpgate_pair_with?: string | null }> } } }).__ogamexStore;
+      const st = (window as Window & { __ogamexStore?: { state: { planets?: Record<string, { id?: string; type?: string; coords?: number[]; buildings?: Record<string, number | undefined>; jumpgate_cooldown_sec?: number | null; jumpgate_harvested_at?: number | null; jumpgate_pair_with?: string | null }> } } }).__ogamexStore;
       const planets = st?.state?.planets ?? {};
       const now = Date.now();
-      // Pair grouping — operator 2026-05-27 "JG都是成对使用 显示改成 [源]/[目标] mm:ss".
-      // Walk moons with active cooldown; for each, emit at most ONE row per pair
-      // (skip when the partner has already been rendered). Sort by remaining
-      // cooldown so 即将冷却完的排上面.
-      const activeMoons = Object.entries(planets)
+      // v0.0.514 — operator 2026-05-31 "应该有 4 个月球倒计时, 只显示了 2 个".
+      // 实证: 4 月球 pair_with 被 sniffer 抓到, 但只 3 cd_sec 被 overlay 拉取 (cp race).
+      // Fallback: 用 localStorage OGAMEX_JUMPGATE_LOG 兜底, log 里 ts 30min 内
+      // 的 src moon 即使 cd_sec=null 也按 1800-elapsed 估算显示。
+      // (JG L1 cooldown ~30min, L2 24min, L3 20min...; 用 1800 L1 默认猜测)
+      const jgLog = (() => {
+        try {
+          return JSON.parse(window.localStorage.getItem("OGAMEX_JUMPGATE_LOG") || "[]") as Array<{ ts: number; src: string; tgt: string }>;
+        } catch { return [] as Array<{ ts: number; src: string; tgt: string }>; }
+      })();
+      const jgLogBySrc = new Map<string, { ts: number; tgt: string }>();
+      for (const e of jgLog) {
+        const cur = jgLogBySrc.get(e.src);
+        if (!cur || e.ts > cur.ts) jgLogBySrc.set(e.src, { ts: e.ts, tgt: e.tgt });
+      }
+      // v0.0.513 — operator 2026-05-31 "显示的月球不全". 改成显示**所有有 JG 建筑**的月球
+      // (建造了 jumpgate L≥1 都列出), 无冷却的显示 "ready" 绿色, 有冷却的显示 mm:ss 黄。
+      // 排序按 G:S:P, 2 列布局不变。
+      const allJgMoons = Object.entries(planets)
         .filter(([_id, p]) => {
-          if (p.type !== "moon" || typeof p.jumpgate_cooldown_sec !== "number") return false;
-          const cd = p.jumpgate_cooldown_sec ?? 0;
-          const elapsed = Math.floor((now - (p.jumpgate_harvested_at ?? now)) / 1000);
-          return Math.max(0, cd - elapsed) > 0;
+          if (p.type !== "moon") return false;
+          const jgLv = (p.buildings as Record<string, number | undefined> | undefined)?.["jumpgate"] ?? 0;
+          return jgLv >= 1;
         })
-        .map(([id, p]) => ({ id, p, remain: Math.max(0, (p.jumpgate_cooldown_sec ?? 0) - Math.floor((now - (p.jumpgate_harvested_at ?? now)) / 1000)) }))
-        .sort((a, b) => a.remain - b.remain);
-      const rendered = new Set<string>();
-      const pairRows: string[] = [];
-      for (const { id, p } of activeMoons) {
-        if (rendered.has(id)) continue;
-        const partnerId = p.jumpgate_pair_with ?? null;
-        const partner = partnerId ? planets[partnerId] : null;
-        const cd = p.jumpgate_cooldown_sec ?? 0;
-        const at = p.jumpgate_harvested_at ?? now;
+        .map(([id, p]) => ({
+          id, p,
+          coords: p.coords ?? [0, 0, 0],
+        }))
+        // 按 G:S:P 升序
+        .sort((a, b) => {
+          const ac = a.coords, bc = b.coords;
+          if ((ac[0] ?? 0) !== (bc[0] ?? 0)) return (ac[0] ?? 0) - (bc[0] ?? 0);
+          if ((ac[1] ?? 0) !== (bc[1] ?? 0)) return (ac[1] ?? 0) - (bc[1] ?? 0);
+          return (ac[2] ?? 0) - (bc[2] ?? 0);
+        });
+      // v0.0.517 — operator 2026-05-31 "不要显示 ready". 只渲染有真 cooldown
+      // 的月球。 cd_sec 没值但 log 30min 内有记录的, 按 1800 fallback 显示。
+      const FALLBACK_JG_CD_SEC = 1800; // JG L1 默认 30 min; 真值 hydrate 后覆盖
+      const cells: string[] = [];
+      for (const { id, p } of allJgMoons) {
+        let cd = p.jumpgate_cooldown_sec ?? 0;
+        let at = p.jumpgate_harvested_at ?? now;
+        // Fallback: 没 cd_sec 但 log 30min 内有记录 → 按 (1800 - elapsed) 估算
+        if ((!p.jumpgate_cooldown_sec) && jgLogBySrc.has(id)) {
+          const logEntry = jgLogBySrc.get(id)!;
+          const elapsedFromLog = Math.floor((now - logEntry.ts) / 1000);
+          if (elapsedFromLog < FALLBACK_JG_CD_SEC) {
+            cd = FALLBACK_JG_CD_SEC;
+            at = logEntry.ts;
+          }
+        }
         const elapsed = Math.floor((now - at) / 1000);
         const remain = Math.max(0, cd - elapsed);
+        if (remain <= 0) continue; // ready 不显示
         const mm = Math.floor(remain / 60);
         const ss = remain % 60;
         const coordsThis = (p.coords ?? []).join(":");
-        // Operator 2026-05-27: "JG都是成对使用 显示改成 源/目的 成对显示".
-        // 没 pair_with (harvest-derived) → 显示 [?] 明确表示 target 未知,
-        // 而非误导用户以为单边即冷却.
-        const label = partner
-          ? `[${coordsThis}]/[${(partner.coords ?? []).join(":")}]`
-          : `[${coordsThis}]/[?]`;
-        pairRows.push(`<div style="padding:2px 0; color:#c0d0e0; font-size:11px;">🌙 ${label} JG: <span class="jg-cd" data-snap="${cd}" data-at="${at}" style="color:#bdb76b;">${mm}:${ss.toString().padStart(2, "0")}</span></div>`);
-        rendered.add(id);
-        if (partnerId) rendered.add(partnerId);  // suppress partner's own row
+        cells.push(`<div style="flex:0 0 50%; padding:2px 4px; box-sizing:border-box; color:#c0d0e0; font-size:11px;">🌙 [${coordsThis}]/<span class="jg-cd" data-snap="${cd}" data-at="${at}" style="color:#bdb76b;">${mm}:${ss.toString().padStart(2, "0")}</span></div>`);
       }
-      if (pairRows.length > 0) {
-        // Operator 2026-05-27: 第一次跳完 panel 没显示 — 因为 sectionCollapsed
-        // .moons 默认 true (折叠). data 已塞进 HTML 字符串但 display:none. 这里
-        // 显式 force expand: 任何冷却中的月球都让用户看到, 否则模块跟没存在一样.
-        moonsSection = `${sectionHeader("moons", "🌙 Moons / Jumpgate", pairRows.length, "#80c0ff", "")}<div style="display:block;">${pairRows.join("")}</div>`;
+      const pairRows: string[] = cells.length > 0
+        ? [`<div style="display:flex; flex-wrap:wrap;">${cells.join("")}</div>`]
+        : [];
+      if (cells.length > 0) {
+        // v0.0.513 — section header 计数显示 monn 总数 (有 JG 的), 之前是
+        // pair-row 数会被误以为"很少"。
+        // v0.0.528 — operator 2026-05-31 "Moons/JumpGate 无法折叠".
+        // 之前 body 写死 display:block (源于 v0.0.??? "force expand" hack),
+        // 现在尊重 sectionCollapsed.moons 状态, 跟其他 section 一致。
+        const moonsBodyDisp = sectionCollapsed.moons ? "none" : "block";
+        moonsSection = `${sectionHeader("moons", "🌙 Moons / Jumpgate", cells.length, "#80c0ff", "")}<div style="display:${moonsBodyDisp};">${pairRows.join("")}</div>`;
       }
-      // Operator 2026-05-27: 第一次跳完 panel 没显示 — log render path
-      // empirics 给我看 activeMoons / pairRows 实际长度
-      console.info(`[panel/moons] render activeMoons=${activeMoons.length} pairRows=${pairRows.length} moonsSection.length=${moonsSection.length}`);
+      console.info(`[panel/moons] render allJgMoons=${allJgMoons.length} cells=${cells.length}`);
     } catch (e) { console.warn("[panel/moons] render failed:", e); }
 
     // Cargo calculator section — operator 2026-05-26:
@@ -2124,29 +2713,13 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const lbl = (v: number): string => v.toLocaleString();
       const cargoCollapsed = sectionCollapsed.cargo;
       const cargoSettingsBtn = `<button data-settings="transport" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="运输设置">⚙</button>`;
-      cargoSection = `${sectionHeader("cargo", "🚚 运输", shipsNeeded, "#80ffd0", cargoSettingsBtn)}
-<div style="display:${cargoCollapsed ? "none" : "block"}; padding:6px 10px; color:#c0d0e0; font-size:11px;">
-  <div style="margin-bottom:4px;">
-    Planet: <select data-action="cargo-planet" style="background:#1a2330; color:#c0d0e0; border:1px solid #354050; width:auto;">${planetOptsCargo}</select>
-    <button data-action="cargo-auto" title="${cargoState.autoFollow ? "Auto-follow ON — tracks ogame current planet" : "Manual — click to re-enable auto-follow"}" style="background:${cargoState.autoFollow ? "#205a40" : "#2a3a52"}; color:#fff; border:1px solid ${cargoState.autoFollow ? "#408a60" : "#354050"}; padding:1px 5px; border-radius:3px; cursor:pointer; font-size:10px; margin-left:4px;">${cargoState.autoFollow ? "🔁 Auto" : "🔒 Lock"}</button>
-  </div>
-  <div style="margin-bottom:4px;">
-    Ship:
-    <label style="margin-right:8px;"><input type="radio" name="cargo-ship" value="smallCargo" data-action="cargo-ship" ${cargoState.ship === "smallCargo" ? "checked" : ""}> SC (${lbl((st?.state?.server?.ship_cargo_capacity ?? {}).smallCargo ?? 5000)})</label>
-    <label><input type="radio" name="cargo-ship" value="largeCargo" data-action="cargo-ship" ${cargoState.ship === "largeCargo" ? "checked" : ""}> LC (${lbl((st?.state?.server?.ship_cargo_capacity ?? {}).largeCargo ?? 25000)})</label>
-  </div>
-  <div style="margin-bottom:4px;">
-    <label style="margin-right:6px;"><input type="checkbox" data-action="cargo-m" ${cargoState.use.m ? "checked" : ""}> M ${lbl(m)}</label>
-    <label style="margin-right:6px;"><input type="checkbox" data-action="cargo-c" ${cargoState.use.c ? "checked" : ""}> C ${lbl(c)}</label>
-    <label><input type="checkbox" data-action="cargo-d" ${cargoState.use.d ? "checked" : ""}> D ${lbl(d)}</label>
-  </div>
-  <div style="display:flex; align-items:center; gap:6px;">
-    <span>Need: <span data-cargo-need style="color:#7cfc00; font-weight:bold; font-size:13px;">${lbl(shipsNeeded)}</span> ${cargoState.ship === "smallCargo" ? "SC" : "LC"}</span>
-    <button data-action="cargo-fill" title="Deploy ships from current planet to its moon (same coords, mission=4)" style="background:#205a80; color:#fff; border:1px solid #408aa0; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🚀 Deploy→Moon</button>
-    <span data-cargo-copied style="color:#7cfc00; font-size:10px; display:none;">✓ deployed</span>
-  </div>
-  <div style="color:#6a7080; font-size:10px; margin-top:2px;">total=${lbl(total)} ÷ cap=${lbl(cap)} = ${lbl(shipsNeeded)} ship${shipsNeeded === 1 ? "" : "s"}</div>
-</div>`;
+      // v0.0.529 — operator 2026-05-31 "这部分不要了, 把运输任务从 goals 移到这里".
+      // 旧的 Cargo Calc UI (Planet 选择 / SC|LC / M C D / Need / Deploy→Moon)
+      // 全删, cargo section header 改成 "🚚 运输任务" + 装 transportRowsHtml.
+      // ⚙ 按钮保留 (跳到 transport modal 创建新运输任务).
+      // 静默引用以保留 lbl 等闭包变量, 不致 TS 误报 unused.
+      void planetOptsCargo; void m; void c; void d; void total; void cap; void shipsNeeded; void lbl; void selected;
+      cargoSection = `${sectionHeader("cargo", "🚚 运输任务", transportGoalCount_v529, "#80ffd0", cargoSettingsBtn)}<div style="display:${cargoCollapsed ? "none" : "block"};">${transportRowsHtml_v529}</div>`;
     } catch { /* no store yet */ }
 
     const body = `<div data-ogamex-body="1" style="display:${bodyDisplay};">${emergencySection}${expeditionSection}${discSection}${moonsSection}${cargoSection}${goalsSection}</div>`;
@@ -2377,6 +2950,20 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     wireAction("data-action-resume", "resume");
     wireAction("data-action-set-main", "set-main");
     wireAction("data-action-unset-main", "unset-main");
+    // v0.0.487 accordion — click goal row header toggles expansion (accordion:
+    // only one open at a time). Buttons inside the header carry
+    // data-stop-toggle to prevent bubbling so Pause/Cancel don't trigger
+    // toggle. Skip if click originated on an input/button.
+    for (const el of panel.querySelectorAll<HTMLElement>("[data-action-toggle-expand]")) {
+      el.addEventListener("click", (ev) => {
+        const tgt = ev.target as HTMLElement;
+        if (tgt.closest("[data-stop-toggle]") || tgt.closest("button") || tgt.closest("input") || tgt.closest("select")) return;
+        const gid = el.getAttribute("data-action-toggle-expand");
+        if (!gid) return;
+        setExpandedGoalId(expandedGoalId === gid ? null : gid);
+        if (lastGoals) render(lastGoals);
+      });
+    }
     // v0.0.449: shortage-chip → 运输 button. Opens transport modal with
     // target+cargo prefilled. targetCoord is resolved to planet id via
     // store lookup (goal.planet is the coord string post-idToCoords).
@@ -2411,10 +2998,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         ev.stopPropagation();
         const key = el.getAttribute("data-tree-toggle");
         if (!key) return;
-        if (treeCollapsed.has(key)) treeCollapsed.delete(key);
-        else treeCollapsed.add(key);
-        // Cheap re-render: use the last fetched goals list rather than
-        // hitting the network again.
+        // v0.0.526 — toggle in treeExpanded (默认折叠语义)
+        if (treeExpanded.has(key)) treeExpanded.delete(key);
+        else treeExpanded.add(key);
         if (lastGoals) render(lastGoals);
       });
     }
@@ -2675,6 +3261,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const elapsed = Math.floor((now - at) / 1000);
       const remain = Math.max(0, snap - elapsed);
       if (remain === 0) {
+        // v0.0.517 — operator 2026-05-31 "不要显示 ready": cooldown 到 0 →
+        // 隐藏该 cell (operator 不想看 ready 行)。
         const row = sp.closest("div");
         if (row) (row as HTMLElement).style.display = "none";
         return;

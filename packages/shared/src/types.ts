@@ -217,6 +217,22 @@ export interface Goal {
    * before flipping the target.
    */
   is_main_goal?: boolean;
+
+  /**
+   * Optional parent goal id. When set, this goal is a SUB-GOAL of `parent_goal_id`
+   * (e.g. an accelerator prereq or a lunarBase prereq feeding a jumpgate goal).
+   *
+   * Semantics:
+   *   - cancelling parent → cascade-cancels all children
+   *   - panel renders children indented under parent
+   *   - children may have their own children (depth not capped, but UI shows ≤3)
+   *
+   * Architecture: parent-child graph is informational, NOT a scheduling
+   * dependency — slot allocation is still per-(body, slot-family). If the
+   * planner cares whether a child must precede its parent, that's encoded in
+   * `prereq_tree` independently.
+   */
+  parent_goal_id?: string;
 }
 
 // --- Strategy ---
@@ -352,6 +368,12 @@ export type DownstreamMsg =
    *  elapsed, sidecar emits this msg. Userscript receives it and POSTs
    *  the recall directly to ogame (cookies + token live in the page). */
   | { type: "save.recall_now"; planet_id: string; fleet_id: number; reason?: string }
+  /** v0.0.472: when an expedition fleet returns (mission=15 fleet just left
+   *  fleets_outbound), check galaxy:system:16 for debris field. If present,
+   *  dispatch explorers from origin planet to collect (mission=8, destType=2).
+   *  Operator 2026-05-30 "有舰队开始返回，检查该银河系16号位置外太空是否有
+   *  残骸，如果有就派探路者去回收". */
+  | { type: "expedition.debris_check"; galaxy: number; system: number; origin_planet_id: string; reason?: string }
   | { type: "ping"; ts: number };
 
 export type BridgeMsg = UpstreamMsg | DownstreamMsg;

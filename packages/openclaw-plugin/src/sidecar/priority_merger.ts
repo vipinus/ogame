@@ -43,7 +43,7 @@ export interface DispatchResult {
  *   - "… production started"                   (shipyard_q has the ship)
  */
 const ALREADY_AT_TARGET_RE =
-  /already at or above target|already upgrading in ogame queue|in flight|production started|goal complete/i;
+  /already at or above target|already upgrading in ogame queue|in flight|production started|goal complete|no-op: source body/i;
 
 function isBlocked(r: Directive | { blocked: string }): r is { blocked: string } {
   return typeof (r as { blocked?: unknown }).blocked === "string";
@@ -76,24 +76,26 @@ export class PriorityMerger {
   // goals. Cleared on state.snapshot arrival (empire_poll) or operator
   // pause+resume (operator_retry).
   private readonly awaitingEvents = new Map<string, Set<string>>();
-  // v0.0.463: event-driven stuck recovery (operator 2026-05-29 "N=2 落地").
-  // When a goal sits "active" for N consecutive snapshots WHERE the ogame
-  // slot it would occupy is empty AND the snapshot's last_update is newer
-  // than row.updated_at, the dispatched directive is presumed lost (WS drop,
-  // network hiccup, page reload during dispatch). Counter increments per
-  // qualifying snapshot; demote to pending when it hits STUCK_DEMOTE_AT.
-  // Counter zeroes when slot becomes busy (directive succeeded) or goal
-  // exits active. NOT timer-based — counts snapshot events.
-  private readonly stuckCounter = new Map<string, number>();
-  private readonly STUCK_DEMOTE_AT = 2;
-  // v0.0.469: atomic fleet ops need more patience — sendFleet POST itself
-  // takes 1-3s, fleet doesn't register in state.fleets_outbound until next
-  // /movement scrape (~5-10s after dispatch). With STUCK_DEMOTE_AT=2 and
-  // snapshot rate ~7.5s, the demote window collided with fleet's "in
-  // flight but not yet visible" gap → false-positive demote → re-dispatch
-  // → DUPLICATE fleet launched (operator 2026-05-30 "重复发运输船了").
-  // Atomic types use 4-snapshot patience (~30s) to let fleet land in state.
-  private readonly STUCK_DEMOTE_AT_ATOMIC = 4;
+  // v0.0.478: dispatch-time-anchored stuck recovery (operator 2026-05-30).
+  // PREVIOUS DESIGN (v0.0.463 N=2 / v0.0.469 N_ATOMIC=4 snapshot count) was
+  // wrong: snapshot rate (~5-7.5s) is unstable, demote window flapped, and
+  // a fleet POST that took >20s to reflect in state.fleets_outbound got
+  // false-positive-demoted → second directive dispatched → DUPLICATE fleet
+  // (operator 2026-05-30: "运输又发了两次, 17min 20s/17min 40s 同源同终").
+  //
+  // NEW DESIGN: track when each goal was last dispatched (dispatchedAt).
+  // stuck-recovery requires (Date.now() - dispatchedAt) >= timeout AND
+  // qualifying snapshot. Timeout is decoupled from snapshot rate.
+  //   - build / research:           30s timeout (slot signal is reliable)
+  //   - atomic fleet (deploy etc.): 90s timeout (sendFleet + ack + state
+  //                                 catch-up can take 30-60s under load)
+  // dispatchedAt cleared on ack (completed/blocked/cancelled status).
+  // Also serves as in-flight DEDUP at dispatch path: if dispatchedAt exists
+  // within timeout window AND goal status is still "active" without ack,
+  // skip re-dispatch this tick (defense-in-depth vs. userscript dedup).
+  private readonly dispatchedAt = new Map<string, number>();
+  private readonly STUCK_TIMEOUT_MS = 30_000;          // build / research
+  private readonly STUCK_TIMEOUT_MS_ATOMIC = 90_000;   // atomic fleet ops
 
   constructor(deps: PriorityMergerDeps) {
     this.store = deps.store;
@@ -134,10 +136,25 @@ export class PriorityMerger {
     return this.awaitingEvents.get(goalId) ?? new Set<string>();
   }
 
-  /** Reset awaiting + all internal state — invoked on client reconnect. */
+  /** Reset awaiting on client reconnect.
+   *  v0.0.498: re-stamped dispatchedAt to give fresh 90s window after reconnect.
+   *  v0.0.507 — operator 2026-05-31: WS flapping (connect/disconnect every few
+   *  seconds) caused every hello to re-stamp dispatchedAt → 90s timer never
+   *  elapsed → stuck-active goals (6 expeditions stuck 2+ min, daemon refuses
+   *  new dispatches because cap reached). Fix: DON'T touch dispatchedAt on
+   *  reconnect at all. Keep original dispatch time. If stuck-recovery 90s
+   *  elapses naturally, demote and re-dispatch. awaitingEvents still cleared
+   *  so failed goals get re-tried. */
   resetCooldown(): void {
     this.awaitingEvents.clear();
-    this.stuckCounter.clear();
+    // intentionally DO NOT touch dispatchedAt — let original dispatch time
+    // anchor the stuck-recovery window through any flapping reconnects.
+  }
+
+  /** Clear dispatch tracking for a goal. Called from ack handler when goal
+   *  transitions away from "active" (completed / blocked / cancelled). */
+  clearDispatched(goalId: string): void {
+    this.dispatchedAt.delete(goalId);
   }
 
   /**
@@ -193,11 +210,12 @@ export class PriorityMerger {
         blocked.push({ goal_id: row.goal.id, reason });
         continue;
       }
-      // v0.0.463: pure-event stuck recovery. Operator's directive may have
-      // been dispatched but lost (WS drop / page reload / etc.). For build/
-      // research goals, the ogame slot it would occupy is the diagnostic:
-      // empty slot + snapshot newer than dispatch = directive presumed lost.
-      // After STUCK_DEMOTE_AT consecutive qualifying snapshots → demote.
+      // v0.0.478: time-anchored stuck recovery. Active goal that hasn't
+      // ack'd within timeout AND has empty ogame slot → demote. Decoupled
+      // from snapshot rate (was N=4 snapshots × 5s = 20s window → false
+      // positives → duplicate fleet, operator 2026-05-30). Now 90s for
+      // atomic fleet ops (covers slow sendFleet + state catch-up gap) and
+      // 30s for build/research (slot signal is reliable & instant).
       if (row.status === "active") {
         const goalType = row.goal.type;
         const planetIdRaw = typeof row.goal.planet === "string" ? row.goal.planet : "";
@@ -252,22 +270,19 @@ export class PriorityMerger {
         // between moons with no outbound fleet visible. Needs cooldown
         // detection (separate enhancement) — left for operator pause+resume.
         const snapshotFresher = (state.last_update ?? 0) > (row.updated_at ?? 0);
-        if (slotEmpty && snapshotFresher) {
-          const cnt = (this.stuckCounter.get(row.goal.id) ?? 0) + 1;
-          const isAtomic = goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport";
-          const demoteAt = isAtomic ? this.STUCK_DEMOTE_AT_ATOMIC : this.STUCK_DEMOTE_AT;
-          if (cnt >= demoteAt) {
-            this.stuckCounter.delete(row.goal.id);
-            this.store.updateStatus(row.goal.id, "pending", `stuck-recovery: empty slot ${cnt} snapshots, directive presumed lost`);
-            // fall through — re-plan as pending below
-          } else {
-            this.stuckCounter.set(row.goal.id, cnt);
-            if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
-            continue;
-          }
+        const isAtomic = goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport";
+        const timeoutMs = isAtomic ? this.STUCK_TIMEOUT_MS_ATOMIC : this.STUCK_TIMEOUT_MS;
+        // Anchor on dispatch time, not snapshot count. Fall back to
+        // row.updated_at when dispatchedAt is missing (e.g. after server
+        // restart while goal was already active).
+        const dispatchTs = this.dispatchedAt.get(row.goal.id) ?? row.updated_at ?? 0;
+        const sinceDispatch = now - dispatchTs;
+        if (slotEmpty && snapshotFresher && sinceDispatch >= timeoutMs) {
+          this.dispatchedAt.delete(row.goal.id);
+          this.store.updateStatus(row.goal.id, "pending", `stuck-recovery: empty slot ${Math.round(sinceDispatch / 1000)}s after dispatch, directive presumed lost`);
+          // fall through — re-plan as pending below
         } else {
-          // slot busy (directive working) OR same snapshot — reset counter
-          this.stuckCounter.delete(row.goal.id);
+          // Still within timeout window OR slot busy → wait for ack.
           if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
           continue;
         }
@@ -329,8 +344,19 @@ export class PriorityMerger {
         if (planetId) shipsSlot.add(planetId);
       }
       this.store.updateStatus(row.goal.id, "active");
+      // v0.0.478: stamp dispatch time for time-anchored stuck-recovery and
+      // in-flight dedup. Cleared by clearDispatched() in ack handler.
+      this.dispatchedAt.set(row.goal.id, Date.now());
       this.send({ type: "directive.dispatch", directive: result });
       dispatched.push(result);
+      // v0.0.506 forensic — log every dispatch so duplicate-fleet bugs are
+      // traceable from journal. Operator 2026-05-30 实证 multiple 2-fleet
+      // events on chain Seg 2 path; need to know if sidecar sent twice OR
+      // userscript executed twice OR something else.
+      try {
+        const dParams = result.params as Record<string, unknown>;
+        console.log(`[merger] DISPATCH goal=${row.goal.id} type=${row.goal.type} P=${row.goal.priority} action=${result.action} dirId=${result.id} planet_id=${dParams["planet_id"]} source_planet=${dParams["source_planet"]} target=${dParams["target_coords"]}(${dParams["target_type"]}) mission=${dParams["mission"]} ships=${JSON.stringify(dParams["ships"])} resources=${JSON.stringify(dParams["resources"])}`);
+      } catch { /* */ }
       // v0.0.433: this leg is now active; downstream chain peers must wait.
       const cid = (row.goal.target as { chain_id?: unknown })?.chain_id;
       if (typeof cid === "string" && cid) chainBlocked.add(cid);

@@ -84,6 +84,11 @@ function pickResourceStrategy(
   cost: { m: number; c: number; d: number; e: number },
   universeSpeed: number,
 ): { action: "wait" } | { action: "upgrade_mine"; mine: string } {
+  // v0.0.470: moons have NO mines (planet-only buildings). Always "wait"
+  // for moons — resources arrive via transport, not local production.
+  // Operator 2026-05-30: JG L2 on moon was recursing into metalMine
+  // upgrade on the moon, which the planet-only gate (correctly) blocked.
+  if (planet.type === "moon") return { action: "wait" };
   const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
   const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
   // (A) Direct wait time = max across short resources
@@ -613,8 +618,23 @@ function planBuildGoal(goal: Goal, state: WorldState): PlanResult {
   if (!building) return { blocked: "build goal missing target.building" };
   if (!planetRef) return { blocked: "build goal missing target.planet" };
 
-  const planet = resolvePlanet(planetRef, state);
+  let planet = resolvePlanet(planetRef, state);
   if (!planet) return { blocked: `planet not found: ${planetRef}` };
+  // v0.0.470: moon-only building disambiguation (operator 2026-05-30
+  // "build jumpgate 2 ↳ moon-only building jumpgate cannot be built on
+  // planet"). When the goal targets a moon-only building (lunarBase,
+  // sensorPhalanx, jumpgate) but resolvePlanet picked the same-coord
+  // planet (due to ambiguous coord ref), auto-switch to the moon. Without
+  // this, the planet-only gate downstream would block forever even though
+  // the same coord has a perfectly valid moon for the build.
+  if (MOON_ONLY_BUILDINGS.has(building) && planet.type !== "moon") {
+    const coord = planet.coords?.join(":");
+    if (coord) {
+      const moonAtCoord = Object.values(state.planets ?? {})
+        .find((p) => p.type === "moon" && p.coords?.join(":") === coord);
+      if (moonAtCoord) planet = moonAtCoord;
+    }
+  }
 
   const ctx: PlanCtx = {
     state,
@@ -1022,6 +1042,18 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
     resolvePlanet(goal.planet, state) ??
     Object.values(state.planets ?? {})[0];
   if (!sourcePlanet) return { blocked: `${goal.type} goal: no source planet available` };
+
+  // v0.0.485 — same-body no-op guard. Operator 2026-05-30: chain Seg 3
+  // "to_stop_load" with fromP=moon emitted deploy with source=moon AND
+  // target_coords=that moon's coord (moon→self). userscript sendFleet
+  // fallback-rewrote source to a planet at OTHER coord, dispatching a
+  // duplicate of Seg 2's cargo fleet. Backend backstop: when source body's
+  // coord matches target coord AND types align → refuse to dispatch.
+  const sourceCoordStr = (sourcePlanet.coords ?? []).join(":");
+  const sourceType = (sourcePlanet as { type?: string }).type ?? "planet";
+  if (sourceCoordStr && sourceCoordStr === targetCoords && sourceType === targetType) {
+    return { blocked: `${goal.type} no-op: source body ${sourcePlanet.id} (${sourceType}) is already at ${targetCoords} — same body, nothing to deploy` };
+  }
 
   const mission = goal.type === "deploy" ? MISSION_DEPLOY : MISSION_TRANSPORT;
 

@@ -58,7 +58,7 @@ export interface HttpServerOptions {
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
-  cancelGoal?: (id: string) => { ok: boolean; reason?: string };
+  cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
   resumeGoal?: (id: string) => { ok: boolean; reason?: string };
   setMainGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -119,7 +119,7 @@ interface ResolvedHttpServerOptions {
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
-  cancelGoal?: (id: string) => { ok: boolean; reason?: string };
+  cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
   resumeGoal?: (id: string) => { ok: boolean; reason?: string };
   setMainGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -316,11 +316,17 @@ export class HttpServer {
       this.handleProviderGet(res, this.opts.stateProvider);
       return;
     }
-    if (method === "GET" && url === "/ogamex/v1/goals") {
-      // listGoals returns the bare array. Wrap in {goals: [...]}. If not
-      // wired, return empty list (operator UI can still load).
+    if (method === "GET" && (url === "/ogamex/v1/goals" || url?.startsWith("/ogamex/v1/goals?"))) {
+      // v0.0.509 — operator 2026-05-31 chrome 崩 实证: 5807 goals 在 store,
+      // 95%+ 是 completed/cancelled 历史, 响应 3.66 MB, panel 3s 拉一次
+      // 每分钟 73 MB 下载 → JS heap OOM。 默认只返回 non-terminal,
+      // ?all=true 显式要全量 (panel 历史视图 / 调试用).
       this.writeCorsHeaders(res);
-      const goals = this.opts.listGoals ? this.opts.listGoals() : [];
+      const allGoals = this.opts.listGoals ? this.opts.listGoals() as Array<{ status?: string }> : [];
+      const includeAll = (url ?? "").includes("all=true");
+      const goals = includeAll
+        ? allGoals
+        : allGoals.filter((g) => g?.status !== "completed" && g?.status !== "cancelled");
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ goals }));
@@ -408,6 +414,26 @@ export class HttpServer {
         res.statusCode = 200;
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify({ ok: true, ts: this.expeditionTriggerTs }));
+        return;
+      }
+      // v0.0.490 — debug log relay. userscript pushes diagnostic text here,
+      // sidecar prints to stdout so journalctl captures it. Public no-auth
+      // (diagnostic only, LAN-bound). Body: { tag, text }.
+      if (url === "/ogamex/v1/debug/log") {
+        let body = "";
+        req.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
+        req.on("end", () => {
+          try {
+            const parsed = JSON.parse(body) as { tag?: string; text?: string };
+            const tag = typeof parsed.tag === "string" ? parsed.tag : "unknown";
+            const text = typeof parsed.text === "string" ? parsed.text : "";
+            console.log(`[debug-log:${tag}] ${text}`);
+          } catch { console.log(`[debug-log:parse-fail] ${body.slice(0, 500)}`); }
+          this.writeCorsHeaders(res);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: true }));
+        });
         return;
       }
       // Species discovery — create goal. Public no-auth (panel button click,

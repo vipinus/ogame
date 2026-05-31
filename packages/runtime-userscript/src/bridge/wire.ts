@@ -162,6 +162,78 @@ export async function wireBridge(
     })();
   });
 
+  // v0.0.472 — expedition debris collection. Sidecar emits this when an
+  // expedition fleet returns. Userscript fetches galaxy:system content, checks
+  // pos 16 for debris field, dispatches explorer fleet (mission=8, destType=2)
+  // to collect. Operator 2026-05-30 spec: explorer = "探路者", any positive
+  // debris triggers; explorer count = ceil((m+c+d) / explorer_cargo_cap).
+  const offDebrisCheck = client.on("expedition.debris_check", (msg) => {
+    const m = msg as { galaxy?: number; system?: number; origin_planet_id?: string; reason?: string };
+    const g = m.galaxy ?? 0, s = m.system ?? 0, origin = m.origin_planet_id ?? "";
+    if (!g || !s || !origin) return;
+    console.info(`[debris] check G:S=${g}:${s} origin=${origin} reason=${m.reason ?? ""}`);
+    void (async (): Promise<void> => {
+      try {
+        // Fetch galaxy content directly (ogame ajax).
+        const r = await fetch(`/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1`, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+          body: new URLSearchParams({ galaxy: String(g), system: String(s) }).toString(),
+        });
+        if (!r.ok) { console.warn(`[debris] galaxy fetch HTTP ${r.status}`); return; }
+        const json = await r.json() as Record<string, unknown>;
+        // Find position 16's debris field. ogame v12 galaxy response shape:
+        //   { galaxy: [{position:16, debris:{metal:N, crystal:N, deuterium?:N}, ...}, ...], ... }
+        // OR { galaxy: { rows: [...] } } — try multiple paths.
+        const rows: Array<Record<string, unknown>> = (() => {
+          const galaxyField = json["galaxy"];
+          if (Array.isArray(galaxyField)) return galaxyField as Array<Record<string, unknown>>;
+          if (galaxyField && typeof galaxyField === "object") {
+            const inner = (galaxyField as { rows?: unknown }).rows;
+            if (Array.isArray(inner)) return inner as Array<Record<string, unknown>>;
+          }
+          return [];
+        })();
+        const pos16 = rows.find((row) => Number(row["position"]) === 16);
+        const debris = (pos16?.["debris"] ?? pos16?.["debrisField"]) as { metal?: number; crystal?: number; deuterium?: number } | undefined;
+        const dm = Number(debris?.metal ?? 0);
+        const dc = Number(debris?.crystal ?? 0);
+        const dd = Number(debris?.deuterium ?? 0);
+        const totalDebris = dm + dc + dd;
+        if (totalDebris <= 0) {
+          console.info(`[debris] G:S:16=${g}:${s}:16 — no debris field, skip`);
+          return;
+        }
+        console.info(`[debris] G:S:16=${g}:${s}:16 has m=${dm} c=${dc} d=${dd} (total ${totalDebris})`);
+        // Compute explorers needed (cap = 16000 standard for explorer).
+        const win = window as Window & { __ogamexStore?: { state?: { server?: { ship_cargo_capacity?: { explorer?: number } } } } };
+        const explorerCap = win.__ogamexStore?.state?.server?.ship_cargo_capacity?.explorer ?? 16000;
+        const explorersNeeded = Math.max(1, Math.ceil(totalDebris / explorerCap));
+        // Dispatch via fleet_api.sendFleet — mission=8 (collect debris), destType=2 (debris).
+        try {
+          const wTokMgr = (window as Window & { __ogamexTokenManager?: unknown }).__ogamexTokenManager;
+          if (!wTokMgr) { console.warn("[debris] no tokenManager available"); return; }
+          const { sendFleet } = await import("../api/fleet_api.js");
+          const result = await sendFleet({
+            ships: { explorer: explorersNeeded } as unknown as import("@ogamex/shared").ShipCount,
+            cargo: { m: 0, c: 0, d: 0 },
+            coords: [g, s, 16],
+            destType: 2,
+            mission: 8 as import("@ogamex/shared").MissionCode,
+            speed: 10,
+            sourcePlanetId: origin,
+          }, { fetch: window.fetch.bind(window), token: wTokMgr as Parameters<typeof sendFleet>[1]["token"] });
+          console.info(`[debris] explorer dispatched fleetId=${result.fleetId} count=${explorersNeeded}`);
+        } catch (e) {
+          console.error("[debris] sendFleet failed:", e);
+        }
+      } catch (e) {
+        console.error("[debris] handler threw:", e);
+      }
+    })();
+  });
+
   // save.recall_now — sidecar's SaveCoordinator decided this fleet's recall
   // margin elapsed and instructs the userscript to POST the recall. Cookies +
   // token live in the page world, so the actual ogame API call has to come

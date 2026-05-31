@@ -570,6 +570,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                       localStorage.setItem(TOKEN_LS_KEY, m[1]);
                     }
                   }
+                  // v0.0.472: operator-initiated build cancel/queue change
+                  // → force empire poll so sidecar sees fresh build_q
+                  // immediately (operator 2026-05-30 "前台取消后台没有反应").
+                  // Without this, sidecar's stale build_q blocked stuck-recovery
+                  // until next natural empire poll (could be minutes).
+                  if (url.includes("cancelEntry") || url.includes("cancelbuildlistEntry")) {
+                    try { window.__ogamexPollEmpire && window.__ogamexPollEmpire(); } catch (_) {}
+                  }
                   if (url.includes("action=checkTarget")) {
                     try {
                       const j = JSON.parse(t);
@@ -654,6 +662,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             xhr.addEventListener("load", () => {
               if (url.includes("/game/index.php")) {
                 try { log("XHR "+method, url, reqBody, xhr.status, (xhr.responseText||"").length, xhr.responseText); } catch(_){}
+                // v0.0.472: operator-initiated cancel via ogame UI XHR →
+                // force empire poll so sidecar sees fresh build_q.
+                if (url.includes("cancelEntry") || url.includes("cancelbuildlistEntry")) {
+                  try { window.__ogamexPollEmpire && window.__ogamexPollEmpire(); } catch(_) {}
+                }
                 // checkTarget shipsData piggyback (same as fetch branch)
                 if (url.includes("action=checkTarget")) {
                   try {
@@ -697,15 +710,36 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                         if (meta) sourceMoonId = meta.getAttribute("content");
                       } catch(_) {}
                     }
+                    // v0.0.516 — operator 2026-05-31 "跳跃的时候源地址和目
+                    // 标地址都要抓". 扩 target 提取 regex + URL params 也兜底.
                     let targetMoonId = null;
                     if (reqBody) {
                       const m = reqBody.match(/targetSpaceObjectId=(\\d+)/)
                             || reqBody.match(/selectedTarget=(\\d+)/)
-                            || reqBody.match(/[\\?&]target=(\\d+)/)
+                            || reqBody.match(/[\\?&]target(?:Id|MoonId|PlanetId)?=(\\d+)/i)
                             || reqBody.match(/destId=(\\d+)/)
                             || reqBody.match(/destinationId=(\\d+)/)
-                            || reqBody.match(/dest_planet=(\\d+)/);
+                            || reqBody.match(/dest_planet=(\\d+)/)
+                            || reqBody.match(/[\\?&]tgt=(\\d+)/)
+                            || reqBody.match(/[\\?&]moonId=(\\d+)/)
+                            || reqBody.match(/moon=(\\d+)/);
                       if (m) targetMoonId = m[1];
+                    }
+                    // URL fallback: executeJump 可能把 target 放 URL query
+                    if (!targetMoonId) {
+                      const um = url.match(/[?&]target(?:Id|MoonId|PlanetId)?=(\\d+)/i)
+                            || url.match(/[?&]tgt=(\\d+)/)
+                            || url.match(/[?&]destId=(\\d+)/);
+                      if (um) targetMoonId = um[1];
+                    }
+                    // JSON response fallback — ogame 可能 echo 回 target info
+                    if (!targetMoonId && jsonResp) {
+                      const targetField = jsonResp.targetSpaceObjectId
+                                       ?? jsonResp.targetMoonId
+                                       ?? jsonResp.targetId
+                                       ?? jsonResp.destination
+                                       ?? jsonResp.tgt;
+                      if (targetField) targetMoonId = String(targetField);
                     }
                     const origCoordMatch = t.match(/起始座[標标][\\s\\S]{0,300}?\\[(\\d+):(\\d+):(\\d+)\\]/);
                     const originCoords = origCoordMatch ? [origCoordMatch[1], origCoordMatch[2], origCoordMatch[3]].join(":") : null;
@@ -725,8 +759,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                     // sandbox async overlay re-fetch 来不及跑完就被 abort. 这里同步
                     // 写 localStorage (blocking) — navigate 前必然落盘. boot 时
                     // hydrate. ONLY 真实 jump (有 target) 写, overlay GET 不写.
-                    if (url.includes("action=executeJump") && targetMoonId && sourceMoonId
-                        && jsonResp && (jsonResp.status === true || jsonResp.success === true)) {
+                    // v0.0.516 — 放宽 log 写入条件: 只要 URL 是 executeJump
+                    // 并且能拿到 src AND tgt, 不管 jsonResp 是不是有 status:true
+                    // (ogame 不同版本 success 字段名变化, 不能要求)。 这样:
+                    //   - sniffer 不会因为 status field 名错就漏抓
+                    //   - 即使 response 不解析 (HTML overlay 或网络抖), 仍记录
+                    //   - 后续 hydrate 拿真值 cooldown 不依赖 sniffer 解析对
+                    if (url.includes("action=executeJump") && targetMoonId && sourceMoonId) {
                       try {
                         const key = "OGAMEX_JUMPGATE_LOG";
                         const log = JSON.parse(localStorage.getItem(key) || "[]");
@@ -737,6 +776,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                         localStorage.setItem(key, JSON.stringify(log));
                         console.log("[OgameXSniff] jumpgate sync-persisted src=" + sourceMoonId + " tgt=" + targetMoonId);
                       } catch (_) {}
+                    } else if (url.includes("action=executeJump")) {
+                      // 捕获失败诊断 — 看下次咋错
+                      console.warn("[OgameXSniff] jumpgate executeJump captured but src/tgt MISSING — src=" + sourceMoonId + " tgt=" + targetMoonId + " body=" + String(reqBody).slice(0, 300));
                     }
                   } catch(_) {}
                 }
@@ -935,7 +977,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             }
             patch[srcId] = srcPatch;
             if (pairTgt && store.state.planets[pairTgt] && pairSrc !== null) {
-              patch[pairTgt] = { jumpgate_pair_with: pairSrc };
+              // v0.0.525 — operator 2026-05-31: target 月球也进 cooldown
+              // (ogame 物理: JG 跳完两边都"充能中"). 写 cd_sec + harvested_at
+              // 到目的月球, 不仅写 pair_with.
+              patch[pairTgt] = {
+                jumpgate_cooldown_sec: cdSec,
+                jumpgate_harvested_at: Date.now(),
+                jumpgate_pair_with: pairSrc,
+              };
             }
           } else if (cdSec === 0) {
             // Explicit READY signal — clearing pair is fine here.
@@ -1094,7 +1143,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.467";
+  const USERSCRIPT_VERSION = "0.0.533";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1523,6 +1572,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               && src.jumpgate_harvested_at && src.jumpgate_harvested_at > e.ts) return false;
           return true;
         });
+      // v0.0.524 — REVERT v0.0.515 (operator 2026-05-31 "又开始自动切星球了").
+      // v0.0.515 加的"扫所有有 JG 月球 cp= overlay 拉真值"会让 ogame 顶栏
+      // 9 次跳来跳去, 视觉很糟。 退回 log-only candidates (sniffer 抓到的才
+      // 探测), 完全事件驱动。 跨 session 的 cooldown 等 sniffer 下次抓。
       if (candidates.length > 0) {
         // Operator 2026-05-27 evidence: 3 rows with identical cd=29:15 after
         // multi-moon hydrate. ogame session-cp is single-slot per session;
@@ -1567,11 +1620,23 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                 continue;
               }
               if (!store.state.planets[entry.src]) continue;
+              // v0.0.525 — operator 2026-05-31 "目的月球的冷却时间没抓到".
+              // ogame 物理: JG 跳跃后 BOTH src 和 tgt 月球都进 cooldown
+              // (每月球只 1 个 JG, 用过 = 充能). 之前只在 src 写 cd_sec, target
+              // 只写 pair_with → target panel 不显示倒计时。 现在 target 也
+              // 同步 cd_sec + harvested_at。
+              const harvestNow = Date.now();
               const hydratePatch: Record<string, Partial<typeof store.state.planets[string]>> = {
-                [entry.src]: { jumpgate_cooldown_sec: parsedCd, jumpgate_harvested_at: Date.now(), jumpgate_pair_with: entry.tgt },
+                [entry.src]: entry.tgt
+                  ? { jumpgate_cooldown_sec: parsedCd, jumpgate_harvested_at: harvestNow, jumpgate_pair_with: entry.tgt }
+                  : { jumpgate_cooldown_sec: parsedCd, jumpgate_harvested_at: harvestNow },
               };
               if (entry.tgt && store.state.planets[entry.tgt]) {
-                hydratePatch[entry.tgt] = { jumpgate_pair_with: entry.src };
+                hydratePatch[entry.tgt] = {
+                  jumpgate_cooldown_sec: parsedCd,
+                  jumpgate_harvested_at: harvestNow,
+                  jumpgate_pair_with: entry.src,
+                };
               }
               store.setPlanetsPatch(hydratePatch);
               const fmt = (s: number): string => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,"0")}`;
@@ -2180,6 +2245,49 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         return;
       }
       void usedPattern; // (silenced — happens every 5s, expected steady-state)
+      // v0.0.490 debug: dump first body's full key list ONCE per type per
+      // session — both to console AND to sidecar via fetch, so journalctl
+      // can show ogame v12 empire schema without operator manual paste.
+      try {
+        const dumpKey = `__ogamexEmpireDump_${typeLabel}`;
+        const dumped = (env.win as Window & Record<string, unknown>)[dumpKey];
+        if (!dumped && data.length > 0) {
+          const sample = data[0]!;
+          const keys = Object.keys(sample);
+          const nonNumeric = keys.filter(k => !/^\d+$/.test(k));
+          const lines: string[] = [];
+          lines.push(`${typeLabel} sample (id=${sample["id"]} name=${sample["name"]}): ${keys.length} keys total, ${nonNumeric.length} non-numeric`);
+          lines.push(`  non-numeric keys: ${nonNumeric.join(", ")}`);
+          for (const k of nonNumeric) {
+            const v = sample[k];
+            const vstr = typeof v === "object" ? JSON.stringify(v).slice(0, 200) : String(v).slice(0, 100);
+            lines.push(`  ${typeLabel}.${k} = ${vstr}`);
+          }
+          // Also dump tid keys with "metal-ish" names by value heuristics:
+          // ogame uses tid<200 for buildings, tid 200-300 for ships. Check if
+          // any tid maps to a metal-ish key by trying value ranges (resource
+          // amounts usually 4-7 digits, level usually 1-99).
+          const tidKeys = keys.filter(k => /^\d+$/.test(k));
+          const highValTids = tidKeys.filter(k => {
+            const v = sample[k];
+            const n = typeof v === "number" ? v : parseInt(String(v).replace(/[.,\s]/g, ""), 10);
+            return Number.isFinite(n) && n > 10000;
+          });
+          lines.push(`  high-value tid keys (>10k, possibly resources): ${highValTids.map(k => `${k}=${sample[k]}`).join(", ")}`);
+          const dump = lines.join("\n");
+          console.log(`[OgameX/empire DEBUG]\n${dump}`);
+          // Send to sidecar so journalctl can show it without operator
+          // pasting console — purely diagnostic, fire-and-forget.
+          try {
+            const bridgeBase = (env.win.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com");
+            void env.win.fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+              method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tag: "empire-dump", text: dump }),
+            }).catch(() => {});
+          } catch { /* */ }
+          (env.win as Window & Record<string, unknown>)[dumpKey] = true;
+        }
+      } catch (e) { console.warn("[OgameX/empire DEBUG] dump failed", e); }
       const cur = store.state;
       const patchPlanets: Record<string, typeof cur.planets[string]> = { ...cur.planets };
       // Operator 2026-05-25: "远征船不够以后卡住了，有新船到达星球也没有起飞".
@@ -2282,9 +2390,119 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           }
           lastShipSnap.set(pid, { ...ships });
         }
-        const hasAny = Object.keys(ships).length > 0 || Object.keys(buildings).length > 0 || Object.keys(lifeform_buildings).length > 0;
+        // v0.0.489 — operator 2026-05-30 "如果我不在线就不干了?". empire 返回
+        // 的 planet 对象除了 numeric tid 之外, 还带 resources 字段 (用 string
+        // key, 跟 fetchResources 同构)。 之前 parser 只看 numeric tid 漏抓
+        // resources → 月球资源永远走不进 sidecar (除非 operator 浏览器打开
+        // 该月球页触发 fetchResources)。 现在 broad-net 抓常见 key 候选,
+        // 命中任意一种就 patch resources / production / storage。
+        const candResources = (() => {
+          const r: { m?: number; c?: number; d?: number; e?: number } = {};
+          const num = (v: unknown): number | undefined => {
+            if (typeof v === "number" && Number.isFinite(v)) return v;
+            if (typeof v === "string") {
+              const stripped = v.replace(/[.,\s]/g, "");
+              const n = parseInt(stripped, 10);
+              if (Number.isFinite(n)) return n;
+            }
+            return undefined;
+          };
+          // v0.0.490 broader candidates: nested .amount / direct number / string forms.
+          const nested = (root: unknown, ...keys: string[]): number | undefined => {
+            let cur: unknown = root;
+            for (const k of keys) {
+              if (cur && typeof cur === "object") cur = (cur as Record<string, unknown>)[k];
+              else return undefined;
+            }
+            return num(cur);
+          };
+          const res = planet["resources"];
+          // ogame v12 candidates (各种 schema 都试):
+          const m =
+            num(planet["metal"]) ?? num(planet["m"]) ?? num(planet["metalAmount"]) ?? num(planet["metal_amount"])
+            ?? nested(res, "metal") ?? nested(res, "metal", "amount") ?? nested(res, "metal", "value")
+            ?? nested(planet, "metal", "amount") ?? nested(planet, "metal", "value");
+          const c =
+            num(planet["crystal"]) ?? num(planet["c"]) ?? num(planet["crystalAmount"]) ?? num(planet["crystal_amount"])
+            ?? nested(res, "crystal") ?? nested(res, "crystal", "amount") ?? nested(res, "crystal", "value")
+            ?? nested(planet, "crystal", "amount") ?? nested(planet, "crystal", "value");
+          const d =
+            num(planet["deuterium"]) ?? num(planet["d"]) ?? num(planet["deuteriumAmount"]) ?? num(planet["deuterium_amount"])
+            ?? nested(res, "deuterium") ?? nested(res, "deuterium", "amount") ?? nested(res, "deuterium", "value")
+            ?? nested(planet, "deuterium", "amount") ?? nested(planet, "deuterium", "value");
+          const e =
+            num(planet["energy"]) ?? num(planet["e"]) ?? num(planet["energyAmount"]) ?? num(planet["energy_amount"])
+            ?? nested(res, "energy") ?? nested(res, "energy", "amount")
+            ?? nested(planet, "energy", "amount");
+          if (m !== undefined) r.m = m;
+          if (c !== undefined) r.c = c;
+          if (d !== undefined) r.d = d;
+          if (e !== undefined) r.e = e;
+          return r;
+        })();
+        const candBuildQ = (() => {
+          // v0.0.495 — ogame standalone empire encodes build_q inside the
+          // per-tid <tid>_html fields. Pattern when a building is upgrading:
+          //   <span class='disabled'>N</span>
+          //   <img title='X 將升級至 N+1 級!'>
+          //   <a class="active" title="取消" onClick="doUpgrade(TID,BID,2,COST,false)">N+1</a>
+          // When idle: only <span> + <a href onclick='doUpgrade(...)' title='升級'>.
+          // Detect: html contains `class="active"` AND title='取消'.
+          // Extract level from `<a class="active"...>N+1</a>` link text.
+          // ends_at: empire doesn't expose; fall back to live build_q if
+          // already set (preserve precise time set by fetchResources), else
+          // placeholder Date.now()+12h (overwritten when fetchResources fires).
+          const liveBody = patchPlanets[pid] as { build_q?: { ends_at?: number; building?: string; level?: number } | null } | undefined;
+          const liveBq = liveBody?.build_q;
+          for (const key of Object.keys(planet)) {
+            const m = /^(\d+)_html$/.exec(key);
+            if (!m) continue;
+            const tid = parseInt(m[1]!, 10);
+            // v0.0.497 — body build_q (per-planet/moon supplies/facilities)
+            // only takes tid 1-50 (buildings). tid 100-199 = research (全
+            // empire 单槽, goes to state.research.queue, NOT body build_q).
+            // tid 200-300 = ships (goes to shipyard_q). tid 400+ = defense.
+            // tid 11000+ = lifeform (separate lf_build_q).
+            // Operator 2026-05-30: panel 显示 "building astrophysics" 错了,
+            // astrophysics(tid124)是 research, 不该写到 moon body build_q.
+            if (tid >= 100) continue;
+            const html = String(planet[key] ?? "");
+            // v0.0.496 fix — match `class="active tooltipRight"` (multi-class).
+            // Original `class="active"` substring miss caused build_q to
+            // never be detected (operator 2026-05-30 实证: 41_html 有 active
+            // 但 v0.0.495 没抓). Use word-boundary regex inside the class attr.
+            if (!/class=["'][^"']*\bactive\b/.test(html)) continue;
+            // Distinguish "active = upgrading" from any other active class
+            // by looking for the Chinese cancellation title; ogame uses
+            // 取消 / cancel / Annuller / etc. depending on locale.
+            if (!/title=["']取消|title=["']cancel|title=["']abbrechen|title=["']annul/i.test(html)) continue;
+            const name = TECH_ID_TO_NAME[String(tid)];
+            if (!name) continue;
+            // Pull level from inside the <a class="active">...N+1...</a> tag.
+            const lvlMatch = /<a[^>]*class=["'][^"']*active[^"']*["'][^>]*>(\d+)<\/a>/.exec(html);
+            const level = lvlMatch ? parseInt(lvlMatch[1]!, 10) : 1;
+            // Preserve precise ends_at if live build_q matches the same
+            // building+level (operator visited the body, fetchResources wrote
+            // it). Otherwise estimate +12h placeholder.
+            const ends_at = (liveBq && liveBq.building === name && liveBq.level === level && (liveBq.ends_at ?? 0) > Date.now())
+              ? liveBq.ends_at!
+              : Date.now() + 12 * 3600 * 1000;
+            return { building: name, technology_id: tid, level, ends_at };
+          }
+          return undefined;
+        })();
+        const hasResources = Object.keys(candResources).length > 0;
+        // v0.0.499 — pollEmpire is the authoritative source for body build_q.
+        // Always set it (valid object OR null). Without this, after parser
+        // tightens (v0.0.497 skipped research tids), the OLD bad build_q
+        // value stayed in store because we didn't explicitly clear it.
+        // Operator 2026-05-30 实证: moon 3:260:8 stuck on astrophysics build_q
+        // even after parser stopped writing it.
+        const buildQEffective: typeof candBuildQ | null = candBuildQ ?? null;
+        const hasAny = true; // always patch — even if just to clear stale build_q
         if (hasAny) {
           const cur = patchPlanets[pid];
+          const curResources = (cur as { resources?: { m?: number; c?: number; d?: number; e?: number } }).resources ?? { m: 0, c: 0, d: 0, e: 0 };
           const merged = {
             ...cur,
             ships: { ...((cur as { ships?: Record<string, number> }).ships ?? {}), ...ships },
@@ -2294,6 +2512,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             ...(Object.keys(lifeform_buildings).length > 0 ? {
               lifeform_buildings: { ...((cur as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {}), ...lifeform_buildings },
             } : {}),
+            ...(hasResources ? { resources: { ...curResources, ...candResources } } : {}),
+            build_q: buildQEffective, // ALWAYS present (no `... ? : {}` gate)
           };
           patchPlanets[pid] = merged as typeof patchPlanets[string];
           updated += 1;
@@ -2313,14 +2533,61 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             patchByPid[pid] = patched as Partial<typeof store.state.planets[string]>;
           } else {
             // Only the fields pollEmpire actually patched.
-            patchByPid[pid] = {
-              ...(p.ships !== undefined ? { ships: p.ships } : {}),
-              ...(p.buildings !== undefined ? { buildings: p.buildings } : {}),
-              ...(p.lifeform_buildings !== undefined ? { lifeform_buildings: p.lifeform_buildings } : {}),
+            // v0.0.491 — operator 2026-05-30: previously the filter dropped
+            // resources + build_q because pollEmpire only used to set
+            // ships/buildings/lifeform. v0.0.489 + .490 extended pollEmpire
+            // to extract resources + build_q too, but this filter still
+            // stripped them out. Result: moon resources from empire dump
+            // looked correct in parsing, but never reached store.
+            const pp = p as Partial<typeof store.state.planets[string]> & {
+              ships?: Record<string, number>;
+              buildings?: Record<string, number>;
+              lifeform_buildings?: Record<string, number>;
+              resources?: { m?: number; c?: number; d?: number; e?: number };
+              build_q?: unknown;
             };
+            patchByPid[pid] = {
+              ...(pp.ships !== undefined ? { ships: pp.ships } : {}),
+              ...(pp.buildings !== undefined ? { buildings: pp.buildings } : {}),
+              ...(pp.lifeform_buildings !== undefined ? { lifeform_buildings: pp.lifeform_buildings } : {}),
+              ...(pp.resources !== undefined ? { resources: pp.resources } : {}),
+              ...(pp.build_q !== undefined ? { build_q: pp.build_q } : {}),
+            } as Partial<typeof store.state.planets[string]>;
           }
         }
         store.setPlanetsPatch(patchByPid);
+        // v0.0.492 — diagnostic: push version + moon 1:486:7 resources to
+        // sidecar journal after each pollEmpire so we can verify v0.0.491+
+        // filter fix is REALLY running (operator: v0.0.491 deploy 没动).
+        // v0.0.508 — pollEmpire-tick POST 砍掉 (operator 2026-05-31 chrome 崩),
+        // 每秒级触发, 累积太多 fetch + journal 噪音。 保留 empire-dump 一次性
+        // 诊断和 fleet-strip 罕见事件。 整段保护在 if (false) 里方便以后开。
+        if (false as boolean) {
+        try {
+          const debugMoonId = "33650177"; // moon 1:486:7
+          const dbgPatch = patchByPid[debugMoonId];
+          const dbgLive = store.state.planets[debugMoonId];
+          // v0.0.493 — also dump the lunarBase (tid 41) raw HTML for the
+          // monitored moon so we can see how empire encodes "in progress"
+          // (operator: resources went to 0 but build_q still None — encoding
+          // is in <tid>_html with <img> after <span>).
+          let lbHtml = "";
+          if (typeLabel === "moon" && data) {
+            const moonRow = data.find((p) => String(p["id"] ?? "") === debugMoonId);
+            if (moonRow) {
+              lbHtml = String(moonRow["41_html"] ?? "").slice(0, 600);
+            }
+          }
+          const bridgeBase = (env.win.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com");
+          void env.win.fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+            method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              tag: "pollEmpire-tick",
+              text: `v=${((env.win as Window & { __ogamexVersion?: string }).__ogamexVersion ?? "?")} updated=${updated} type=${typeLabel} moon1:486:7.patchKeys=[${dbgPatch ? Object.keys(dbgPatch).join(",") : "MISSING"}] patch.resources=${JSON.stringify((dbgPatch as { resources?: unknown } | undefined)?.resources)} patch.build_q=${JSON.stringify((dbgPatch as { build_q?: unknown } | undefined)?.build_q)} live.resources=${JSON.stringify(dbgLive?.resources)} live.build_q=${JSON.stringify(dbgLive?.build_q)}${lbHtml ? ` moon1:486:7.41_html=${lbHtml}` : ""}`,
+            }),
+          }).catch(() => {});
+        } catch { /* */ }
+        } // end if(false) — v0.0.508 forensic gated
         // Expose to BOTH sandboxed window AND page's real window (unsafeWindow)
         // so devtools console eval can read/write the store directly.
         (env.win as Window & { __ogamexStore?: typeof store }).__ogamexStore = store;
@@ -2658,6 +2925,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           body: "{}",
         }).catch(() => { /* sidecar may be down; safety net catches */ });
       } catch { /* */ }
+      // v0.0.489 — operator 2026-05-30 "有船到了要更新资源" event-driven.
+      // Fleet count dropped = a fleet returned OR arrived at its destination
+      // (cargo unloaded there). Either way the destination/source body's
+      // resources just changed. Trigger immediate pollEmpire(force) to refresh
+      // resources for ALL bodies (now that pollEmpire extracts resources via
+      // the v0.0.489 broad-net parser). Without this, sidecar lags by the
+      // periodic poll interval (~30s+).
+      void pollEmpire({ force: true }).catch((e) => console.warn("[OgameX] event-driven pollEmpire failed", e));
     }
     lastFleetCount = n;
   }

@@ -351,6 +351,16 @@ export async function startSidecar(
   // ref so closures stay typesafe; assigned at line ~1055 just after
   // `new PriorityMerger(...)`.
   let priorityMergerRef: PriorityMerger | null = null;
+  // v0.0.500 — track fleet IDs we've already fired debris-check for, so each
+  // expedition triggers at most one explorer dispatch even if return_at stays
+  // set across many snapshots. GC'd when fleet ID disappears from outbound.
+  const firedDebrisCheckFor = new Set<string>();
+  // v0.0.501 — fallback signal: track last-seen origin/dest per expedition
+  // fleet so we can fire debris-check when fleet disappears from outbound.
+  // v0.0.502 — also track last arrival_at so we can detect phase transition
+  // (arrival_at jumps from past to future = fleet entered next phase, which
+  // for expedition mission means exploration ended → returning home).
+  const expLastSeen = new Map<string, { origin: readonly number[]; dest: readonly number[]; arrival_at: number | null }>();
   const triggerDispatch = (): void => {
     if (!priorityMergerRef) return;
     try { priorityMergerRef.dispatch(stateRef.current ?? emptyWorldState()); }
@@ -678,12 +688,46 @@ export async function startSidecar(
         const planetId = (() => {
           const ref = typeof goal.planet === "string" ? goal.planet : undefined;
           if (!ref) return undefined;
+          // v0.0.476: same moon-only redirect as listGoals tree resolver
+          // (v0.0.471). Without this, computeEta resolved coord/numeric-id
+          // to planet for moon-only goals (JG L2 etc.) → moon's build_q
+          // invisible → eta_at=null → panel can't show "building" status.
+          const tgtBuilding = (goal.target as { building?: unknown })?.building;
+          const isMoonOnly = goal.type === "build"
+            && typeof tgtBuilding === "string"
+            && (tgtBuilding === "lunarBase" || tgtBuilding === "sensorPhalanx" || tgtBuilding === "jumpgate");
+          // Case A: coord ref
           if (/^\d+:\d+:\d+$/.test(ref)) {
+            const matches: Array<{ id: string; type: string }> = [];
             for (const [id, p] of Object.entries(planets)) {
               const c = (p as { coords?: readonly number[] } | undefined)?.coords;
-              if (Array.isArray(c) && c.join(":") === ref) return id;
+              if (Array.isArray(c) && c.join(":") === ref) {
+                matches.push({ id, type: (p as { type?: string }).type ?? "planet" });
+              }
             }
-            return undefined;
+            if (matches.length === 0) return undefined;
+            if (isMoonOnly) {
+              const moon = matches.find((x) => x.type === "moon");
+              if (moon) return moon.id;
+            }
+            return matches[0]!.id;
+          }
+          // Case B: numeric id ref → may point to planet but want moon
+          if (isMoonOnly) {
+            const directBody = planets[ref];
+            if (directBody && (directBody as { type?: string }).type !== "moon") {
+              const coords = (directBody as { coords?: readonly number[] }).coords;
+              if (Array.isArray(coords)) {
+                const coordStr = coords.join(":");
+                for (const [id, p] of Object.entries(planets)) {
+                  const pType = (p as { type?: string }).type;
+                  const pCoords = (p as { coords?: readonly number[] }).coords;
+                  if (pType === "moon" && Array.isArray(pCoords) && pCoords.join(":") === coordStr) {
+                    return id;
+                  }
+                }
+              }
+            }
           }
           return ref;
         })();
@@ -731,11 +775,57 @@ export async function startSidecar(
         let currentStepCapture: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null = null;
         const planetRef = typeof r.goal.planet === "string" ? r.goal.planet : undefined;
         // Resolve planet ref (id-or-coord) to id for tree lookup.
+        // v0.0.471: moon-only building disambiguation (operator 2026-05-30
+        // "不跑 build jumpgate 2 ↳ lunarBase (0/1)"). When the goal target
+        // is a moon-only building (jumpgate/lunarBase/sensorPhalanx) and
+        // the planet ref is an ambiguous coord, PREFER moon at that coord.
+        // Without this, simulate() resolved to planet (first match by
+        // iteration order) → tree showed lunarBase=0 (planet has none) →
+        // current_step locked at lunarBase L1 → goal never gets dispatched
+        // because planner (which DOES prefer moon, v0.0.470) sees different
+        // state than tree. Mirror the same preference here.
+        const MOON_ONLY_BUILDINGS_SET = new Set(["lunarBase", "sensorPhalanx", "jumpgate"]);
+        const goalTargetBuilding = (r.goal.target as { building?: unknown })?.building;
+        const wantMoon = r.goal.type === "build"
+          && typeof goalTargetBuilding === "string"
+          && MOON_ONLY_BUILDINGS_SET.has(goalTargetBuilding);
         let resolvedPlanetId = planetRef;
+        // Case A: planetRef is a coord like "4:299:8" — resolve to id by
+        // iterating, preferring moon for moon-only buildings.
         if (planetRef && /^\d+:\d+:\d+$/.test(planetRef)) {
+          const matches: Array<{ id: string; type: string }> = [];
           for (const [id, p] of Object.entries(planets)) {
             if (Array.isArray(p?.coords) && p.coords.join(":") === planetRef) {
-              resolvedPlanetId = id; break;
+              matches.push({ id, type: (p as { type?: string }).type ?? "planet" });
+            }
+          }
+          if (matches.length > 0) {
+            const chosen = wantMoon
+              ? (matches.find((x) => x.type === "moon") ?? matches[0])
+              : matches[0];
+            resolvedPlanetId = chosen!.id;
+          }
+        }
+        // Case B: planetRef is a numeric id (e.g., "33666823") that points
+        // to a PLANET but target is moon-only — switch to the moon at the
+        // same coord. Mirror of planner v0.0.470 behavior. Without this,
+        // tree builder shows planet's empty lunarBase (0/1) while planner
+        // dispatches to moon — operator sees inconsistent UI.
+        else if (planetRef && wantMoon && planets[planetRef]) {
+          const resolvedBody = planets[planetRef]!;
+          const bodyType = (resolvedBody as { type?: string }).type;
+          if (bodyType !== "moon") {
+            const coord = (resolvedBody as { coords?: number[] }).coords;
+            if (Array.isArray(coord)) {
+              const coordStr = coord.join(":");
+              for (const [id, p] of Object.entries(planets)) {
+                const pType = (p as { type?: string }).type;
+                const pCoords = (p as { coords?: number[] }).coords;
+                if (pType === "moon" && Array.isArray(pCoords) && pCoords.join(":") === coordStr) {
+                  resolvedPlanetId = id;
+                  break;
+                }
+              }
             }
           }
         }
@@ -774,6 +864,59 @@ export async function startSidecar(
           status: r.status,
           reason: r.reason,
           is_main_goal: r.goal.is_main_goal === true,
+          parent_goal_id: r.goal.parent_goal_id,
+          // v0.0.483 — body-wide active queue snapshot (any building/research
+          // happening on this goal's body, regardless of whether it serves
+          // THIS goal's tech). Operator 2026-05-30: 月球上 lunarBase L7 在
+          // 造 → jumpgate L2 goal panel 应该显示 "building lunarBase L7" 优先
+          // 于 "waiting resources / awaiting transport". 反映真实 ground truth.
+          body_build_q: (() => {
+            const ref = typeof r.goal.planet === "string" ? r.goal.planet : undefined;
+            if (!ref) return null;
+            const planetsMap = stateRef.current?.planets ?? {};
+            const tgtBuilding = (r.goal.target as { building?: unknown })?.building;
+            const isMoonOnly = r.goal.type === "build" && typeof tgtBuilding === "string"
+              && (tgtBuilding === "lunarBase" || tgtBuilding === "sensorPhalanx" || tgtBuilding === "jumpgate");
+            let bodyId: string | undefined = undefined;
+            if (/^\d+:\d+:\d+$/.test(ref)) {
+              const matches: Array<{ id: string; type: string }> = [];
+              for (const [id, p] of Object.entries(planetsMap)) {
+                const c = (p as { coords?: readonly number[] } | undefined)?.coords;
+                if (Array.isArray(c) && c.join(":") === ref) matches.push({ id, type: (p as { type?: string }).type ?? "planet" });
+              }
+              if (isMoonOnly) bodyId = matches.find((x) => x.type === "moon")?.id ?? matches[0]?.id;
+              else bodyId = matches[0]?.id;
+            } else {
+              bodyId = ref;
+              if (isMoonOnly) {
+                const direct = planetsMap[ref] as { type?: string; coords?: readonly number[] } | undefined;
+                if (direct && direct.type !== "moon" && Array.isArray(direct.coords)) {
+                  const coordStr = direct.coords.join(":");
+                  for (const [id, p] of Object.entries(planetsMap)) {
+                    const pt = (p as { type?: string }).type;
+                    const pc = (p as { coords?: readonly number[] }).coords;
+                    if (pt === "moon" && Array.isArray(pc) && pc.join(":") === coordStr) { bodyId = id; break; }
+                  }
+                }
+              }
+            }
+            const body = bodyId ? (planetsMap[bodyId] as { build_q?: { ends_at?: number; building?: string; level?: number }; lf_build_q?: { ends_at?: number; building?: string; level?: number }; shipyard_q?: { ends_at?: number; ship?: string } } | undefined) : undefined;
+            if (!body) return null;
+            const now = Date.now();
+            const bq = body.build_q;
+            if (bq?.ends_at && bq.ends_at > now && bq.building) {
+              return { queue: "build", tech: bq.building, level: bq.level ?? null, ends_at: bq.ends_at };
+            }
+            const lq = body.lf_build_q;
+            if (lq?.ends_at && lq.ends_at > now && lq.building) {
+              return { queue: "lf_build", tech: lq.building, level: lq.level ?? null, ends_at: lq.ends_at };
+            }
+            const sq = body.shipyard_q;
+            if (sq?.ends_at && sq.ends_at > now && sq.ship) {
+              return { queue: "shipyard", tech: sq.ship, level: null, ends_at: sq.ends_at };
+            }
+            return null;
+          })(),
           created_at: r.created_at,
           updated_at: r.updated_at,
           eta_at: (() => {
@@ -878,14 +1021,37 @@ export async function startSidecar(
     },
     cancelGoal: (id) => {
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
+      // v0.0.481: cascade cancel — cancel all live descendants whose
+      // parent_goal_id traces back to this id (BFS through parent_goal_id
+      // chain). Architecture B: parent-child sub-goal relationship.
+      const cascadeIds: string[] = [];
+      const queue = [id];
+      const visited = new Set<string>();
+      while (queue.length > 0) {
+        const pid = queue.shift()!;
+        if (visited.has(pid)) continue;
+        visited.add(pid);
+        for (const child of goalsStore.listChildren(pid)) {
+          if (child.status === "completed" || child.status === "cancelled") continue;
+          cascadeIds.push(child.goal.id);
+          queue.push(child.goal.id);
+        }
+      }
       goalsStore.updateStatus(id, "cancelled", "via /v1/goals/{id}/cancel");
       priorityMergerRef?.clearAwaiting(id);
+      priorityMergerRef?.clearDispatched(id);
+      for (const cid of cascadeIds) {
+        goalsStore.updateStatus(cid, "cancelled", `cascade: parent ${id.slice(0, 12)} cancelled`);
+        priorityMergerRef?.clearAwaiting(cid);
+        priorityMergerRef?.clearDispatched(cid);
+      }
       triggerDispatch();
-      return { ok: true };
+      return { ok: true, cascaded: cascadeIds.length };
     },
     pauseGoal: (id) => {
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.updateStatus(id, "blocked", "paused by operator");
+      priorityMergerRef?.clearDispatched(id);
       triggerDispatch();
       return { ok: true };
     },
@@ -895,6 +1061,7 @@ export async function startSidecar(
       // v0.0.459: operator-triggered retry — clear awaiting so this goal
       // is eligible for dispatch on the immediate triggerDispatch below.
       priorityMergerRef?.clearAwaiting(id);
+      priorityMergerRef?.clearDispatched(id);
       triggerDispatch();
       return { ok: true };
     },
@@ -1048,6 +1215,7 @@ export async function startSidecar(
             if (!isTransient && (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport")) {
               goalsStore.updateStatus(goalId, "cancelled", reason);
               priorityMergerRef?.clearAwaiting(goalId);
+              priorityMergerRef?.clearDispatched(goalId);
             } else {
               goalsStore.updateStatus(goalId, "blocked", reason);
               // v0.0.459: event-triggered gate — goal stays blocked until
@@ -1055,10 +1223,15 @@ export async function startSidecar(
               // awaiting set. Without this, every snapshot would re-dispatch
               // the same failed directive in a tight loop.
               priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "operator_retry"]);
+              // v0.0.478: also clear dispatch stamp — directive completed
+              // (with failure), so stuck-recovery's "in-flight" gate releases.
+              priorityMergerRef?.clearDispatched(goalId);
             }
           } else if (result?.success === true) {
             // Success → clear any awaiting set so next dispatch can fire.
             priorityMergerRef?.clearAwaiting(goalId);
+            // v0.0.478: clear dispatch stamp so next leg/level can dispatch.
+            priorityMergerRef?.clearDispatched(goalId);
             // ATOMIC actions (expedition / colonize / deploy / transport):
             // ApiExec's success means the fleet launched. Goal is terminal —
             // mark completed immediately. Without this, expedition goals
@@ -1309,6 +1482,71 @@ export async function startSidecar(
         try {
           (http as unknown as { bumpExpeditionTrigger?: () => void }).bumpExpeditionTrigger?.();
         } catch { /* */ }
+      }
+      // v0.0.501 — expedition debris collection, dual-signal:
+      //   Signal A (primary, 早): mission=15 fleet first observed with
+      //     return_at != null → fire (fleet started returning)
+      //   Signal B (fallback, 晚): mission=15 fleet was in prev snapshot,
+      //     gone in new snapshot → fire (fleet returned home)
+      // Both signals dedupped per fleet ID via firedDebrisCheckFor Set.
+      // Operator 2026-05-30 实证: harvest may not capture return_at reliably;
+      // fallback ensures debris-check fires at worst case (fleet home).
+      try {
+        const findOriginPlanet = (origCoord: string): { id: string } | undefined => {
+          return Object.values(msg.snapshot.planets ?? {})
+            .find((p) => Array.isArray(p.coords) && p.coords.join(":") === origCoord && p.type === "planet");
+        };
+        const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string): void => {
+          if (firedDebrisCheckFor.has(fleetId)) return;
+          if (!Array.isArray(origin) || origin.length !== 3 || !Array.isArray(dest)) return;
+          const originPlanet = findOriginPlanet(origin.join(":"));
+          if (!originPlanet) {
+            console.log(`[debris-check] SKIP fleet ${fleetId}: origin ${origin.join(":")} not in planets`);
+            return;
+          }
+          const g = dest[0], s = dest[1];
+          if (typeof g !== "number" || typeof s !== "number") return;
+          firedDebrisCheckFor.add(fleetId);
+          const dbgMsg = { type: "expedition.debris_check" as const, galaxy: g, system: s, origin_planet_id: originPlanet.id, reason };
+          ws.send(dbgMsg);
+          http.queueDownstream(dbgMsg);
+          console.log(`[debris-check] FIRED fleet ${fleetId} ${reason}: G:S=${g}:${s} origin=${originPlanet.id}`);
+        };
+        // Signal A: scan current snapshot for mission=15 with return_at set.
+        // Signal C (NEW): arrival_at transition past→future = fleet entered
+        //   return phase (most reliable signal in practice — return_at often
+        //   stays NULL even after fleet starts returning).
+        const nowMs = Date.now();
+        const currentExpIds = new Set<string>();
+        for (const f of msg.snapshot.fleets_outbound ?? []) {
+          if (typeof f.id !== "string") continue;
+          if (f.mission !== 15) continue;
+          currentExpIds.add(f.id);
+          const prev = expLastSeen.get(f.id);
+          const prevArrival = prev?.arrival_at ?? null;
+          expLastSeen.set(f.id, { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null });
+          // Signal A — return_at appeared
+          if (f.return_at !== null && f.return_at !== undefined) {
+            fireFor(f.id, f.origin, f.dest, `return_at set (=${f.return_at})`);
+            continue;
+          }
+          // Signal C — arrival_at jumped past → future (next phase deadline)
+          if (prevArrival !== null && prevArrival < nowMs && (f.arrival_at ?? 0) > nowMs) {
+            fireFor(f.id, f.origin, f.dest, `arrival_at jumped past→future (${prevArrival}→${f.arrival_at}) — phase transition`);
+          }
+        }
+        // Signal B: any expLastSeen entry NOT in current snapshot → fleet disappeared (returned home).
+        for (const [fid, info] of Array.from(expLastSeen.entries())) {
+          if (currentExpIds.has(fid)) continue;
+          fireFor(fid, info.origin, info.dest, "fleet disappeared from outbound (returned home)");
+          expLastSeen.delete(fid);
+        }
+        // GC firedDebrisCheckFor for fleet IDs no longer present.
+        for (const fid of Array.from(firedDebrisCheckFor)) {
+          if (!currentExpIds.has(fid)) firedDebrisCheckFor.delete(fid);
+        }
+      } catch (e) {
+        console.error("[ogamex/sidecar] debris-check threw", e);
       }
     }
 
