@@ -48,8 +48,23 @@ export class HttpBridgeClient {
   private baseUrl: string | null = null;
   private token: string | null = null;
 
-  /** Highest server-side ts we've seen — sent as `since_ts` to dedupe. */
-  private lastPollTs = 0;
+  /** Highest server-side ts we've seen — sent as `since_ts` to dedupe.
+   *  v0.0.552 — persisted in localStorage across page reloads. Without this,
+   *  TM's @run-at=document-end re-creates HttpBridgeClient on every ogame
+   *  page navigation; lastPollTs=0 → re-poll re-fetches old directives →
+   *  same dirId executed multiple times → ogame receives 3 sendFleet for
+   *  what operator intended as 1 dispatch (operator 2026-05-31 incident:
+   *  3 fleets Colony 3:279:7 → Moon 3:279:7 within 27s, crystal stock
+   *  3M → 4.8M → 155 from sequential drain). */
+  private static readonly LAST_POLL_TS_KEY = "OGAMEX_LAST_POLL_TS";
+  private lastPollTs: number = (() => {
+    try {
+      const w = (typeof window !== "undefined" ? window : globalThis) as { localStorage?: Storage };
+      const v = w.localStorage?.getItem(HttpBridgeClient.LAST_POLL_TS_KEY);
+      const n = v ? parseInt(v, 10) : 0;
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    } catch { return 0; }
+  })();
 
   private currentAbort: AbortController | null = null;
   private backoffTimer: ReturnType<typeof setTimeout> | null = null;
@@ -198,6 +213,13 @@ export class HttpBridgeClient {
     }
     // Advance the cursor unconditionally so we don't replay messages.
     this.lastPollTs = Date.now();
+    // v0.0.552 — persist across page reloads. Without this, every TM
+    // re-init on ogame page navigation resets the cursor and re-fetches
+    // old directives → ogame receives duplicate sendFleet POSTs.
+    try {
+      const w = (typeof window !== "undefined" ? window : globalThis) as { localStorage?: Storage };
+      w.localStorage?.setItem(HttpBridgeClient.LAST_POLL_TS_KEY, String(this.lastPollTs));
+    } catch { /* localStorage unavailable in some sandboxes */ }
     return true;
   }
 
