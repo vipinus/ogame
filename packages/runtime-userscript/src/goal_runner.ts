@@ -72,11 +72,28 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
 
   function ack(directiveId: string, result: AckResult): void {
     if (stopped) return;
-    client.send({
-      type: "event.directive_completed",
+    const msg = {
+      type: "event.directive_completed" as const,
       directive_id: directiveId,
       result,
-    });
+    };
+    client.send(msg);
+    // v0.0.548 — dual-path ack via HTTP. WS can be in a zombie state
+    // (ws.send doesn't throw even when TCP is dead). Acks lost in that
+    // window leave the goal stuck "active" in sidecar; stuck-recovery
+    // re-dispatches in a loop until operator cancels. HTTP path is
+    // independent of WS connection state. Sidecar's directiveToGoal
+    // map provides natural idempotency — processing the same ack twice
+    // is a no-op after the first removes the directive_id.
+    try {
+      const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+      void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/push`, {
+        method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(msg),
+      }).catch(() => { /* */ });
+    } catch { /* */ }
   }
 
   async function run(directive: Directive): Promise<void> {
