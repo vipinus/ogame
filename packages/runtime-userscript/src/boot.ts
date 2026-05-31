@@ -1143,7 +1143,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.542";
+  const USERSCRIPT_VERSION = "0.0.543";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1462,6 +1462,25 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // (movement summary silenced — slots are tracked, no repeated log needed)
       // Synthesize fleets_outbound entries from parsedFleets (has origin+dest).
       // Fall back to allFleetEls count if parser missed entries.
+      // v0.0.543 forensic — operator 2026-05-31 "应该查返回参数的处理流程".
+      // chain Seg prereq 漏判 → 怀疑 /movement scrape 漏 fleet 行. 这条 fire-
+      // and-forget POST 把每次 scrape 结果 (parsed vs allFleetEls 计数 + 每条
+      // origin/dest/mission) 镜像到 sidecar journal, 可以查 chain 真实
+      // dispatch 后 fleets_outbound 是不是这个 row 缺了.
+      try {
+        const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+        const fallback = parsedFleets.length !== allFleetEls.length;
+        const summary = parsedFleets.map((f) => `${f.mission}:${(f.origin ?? []).join(",")}→${(f.dest ?? []).join(",")}@${(f as { arrival_at?: number }).arrival_at ?? 0}`).join(" | ");
+        void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tag: "MOV-SCRAPE",
+            text: `parsed=${parsedFleets.length} allEls=${allFleetEls.length} fallback=${fallback} fleets=[${summary}]`,
+          }),
+        }).catch(() => { /* */ });
+      } catch { /* */ }
       const sourceList = parsedFleets.length === allFleetEls.length ? parsedFleets : allFleetEls.map((m) => ({
         mission: parseInt(m[1]!, 10),
         origin: undefined as readonly number[] | undefined,
