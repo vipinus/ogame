@@ -902,7 +902,20 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // directive.id is per-tick directive id. Both printed for cross-ref
     // against sidecar [merger] DISPATCH lines.
     const _cargo = { m: resources["m"] ?? 0, c: resources["c"] ?? 0, d: resources["d"] ?? 0 };
-    console.warn(`[ApiExec/POST-IN] ${directive.action} goal_id=${(directive as { goal_id?: string }).goal_id ?? "?"} dirId=${directive.id} cp=${planetId} → ${tGalaxy}:${tSystem}:${tPos}(type=${destType}) mission=${mission} ships=${JSON.stringify(ships)} cargo=${JSON.stringify(_cargo)}`);
+    const _postInText = `${directive.action} goal_id=${(directive as { goal_id?: string }).goal_id ?? "?"} dirId=${directive.id} cp=${planetId} → ${tGalaxy}:${tSystem}:${tPos}(type=${destType}) mission=${mission} ships=${JSON.stringify(ships)} cargo=${JSON.stringify(_cargo)}`;
+    console.warn(`[ApiExec/POST-IN] ${_postInText}`);
+    // v0.0.540 — mirror to sidecar so journal captures forensic even after
+    // browser reload. Console alone is unreliable (operator reload wiped
+    // the 19:41 chain trace before paste). Fire-and-forget.
+    try {
+      const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+      void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+        method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: "POST-IN", text: _postInText }),
+      }).catch(() => { /* */ });
+    } catch { /* */ }
     console.info(`[ApiExec] ${directive.action} delegate→fleet_api.sendFleet ${tGalaxy}:${tSystem}:${tPos} type=${destType} mission=${mission} cp=${planetId}`);
     try {
       const res = await fleetApiSendFleet(
