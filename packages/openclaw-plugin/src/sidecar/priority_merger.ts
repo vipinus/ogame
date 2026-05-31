@@ -210,6 +210,54 @@ export class PriorityMerger {
         blocked.push({ goal_id: row.goal.id, reason });
         continue;
       }
+      // v0.0.539 — cross-tick chain prereq (tree-style, operator 2026-05-31
+      // "改成树状前置任务方式，如同建筑任务"). chainBlocked above is per-tick
+      // only — once leg 1 ack'd completed (sendFleet success), chainBlocked
+      // is empty next tick and leg 2 fires even though leg 1's FLEET hasn't
+      // arrived yet. Fix: any leg with chain_id waits for every same-chain
+      // sibling with strictly higher priority to be terminal (completed/
+      // cancelled) AND its observable fleet (matched in fleets_outbound by
+      // source coords + dest coords) to be gone. Priority ordering is the
+      // chain template's existing sequence signal (genFerry: load=N,
+      // hop=N-1, unload=N-2; Seg 2=9, Seg 3=6).
+      if (typeof chainId === "string" && chainId) {
+        const allRows = this.store.list();
+        const upstream = allRows.filter((r) => {
+          const cid = (r.goal.target as { chain_id?: unknown })?.chain_id;
+          return cid === chainId && r.goal.id !== row.goal.id && r.goal.priority > row.goal.priority;
+        });
+        let upstreamReason: string | null = null;
+        for (const u of upstream) {
+          if (u.status !== "completed" && u.status !== "cancelled") {
+            upstreamReason = `chain prereq: upstream leg ${u.goal.id.slice(0, 12)} (${(u.goal.target as { chain_phase?: string })?.chain_phase ?? "?"}) status=${u.status}`;
+            break;
+          }
+          if (u.status === "cancelled") continue;
+          const uTarget = u.goal.target as { source_planet?: string; target_coords?: string };
+          const srcPlanet = typeof uTarget.source_planet === "string"
+            ? Object.values(state.planets ?? {}).find((p) => p.id === uTarget.source_planet)
+            : null;
+          if (!srcPlanet) continue;
+          const srcCoords = srcPlanet.coords.join(":");
+          const dstCoords = typeof uTarget.target_coords === "string" ? uTarget.target_coords : "";
+          if (!dstCoords) continue;
+          const inTransit = (state.fleets_outbound ?? []).some(
+            (f) => f.origin.join(":") === srcCoords && f.dest.join(":") === dstCoords,
+          );
+          if (inTransit) {
+            upstreamReason = `chain prereq: upstream ${u.goal.id.slice(0, 12)} (${(u.goal.target as { chain_phase?: string })?.chain_phase ?? "?"}) fleet still in transit ${srcCoords}→${dstCoords}`;
+            break;
+          }
+        }
+        if (upstreamReason) {
+          if (row.status !== "blocked" || row.reason !== upstreamReason) {
+            this.store.updateStatus(row.goal.id, "blocked", upstreamReason);
+          }
+          blocked.push({ goal_id: row.goal.id, reason: upstreamReason });
+          chainBlocked.add(chainId);
+          continue;
+        }
+      }
       // v0.0.478: time-anchored stuck recovery. Active goal that hasn't
       // ack'd within timeout AND has empty ogame slot → demote. Decoupled
       // from snapshot rate (was N=4 snapshots × 5s = 20s window → false
