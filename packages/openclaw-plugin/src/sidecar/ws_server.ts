@@ -22,6 +22,15 @@ export class WsServer {
   private wss: WebSocketServer | null = null;
   private readonly handlers: HandlerMap = {};
   private readonly clients = new Set<WebSocket>();
+  // v0.0.545 — heartbeat (operator 2026-05-31 "后台应该往前台发心跳检测").
+  // Server sends ping every PING_INTERVAL_MS. Each client gets isAlive=true on
+  // connect + pong arrival. Sweep every PING_INTERVAL_MS: if isAlive still
+  // false (no pong since last ping) → terminate the socket. Browser auto-
+  // replies to ping at protocol level; userscript needs no code change.
+  // Terminate triggers client's onclose → existing reconnectOnLoss path fires.
+  private static readonly PING_INTERVAL_MS = 30_000;
+  private readonly aliveFlags = new WeakMap<WebSocket, boolean>();
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: WsServerOptions) {
     this.options = options;
@@ -43,7 +52,9 @@ export class WsServer {
 
     wss.on("connection", (ws) => {
       this.clients.add(ws);
-      ws.on("close", () => this.clients.delete(ws));
+      this.aliveFlags.set(ws, true);
+      ws.on("pong", () => { this.aliveFlags.set(ws, true); });
+      ws.on("close", () => { this.clients.delete(ws); this.aliveFlags.delete(ws); });
       ws.on("error", () => { /* swallow; close will follow */ });
       ws.on("message", (data) => this.onMessage(data));
     });
@@ -59,6 +70,20 @@ export class WsServer {
 
     this.http = http;
     this.wss = wss;
+
+    // v0.0.545 — periodic ping sweep. Pings live clients; terminates zombies.
+    this.pingTimer = setInterval(() => {
+      for (const ws of this.clients) {
+        if (this.aliveFlags.get(ws) === false) {
+          // Missed last pong. Force-close → client's onclose → reconnect.
+          console.warn(`[ws] terminating zombie socket (no pong in ${WsServer.PING_INTERVAL_MS / 1000}s)`);
+          try { ws.terminate(); } catch { /* */ }
+          continue;
+        }
+        this.aliveFlags.set(ws, false);
+        try { ws.ping(); } catch { /* swallow; close will follow */ }
+      }
+    }, WsServer.PING_INTERVAL_MS);
   }
 
   async stop(): Promise<void> {
@@ -67,6 +92,10 @@ export class WsServer {
     this.wss = null;
     this.http = null;
 
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
     if (wss) {
       for (const ws of this.clients) {
         try { ws.close(1001, "server stopping"); } catch { /* ignore */ }
