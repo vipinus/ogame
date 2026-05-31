@@ -248,8 +248,8 @@ function openExpeditionSettings(
   // (212) + crawler (217) are stationary — excluded. pathfinder/explorer
   // share tid 219; only `explorer` (canonical v12 name) is exposed.
   const SHIP_FIELDS: Array<{ key: string; label: string }> = [
-    { key: "smallCargo",     label: "小型運輸艦 (ST)" },
-    { key: "largeCargo",     label: "大型運輸艦 (LT)" },
+    { key: "smallCargo",     label: "小型運輸艦 (SC)" },
+    { key: "largeCargo",     label: "大型運輸艦 (LC)" },
     { key: "lightFighter",   label: "輕型戰鬥機 (LF)" },
     { key: "heavyFighter",   label: "重型戰鬥機 (HF)" },
     { key: "cruiser",        label: "巡洋艦 (Cr)" },
@@ -925,12 +925,12 @@ function openGoalsSettings(
 }
 
 // M5 — Transport settings modal. Operator 2026-05-29 spec:
-//   1. 选择运输舰的来源星球 (displays LT/ST counts on that planet),
+//   1. 选择运输舰的来源星球 (displays LC/SC counts on that planet),
 //      checkbox "空船跳跃门可用时 是否使用跳跃门".
 //   2. 资源所在星球 — pick planet, shows M/C/D, lets operator override
-//      the amount to ship per resource, computes needed LT vs ST.
+//      the amount to ship per resource, computes needed LC vs SC.
 //   3. 目标星球.
-//   4. 选 LT or ST → 自动填入数量 = ceil(total_res / ship_cap).
+//   4. 选 LC or SC → 自动填入数量 = ceil(total_res / ship_cap).
 // Submit: Phase 1 POSTs a single `transport` goal (sidecar's existing
 // type). Phase 2 will add the JG-aware multi-hop chain (deploy →
 // jumpgate → deploy → transport).
@@ -1053,8 +1053,8 @@ function openTransportSettings(
         <div data-tr-stopover-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
       ${sectionCard("⑤ 选船类型 + 资源装载 + 数量",
         `<div style="display:flex; gap:12px; padding-bottom:6px;">
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> 大运 LT (cap ${fmt(ltCap)})</label>
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小运 ST (cap ${fmt(stCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> 大运 LC (cap ${fmt(ltCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小运 SC (cap ${fmt(stCap)})</label>
         </div>
         <div style="display:flex; gap:10px; padding:4px 0; align-items:center; font-size:11px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
@@ -1185,7 +1185,7 @@ function openTransportSettings(
         const p = planetsMap[r.value];
         const lt = p?.ships?.largeCargo ?? 0;
         const st = p?.ships?.smallCargo ?? 0;
-        sourceInfo.innerHTML = `<span style="color:#d0d8e0;">大运 LT × ${fmt(lt)} · 小运 ST × ${fmt(st)}</span>`;
+        sourceInfo.innerHTML = `<span style="color:#d0d8e0;">大运 LC × ${fmt(lt)} · 小运 SC × ${fmt(st)}</span>`;
       });
     }
     // Operator 2026-05-29: 默认来源 = 当前 ogame 所在 planet. Reads the
