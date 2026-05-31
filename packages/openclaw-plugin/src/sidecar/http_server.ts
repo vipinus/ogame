@@ -914,6 +914,23 @@ export class HttpServer {
     const sinceTs = typeof body.since_ts === "number" ? body.since_ts : 0;
     const ackIds = new Set(Array.isArray(body.ack_ids) ? body.ack_ids : []);
 
+    // v0.0.555 — operator 2026-05-31 "资源够了为什么不建" root cause:
+    // queue accumulated stale directive entries (action|params dedup at
+    // queueDownstream kept matching against them, dropping fresh dispatches).
+    // First-ever dispatch was delivered to userscript at some point; the
+    // entry stayed in queue forever. Next dispatch (different dirId, same
+    // action+params) hit dedup → dropped → userscript never saw it →
+    // goal stayed "active" → planner re-dispatched 30s later → dropped again.
+    // Fix: prune any queue entry with ts <= since_ts. Client's cursor having
+    // moved past those ts means it already consumed them; they cannot
+    // re-deliver. Now dedup at queueDownstream sees a CLEAN queue and lets
+    // legitimate new dispatches through.
+    if (sinceTs > 0) {
+      for (let i = this.queue.length - 1; i >= 0; i--) {
+        if (this.queue[i]!.ts <= sinceTs) this.queue.splice(i, 1);
+      }
+    }
+
     const filterReady = (): QueueEntry[] =>
       this.queue.filter((e) => e.ts > sinceTs && !ackIds.has(e.id));
 
