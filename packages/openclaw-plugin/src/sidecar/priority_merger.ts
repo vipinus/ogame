@@ -169,6 +169,19 @@ export class PriorityMerger {
     const blocked: { goal_id: string; reason: string }[] = [];
     let skipped_terminal = 0;
 
+    // v0.0.544 — state-staleness gate (operator 2026-05-31 incident).
+    // WS push from userscript broke at 21:07, sidecar kept dispatching
+    // based on 30+ min stale snapshot → "ships short" on bodies that
+    // ACTUALLY have ships (per ogame email evidence). Planning on stale
+    // state is worse than not planning. Fleet-POST goal types skip
+    // entirely when state is older than STATE_STALE_MS. Build/research/
+    // build_ships goals still try (their state — slots, prereqs — is
+    // ledger-style, less volatile than fleet/ship counts).
+    const STATE_STALE_MS = 5 * 60 * 1000;
+    const lastUpdate = (state as { last_update?: number }).last_update ?? 0;
+    const stateAgeMs = Date.now() - lastUpdate;
+    const stateStale = lastUpdate > 0 && stateAgeMs > STATE_STALE_MS;
+
     // Slot tracking — ogame physics: research is GLOBAL (1 player), build &
     // shipyard are PER PLANET (1 each). Pre-seed from in-flight state queues
     // (build_q with future ends_at, research.queue active) so already-queued
@@ -340,6 +353,19 @@ export class PriorityMerger {
       // Skip until one of those events arrives and clears the awaiting set.
       const awaiting = this.awaitingEvents.get(row.goal.id);
       if (awaiting && awaiting.size > 0) {
+        if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
+        continue;
+      }
+      // v0.0.544 — state-staleness gate for fleet POST goals.
+      const gType = row.goal.type;
+      const isFleetPostType = gType === "expedition" || gType === "colonize"
+        || gType === "deploy" || gType === "transport" || gType === "jumpgate";
+      if (stateStale && isFleetPostType) {
+        const reason = `state stale (${Math.round(stateAgeMs / 60000)}min) — fleet POST goals defer to fresh state`;
+        if (row.status !== "blocked" || row.reason !== reason) {
+          this.store.updateStatus(row.goal.id, "blocked", reason);
+        }
+        blocked.push({ goal_id: row.goal.id, reason });
         if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
         continue;
       }
