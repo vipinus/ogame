@@ -326,15 +326,15 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       const errs = (res.json as { errors?: unknown; error?: unknown }).errors ?? (res.json as { error?: unknown }).error;
       throw new Error(`${component}:${targetName} rejected: ${JSON.stringify(errs)}`);
     }
-    // v0.0.554 — operator 2026-05-31 "资源够了为什么不建": build jumpgate L2 @
-    // moon 33642959 dispatched every 30s for hours; ogame never accepted but
-    // userscript treated each non-JSON HTML response as success → ack success
-    // → goal stayed "active" → planner re-dispatched indefinitely. Real ogame
-    // success returns JSON {success:true,...} with newAjaxToken. If json is
-    // null (HTML overlay = "missing prereq / not enough resources / wrong
-    // page") OR success flag missing/false, treat as failure so the goal
-    // gets the real reason from raw body instead of fake-completing.
-    if (!res.json || (res.json as { success?: boolean }).success !== true) {
+    // v0.0.555 — accept BOTH ogame v12 success shapes:
+    //   {success: true, ...}        (older / fleetdispatch endpoint)
+    //   {status: "success", ...}    (newer / buildlistactions endpoint;
+    //                                operator 2026-05-31 evidence:
+    //                                "Jump Gate is under construction.")
+    // v0.0.554 only checked the boolean form → real success treated as fail.
+    const j = res.json as { success?: boolean; status?: string } | null;
+    const okSuccess = j?.success === true || j?.status === "success";
+    if (!okSuccess) {
       const snippet = res.raw.slice(0, 240).replace(/\s+/g, " ");
       throw new Error(`${component}:${targetName} rejected (non-success response HTTP ${res.status}): ${snippet}`);
     }

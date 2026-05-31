@@ -145,7 +145,9 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
     console.log(`[cpPost/${opts.action}] attempt=${attempt} HTTP ${r.status} json=${json ? JSON.stringify(json).slice(0, 200) : "<non-JSON>"} raw[0:200]=${raw.slice(0, 200)}`);
     // Non-JSON (overlay HTML etc) → return as-is to caller.
     if (!json) return { json: null, raw, status: r.status };
-    const okFlag = json["success"] === true || json["status"] === true;
+    // v0.0.555 — accept "status":"success" string form too (ogame v12
+    // buildlistactions endpoint returns it instead of success:true boolean).
+    const okFlag = json["success"] === true || json["status"] === true || json["status"] === "success";
     if (okFlag) {
       const newToken = (json as { newAjaxToken?: unknown }).newAjaxToken;
       if (typeof newToken === "string") opts.token.set(newToken);
