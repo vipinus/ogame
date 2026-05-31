@@ -794,11 +794,30 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       throw new Error(`jumpgate rejected: ${errMsg.slice(0, 200)}`);
     }
     console.info(`[ApiExec/jumpgate] OK src=${sourceMoonId} → tgt=${targetMoonId} cooldown=${resp.cooldown ?? resp.nextActionAt ?? "?"}s`);
-    // Refresh state — jumpgate doesn't appear in /movement (instant), so
-    // pollEmpire is the only path to see ships now on target moon.
+    // v0.0.546 — operator 2026-05-31 "跳跃以后要立刻刷新舰队数量". Old code
+    // fired one pollEmpire force, but ogame's empire endpoint can return
+    // pre-JG ship counts if the server-side state hasn't committed yet
+    // (observed: src moon 4:299:8 LC=195 still shown after JG, dest moon
+    // 4:242:8 LC=0). Fix: fire IMMEDIATE poll + retry after 3s safety net,
+    // and mirror the trigger to sidecar journal for forensic.
     try {
       const w = (this.win as Window & { __ogamexPollEmpire?: (opts: { force?: boolean }) => Promise<void> });
-      if (typeof w.__ogamexPollEmpire === "function") void w.__ogamexPollEmpire({ force: true }).catch(() => { /* */ });
+      if (typeof w.__ogamexPollEmpire === "function") {
+        void w.__ogamexPollEmpire({ force: true }).catch(() => { /* */ });
+        setTimeout(() => {
+          void w.__ogamexPollEmpire!({ force: true }).catch(() => { /* */ });
+        }, 3000);
+      }
+      const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+      void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+        method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tag: "JG-OK",
+          text: `src_moon=${sourceMoonId} → tgt_moon=${targetMoonId} ships=${JSON.stringify(ships)} pollEmpire fired (immediate + 3s)`,
+        }),
+      }).catch(() => { /* */ });
     } catch { /* */ }
     return { action: "jumpgate", clicked: true };
   }
