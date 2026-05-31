@@ -1,0 +1,37 @@
+{"type":"entity","name":"operator","entityType":"player","observations":["ogame s274-en player","class: discoverer","species: kaelesh","email: fabric.soul7@gmail.com","operates ogame via OpenClaw at ssh ddxs@192.168.2.100","prefers ajax/SPA endpoints over HTML scrape","verifies API contracts via sniffer/devtools FIRST — no guessing","cancel/delete/reset 类破坏性操作必须先告知 (no silent destruction)","autonomous actors must self-check state for physics-violations","alibaba-flavor PUA mode when frustrated"]}
+{"type":"entity","name":"s274-en","entityType":"ogame_server","observations":["url: https://s274-en.ogame.gameforge.com","universe speed: 8","language: en","21:00 daily restart — don't reload userscript during window","sidecar HTTP /v1/* no-auth by design (LAN only)"]}
+{"type":"entity","name":"planet:1:486:7","entityType":"planet","observations":["id: 33650176","coord: 1:486:7","has moon at 1:486:7"]}
+{"type":"entity","name":"moon:1:486:7","entityType":"moon","observations":["id: 33650177","coord: 1:486:7","orbits planet 1:486:7","lunarBase L6 / robotics L10 / JG L1 (2026-05-29 snapshot — stale)"]}
+{"type":"entity","name":"planet:2:279:8","entityType":"planet","observations":["id: 33649008","coord: 2:279:8","has moon at 2:279:8"]}
+{"type":"entity","name":"moon:2:279:8","entityType":"moon","observations":["id: 33649009","coord: 2:279:8","orbits planet 2:279:8","lunarBase L6 / robotics L10 / JG L1 (2026-05-29 snapshot — stale)"]}
+{"type":"entity","name":"planet:2:75:7","entityType":"planet","observations":["id: 33639409","coord: 2:75:7","has moon at 2:75:7"]}
+{"type":"entity","name":"moon:2:75:7","entityType":"moon","observations":["id: 33639410","coord: 2:75:7","orbits planet 2:75:7","lunarBase L6 / robotics L10 / JG L1 (2026-05-29 snapshot — stale)"]}
+{"type":"entity","name":"planet:3:194:8","entityType":"planet","observations":["id: 33653079","coord: 3:194:8","has moon at 3:194:8"]}
+{"type":"entity","name":"moon:3:194:8","entityType":"moon","observations":["id: 33653080","coord: 3:194:8","orbits planet 3:194:8","lunarBase L6 / robotics L10 / JG L1 (2026-05-29 snapshot — stale)"]}
+{"type":"entity","name":"planet:3:260:8","entityType":"planet","observations":["id: 33650199","coord: 3:260:8","has moon at 3:260:8"]}
+{"type":"entity","name":"moon:3:260:8","entityType":"moon","observations":["id: 33650200","coord: 3:260:8","orbits planet 3:260:8","lunarBase L7 / robotics L10 / JG L1 (2026-05-29 snapshot — stale)"]}
+{"type":"entity","name":"planet:3:260:9","entityType":"planet","observations":["id: 33652262","coord: 3:260:9","has moon at 3:260:9"]}
+{"type":"entity","name":"moon:3:260:9","entityType":"moon","observations":["id: 33652263","coord: 3:260:9","orbits planet 3:260:9","lunarBase L6 / robotics L9 / JG L1 (2026-05-29 snapshot — stale)"]}
+{"type":"entity","name":"planet:3:279:7","entityType":"planet","observations":["id: 33642958","coord: 3:279:7","has moon at 3:279:7","operator main planet — fallback target when invalid cp"]}
+{"type":"entity","name":"moon:3:279:7","entityType":"moon","observations":["id: 33642959","coord: 3:279:7","orbits planet 3:279:7","lunarBase L6 / robotics L10 / JG L1 (2026-05-29 snapshot — stale)"]}
+{"type":"entity","name":"planet:4:241:8","entityType":"planet","observations":["id: 33646307","coord: 4:241:8","has moon at 4:241:8"]}
+{"type":"entity","name":"moon:4:241:8","entityType":"moon","observations":["id: 33646308","coord: 4:241:8","orbits planet 4:241:8","lunarBase L7 / robotics L10 / JG L1 (2026-05-29 snapshot — stale)"]}
+{"type":"entity","name":"planet:4:242:8","entityType":"planet","observations":["id: 33646353","coord: 4:242:8","has moon at 4:242:8"]}
+{"type":"entity","name":"moon:4:242:8","entityType":"moon","observations":["id: 33646354","coord: 4:242:8","orbits planet 4:242:8","lunarBase L7 / robotics L10 / JG L1 (2026-05-29 snapshot — stale)"]}
+{"type":"entity","name":"planet:4:299:8","entityType":"planet","observations":["id: 33666878","coord: 4:299:8","has moon at 4:299:8"]}
+{"type":"entity","name":"moon:4:299:8","entityType":"moon","observations":["id: 33666879","coord: 4:299:8","orbits planet 4:299:8","laggard moon — lunarBase L3 / robotics L6 / JG L0 (2026-05-29) — being climbed via robo L13 goal"]}
+{"type":"entity","name":"sidecar","entityType":"infrastructure","observations":["runs on 192.168.2.100","start: screen -dmS sidecar /usr/bin/node /tmp/run_sidecar.mjs","goals.db sqlite","HTTP API at https://ogame.anyfq.com/ogamex/v1/*","deploy path: /home/ddxs/.openclaw/extensions/ogamex/dist/sidecar/","DO NOT directly inspect ~/.openclaw/ — credentials live there"]}
+{"type":"entity","name":"userscript","entityType":"infrastructure","observations":["runtime-userscript package","build: rollup at packages/runtime-userscript","deploy: scp dist/ogame-runtime.user.js to 192.168.2.100:/tmp/ogame-runtime.user.js","served via anyfq /dl/ogame-runtime.user.js","version sync 2 places: rollup.config.js @version + boot.ts USERSCRIPT_VERSION","current: v0.0.456"]}
+{"type":"relation","from":"operator","to":"s274-en","relationType":"plays_on"}
+{"type":"relation","from":"moon:1:486:7","to":"planet:1:486:7","relationType":"orbits"}
+{"type":"relation","from":"moon:2:279:8","to":"planet:2:279:8","relationType":"orbits"}
+{"type":"relation","from":"moon:2:75:7","to":"planet:2:75:7","relationType":"orbits"}
+{"type":"relation","from":"moon:3:194:8","to":"planet:3:194:8","relationType":"orbits"}
+{"type":"relation","from":"moon:3:260:8","to":"planet:3:260:8","relationType":"orbits"}
+{"type":"relation","from":"moon:3:260:9","to":"planet:3:260:9","relationType":"orbits"}
+{"type":"relation","from":"moon:3:279:7","to":"planet:3:279:7","relationType":"orbits"}
+{"type":"relation","from":"moon:4:241:8","to":"planet:4:241:8","relationType":"orbits"}
+{"type":"relation","from":"moon:4:242:8","to":"planet:4:242:8","relationType":"orbits"}
+{"type":"relation","from":"moon:4:299:8","to":"planet:4:299:8","relationType":"orbits"}
+{"type":"relation","from":"operator","to":"sidecar","relationType":"operates"}
+{"type":"relation","from":"operator","to":"userscript","relationType":"operates"}
