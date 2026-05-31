@@ -124,7 +124,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     return { status: r.status, body: txt };
   }
 
-  async execute(directive: Directive): Promise<{ action: string; clicked: boolean }> {
+  async execute(directive: Directive): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
     // expedition uses source_planet (not planet_id) — accept either.
     const planetId =
       (directive.params as { planet_id?: string }).planet_id
@@ -138,7 +138,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // (operator's view) and restore via try/finally so every action,
     // not just discover, leaves the operator on their planet.
     const operatorCp = this.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? null;
-    const inner = async (): Promise<{ action: string; clicked: boolean }> => {
+    const inner = async (): Promise<{ action: string; clicked: boolean; fleetId?: number }> => {
       if (directive.action === "expedition") return this.execExpedition(directive, planetId);
       if (directive.action === "colonize") return this.execColonize(directive, planetId);
       if (directive.action === "deploy" || directive.action === "transport") {
@@ -157,7 +157,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
 
   /** Old replay/capture path for non-fleet actions (build/research/etc).
    *  Wrapped out of execute() so the outer try/finally can restore cp. */
-  private async execLegacy(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
+  private async execLegacy(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
 
     // TIER 1 — replay sniffer-captured ogame URL if seen. ogame's own
     // click triggers the REAL endpoint with EXACT format; we just copy.
@@ -292,7 +292,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     component: "research" | "supplies" | "facilities" | "lfbuildings",
     directive: Directive,
     planetId: string,
-  ): Promise<{ action: string; clicked: boolean }> {
+  ): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
     const targetName = component === "research"
       ? ((directive.params as { tech?: string }).tech ?? "")
       : ((directive.params as { building?: string }).building ?? "");
@@ -334,7 +334,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   private async execShipBuild(
     directive: Directive,
     planetId: string,
-  ): Promise<{ action: string; clicked: boolean }> {
+  ): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
     const ship = (directive.params as { ship?: string }).ship ?? "";
     const amount = ((): number => {
       const a = (directive.params as { amount?: unknown }).amount;
@@ -383,7 +383,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   private async execExpedition(
     directive: Directive,
     planetId: string,
-  ): Promise<{ action: string; clicked: boolean }> {
+  ): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
     const params = directive.params as {
       source_coords?: string;
       ships?: Record<string, number>;
@@ -470,6 +470,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // it for unified retry + transient detection across all fleet POSTs.
     if (!this.tokenManager) throw new Error("expedition: no tokenManager wired");
     console.info(`[ApiExec] expedition delegate→fleet_api.sendFleet ${galaxy}:${system}:16 mission=15 cp=${planetId}`);
+    let fleetId: number | undefined;
     try {
       const res = await fleetApiSendFleet(
         {
@@ -485,6 +486,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         { fetch: this.fetchFn, token: this.tokenManager },
       );
       console.info(`[ApiExec] expedition OK fleetId=${res.fleetId}`);
+      fleetId = res.fleetId;
       try {
         const shipsData = (res.raw as { shipsData?: unknown }).shipsData;
         if (shipsData) cacheShipsData(shipsData, this.win);
@@ -510,14 +512,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (typeof w.__ogamexHarvestMovement === "function") void w.__ogamexHarvestMovement().catch(() => { /* */ });
       if (typeof w.__ogamexPollEmpire === "function") void w.__ogamexPollEmpire({ force: true }).catch(() => { /* */ });
     } catch { /* */ }
-    return { action: "expedition", clicked: true };
+    return { action: "expedition", clicked: true, fleetId };
   }
 
   /* ─── BELOW IS LEGACY 3-stage IMPL kept for reference; unreachable. ─── */
   private async _execExpeditionLegacy_dead_code_kept_for_reference(
     directive: Directive,
     planetId: string,
-  ): Promise<{ action: string; clicked: boolean }> {
+  ): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
     void directive; void planetId;
     const ships: Record<string, number> = {};
     const galaxy = 0, system = 0;
@@ -692,7 +694,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    * first to harvest the token from the HTML form. session-cp must point at
    * the source moon (cp=<moonId>).
    */
-  private async execJumpgate(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
+  private async execJumpgate(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
     const params = directive.params as {
       source_moon_id?: string;
       target_moon_id?: string;
@@ -808,7 +810,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    *  target coords (not position=16). On success ogame plants colony at the
    *  target slot. WARNING: best-guess body shape — capture real click for
    *  accuracy if first attempt fails. */
-  private async execColonize(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
+  private async execColonize(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
     // v0.0.438: delegate to fleet_api.sendFleet (mission=7 colonize, type=1
     // planet). Fixes pre-existing ReferenceError on line 883 (`destType`
     // undefined in execColonize scope) introduced when execFleetSend was
@@ -838,7 +840,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         { fetch: this.fetchFn, token: this.tokenManager },
       );
       console.info(`[ApiExec] colonize OK fleetId=${res.fleetId}`);
-      return { action: "colonize", clicked: true };
+      return { action: "colonize", clicked: true, fleetId: res.fleetId };
     } catch (e) {
       throw new Error(`colonize rejected: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
     }
@@ -848,7 +850,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    *  3-stage token chain as colonize/expedition. type=1 for planet targets,
    *  type=3 for debris field, type=2 for moon — we default to type=1 since
    *  deploy/transport targets are your own colonies. */
-  private async execFleetSend(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
+  private async execFleetSend(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
     const params = directive.params as { target_coords?: string; target_type?: string; ships?: Record<string, number>; resources?: Record<string, number>; mission?: number };
     const ships = params.ships ?? {};
     const resources = params.resources ?? {};
@@ -911,7 +913,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         { fetch: this.fetchFn, token: this.tokenManager },
       );
       console.info(`[ApiExec] ${directive.action} OK fleetId=${res.fleetId}`);
-      return { action: directive.action, clicked: true };
+      return { action: directive.action, clicked: true, fleetId: res.fleetId };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(`${directive.action} rejected: ${msg.slice(0, 200)}`);
@@ -926,7 +928,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    *  Uses 1 fleet slot until exploration fleet returns. */
   // execute() at top wraps EVERY action in try/finally that restores
   // session-cp — no per-action restore needed here.
-  private async execDiscover(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
+  private async execDiscover(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean; fleetId?: number }> {
     const p = directive.params as { galaxy?: number; system?: number; position?: number; goal_id?: string };
     const galaxy = p.galaxy ?? 0;
     const system = p.system ?? 0;

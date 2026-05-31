@@ -203,6 +203,18 @@ interface PlanCtx {
 }
 
 export function planGoal(goal: Goal, state: WorldState): PlanResult {
+  // v0.0.535 — architectural idempotency gate. Fleet-POST goal types record
+  // dispatched_fleet_id once sendFleet returns ok. Until that field clears
+  // (cancellation / chain leg advance / fleet return), refuse to generate a
+  // new directive — the goal already has a real ogame fleet bound to it.
+  // sendFleet's return value IS the dispatch ledger.
+  if (
+    (goal.type === "expedition" || goal.type === "colonize" || goal.type === "deploy" ||
+     goal.type === "transport" || goal.type === "jumpgate") &&
+    typeof goal.dispatched_fleet_id === "number"
+  ) {
+    return { blocked: `${goal.type} already dispatched (fleet_id=${goal.dispatched_fleet_id})` };
+  }
   switch (goal.type) {
     case "research":
       return planResearchGoal(goal, state);
