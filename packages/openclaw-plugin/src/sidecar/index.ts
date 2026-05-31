@@ -1219,10 +1219,29 @@ export async function startSidecar(
             } else {
               goalsStore.updateStatus(goalId, "blocked", reason);
               // v0.0.459: event-triggered gate — goal stays blocked until
-              // empire_poll snapshot OR operator_retry (resume) clears the
-              // awaiting set. Without this, every snapshot would re-dispatch
-              // the same failed directive in a tight loop.
-              priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "operator_retry"]);
+              // awaiting events clear.
+              // v0.0.542: split policy by goal type (operator 2026-05-31
+              // "运输到了 但 100001 还卡在 awaiting operator_retry"). Build /
+              // research / build_ships / lifeform_building / species_discovery
+              // failures are usually transient (resource shortage at POST
+              // time, slot race, mystery 100001) — when underlying ogame
+              // state changes (transport arrives, slot frees), the next
+              // empire_poll snapshot should auto-retry. Add 60s backoff so
+              // persistent errors don't tight-loop. Fleet POSTs (expedition/
+              // colonize/deploy/transport/jumpgate FLEET goal) keep the
+              // strict operator_retry gate — they're slot-bound, race-prone,
+              // and operator wants explicit control before re-firing.
+              const failedType = row?.goal.type;
+              const isFleetPost = failedType === "expedition" || failedType === "colonize"
+                || failedType === "deploy" || failedType === "transport" || failedType === "jumpgate";
+              if (isFleetPost) {
+                priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "operator_retry"]);
+              } else {
+                priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "backoff_60s"]);
+                setTimeout(() => {
+                  priorityMergerRef?.clearAwaiting(goalId, "backoff_60s");
+                }, 60_000);
+              }
               // v0.0.478: also clear dispatch stamp — directive completed
               // (with failure), so stuck-recovery's "in-flight" gate releases.
               priorityMergerRef?.clearDispatched(goalId);
