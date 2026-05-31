@@ -1619,12 +1619,23 @@ function openTransportSettings(
       }
     }
     if (prefill?.cargo) {
+      // v0.0.541 — operator 2026-05-31 "建筑任务里面点运输以后,所需资源
+      // 没有正确填入". Bug: 旧逻辑 if (X > 0) 只覆盖正值, X=0 时保留 boot 块
+      // 填的"当前星球库存"残留 → shortage 只缺 c 时, m/d 输入框还是当前
+      // 星球的 m/d 库存, 操作员看到的"所需资源"跟实际填的对不上.
+      // 修法: 显式按 prefill.cargo 三件都写, 0 就是 0; 同步把 cargoEnable
+      // checkbox 在该资源 == 0 时取消, 不勾不装船 (跟 v0.0.531 配套).
       const cm = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
       const cc = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
       const cd = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
-      if (cm && prefill.cargo.m > 0) cm.value = String(prefill.cargo.m);
-      if (cc && prefill.cargo.c > 0) cc.value = String(prefill.cargo.c);
-      if (cd && prefill.cargo.d > 0) cd.value = String(prefill.cargo.d);
+      if (cm) cm.value = String(prefill.cargo.m);
+      if (cc) cc.value = String(prefill.cargo.c);
+      if (cd) cd.value = String(prefill.cargo.d);
+      for (const [key, val] of [["m", prefill.cargo.m], ["c", prefill.cargo.c], ["d", prefill.cargo.d]] as const) {
+        const cb = m.querySelector<HTMLInputElement>(`[data-tr-cargo-enable="${key}"]`);
+        if (cb) cb.checked = val > 0;
+        updateCargoEnabledState(key);
+      }
       updateShipCount();
     }
     // v0.0.522 — prefill 来源是 goals "→ 运输" 按钮 (有 targetPlanetId), 这意味着
