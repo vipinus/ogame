@@ -1057,8 +1057,15 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
 
   const mission = goal.type === "deploy" ? MISSION_DEPLOY : MISSION_TRANSPORT;
 
-  // Terminal: matching mission fleet already outbound from this planet to
-  // those coords.
+  // v0.0.547 — operator 2026-05-31 "这次根本就没飞 你看一下最后一个运输任务"
+  // chain leg 1 (ferry_to_res_load planet→moon at 4:299:8) was auto-completed
+  // 71ms after creation because this check returned `blocked: already at or
+  // above target — ... fleet in flight ...` and ALREADY_AT_TARGET_RE matched
+  // "in flight" → priority_merger flipped to "completed" (terminal).
+  // But the in-flight fleet was UNRELATED (different chain, same coord pair).
+  // For chain legs, "fleet in flight" means WAIT (transient), NOT done.
+  // Drop the "already at or above target" prefix so the regex doesn't match
+  // and the goal stays blocked (will retry when fleet clears outbound).
   const srcKey = sourcePlanet.coords.join(":");
   for (const f of state.fleets_outbound ?? []) {
     if (
@@ -1066,7 +1073,7 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
       f.origin.join(":") === srcKey &&
       f.dest.join(":") === targetCoords
     ) {
-      return { blocked: `already at or above target — ${goal.type} fleet in flight from ${srcKey} → ${targetCoords}` };
+      return { blocked: `${goal.type} pre-empted by existing fleet (mission ${mission} ${srcKey}→${targetCoords}); waiting for clear outbound` };
     }
   }
 
