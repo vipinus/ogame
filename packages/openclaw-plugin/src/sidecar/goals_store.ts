@@ -132,33 +132,6 @@ export class GoalsStore {
     return row;
   }
 
-  /**
-   * Record the fleetId returned by ogame's sendFleet POST. Once set, planner
-   * short-circuits this goal to "blocked: already dispatched". Cleared by
-   * clearFleetId() on goal cancellation, transport return, or chain leg
-   * progression. Architectural answer to "fleet sent twice" — POST's return
-   * value IS the dispatch ledger; no separate table needed.
-   */
-  setFleetId(id: string, fleetId: number): GoalRow {
-    const row = this.get(id);
-    if (!row) throw new Error(`GoalsStore.setFleetId: unknown goal id "${id}"`);
-    const goal = { ...row.goal, dispatched_fleet_id: fleetId };
-    const ts = this.now();
-    this.stmtUpdateGoalJson.run(JSON.stringify(goal), ts, id);
-    const updated = this.get(id);
-    if (!updated) throw new Error(`GoalsStore.setFleetId: row vanished for id "${id}"`);
-    return updated;
-  }
-
-  clearFleetId(id: string): void {
-    const row = this.get(id);
-    if (!row || row.goal.dispatched_fleet_id === undefined) return;
-    const goal = { ...row.goal };
-    delete goal.dispatched_fleet_id;
-    const ts = this.now();
-    this.stmtUpdateGoalJson.run(JSON.stringify(goal), ts, id);
-  }
-
   remove(id: string): void {
     // No-op when no row matches; better-sqlite3 will not throw.
     this.stmtDelete.run(id);

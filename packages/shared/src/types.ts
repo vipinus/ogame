@@ -233,20 +233,6 @@ export interface Goal {
    * `prereq_tree` independently.
    */
   parent_goal_id?: string;
-
-  /**
-   * Set by sidecar after userscript api_executor's sendFleet() returns ok.
-   * Once present, planner.plan() short-circuits to {blocked: "already dispatched"}
-   * for any fleet-POST goal type (expedition / colonize / deploy / transport /
-   * jumpgate). The only way to re-dispatch is to clear this field — done on
-   * goal cancellation, on fleet return (transport mission=3), or when the goal
-   * progresses past its dispatched leg (chain templates).
-   *
-   * This is the simple architectural answer to "fleet sent twice": the sendFleet
-   * POST has a real fleetId in its return value; record it and refuse to plan
-   * a goal that already has one.
-   */
-  dispatched_fleet_id?: number;
 }
 
 // --- Strategy ---
