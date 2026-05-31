@@ -896,12 +896,19 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       throw new Error(`${directive.action}: no tokenManager wired (v0.0.436 delegation needs it)`);
     }
     const destTypeNum = destType === "3" ? 3 : destType === "2" ? 2 : 1;
+    // v0.0.537 forensic — 1:486:7 chain leg-2 ran with leg-1 shape; log
+    // the actual params we hand to fleet_api.sendFleet so we can compare
+    // goal.target vs real POST. directive.goal_id is the chain leg id;
+    // directive.id is per-tick directive id. Both printed for cross-ref
+    // against sidecar [merger] DISPATCH lines.
+    const _cargo = { m: resources["m"] ?? 0, c: resources["c"] ?? 0, d: resources["d"] ?? 0 };
+    console.warn(`[ApiExec/POST-IN] ${directive.action} goal_id=${(directive as { goal_id?: string }).goal_id ?? "?"} dirId=${directive.id} cp=${planetId} → ${tGalaxy}:${tSystem}:${tPos}(type=${destType}) mission=${mission} ships=${JSON.stringify(ships)} cargo=${JSON.stringify(_cargo)}`);
     console.info(`[ApiExec] ${directive.action} delegate→fleet_api.sendFleet ${tGalaxy}:${tSystem}:${tPos} type=${destType} mission=${mission} cp=${planetId}`);
     try {
       const res = await fleetApiSendFleet(
         {
           ships: ships as unknown as import("@ogamex/shared").ShipCount,
-          cargo: { m: resources["m"] ?? 0, c: resources["c"] ?? 0, d: resources["d"] ?? 0 },
+          cargo: _cargo,
           coords: [tGalaxy, tSystem, tPos],
           destType: destTypeNum as 1 | 2 | 3,
           mission: mission as 3 | 4,
