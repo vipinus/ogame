@@ -88,9 +88,18 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     try {
       const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
       const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+      // v0.0.549 — HttpServer.handlePush requires Authorization: Bearer <token>.
+      // Operator console showed `push:1 Failed to load resource: 401` because
+      // v0.0.548 omitted the header. Read same key as main.ts readConfig:
+      // OGAMEX_BRIDGE_TOKEN from localStorage (fallback empty → request will
+      // still 401 but at least the path is testable in setups w/o token).
+      const tok = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "";
       void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/push`, {
         method: "POST", credentials: "omit",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(tok ? { "Authorization": `Bearer ${tok}` } : {}),
+        },
         body: JSON.stringify(msg),
       }).catch(() => { /* */ });
     } catch { /* */ }
