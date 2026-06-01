@@ -967,7 +967,51 @@ function openGoalsSettings(
           <button data-lf-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
         </div>
       </div>
-      <!-- Shared pane (used by 3 non-planet/moon/lf-build tabs) -->
+      <!-- v0.0.599 — 普通研究独立 pane. Research is GLOBAL (single queue
+           per account), no planet selector needed; planner auto-picks
+           source planet with the highest researchLab. -->
+      <div data-pane="research" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
+        <div data-rs-queue style="padding:6px 0; color:#7080a0; font-size:11px;">global queue: <span style="color:#a06060;">loading…</span></div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">研究项目 (单选)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="energyTech" style="vertical-align:middle;"/><span>能量技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="laserTech" style="vertical-align:middle;"/><span>激光技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="ionTech" style="vertical-align:middle;"/><span>离子技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceTech" style="vertical-align:middle;"/><span>超空间技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="plasmaTech" style="vertical-align:middle;"/><span>等离子技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="combustion" style="vertical-align:middle;"/><span>内燃机引擎</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="impulseDrive" style="vertical-align:middle;"/><span>脉冲引擎</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceDrive" style="vertical-align:middle;"/><span>超空间引擎</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="espionageTech" style="vertical-align:middle;"/><span>间谍技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="computerTech" style="vertical-align:middle;"/><span>电脑技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="astrophysics" style="vertical-align:middle;"/><span>天体物理</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="intergalactic" style="vertical-align:middle;"/><span>星际研究</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="gravitonTech" style="vertical-align:middle;"/><span>引力技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="weapons" style="vertical-align:middle;"/><span>武器技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="shielding" style="vertical-align:middle;"/><span>防御护盾</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="armor" style="vertical-align:middle;"/><span>装甲技术</span></label>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <input data-rs-level type="number" min="1" max="30" value="" placeholder="例: 9" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span style="color:#7080a0; font-size:10px;">支持 1-30</span>
+        </div>
+        <div style="padding:6px 0; min-height:22px;">
+          <span data-rs-desc style="color:#7cfc00; font-size:11px;"></span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <input data-rs-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
+          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
+          <span data-rs-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+          <button data-rs-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+        </div>
+      </div>
+      <!-- Shared pane (used by 2 non-dedicated tabs) -->
       <div data-pane="shared" style="display:none;">
       <!-- Operator 2026-05-29: 自然语言入口 — Gemini 解析 → 填表单 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
@@ -1058,8 +1102,9 @@ function openGoalsSettings(
     const planetBuildPane = m.querySelector<HTMLElement>('[data-pane="planet-build"]');
     const moonBuildPane = m.querySelector<HTMLElement>('[data-pane="moon-build"]');
     const lfBuildPane = m.querySelector<HTMLElement>('[data-pane="lf-build"]');
+    const researchPane = m.querySelector<HTMLElement>('[data-pane="research"]');
     const sharedPane = m.querySelector<HTMLElement>('[data-pane="shared"]');
-    const isDedicatedPane = (id: TabId): boolean => id === "planet-build" || id === "moon-build" || id === "lf-build";
+    const isDedicatedPane = (id: TabId): boolean => id === "planet-build" || id === "moon-build" || id === "lf-build" || id === "research";
     const applyTab = (tabId: TabId): void => {
       const tab = TAB_DEFS.find((t) => t.id === tabId);
       if (!tab) return;
@@ -1075,6 +1120,7 @@ function openGoalsSettings(
       if (planetBuildPane) planetBuildPane.style.display = tabId === "planet-build" ? "" : "none";
       if (moonBuildPane) moonBuildPane.style.display = tabId === "moon-build" ? "" : "none";
       if (lfBuildPane) lfBuildPane.style.display = tabId === "lf-build" ? "" : "none";
+      if (researchPane) researchPane.style.display = tabId === "research" ? "" : "none";
       if (sharedPane) sharedPane.style.display = isDedicatedPane(tabId) ? "none" : "";
       if (isDedicatedPane(tabId)) return; // skip shared-form filtering below
       if (!typeSel) return;
@@ -1576,6 +1622,85 @@ function openGoalsSettings(
         } else {
           lfStatusEl.textContent = `部分失败: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
           lfStatusEl.style.color = "#a06060";
+        }
+      });
+    }
+
+    // v0.0.599 — research pane wiring (global queue, no planet selector).
+    {
+      const RESEARCH_LABEL: Record<string, string> = {
+        energyTech: "能量技术", laserTech: "激光技术", ionTech: "离子技术",
+        hyperspaceTech: "超空间技术", plasmaTech: "等离子技术",
+        combustion: "内燃机引擎", impulseDrive: "脉冲引擎", hyperspaceDrive: "超空间引擎",
+        espionageTech: "间谍技术", computerTech: "电脑技术",
+        astrophysics: "天体物理", intergalactic: "星际研究", gravitonTech: "引力技术",
+        weapons: "武器技术", shielding: "防御护盾", armor: "装甲技术",
+      };
+      const rsTechRadios = (): HTMLInputElement[] => Array.from(
+        m.querySelectorAll<HTMLInputElement>('input[name="rs-tech-radio"]'),
+      );
+      const rsLevelInput = m.querySelector<HTMLInputElement>("[data-rs-level]");
+      const rsDescEl = m.querySelector<HTMLElement>("[data-rs-desc]");
+      const rsPriorityInput = m.querySelector<HTMLInputElement>("[data-rs-priority]");
+      const rsStatusEl = m.querySelector<HTMLElement>("[data-rs-status]");
+      const rsCreateBtn = m.querySelector<HTMLButtonElement>("[data-rs-create]");
+      const rsQueueEl = m.querySelector<HTMLElement>("[data-rs-queue]");
+      // Render current global research queue status (live read; ack-driven
+      // refresh isn't critical since modal opens are user-initiated).
+      const rq = (storeRef?.state as { research?: { queue?: { tech?: string; level?: number; ends_at?: number } | null } } | undefined)?.research?.queue;
+      if (rsQueueEl) {
+        if (rq && rq.ends_at && rq.ends_at > nowMs) {
+          const etaMin = Math.round((rq.ends_at - nowMs) / 60000);
+          const techLabel = RESEARCH_LABEL[rq.tech ?? ""] ?? rq.tech ?? "?";
+          rsQueueEl.innerHTML = `global queue: <span style="color:#ffaa66;">${escapeHtml(techLabel)} L${rq.level} eta=${etaMin}min</span>`;
+        } else {
+          rsQueueEl.innerHTML = `global queue: <span style="color:#7cfc00;">空闲</span>`;
+        }
+      }
+      const refreshRsDesc = (): void => {
+        if (!rsDescEl) return;
+        const techRadio = rsTechRadios().find((r) => r.checked);
+        const lvl = parseInt(rsLevelInput?.value ?? "", 10);
+        if (!techRadio || !lvl) {
+          rsDescEl.textContent = "（选研究项目 + 级别后显示）";
+          rsDescEl.style.color = "#5a7090";
+          return;
+        }
+        const tLabel = RESEARCH_LABEL[techRadio.value] ?? techRadio.value;
+        rsDescEl.textContent = `目标研究 ${tLabel} ${lvl} 级`;
+        rsDescEl.style.color = "#7cfc00";
+      };
+      for (const r of rsTechRadios()) r.addEventListener("change", refreshRsDesc);
+      rsLevelInput?.addEventListener("input", refreshRsDesc);
+      refreshRsDesc();
+      rsCreateBtn?.addEventListener("click", async () => {
+        if (!rsStatusEl) return;
+        const techRadio = rsTechRadios().find((r) => r.checked);
+        const lvl = parseInt(rsLevelInput?.value ?? "", 10);
+        const pri = parseInt(rsPriorityInput?.value ?? "5", 10) || 5;
+        if (!techRadio) { rsStatusEl.textContent = "请选研究项目"; rsStatusEl.style.color = "#a06060"; return; }
+        if (!lvl || lvl < 1 || lvl > 30) { rsStatusEl.textContent = "级别须 1-30"; rsStatusEl.style.color = "#a06060"; return; }
+        rsStatusEl.textContent = "创建中…"; rsStatusEl.style.color = "#7080a0";
+        try {
+          const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "research",
+              target: { tech: techRadio.value, level: lvl },
+              priority: pri,
+            }),
+          });
+          if (r.ok) {
+            rsStatusEl.textContent = `✓ 已创建研究任务`;
+            rsStatusEl.style.color = "#7cfc00";
+          } else {
+            rsStatusEl.textContent = `HTTP ${r.status}`;
+            rsStatusEl.style.color = "#a06060";
+          }
+        } catch (e) {
+          rsStatusEl.textContent = `error: ${(e as Error).message ?? e}`;
+          rsStatusEl.style.color = "#a06060";
         }
       });
     }
