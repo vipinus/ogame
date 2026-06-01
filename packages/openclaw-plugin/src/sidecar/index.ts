@@ -61,6 +61,7 @@ import type {
   WorldState,
 } from "@ogamex/shared";
 import { TECH_TREE, LIFEFORM_TECH } from "@ogamex/shared";
+import type { CelestialType } from "@ogamex/shared";
 
 interface PrereqTreeNode {
   tech: string;
@@ -376,7 +377,11 @@ export async function startSidecar(
   // v0.0.502 — also track last arrival_at so we can detect phase transition
   // (arrival_at jumps from past to future = fleet entered next phase, which
   // for expedition mission means exploration ended → returning home).
-  const expLastSeen = new Map<string, { origin: readonly number[]; dest: readonly number[]; arrival_at: number | null }>();
+  // v0.0.561 — also track origin_type so Signal B (fleet-disappeared) can
+  // resolve the correct celestial body (moon vs planet at same coords).
+  // operator 2026-06-01: 月球远征返回时, harvest dispatch 必须从月球派, 不能
+  // 默认拿同坐标的星球。
+  const expLastSeen = new Map<string, { origin: readonly number[]; origin_type: CelestialType; dest: readonly number[]; arrival_at: number | null }>();
   const triggerDispatch = (): void => {
     if (!priorityMergerRef) return;
     try { priorityMergerRef.dispatch(stateRef.current ?? emptyWorldState()); }
@@ -1532,25 +1537,32 @@ export async function startSidecar(
       // Operator 2026-05-30 实证: harvest may not capture return_at reliably;
       // fallback ensures debris-check fires at worst case (fleet home).
       try {
-        const findOriginPlanet = (origCoord: string): { id: string } | undefined => {
+        // v0.0.561 — fix moon-origin expedition harvest dispatch. Previously
+        // hardcoded `p.type === "planet"` which forced the harvest to launch
+        // from the planet sibling even when the expedition came from a moon
+        // (e.g. 4:299:8 moon → expedition fleet returns → harvest dispatched
+        // from planet 4:299:8 instead of moon 4:299:8). Use the fleet's own
+        // origin_type field (FleetMovement.origin_type per shared/types.ts)
+        // to match planet vs moon correctly.
+        const findOriginBody = (origCoord: string, originType: CelestialType): { id: string } | undefined => {
           return Object.values(msg.snapshot.planets ?? {})
-            .find((p) => Array.isArray(p.coords) && p.coords.join(":") === origCoord && p.type === "planet");
+            .find((p) => Array.isArray(p.coords) && p.coords.join(":") === origCoord && p.type === originType);
         };
-        const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string): void => {
+        const fireFor = (fleetId: string, origin: readonly number[], originType: CelestialType, dest: readonly number[], reason: string): void => {
           if (firedDebrisCheckFor.has(fleetId)) return;
           if (!Array.isArray(origin) || origin.length !== 3 || !Array.isArray(dest)) return;
-          const originPlanet = findOriginPlanet(origin.join(":"));
-          if (!originPlanet) {
-            console.log(`[debris-check] SKIP fleet ${fleetId}: origin ${origin.join(":")} not in planets`);
+          const originBody = findOriginBody(origin.join(":"), originType);
+          if (!originBody) {
+            console.log(`[debris-check] SKIP fleet ${fleetId}: origin ${origin.join(":")}/${originType} not in planets`);
             return;
           }
           const g = dest[0], s = dest[1];
           if (typeof g !== "number" || typeof s !== "number") return;
           firedDebrisCheckFor.add(fleetId);
-          const dbgMsg = { type: "expedition.debris_check" as const, galaxy: g, system: s, origin_planet_id: originPlanet.id, reason };
+          const dbgMsg = { type: "expedition.debris_check" as const, galaxy: g, system: s, origin_planet_id: originBody.id, reason };
           ws.send(dbgMsg);
           http.queueDownstream(dbgMsg);
-          console.log(`[debris-check] FIRED fleet ${fleetId} ${reason}: G:S=${g}:${s} origin=${originPlanet.id}`);
+          console.log(`[debris-check] FIRED fleet ${fleetId} ${reason}: G:S=${g}:${s} origin=${originBody.id}(${originType})`);
         };
         // Signal A: scan current snapshot for mission=15 with return_at set.
         // Signal C (NEW): arrival_at transition past→future = fleet entered
@@ -1564,21 +1576,21 @@ export async function startSidecar(
           currentExpIds.add(f.id);
           const prev = expLastSeen.get(f.id);
           const prevArrival = prev?.arrival_at ?? null;
-          expLastSeen.set(f.id, { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null });
+          expLastSeen.set(f.id, { origin: f.origin, origin_type: f.origin_type, dest: f.dest, arrival_at: f.arrival_at ?? null });
           // Signal A — return_at appeared
           if (f.return_at !== null && f.return_at !== undefined) {
-            fireFor(f.id, f.origin, f.dest, `return_at set (=${f.return_at})`);
+            fireFor(f.id, f.origin, f.origin_type, f.dest, `return_at set (=${f.return_at})`);
             continue;
           }
           // Signal C — arrival_at jumped past → future (next phase deadline)
           if (prevArrival !== null && prevArrival < nowMs && (f.arrival_at ?? 0) > nowMs) {
-            fireFor(f.id, f.origin, f.dest, `arrival_at jumped past→future (${prevArrival}→${f.arrival_at}) — phase transition`);
+            fireFor(f.id, f.origin, f.origin_type, f.dest, `arrival_at jumped past→future (${prevArrival}→${f.arrival_at}) — phase transition`);
           }
         }
         // Signal B: any expLastSeen entry NOT in current snapshot → fleet disappeared (returned home).
         for (const [fid, info] of Array.from(expLastSeen.entries())) {
           if (currentExpIds.has(fid)) continue;
-          fireFor(fid, info.origin, info.dest, "fleet disappeared from outbound (returned home)");
+          fireFor(fid, info.origin, info.origin_type, info.dest, "fleet disappeared from outbound (returned home)");
           expLastSeen.delete(fid);
         }
         // GC firedDebrisCheckFor for fleet IDs no longer present.
