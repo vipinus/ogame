@@ -714,9 +714,107 @@ function openGoalsSettings(
       `<button data-tab-btn="${t.id}" style="background:#0a1018; color:#7080a0; border:1px solid #2a3a52; border-bottom:none; padding:6px 10px; font-size:11px; cursor:pointer; border-top-left-radius:4px; border-top-right-radius:4px;">${escapeHtml(t.label)}</button>`,
     ).join("");
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
+    // v0.0.583 — operator 2026-06-01: "星球建筑 tab" 独立 form (去掉 NL,
+    // 只列 planet, 占用灰显, 建筑 radio + level input + 实时描述). Other 5
+    // tabs continue using the shared (NL + free-form target JSON) panel.
+    const PLANET_BUILDING_KEYS = [
+      "metalMine", "crystalMine", "deuteriumSynth",
+      "solarPlant", "fusionReactor",
+      "metalStorage", "crystalStorage", "deuteriumTank",
+      "roboticsFactory", "shipyard", "researchLab", "naniteFactory",
+      "terraformer",
+    ] as const;
+    const PLANET_BUILDING_LABEL: Record<string, string> = {
+      metalMine: "金属矿", crystalMine: "晶体矿", deuteriumSynth: "重氢合成器",
+      solarPlant: "太阳能", fusionReactor: "核聚变",
+      metalStorage: "金属仓库", crystalStorage: "晶体仓库", deuteriumTank: "重氢罐",
+      roboticsFactory: "机械工厂", shipyard: "船坞", researchLab: "实验室", naniteFactory: "纳米工厂",
+      terraformer: "地形改造",
+    };
+    // Fetch current active goals to detect occupied planets (one goal per
+    // planet rule, operator 2026-06-01).
+    let activeGoals: Array<{ planet?: string; status: string; type: string }> = [];
+    try {
+      const gr = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals`);
+      if (gr.ok) {
+        const gj = await gr.json() as { goals?: Array<{ planet?: string; status: string; type: string }> };
+        activeGoals = (gj.goals ?? []).filter((g) => g.status !== "completed" && g.status !== "cancelled");
+      }
+    } catch { /* */ }
+    const occupiedCoords = new Set(activeGoals.map((g) => g.planet ?? "").filter(Boolean));
+    const planetCoordById = new Map<string, string>();
+    for (const k of sortedCoordKeys) {
+      const { planet } = groupedByCoord.get(k)!;
+      if (planet) planetCoordById.set(planet.id, k);
+    }
+    const planetOccupied = (pid: string): boolean => {
+      const coord = planetCoordById.get(pid);
+      return coord ? occupiedCoords.has(coord) : false;
+    };
     body.innerHTML = `
       <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">普通任务 — 选 tab 创建任务. 已有 active goals 在主面板 Goals section 显示</div>
       <div data-tab-bar style="display:flex; gap:2px; margin-bottom:0;">${renderTabBar()}</div>
+      <!-- v0.0.583 — 星球建筑独立 pane -->
+      <div data-pane="planet-build" style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选, 已有任务的星球灰显不可选)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; max-height:220px; overflow-y:auto; background:#06090f;">
+            <div style="padding:4px 8px; border-bottom:1px solid #1a2030;">
+              <label data-pb-all-wrap style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                <input data-pb-planet type="radio" name="pb-planet-radio" value="all-planets" style="vertical-align:middle;"/>
+                <span>🌍 所有星球 (每个空闲星球各建一个)</span>
+              </label>
+            </div>
+            ${sortedCoordKeys
+              .filter((k) => groupedByCoord.get(k)!.planet)
+              .map((k) => {
+                const { planet } = groupedByCoord.get(k)!;
+                const p = planet!;
+                const occ = planetOccupied(p.id);
+                const tip = occ ? `title="已有任务进行中, 不可选 (一星球一任务)"` : "";
+                const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
+                const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[已占用]</span>` : "";
+                return `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
+                  <span style="width:72px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+                  <label style="flex:1; display:flex; align-items:center; gap:6px; color:#d0d8e0; font-size:11px; ${dim}" ${tip}>
+                    <input data-pb-planet type="radio" name="pb-planet-radio" value="${escapeHtml(p.id)}" ${occ ? "disabled" : ""} style="vertical-align:middle;"/>
+                    <span>🌍 ${escapeHtml(p.name ?? "殖民")}${occSuffix}</span>
+                  </label>
+                </div>`;
+              }).join("")}
+          </div>
+        </div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">建筑 (单选)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
+            ${PLANET_BUILDING_KEYS.map((bk) => `
+              <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                <input data-pb-building type="radio" name="pb-building-radio" value="${escapeHtml(bk)}" style="vertical-align:middle;"/>
+                <span>${escapeHtml(PLANET_BUILDING_LABEL[bk] ?? bk)}</span>
+              </label>
+            `).join("")}
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <input data-pb-level type="number" min="1" max="50" value="" placeholder="例: 7" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
+        </div>
+        <div style="padding:6px 0; min-height:22px;">
+          <span data-pb-desc style="color:#7cfc00; font-size:11px;"></span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <input data-pb-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
+          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
+          <span data-pb-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+          <button data-pb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+        </div>
+      </div>
+      <!-- Shared pane (used by 5 non-planet-build tabs) -->
+      <div data-pane="shared" style="display:none;">
       <!-- Operator 2026-05-29: 自然语言入口 — Gemini 解析 → 填表单 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
         <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">自然语言描述 <span style="color:#7080a0; font-size:10px;">(可选 — 让 AI 解析填表单)</span></div>
@@ -787,6 +885,7 @@ function openGoalsSettings(
           <button data-goal-create="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
         </div>
       </div>
+      </div><!-- /data-pane="shared" -->
     `;
     // Sync textarea placeholder with selected type.
     const typeSel = m.querySelector<HTMLSelectElement>("[data-goal-type]");
@@ -802,9 +901,11 @@ function openGoalsSettings(
     typeSel?.addEventListener("change", refreshPreset);
 
     // v0.0.582 — tab switching. Activate "planet-build" by default.
+    const planetBuildPane = m.querySelector<HTMLElement>('[data-pane="planet-build"]');
+    const sharedPane = m.querySelector<HTMLElement>('[data-pane="shared"]');
     const applyTab = (tabId: TabId): void => {
       const tab = TAB_DEFS.find((t) => t.id === tabId);
-      if (!tab || !typeSel) return;
+      if (!tab) return;
       // Restyle tab buttons
       for (const btn of m.querySelectorAll<HTMLButtonElement>("[data-tab-btn]")) {
         const active = btn.dataset["tabBtn"] === tabId;
@@ -813,6 +914,16 @@ function openGoalsSettings(
         btn.style.borderColor = active ? "#3a5a82" : "#2a3a52";
         btn.style.fontWeight = active ? "600" : "normal";
       }
+      // v0.0.583 — pane switch: planet-build has its own dedicated form,
+      // other 5 tabs share the legacy form.
+      if (tabId === "planet-build") {
+        if (planetBuildPane) planetBuildPane.style.display = "";
+        if (sharedPane) sharedPane.style.display = "none";
+        return; // skip shared-form filtering below
+      }
+      if (planetBuildPane) planetBuildPane.style.display = "none";
+      if (sharedPane) sharedPane.style.display = "";
+      if (!typeSel) return;
       // Refilter goal type options
       typeSel.innerHTML = tab.goalTypes
         .map((v) => presetByValue.get(v))
@@ -860,6 +971,100 @@ function openGoalsSettings(
       });
     }
     applyTab("planet-build");
+
+    // v0.0.583 — planet-build pane wiring: live description + submit.
+    const pbPlanetRadios = (): HTMLInputElement[] => Array.from(
+      m.querySelectorAll<HTMLInputElement>('input[name="pb-planet-radio"]'),
+    );
+    const pbBuildingRadios = (): HTMLInputElement[] => Array.from(
+      m.querySelectorAll<HTMLInputElement>('input[name="pb-building-radio"]'),
+    );
+    const pbLevelInput = m.querySelector<HTMLInputElement>("[data-pb-level]");
+    const pbDescEl = m.querySelector<HTMLElement>("[data-pb-desc]");
+    const pbPriorityInput = m.querySelector<HTMLInputElement>("[data-pb-priority]");
+    const pbStatusEl = m.querySelector<HTMLElement>("[data-pb-status]");
+    const pbCreateBtn = m.querySelector<HTMLButtonElement>("[data-pb-create]");
+    const pbAllRadio = m.querySelector<HTMLInputElement>('input[name="pb-planet-radio"][value="all-planets"]');
+    // If any planet is occupied, disable "all-planets" too (one-task-per-planet).
+    const anyOccupied = sortedCoordKeys.some((k) => {
+      const planet = groupedByCoord.get(k)?.planet;
+      return planet ? planetOccupied(planet.id) : false;
+    });
+    if (pbAllRadio) {
+      pbAllRadio.disabled = anyOccupied;
+      const wrap = m.querySelector<HTMLElement>("[data-pb-all-wrap]");
+      if (anyOccupied && wrap) {
+        wrap.style.opacity = "0.4";
+        wrap.style.cursor = "not-allowed";
+        wrap.title = "有星球被占用, 无法选 '所有星球' (一星球一任务)";
+        const span = wrap.querySelector("span");
+        if (span) span.textContent += " — 不可用 (有星球已占用)";
+      }
+    }
+    const refreshPbDesc = (): void => {
+      if (!pbDescEl) return;
+      const planetRadio = pbPlanetRadios().find((r) => r.checked);
+      const buildingRadio = pbBuildingRadios().find((r) => r.checked);
+      const lvl = parseInt(pbLevelInput?.value ?? "", 10);
+      if (!planetRadio || !buildingRadio || !lvl) {
+        pbDescEl.textContent = "（选星球 + 建筑 + 级别后显示）";
+        pbDescEl.style.color = "#5a7090";
+        return;
+      }
+      const bLabel = PLANET_BUILDING_LABEL[buildingRadio.value] ?? buildingRadio.value;
+      if (planetRadio.value === "all-planets") {
+        pbDescEl.textContent = `目标在 所有空闲星球 建造 ${bLabel} ${lvl} 级`;
+      } else {
+        const coord = planetCoordById.get(planetRadio.value) ?? "?";
+        pbDescEl.textContent = `目标在 ${coord} 建造 ${bLabel} ${lvl} 级`;
+      }
+      pbDescEl.style.color = "#7cfc00";
+    };
+    for (const r of pbPlanetRadios()) r.addEventListener("change", refreshPbDesc);
+    for (const r of pbBuildingRadios()) r.addEventListener("change", refreshPbDesc);
+    pbLevelInput?.addEventListener("input", refreshPbDesc);
+    refreshPbDesc();
+    pbCreateBtn?.addEventListener("click", async () => {
+      if (!pbStatusEl) return;
+      const planetRadio = pbPlanetRadios().find((r) => r.checked);
+      const buildingRadio = pbBuildingRadios().find((r) => r.checked);
+      const lvl = parseInt(pbLevelInput?.value ?? "", 10);
+      const pri = parseInt(pbPriorityInput?.value ?? "5", 10) || 5;
+      if (!planetRadio) { pbStatusEl.textContent = "请选星球"; pbStatusEl.style.color = "#a06060"; return; }
+      if (!buildingRadio) { pbStatusEl.textContent = "请选建筑"; pbStatusEl.style.color = "#a06060"; return; }
+      if (!lvl || lvl < 1 || lvl > 50) { pbStatusEl.textContent = "级别须 1-50"; pbStatusEl.style.color = "#a06060"; return; }
+      pbStatusEl.textContent = "创建中…"; pbStatusEl.style.color = "#7080a0";
+      const planetsToCreate: string[] = planetRadio.value === "all-planets"
+        ? sortedCoordKeys
+            .map((k) => groupedByCoord.get(k)?.planet)
+            .filter((p): p is StorePlanet => !!p && !planetOccupied(p.id))
+            .map((p) => p.id)
+        : [planetRadio.value];
+      let okCount = 0; const errs: string[] = [];
+      for (const pid of planetsToCreate) {
+        try {
+          const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "build",
+              target: { building: buildingRadio.value, level: lvl },
+              planet: pid,
+              priority: pri,
+            }),
+          });
+          if (r.ok) okCount++; else errs.push(`${pid}: HTTP ${r.status}`);
+        } catch (e) { errs.push(`${pid}: ${(e as Error).message ?? e}`); }
+      }
+      if (errs.length === 0) {
+        pbStatusEl.textContent = `✓ 已创建 ${okCount} 个任务`;
+        pbStatusEl.style.color = "#7cfc00";
+      } else {
+        pbStatusEl.textContent = `部分失败: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
+        pbStatusEl.style.color = "#a06060";
+      }
+    });
+
     // Operator 2026-05-29: planet radio change → auto-fill the coord prefix
     // into the NL textarea so the operator can keep typing the rest of the
     // instruction. Replaces an existing "在 G:S:P " head; otherwise prepends.
