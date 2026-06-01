@@ -717,19 +717,24 @@ function openGoalsSettings(
     // v0.0.583 — operator 2026-06-01: "星球建筑 tab" 独立 form (去掉 NL,
     // 只列 planet, 占用灰显, 建筑 radio + level input + 实时描述). Other 5
     // tabs continue using the shared (NL + free-form target JSON) panel.
+    // v0.0.587 — operator 2026-06-01 "确认后台可以处理": audited TECH_TREE
+    // catalog at shared/src/tech_tree.ts. terraformer is in tech_ids
+    // (id="33") but has NO TECH_TREE entry → planner returns blocked
+    // "unknown tech: terraformer". Removed from panel to prevent stuck
+    // goals. To re-enable: add a terraformer entry to TECH_TREE with cost
+    // formula + prereqs (separate sprint). All 12 remaining buildings are
+    // verified present in TECH_TREE.
     const PLANET_BUILDING_KEYS = [
       "metalMine", "crystalMine", "deuteriumSynth",
       "solarPlant", "fusionReactor",
       "metalStorage", "crystalStorage", "deuteriumTank",
       "roboticsFactory", "shipyard", "researchLab", "naniteFactory",
-      "terraformer",
     ] as const;
     const PLANET_BUILDING_LABEL: Record<string, string> = {
       metalMine: "金属矿", crystalMine: "晶体矿", deuteriumSynth: "重氢合成器",
       solarPlant: "太阳能", fusionReactor: "核聚变",
       metalStorage: "金属仓库", crystalStorage: "晶体仓库", deuteriumTank: "重氢罐",
       roboticsFactory: "机械工厂", shipyard: "船坞", researchLab: "实验室", naniteFactory: "纳米工厂",
-      terraformer: "地形改造",
     };
     // v0.0.584 — operator 2026-06-01 "都是灰色是不对的, 多数星球上没有建造任务":
     // occupied judgment was based on sidecar goal queue (always many blocked
