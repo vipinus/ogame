@@ -715,47 +715,50 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (Object.values(ships).every((n) => !n)) {
       throw new Error("jumpgate: empty ships payload");
     }
-    // v0.0.437: mirror fleet_api.sendFleet 流程 — 4-attempt retry +
-    // TRANSIENT race detection (140043 / 請稍後再試) + loud raw-body log
-    // + token refresh on TOKEN_INVALID. operator 2026-05-29: "跳跃也走流程".
-    const TRANSIENT_RACE_RE = /140043|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet/i;
-    const TOKEN_INVALID_RE = /invalid token|csrf|session expired/i;
+    // v0.0.558 Phase 2 — migrated from handrolled retry loop to
+    // cpPostWithRetry with the v0.0.557 hooks (tokenProvider,
+    // successCheck, refreshTokenOnInvalid). Old code path (lines
+    // 720-833 in v0.0.557) contained inline 4-attempt loop +
+    // local TRANSIENT_RACE_RE / TOKEN_INVALID_RE constants that
+    // duplicated cpPostWithRetry's defaults. Now: overlay GET +
+    // executeJump POST both go through cpPostWithRetry. Mutex,
+    // restore, click_intercept, retry, transient handling all
+    // inherited from the unified entry.
     const overlayUrl = `/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1`;
+    const tokenPatterns: RegExp[] = [
+      /name=["']token["']\s+value=["']([a-zA-Z0-9_\-]+)["']/i,      // <input name='token' value='...'>
+      /value=["']([a-zA-Z0-9_\-]{16,})["']\s+name=["']token["']/i,  // reversed attr order
+      /["']token["']\s*[:=]\s*["']([a-zA-Z0-9_\-]+)["']/i,          // js: token: "..."
+      /data-token=["']([a-zA-Z0-9_\-]+)["']/i,                       // data-token attr
+      /var\s+token\s*=\s*["']([a-zA-Z0-9_\-]+)["']/i,                // var token = "..."
+      /ajaxToken\s*=\s*["']([a-zA-Z0-9_\-]+)["']/i,                  // ajaxToken = "..."
+      /["']?ajaxToken["']?\s*:\s*["']([a-zA-Z0-9_\-]+)["']/i,        // "ajaxToken": "..."
+    ];
+    if (!this.tokenManager) throw new Error(`jumpgate: no tokenManager wired`);
     const fetchOverlayToken = async (): Promise<string> => {
-      const overlayResp = await fetchWithCpBypassBusy(
-        overlayUrl,
-        { method: "GET", credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-        sourceMoonId,
-        { skipRestore: true },
-      );
-      if (!overlayResp.ok) throw new Error(`jumpgate overlay HTTP ${overlayResp.status}`);
-      const overlayHtml = await overlayResp.text();
-      // v0.0.445: ogame v12 uses SINGLE quotes —
-      //   <input type='hidden' name='token' value='4dad2571...' />
-      // verified from operator's console context dump 2026-05-29.
-      // Patterns now accept both ' and " via ["'].
-      const tokenPatterns: RegExp[] = [
-        /name=["']token["']\s+value=["']([a-zA-Z0-9_\-]+)["']/i,      // <input name='token' value='...'>
-        /value=["']([a-zA-Z0-9_\-]{16,})["']\s+name=["']token["']/i,  // reversed attr order
-        /["']token["']\s*[:=]\s*["']([a-zA-Z0-9_\-]+)["']/i,          // js: token: "..."
-        /data-token=["']([a-zA-Z0-9_\-]+)["']/i,                       // data-token attr
-        /var\s+token\s*=\s*["']([a-zA-Z0-9_\-]+)["']/i,                // var token = "..."
-        /ajaxToken\s*=\s*["']([a-zA-Z0-9_\-]+)["']/i,                  // ajaxToken = "..."
-        /["']?ajaxToken["']?\s*:\s*["']([a-zA-Z0-9_\-]+)["']/i,        // "ajaxToken": "..."
-      ];
+      // GET overlay HTML via cpPostWithRetry. Response is HTML (not JSON);
+      // cpPostWithRetry returns json=null early → res.raw is the HTML.
+      const res = await cpPostWithRetry({
+        endpoint: overlayUrl,
+        sourcePlanetId: sourceMoonId,
+        token: this.tokenManager!,            // satisfies API; overlay GET doesn't actually use it
+        action: "jg:overlay",
+        method: "GET",
+        skipRestore: true,
+      });
+      if (res.status !== 200) throw new Error(`jumpgate overlay HTTP ${res.status}`);
+      const html = res.raw;
       for (const re of tokenPatterns) {
-        const m = overlayHtml.match(re);
+        const m = html.match(re);
         if (m && m[1]) return m[1];
       }
-      // No match — dump context around the FIRST occurrence of "token" so
-      // operator can paste the real format and we add a pattern.
-      const idx = overlayHtml.toLowerCase().indexOf("token");
-      const ctx = idx >= 0 ? overlayHtml.slice(Math.max(0, idx - 60), idx + 160) : "<no 'token' substring>";
-      console.warn(`[ApiExec/jumpgate] token regex failed (len=${overlayHtml.length}). Context around "token":`, ctx);
-      throw new Error(`jumpgate: token not found in overlay (len=${overlayHtml.length}) — see console "Context around token" log`);
+      const idx = html.toLowerCase().indexOf("token");
+      const ctx = idx >= 0 ? html.slice(Math.max(0, idx - 60), idx + 160) : "<no 'token' substring>";
+      console.warn(`[ApiExec/jumpgate] token regex failed (len=${html.length}). Context around "token":`, ctx);
+      throw new Error(`jumpgate: token not found in overlay (len=${html.length})`);
     };
-    let token = await fetchOverlayToken();
-    console.info(`[ApiExec/jumpgate] overlay token len=${token.length} src=${sourceMoonId} tgt=${targetMoonId} ships=${JSON.stringify(ships)}`);
+    let cachedToken = await fetchOverlayToken();
+    console.info(`[ApiExec/jumpgate] overlay token len=${cachedToken.length} src=${sourceMoonId} tgt=${targetMoonId} ships=${JSON.stringify(ships)}`);
     const buildJgBody = (tk: string): URLSearchParams => {
       const b = new URLSearchParams();
       b.append("token", tk);
@@ -767,70 +770,43 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
       return b;
     };
-    let resp: { status?: boolean; success?: boolean; cooldown?: number; nextActionAt?: number; errors?: unknown; message?: string } = {};
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      const body = buildJgBody(token);
-      console.log(`[ApiExec/jumpgate] attempt=${attempt} POST cp=${sourceMoonId} body=${body.toString().replace(/token=[^&]+/, "token=***")}`);
-      const r = await fetchWithCpBypassBusy(
-        `/game/index.php?page=componentOnly&component=jumpgate&action=executeJump&asJson=1`,
-        {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-          body,
-        },
-        sourceMoonId,
-        { skipRestore: true },
-      );
-      const txt = await r.text();
-      try { resp = JSON.parse(txt); } catch {
-        throw new Error(`jumpgate non-JSON response (HTTP ${r.status}): ${txt.slice(0, 200)}`);
-      }
-      console.log(`[ApiExec/jumpgate] attempt=${attempt} resp status=${resp.status} success=${resp.success} message=${resp.message ?? "<none>"} errors=${JSON.stringify(resp.errors ?? null)} raw[0:300]=${txt.slice(0, 300)}`);
-      // v0.0.546 forensic — mirror full JG response to sidecar journal.
-      // Operator 2026-05-31 "JG 没有跳" → ghost ack suspected: ogame says
-      // success but JG didn't fire. Full response often has a discriminator
-      // (errors array, cooldown=0, message text) we need to see to fix.
-      try {
-        const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-        if (ctxWin.localStorage?.getItem("OGAMEX_FORENSIC") === "1") {
-          const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
-          void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
-            method: "POST", credentials: "omit",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              tag: "JG-RESP",
-              text: `attempt=${attempt} src=${sourceMoonId} → tgt=${targetMoonId} status=${resp.status} success=${resp.success} cooldown=${resp.cooldown ?? "<none>"} keys=[${Object.keys(resp).join(",")}] raw=${txt.slice(0, 1500)}`,
-            }),
-          }).catch(() => { /* */ });
-        }
-      } catch { /* */ }
-      // v0.0.546 — ghost-ack defense (operator 2026-05-31 "JG 没有跳"):
-      // ogame can return success=true while errors[] is populated. Don't
-      // trust success flag alone; require errors[] to be empty too.
-      // (We do NOT also require cooldown — that field's presence varies by
-      // skin/version; can't safely use as a discriminator without ground
-      // truth from journal forensic.)
-      const rawOk = resp.status === true || resp.success === true;
-      const errsArr = Array.isArray(resp.errors) ? resp.errors : [];
-      const ok = rawOk && errsArr.length === 0;
-      if (ok) break;
-      if (rawOk && errsArr.length > 0) {
-        throw new Error(`jumpgate ghost-ack: success flag set but errors=${JSON.stringify(errsArr).slice(0, 200)}`);
-      }
-      const errMsg = String(resp.message ?? JSON.stringify(resp.errors ?? "") ?? txt.slice(0, 200));
-      if (attempt === 1 && TOKEN_INVALID_RE.test(errMsg)) {
-        token = await fetchOverlayToken();
-        continue;
-      }
-      if (TRANSIENT_RACE_RE.test(errMsg) && attempt < 4) {
-        const backoffMs = 200 * attempt;
-        console.warn(`[ApiExec/jumpgate] attempt=${attempt} transient race — backoff ${backoffMs}ms + token refresh`);
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
-        token = await fetchOverlayToken();
-        continue;
-      }
+    // executeJump via cpPostWithRetry. successCheck folds the v0.0.546
+    // ghost-ack defense: status/success flag set BUT errors[] populated →
+    // treat as non-success → cpPostWithRetry's retry path kicks in (since
+    // ogame's "100001 previously unknown error" matches TRANSIENT_RACE_RE
+    // in fleet_api.ts). refreshTokenOnInvalid re-fetches overlay on
+    // TOKEN_INVALID_RE.
+    const jgRes = await cpPostWithRetry({
+      endpoint: `/game/index.php?page=componentOnly&component=jumpgate&action=executeJump&asJson=1`,
+      sourcePlanetId: sourceMoonId,
+      token: this.tokenManager,
+      action: "jg:executeJump",
+      method: "POST",
+      tokenProvider: async () => cachedToken,
+      refreshTokenOnInvalid: async () => {
+        cachedToken = await fetchOverlayToken();
+        return cachedToken;
+      },
+      successCheck: (json) => {
+        const rawOk = json["status"] === true || json["success"] === true;
+        const errs = Array.isArray(json["errors"]) ? (json["errors"] as unknown[]) : [];
+        return rawOk && errs.length === 0;
+      },
+      buildBody: buildJgBody,
+      skipRestore: true,
+    });
+    // Post-retry distillation: cpPostWithRetry's successCheck returning false
+    // (after exhausting transient retries) means non-transient failure;
+    // res.json is returned for caller to handle.
+    const resp = (jgRes.json ?? {}) as { status?: boolean; success?: boolean; cooldown?: number; nextActionAt?: number; errors?: unknown; message?: string };
+    const rawOk = resp.status === true || resp.success === true;
+    const errsArr = Array.isArray(resp.errors) ? resp.errors : [];
+    if (!rawOk) {
+      const errMsg = String(resp.message ?? JSON.stringify(resp.errors ?? "") ?? jgRes.raw.slice(0, 200));
       throw new Error(`jumpgate rejected: ${errMsg.slice(0, 200)}`);
+    }
+    if (errsArr.length > 0) {
+      throw new Error(`jumpgate ghost-ack: success flag set but errors=${JSON.stringify(errsArr).slice(0, 200)}`);
     }
     console.info(`[ApiExec/jumpgate] OK src=${sourceMoonId} → tgt=${targetMoonId} cooldown=${resp.cooldown ?? resp.nextActionAt ?? "?"}s`);
     // v0.0.546 — operator 2026-05-31 "跳跃以后要立刻刷新舰队数量". Old code

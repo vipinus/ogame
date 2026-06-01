@@ -66,7 +66,7 @@ The first-time architecture sweep already moved most dispatchers to
 `execSimpleUpgrade` → `cpPostWithRetry`). The remaining direct callers
 are listed below and slated for migration.
 
-## 4. Current Audit (2026-06-01)
+## 4. Current Audit (2026-06-01, updated after Phase 2)
 
 | File:Line | Path | Standard? | Notes |
 |---|---|---|---|
@@ -74,11 +74,11 @@ are listed below and slated for migration.
 | `fleet_api.ts:267` | inside `sendFleet` | ✅ wrapper | this IS the standard |
 | `api_executor.ts:545` | expedition legacy 3-stage POST helper | ❌ BYPASS | handrolled retry, multi-stage token chain |
 | `api_executor.ts:635` | expedition legacy sendFleet final | ❌ BYPASS | same context as 545 |
-| `api_executor.ts:725` | jumpgate overlay token GET | ❌ BYPASS | could use cpPostWithRetry GET mode |
-| `api_executor.ts:774` | jumpgate executeJump POST | ❌ BYPASS | handrolled 4-attempt retry duplicates cpPostWithRetry |
-| `api_executor.ts:1018` | discover/galaxy fetch | ❌ BYPASS | galaxy token chain (separate from TokenManager — legacy) |
-| `api_executor.ts:1201` | discover POST | ❌ BYPASS | same |
-| `api_executor.ts:1280/1326` | discover token-refresh retry | ❌ BYPASS | same |
+| ~~`api_executor.ts:725`~~ | ~~jumpgate overlay token GET~~ | ✅ MIGRATED v0.0.558 | now `cpPostWithRetry({method:"GET"})` |
+| ~~`api_executor.ts:774`~~ | ~~jumpgate executeJump POST~~ | ✅ MIGRATED v0.0.558 | now `cpPostWithRetry({tokenProvider,refreshTokenOnInvalid,successCheck})` |
+| `api_executor.ts:994` | discover/galaxy fetch | ❌ BYPASS | galaxy token chain (separate from TokenManager — legacy) |
+| `api_executor.ts:1177` | discover POST | ❌ BYPASS | same |
+| `api_executor.ts:1256/1302` | discover token-refresh retry | ❌ BYPASS | same |
 | `boot.ts:854/866/884` | sniffer init triple-fetch | ❌ BYPASS | boot-time, low frequency, cp=any planet |
 | `boot.ts:1028/1597` | sandbox CASE B overlay re-fetch | ❌ BYPASS | rare |
 | `boot.ts:1856` | fetchResources periodic poll | ⚠️ safe | cp=operatorCp, no shift |
@@ -150,12 +150,18 @@ gets its own commit.
 
 ### Migration phases (proposed)
 
-- **Phase 1**: extend `cpPostWithRetry` with the 3 hooks above + tests
-- **Phase 2**: migrate jumpgate (725/774) — simplest, validates extensions
-- **Phase 3**: migrate discover/galaxy chain (1018/1201/1280/1326) — uses
-  galaxy token cache
-- **Phase 4**: migrate expedition 3-stage (545/635) — most complex token
-  chain, validate token-flow semantics carefully
+- **Phase 1 DONE (v0.0.557)**: extended `cpPostWithRetry` with the 3 hooks
+  (`tokenProvider`, `successCheck`, `refreshTokenOnInvalid`).
+- **Phase 2 DONE (v0.0.558)**: migrated jumpgate. Overlay GET → `cpPostWithRetry({
+  method:"GET", skipRestore:true})`; executeJump POST → `cpPostWithRetry({
+  tokenProvider, refreshTokenOnInvalid:fetchOverlayToken, successCheck:strict
+  ghost-ack defense, buildBody, skipRestore:true})`. Inline 4-attempt loop +
+  local TRANSIENT_RACE_RE / TOKEN_INVALID_RE removed (now centralized).
+- **Phase 3 next**: migrate discover/galaxy chain (994/1177/1256/1302) — uses
+  galaxy token cache (`__ogamexLastGalaxyToken`). `tokenProvider` reads the
+  cache, `refreshTokenOnInvalid` re-fetches galaxy chunk.
+- **Phase 4 next**: migrate expedition 3-stage (545/635) — most complex token
+  chain, validate token-flow semantics carefully.
 
 ## 6. Enforcement
 
