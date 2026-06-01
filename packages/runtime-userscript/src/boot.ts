@@ -14,7 +14,7 @@ import {
 import { extractIncomingEvents } from "./probes/extractors/events.js";
 import { extractPlanets } from "./probes/extractors/planets.js";
 import { extractTechLevels } from "./probes/extractors/buildings.js";
-import { TECH_TREE, TECH_NAME_BY_ID, TECH_ID_BY_NAME, idKind } from "@ogamex/shared";
+import { TECH_TREE, TECH_NAME_BY_ID, TECH_ID_BY_NAME, idKind, LIFEFORM_TECH } from "@ogamex/shared";
 import { extractFleetMovements } from "./probes/extractors/fleet.js";
 import { installEventBoxHook } from "./probes/eventbox_hook.js";
 import { extractToken, type OgameWindow } from "./probes/extractors/token.js";
@@ -1166,7 +1166,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.602";
+  const USERSCRIPT_VERSION = "0.0.603";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1998,7 +1998,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // tab drift is acceptable; planner re-derives from server.resources
   // when needed.
 
-  const REFRESH_PAGES = ["research", "supplies", "facilities", "shipyard", "fleetdispatch", "lfbuildings"];
+  const REFRESH_PAGES = ["research", "supplies", "facilities", "shipyard", "fleetdispatch", "lfbuildings", "lfresearch"];
   let refreshIdx = 0;
   // Per-component chunk usability — verified 2026-05-25 via live probe:
   //   fleetdispatch chunk returns 131KB with full inline data (var shipsOnPlanet)
@@ -2044,12 +2044,20 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const parser = new (env.win as unknown as { DOMParser: typeof DOMParser }).DOMParser();
       const parsedDoc = parser.parseFromString(html, "text/html");
 
-      // 1) Tech levels (research/supplies/facilities → regular; lfbuildings → lifeform)
+      // 1) Tech levels (research/supplies/facilities → regular; lfbuildings → lifeform;
+      //    lfresearch → lifeform_research per planet, v0.0.603)
       const techMap = (await import("./probes/extractors/buildings.js")).extractTechLevels(parsedDoc);
       if (Object.keys(techMap).length > 0) {
         const buildings: Record<string, number> = {};
         const research: Record<string, number> = {};
         const lifeform_buildings: Record<string, number> = {};
+        const lifeform_research: Record<string, number> = {};
+        // Pre-build set of all lifeform research names across species for O(1) lookup.
+        const lfResearchNames = new Set<string>();
+        for (const sp of ["humans", "rocktal", "mechas", "kaelesh"] as const) {
+          const cat = (LIFEFORM_TECH as Record<string, { research?: Record<string, unknown> }>)[sp];
+          for (const k of Object.keys(cat?.research ?? {})) lfResearchNames.add(k);
+        }
         // Detect species from lifeform tech ID prefix:
         //   111xx = humans  121xx = rocktal  131xx = mechas  141xx = kaelesh
         let detectedSpecies: string | null = null;
@@ -2067,6 +2075,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             }
             continue;
           }
+          // v0.0.603 — lifeform research detection: catalog name match.
+          if (lfResearchNames.has(id)) { lifeform_research[id] = lvl; continue; }
           const entry = (TECH_TREE as Record<string, { kind: string }>)[id];
           if (!entry) continue;
           if (entry.kind === "building") buildings[id] = lvl;
@@ -2075,7 +2085,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const cur = store.state;
         const patch: Partial<typeof cur> = {};
         const targetPlanet = planetId ? cur.planets[planetId] : undefined;
-        if (targetPlanet && planetId && (Object.keys(buildings).length > 0 || Object.keys(lifeform_buildings).length > 0)) {
+        if (targetPlanet && planetId && (Object.keys(buildings).length > 0 || Object.keys(lifeform_buildings).length > 0 || Object.keys(lifeform_research).length > 0)) {
           const existingLf = (targetPlanet as { lifeform?: { species?: string } | null }).lifeform ?? null;
           const lifeformPatch = detectedSpecies !== null && (existingLf === null || existingLf.species !== detectedSpecies)
             ? { lifeform: { ...(existingLf ?? {}), species: detectedSpecies } }
@@ -2087,6 +2097,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               buildings: { ...(targetPlanet.buildings ?? {}), ...buildings },
               ...(Object.keys(lifeform_buildings).length > 0 ? {
                 lifeform_buildings: { ...((targetPlanet as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {}), ...lifeform_buildings }
+              } : {}),
+              ...(Object.keys(lifeform_research).length > 0 ? {
+                lifeform_research: { ...((targetPlanet as { lifeform_research?: Record<string, number> }).lifeform_research ?? {}), ...lifeform_research }
               } : {}),
               ...lifeformPatch,
             } as typeof targetPlanet,

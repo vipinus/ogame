@@ -1819,13 +1819,16 @@ function openGoalsSettings(
         for (const r of lrTechRadios()) r.addEventListener("change", refreshLrDesc);
       };
       const speciesLabelMapLr: Record<string, string> = { humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什" };
+      // v0.0.603 — per-planet current level display. lifeform_research is
+      // per-planet (operator 2026-06-01 "生命研究每个星球是不同的"), read
+      // from store.planets[pid].lifeform_research[tech].
       const refreshLrDesc = (): void => {
         if (!lrDescEl) return;
         const speciesRadio = lrSpeciesRadios().find((r) => r.checked);
         const planetRadio = lrPlanetRadios().find((r) => r.checked);
         const techRadio = lrTechRadios().find((r) => r.checked);
         const lvl = parseInt(lrLevelInput?.value ?? "", 10);
-        if (!speciesRadio || !planetRadio || !techRadio || !lvl) {
+        if (!speciesRadio || !planetRadio || !techRadio) {
           lrDescEl.textContent = "（选物种 + 星球 + 研究 + 级别后显示）";
           lrDescEl.style.color = "#5a7090";
           return;
@@ -1833,7 +1836,14 @@ function openGoalsSettings(
         const tLabel = currentLrLabels.get(techRadio.value) ?? techRadio.value;
         const sn = speciesLabelMapLr[speciesRadio.value] ?? speciesRadio.value;
         const coord = planetCoordById.get(planetRadio.value) ?? "?";
-        lrDescEl.textContent = `目标在 ${coord} 研究 ${tLabel} ${lvl} 级 (${sn})`;
+        const lfResearch = (storeRef?.state?.planets?.[planetRadio.value] as { lifeform_research?: Record<string, number> } | undefined)?.lifeform_research ?? {};
+        const curLvl = lfResearch[techRadio.value] ?? 0;
+        const curPart = `当前 ${coord} ${tLabel} L${curLvl}`;
+        if (!lvl) {
+          lrDescEl.textContent = `${curPart}（输入目标级别即可创建, ${sn}）`;
+        } else {
+          lrDescEl.textContent = `${curPart} → 目标 L${lvl} (${sn})`;
+        }
         lrDescEl.style.color = "#7cfc00";
       };
       const initLrSpecies = lrSpeciesRadios().find((r) => r.checked)?.value ?? "kaelesh";
