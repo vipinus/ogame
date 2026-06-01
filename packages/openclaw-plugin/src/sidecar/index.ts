@@ -1261,17 +1261,17 @@ export async function startSidecar(
               const failedType = row?.goal.type;
               const isFleetPost = failedType === "expedition" || failedType === "colonize"
                 || failedType === "deploy" || failedType === "transport" || failedType === "jumpgate";
-              if (isFleetPost) {
-                priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "operator_retry"]);
-              } else {
-                // v0.0.576 — operator 2026-06-01 "所有都改成15秒": shorten
-                // failure backoff from 60s → 15s for non-fleet-POST types
-                // (build/research/build_ships/lifeform_building/species_discovery).
-                priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "backoff_15s"]);
-                setTimeout(() => {
-                  priorityMergerRef?.clearAwaiting(goalId, "backoff_15s");
-                }, 15_000);
-              }
+              // v0.0.577 — operator 2026-06-01 "不要手动 resume": all goal
+               // types auto-backoff (no more operator_retry gate for fleet POST).
+               // Fleet POST failures historically waited for explicit operator
+               // pause+resume to avoid race-prone re-fire. With dispatch dedup
+               // (wire harvest 10min + sendFleet payload 60s + sidecar firedDebrisCheckFor)
+               // + stuck-recovery 60s, race risk is acceptable for auto-recovery.
+              priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "backoff_60s"]);
+              setTimeout(() => {
+                priorityMergerRef?.clearAwaiting(goalId, "backoff_60s");
+              }, 60_000);
+              void isFleetPost; // kept for log/diag; treatment unified now
               // v0.0.478: also clear dispatch stamp — directive completed
               // (with failure), so stuck-recovery's "in-flight" gate releases.
               priorityMergerRef?.clearDispatched(goalId);
