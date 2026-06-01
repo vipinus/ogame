@@ -691,10 +691,32 @@ function openGoalsSettings(
       }
       return 0;
     });
-    const typeOpts = GOAL_PRESETS.map((g) => `<option value="${escapeHtml(g.value)}">${escapeHtml(g.label)}</option>`).join("");
+    // v0.0.582 — operator 2026-06-01: tab mode. 6 tabs:
+    //   1. 星球建筑 — build (planet), build_universal, terraformer_to
+    //   2. 月球建筑 — build (moon-only buildings: jumpgate, sensorPhalanx, lunarBase, moonShield)
+    //   3. 生命形态建筑 — lifeform_building, pick_lifeform, lifeform_level_to
+    //   4. 普通研究 — research
+    //   5. 生命形态研究 — lifeform_research
+    //   6. 舰队任务 — colonize, expedition, deploy, transport, build_ships, build_defense
+    // Tab switch filters goal type select options + dims planet/moon rows
+    // that don't match the tab's body kind.
+    type TabId = "planet-build" | "moon-build" | "lf-build" | "research" | "lf-research" | "fleet";
+    const TAB_DEFS: Array<{ id: TabId; label: string; goalTypes: string[]; bodyFilter: "planet" | "moon" | "any" }> = [
+      { id: "planet-build", label: "🌍 星球建筑", goalTypes: ["build", "build_universal", "terraformer_to"], bodyFilter: "planet" },
+      { id: "moon-build",   label: "🌙 月球建筑", goalTypes: ["build"],                                       bodyFilter: "moon"   },
+      { id: "lf-build",     label: "🧬 生命建筑", goalTypes: ["lifeform_building", "pick_lifeform", "lifeform_level_to"], bodyFilter: "planet" },
+      { id: "research",     label: "🔬 普通研究", goalTypes: ["research"],                                    bodyFilter: "planet" },
+      { id: "lf-research",  label: "⚗️ 生命研究", goalTypes: ["lifeform_research"],                            bodyFilter: "planet" },
+      { id: "fleet",        label: "🚀 舰队任务", goalTypes: ["colonize", "expedition", "deploy", "transport", "build_ships", "build_defense"], bodyFilter: "any" },
+    ];
+    const presetByValue = new Map(GOAL_PRESETS.map((g) => [g.value, g] as const));
+    const renderTabBar = (): string => TAB_DEFS.map((t) =>
+      `<button data-tab-btn="${t.id}" style="background:#0a1018; color:#7080a0; border:1px solid #2a3a52; border-bottom:none; padding:6px 10px; font-size:11px; cursor:pointer; border-top-left-radius:4px; border-top-right-radius:4px;">${escapeHtml(t.label)}</button>`,
+    ).join("");
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">普通任务 — 创建 build / research / colonize / 等任务. 已有 active goals 在主面板 Goals section 显示</div>
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">普通任务 — 选 tab 创建任务. 已有 active goals 在主面板 Goals section 显示</div>
+      <div data-tab-bar style="display:flex; gap:2px; margin-bottom:0;">${renderTabBar()}</div>
       <!-- Operator 2026-05-29: 自然语言入口 — Gemini 解析 → 填表单 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
         <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">自然语言描述 <span style="color:#7080a0; font-size:10px;">(可选 — 让 AI 解析填表单)</span></div>
@@ -704,10 +726,10 @@ function openGoalsSettings(
           <button data-goal-nl-parse="1" style="background:#3a3a5a; color:#fff; border:1px solid #6a6a8a; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">🤖 解析填表单</button>
         </div>
       </div>
-      <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px;">
+      <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">任务类型</span>
-          <select data-goal-type style="${inputStyle} flex:1;">${typeOpts}</select>
+          <select data-goal-type style="${inputStyle} flex:1;"></select>
         </div>
         <div style="padding:6px 0;">
           <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选)</div>
@@ -731,17 +753,17 @@ function openGoalsSettings(
             ${sortedCoordKeys.map((k) => {
               const { planet, moon } = groupedByCoord.get(k)!;
               const cellPlanet = planet
-                ? `<label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                ? `<label class="tab-cell-planet" style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                     <input data-goal-planet type="radio" name="goal-planet-radio" value="${escapeHtml(planet.id)}" style="vertical-align:middle;"/>
                     <span>🌍 ${escapeHtml(planet.name ?? "殖民")}</span>
                   </label>`
-                : `<span style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
+                : `<span class="tab-cell-planet" style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
               const cellMoon = moon
-                ? `<label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                ? `<label class="tab-cell-moon" style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                     <input data-goal-planet type="radio" name="goal-planet-radio" value="${escapeHtml(moon.id)}" style="vertical-align:middle;"/>
                     <span>🌙 ${escapeHtml(moon.name ?? "月球")}</span>
                   </label>`
-                : `<span style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
+                : `<span class="tab-cell-moon" style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
               return `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
                 <span style="width:72px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
                 ${cellPlanet}
@@ -772,13 +794,72 @@ function openGoalsSettings(
     const targetHint = m.querySelector<HTMLElement>("[data-goal-target-hint]");
     const refreshPreset = (): void => {
       const t = typeSel?.value ?? "";
-      const preset = GOAL_PRESETS.find((p) => p.value === t);
+      const preset = presetByValue.get(t);
       if (!preset || !targetTa || !targetHint) return;
       targetTa.value = preset.targetPlaceholder;
       targetHint.textContent = preset.planetReq ? "需要选 planet — 该类型必须指定 source" : "可不选 planet — planner 会默认或读 target 内字段";
     };
     typeSel?.addEventListener("change", refreshPreset);
-    refreshPreset();
+
+    // v0.0.582 — tab switching. Activate "planet-build" by default.
+    const applyTab = (tabId: TabId): void => {
+      const tab = TAB_DEFS.find((t) => t.id === tabId);
+      if (!tab || !typeSel) return;
+      // Restyle tab buttons
+      for (const btn of m.querySelectorAll<HTMLButtonElement>("[data-tab-btn]")) {
+        const active = btn.dataset["tabBtn"] === tabId;
+        btn.style.background = active ? "#1a2438" : "#0a1018";
+        btn.style.color = active ? "#e0e8f0" : "#7080a0";
+        btn.style.borderColor = active ? "#3a5a82" : "#2a3a52";
+        btn.style.fontWeight = active ? "600" : "normal";
+      }
+      // Refilter goal type options
+      typeSel.innerHTML = tab.goalTypes
+        .map((v) => presetByValue.get(v))
+        .filter((p): p is typeof GOAL_PRESETS[number] => !!p)
+        .map((p) => `<option value="${escapeHtml(p.value)}">${escapeHtml(p.label)}</option>`)
+        .join("");
+      refreshPreset();
+      // Filter planet rows: dim moon col on "planet-*"/"research"/"lf-*",
+      // dim planet col on "moon-build". "fleet" tab keeps both visible.
+      const showPlanet = tab.bodyFilter === "planet" || tab.bodyFilter === "any";
+      const showMoon = tab.bodyFilter === "moon" || tab.bodyFilter === "any";
+      for (const lbl of m.querySelectorAll<HTMLElement>(".tab-cell-planet")) {
+        lbl.style.opacity = showPlanet ? "1" : "0.25";
+        const inp = lbl.querySelector<HTMLInputElement>('input[type="radio"]');
+        if (inp) inp.disabled = !showPlanet;
+      }
+      for (const lbl of m.querySelectorAll<HTMLElement>(".tab-cell-moon")) {
+        lbl.style.opacity = showMoon ? "1" : "0.25";
+        const inp = lbl.querySelector<HTMLInputElement>('input[type="radio"]');
+        if (inp) inp.disabled = !showMoon;
+      }
+      // "All planets"/"All moons" header row: similarly filter.
+      const allPlanetsRow = m.querySelector<HTMLInputElement>('input[value="all-planets"]');
+      const allMoonsRow = m.querySelector<HTMLInputElement>('input[value="all-moons"]');
+      if (allPlanetsRow) {
+        allPlanetsRow.disabled = !showPlanet;
+        (allPlanetsRow.parentElement as HTMLElement).style.opacity = showPlanet ? "1" : "0.25";
+      }
+      if (allMoonsRow) {
+        allMoonsRow.disabled = !showMoon;
+        (allMoonsRow.parentElement as HTMLElement).style.opacity = showMoon ? "1" : "0.25";
+      }
+      // If active radio is now disabled, pick first enabled.
+      const checkedRadio = m.querySelector<HTMLInputElement>('input[name="goal-planet-radio"]:checked');
+      if (checkedRadio?.disabled) {
+        const firstEnabled = Array.from(m.querySelectorAll<HTMLInputElement>('input[name="goal-planet-radio"]'))
+          .find((r) => !r.disabled);
+        if (firstEnabled) firstEnabled.checked = true;
+      }
+    };
+    for (const btn of m.querySelectorAll<HTMLButtonElement>("[data-tab-btn]")) {
+      btn.addEventListener("click", () => {
+        const tabId = btn.dataset["tabBtn"] as TabId | undefined;
+        if (tabId) applyTab(tabId);
+      });
+    }
+    applyTab("planet-build");
     // Operator 2026-05-29: planet radio change → auto-fill the coord prefix
     // into the NL textarea so the operator can keep typing the rest of the
     // instruction. Replaces an existing "在 G:S:P " head; otherwise prepends.
