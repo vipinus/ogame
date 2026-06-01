@@ -78,29 +78,52 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       result,
     };
     client.send(msg);
-    // v0.0.548 — dual-path ack via HTTP. WS can be in a zombie state
-    // (ws.send doesn't throw even when TCP is dead). Acks lost in that
-    // window leave the goal stuck "active" in sidecar; stuck-recovery
-    // re-dispatches in a loop until operator cancels. HTTP path is
-    // independent of WS connection state. Sidecar's directiveToGoal
-    // map provides natural idempotency — processing the same ack twice
-    // is a no-op after the first removes the directive_id.
+    // v0.0.548 — dual-path ack via HTTP. WS can be in a zombie state.
+    // v0.0.579 — operator 2026-06-01 "不要手动 resume": single POST sometimes
+    // fails (cf flakiness, sidecar restart window, network blip). Retry × 3
+    // with exponential backoff so ack survives single-point failure. Sidecar's
+    // directiveToGoal map is idempotent — re-processing same directive_id
+    // is a no-op after the first ack lands. Failure after 3 retries falls
+    // through to stuck-recovery 60s on sidecar side (still owner-free).
     try {
       const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
       const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
-      // v0.0.549 — HttpServer.handlePush requires Authorization: Bearer <token>.
-      // v0.0.555 — match main.ts readConfig fallback ("smoke-test-token") so
-      // operators with token only in GM_getValue (not mirrored to localStorage)
-      // still authenticate. Console push:1 401 was caused by this gap.
       const tok = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
-      void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/push`, {
-        method: "POST", credentials: "omit",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${tok}`,
-        },
-        body: JSON.stringify(msg),
-      }).catch(() => { /* */ });
+      const url = `${bridgeBase.replace(/\/$/, "")}/ogamex/v1/push`;
+      const body = JSON.stringify(msg);
+      void (async (): Promise<void> => {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const ac = new AbortController();
+          const timer = setTimeout(() => ac.abort(), 5_000);
+          try {
+            const res = await fetch(url, {
+              method: "POST", credentials: "omit",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${tok}`,
+              },
+              body,
+              signal: ac.signal,
+            });
+            if (res.ok) return;
+            // 4xx (e.g., 401) → no point retrying same payload
+            if (res.status >= 400 && res.status < 500) {
+              console.warn(`[goal_runner/ack] POST ${url} HTTP ${res.status} — not retrying client error`);
+              return;
+            }
+            console.warn(`[goal_runner/ack] attempt=${attempt} HTTP ${res.status} — backoff before retry`);
+          } catch (e) {
+            const errName = (e as { name?: string }).name;
+            console.warn(`[goal_runner/ack] attempt=${attempt} ${errName === "AbortError" ? "TIMEOUT" : "ERROR"}: ${(e as Error).message ?? e}`);
+          } finally {
+            clearTimeout(timer);
+          }
+          if (attempt < 3) {
+            await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+          }
+        }
+        console.warn(`[goal_runner/ack] gave up after 3 attempts for ${directiveId} — sidecar stuck-recovery 60s will re-dispatch`);
+      })();
     } catch { /* */ }
   }
 
