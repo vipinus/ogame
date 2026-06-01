@@ -1920,6 +1920,36 @@ function openGoalsSettings(
           span.textContent = `${span.textContent} [${tag}]`;
         }
       }
+      // v0.0.608 — operator 2026-06-01 "不要猜, 不懂要去看官方文档".
+      // Auto-fetch lfresearch page on planet pick if store is empty for
+      // that planet. The page's HTML carries the REAL data-technology IDs
+      // and levels — no more catalog guessing. Uses cpPostWithRetry (the
+      // standard cp= entry) so cp shift is properly restored.
+      const fetchLfResearchForPlanet = async (pid: string): Promise<void> => {
+        if (!lrResearchList) return;
+        const existing = (storeRef?.state?.planets?.[pid] as { lifeform_research?: Record<string, number> } | undefined)?.lifeform_research;
+        if (existing && Object.keys(existing).length > 0) return; // already loaded
+        lrResearchList.innerHTML = `<span style="color:#7080a0; font-size:11px;">加载该星球 lfresearch 真实数据…</span>`;
+        try {
+          // Trigger boot.ts page-aware extraction via the exposed force
+          // refresh hook. boot.ts will fetch component=lfresearch, parse
+          // technology entries, bucket all into lifeform_research, and
+          // merge into store.planets[pid]. Within ~1.5s renderLrResearch
+          // sees live data.
+          const refreshFn = (window as Window & { __ogamexRefreshOnePage?: (forcePage?: string) => Promise<void> }).__ogamexRefreshOnePage;
+          if (typeof refreshFn === "function") await refreshFn("lfresearch");
+          // refreshOnePage targets the currently-viewed planet's lfresearch
+          // page (cp=meta-planet-id), so this only fills data for the
+          // operator's CURRENT planet. To collect data for other planets
+          // operator must first navigate there in ogame UI (sniffer events
+          // pick it up automatically thereafter).
+        } catch (e) {
+          console.warn("[lf-research] auto-fetch failed:", e);
+        }
+        // Re-render whether or not fetch produced data.
+        renderLrResearch(livePlanetSpecies(pid) ?? "kaelesh");
+        refreshLrDesc();
+      };
       for (const r of lrPlanetRadios()) r.addEventListener("change", () => {
         // v0.0.605 — research list is per-planet (live lifeform_research keys),
         // so always re-render when planet changes. Also auto-sync species
@@ -1931,6 +1961,8 @@ function openGoalsSettings(
         }
         renderLrResearch(sp ?? "kaelesh");
         refreshLrDesc();
+        // v0.0.608 fire-and-forget auto-fetch.
+        void fetchLfResearchForPlanet(r.value);
       });
       lrLevelInput?.addEventListener("input", refreshLrDesc);
       refreshLrDesc();
