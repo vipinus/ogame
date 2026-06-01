@@ -31,14 +31,14 @@ cd "$(dirname "$0")/.."
 
 # --- Bucket 1: INFRASTRUCTURE (permanent allow, doc'd in §4 table) -----
 ALLOW_LIST_INFRA=$(cat <<'EOF'
-src/boot.ts:877
-src/boot.ts:889
-src/boot.ts:907
-src/boot.ts:1051
-src/boot.ts:1620
-src/boot.ts:1879
-src/boot.ts:2026
-src/boot.ts:2771
+src/boot.ts:899
+src/boot.ts:911
+src/boot.ts:929
+src/boot.ts:1073
+src/boot.ts:1642
+src/boot.ts:1901
+src/boot.ts:2048
+src/boot.ts:2795
 EOF
 )
 

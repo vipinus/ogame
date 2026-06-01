@@ -430,6 +430,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // v0.0.597 — also poll for lifeform-change signal from sniffer (page-world
   // script writes dataset.ogamexLfChangeTs on lfsettings/pickLifeform URLs).
   let lastSeenLfChangeTs = 0;
+  let lastSeenLfResearchChangeTs = 0;
   setInterval(async () => {
     try {
       const { cpInFlightCount } = await import("./api/safe_fetch.js");
@@ -444,6 +445,20 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (typeof pollFn === "function") {
           console.info(`[OgameX/species] lifeform change detected by sniffer @ ts=${lfTs} — firing pollEmpire(force)`);
           void pollFn({ force: true }).catch((e) => console.warn("[OgameX/species] post-lf pollEmpire failed", e));
+        }
+      }
+      // v0.0.606 — operator 2026-06-01 "每次从星球添加和重置科技的时候更新
+      // 维护列表". Sniffer detected an lfresearch upgrade/reset → force
+      // refreshOnePage("lfresearch") so the planet's research catalog stays
+      // current without waiting for the periodic cycle (~70s).
+      const lfrTsRaw = env.doc.documentElement.dataset["ogamexLfResearchChangeTs"];
+      const lfrTs = lfrTsRaw ? parseInt(lfrTsRaw, 10) : 0;
+      if (lfrTs > lastSeenLfResearchChangeTs) {
+        lastSeenLfResearchChangeTs = lfrTs;
+        const refreshFn = (env.win as Window & { __ogamexRefreshOnePage?: (forcePage?: string) => Promise<void> }).__ogamexRefreshOnePage;
+        if (typeof refreshFn === "function") {
+          console.info(`[OgameX/lfresearch] lfresearch change detected by sniffer @ ts=${lfrTs} — forcing refreshOnePage("lfresearch")`);
+          void refreshFn("lfresearch").catch((e) => console.warn("[OgameX/lfresearch] force refresh failed", e));
         }
       }
     } catch { /* */ }
@@ -551,6 +566,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           // periodic ~5s empire poll).
           if (/lfsettings|pickLifeform|component=lfsettings/i.test(u)) {
             document.documentElement.dataset.ogamexLfChangeTs = String(Date.now());
+          }
+          // v0.0.606 — operator 2026-06-01 "每次从星球添加和重置科技的时候
+          // 更新维护列表". Detect lfresearch upgrade/reset on any planet —
+          // force the sandbox-side mirror tick to immediately refresh the
+          // lfresearch page so the per-planet research catalog stays current.
+          if (/component=lfresearch|action=upgrade.*lfresearch|action=resetTree/i.test(u)) {
+            document.documentElement.dataset.ogamexLfResearchChangeTs = String(Date.now());
           }
         };
         // Expose a one-liner dump helper for operator. Reads OGAMEX_API_CAPTURES
@@ -1166,7 +1188,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.605";
+  const USERSCRIPT_VERSION = "0.0.606";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2007,9 +2029,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Only fleetdispatch is SPA-routable as componentOnly chunk; the rest must
   // go through page=ingame full-page to render building/research levels.
   const CHUNK_SUPPORTED = new Set<string>(["fleetdispatch"]);
-  async function refreshOnePage(): Promise<void> {
-    const page = REFRESH_PAGES[refreshIdx % REFRESH_PAGES.length]!;
-    refreshIdx += 1;
+  async function refreshOnePage(forcePage?: string): Promise<void> {
+    const page = forcePage ?? REFRESH_PAGES[refreshIdx % REFRESH_PAGES.length]!;
+    if (!forcePage) refreshIdx += 1;
     try {
       const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
       const useChunk = CHUNK_SUPPORTED.has(page);
@@ -2702,6 +2724,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   setTimeout(pollEmpire, 12_000);
   // Expose globally so ApiExec can request a refresh on demand.
   (env.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire = pollEmpire;
+  // v0.0.606 — expose forced refreshOnePage for event-driven sniffer signals.
+  (env.win as Window & { __ogamexRefreshOnePage?: (forcePage?: string) => Promise<void> }).__ogamexRefreshOnePage = refreshOnePage;
   // Diagnostic helper — operator calls __ogamexDebugGalaxy(g,s) in DevTools.
   // CRITICAL: Tampermonkey sandboxes env.win. DevTools console sees PAGE
   // window (unsafeWindow). Must dual-expose for console access.
