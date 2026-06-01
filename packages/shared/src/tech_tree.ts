@@ -132,6 +132,17 @@ const buildings: Record<string, TechEntry> = {
     requires: { lunarBase: 1, hyperspaceDrive: 7 },
     cost_at: (l) => res(pow(2_000_000, 2)(l), pow(4_000_000, 2)(l), pow(2_000_000, 2)(l)),
   },
+  // operator 2026-06-01 "要支持 terraformer". ogame v12 standard:
+  //   - Prereqs: Nanite Factory L1, Energy Technology L12
+  //   - Base cost L1: 0 m / 50000 c / 100000 d (+ 1000 energy, not modeled)
+  //   - Scaling: × 2 per level
+  // Planet-only (id 33 in tech_ids; not in MOON_* allow/only sets).
+  terraformer: {
+    id: "terraformer",
+    kind: "building",
+    requires: { naniteFactory: 1, energyTech: 12 },
+    cost_at: (l) => res(0, pow(50_000, 2)(l), pow(100_000, 2)(l)),
+  },
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
