@@ -1400,11 +1400,92 @@ function openGoalsSettings(
         }
         lfDescEl.style.color = "#7cfc00";
       };
+      // v0.0.594 — operator 2026-06-01 "每颗星球的种族不同, 选 species 后
+      // 只有对应的星球可选, 其他灰色". Read each planet's lifeform.species
+      // from store; planets with mismatched (or null) species get dimmed
+      // and disabled when a species is selected.
+      const speciesLabelMap: Record<string, string> = {
+        humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什",
+      };
+      // v0.0.595 — operator 2026-06-01 "重新选择种族的时候更新你的数据":
+      // read species LIVE from store every refresh (no snapshot). store is
+      // live reference — boot.ts sniffer auto-updates lifeform.species when
+      // ogame UI reflects a change.
+      const livePlanetSpecies = (pid: string): string | null => {
+        const lf = (storeRef?.state?.planets?.[pid] as { lifeform?: { species?: string } | null } | undefined)?.lifeform;
+        return lf?.species ?? null;
+      };
+      const refreshSpeciesTags = (): void => {
+        for (const radio of lfPlanetRadios()) {
+          const pid = radio.value;
+          if (pid === "all-planets" || pid === "idle-planets") continue;
+          const sp = livePlanetSpecies(pid);
+          const tag = sp ? speciesLabelMap[sp] ?? sp : "未设置";
+          const span = radio.parentElement?.querySelector("span");
+          if (!span) continue;
+          // Strip existing tag (if any) then re-append fresh.
+          const base = (span.textContent ?? "").replace(/\s*\[(人类|岩族|机械族|凯莱什|未设置)\]\s*$/, "");
+          span.textContent = `${base} [${tag}]`;
+        }
+      };
+      refreshSpeciesTags();
+      const applyLfSpeciesFilter = (species: string): void => {
+        // Always re-read tags first (in case store updated since last call).
+        refreshSpeciesTags();
+        let matchCount = 0;
+        for (const radio of lfPlanetRadios()) {
+          const pid = radio.value;
+          if (pid === "all-planets" || pid === "idle-planets") continue;
+          const sp = livePlanetSpecies(pid);
+          const matches = sp === species;
+          if (matches) matchCount++;
+          const label = radio.closest("label") as HTMLElement | null;
+          if (!label) continue;
+          // Don't override the lf_build_q occupancy disable (that has its own dim).
+          const wasLfqDim = label.title.includes("生命建筑队列在建中");
+          if (!matches) {
+            radio.disabled = true;
+            label.style.opacity = "0.3";
+            label.style.cursor = "not-allowed";
+            label.title = sp
+              ? `该星球 species=${speciesLabelMap[sp] ?? sp}, 不匹配当前选择 (${speciesLabelMap[species] ?? species})`
+              : `该星球未选择 species, 无法建生命建筑`;
+          } else if (!wasLfqDim) {
+            radio.disabled = false;
+            label.style.opacity = "1";
+            label.style.cursor = "pointer";
+            label.title = "";
+          }
+        }
+        // If currently checked radio was just disabled, clear selection.
+        const checked = lfPlanetRadios().find((r) => r.checked);
+        if (checked?.disabled) checked.checked = false;
+        // If 0 matching planets, also dim "所有星球" / "空闲星球" since neither
+        // dispatch makes sense.
+        const lfAllRadio2 = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="all-planets"]');
+        const lfIdleRadio2 = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="idle-planets"]');
+        if (lfAllRadio2 && lfIdleRadio2) {
+          if (matchCount === 0) {
+            dimRadio(lfAllRadio2, `无 ${speciesLabelMap[species] ?? species} species 的星球, 不能扇出`);
+            dimRadio(lfIdleRadio2, `无 ${speciesLabelMap[species] ?? species} species 的星球, 不能扇出`);
+          } else {
+            // Restore (subject to original anyOccupied / anyIdle rules below).
+            lfAllRadio2.disabled = false;
+            lfIdleRadio2.disabled = false;
+            for (const r of [lfAllRadio2, lfIdleRadio2]) {
+              const lbl = r.closest("label") as HTMLElement | null;
+              if (lbl) { lbl.style.opacity = "1"; lbl.style.cursor = "pointer"; lbl.title = ""; }
+            }
+          }
+        }
+      };
       // Initial render (kaelesh default per operator memory).
       const initSpecies = lfSpeciesRadios().find((r) => r.checked)?.value ?? "kaelesh";
       renderLfBuildings(initSpecies);
+      applyLfSpeciesFilter(initSpecies);
       for (const r of lfSpeciesRadios()) r.addEventListener("change", () => {
         renderLfBuildings(r.value);
+        applyLfSpeciesFilter(r.value);
         refreshLfDesc();
       });
       for (const r of lfPlanetRadios()) r.addEventListener("change", refreshLfDesc);
