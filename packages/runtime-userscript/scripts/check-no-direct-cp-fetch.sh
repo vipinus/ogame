@@ -42,17 +42,15 @@ src/boot.ts:2697
 EOF
 )
 
-# --- Bucket 2: DIRECTIVE-DISPATCH (TODO migrate to cpPostWithRetry) -----
+# --- Bucket 2: DIRECTIVE-DISPATCH (migration COMPLETE v0.0.560) ----------
 # Phase 1 DONE (v0.0.557): extended cpPostWithRetry with tokenProvider /
 #   successCheck / refreshTokenOnInvalid hooks.
 # Phase 2 DONE (v0.0.558): jumpgate overlay GET + executeJump POST migrated.
-# Phase 3 DONE (v0.0.559): discover/galaxy chain migrated — galaxy fetch +
-#   sendDiscoveryFleet + 2 inline business retries all through cpPostWithRetry
-#   maxAttempts=1 (business retry logic kept; only cp= fetch standardized).
-# Phase 4 next: api_executor.ts:545/635 (expedition 3-stage chain).
+# Phase 3 DONE (v0.0.559): discover/galaxy chain migrated.
+# Phase 4 DONE (v0.0.560): expedition 3-stage legacy method was dead code
+#   (delegate-to-sendFleet since v0.0.439); deleted ~167 unreachable lines
+#   that held the last 2 direct bypasses. ALLOW_LIST_DIRECTIVE now empty.
 ALLOW_LIST_DIRECTIVE=$(cat <<'EOF'
-src/api_executor.ts:545
-src/api_executor.ts:635
 EOF
 )
 
@@ -89,8 +87,10 @@ if [ -n "$NEW_VIOLATIONS" ]; then
   exit 1
 fi
 
-INFRA_COUNT=$(echo "$ALLOW_LIST_INFRA" | wc -l)
-DIRECTIVE_COUNT=$(echo "$ALLOW_LIST_DIRECTIVE" | wc -l)
+# Count non-empty lines (empty heredoc produces empty string which `wc -l`
+# of `echo` would count as 1; use printf + grep -c '.' to skip empties).
+INFRA_COUNT=$(printf '%s\n' "$ALLOW_LIST_INFRA" | grep -c '.' || true)
+DIRECTIVE_COUNT=$(printf '%s\n' "$ALLOW_LIST_DIRECTIVE" | grep -c '.' || true)
 echo "✅ no NEW direct fetchWithCp[BypassBusy] callers"
 echo "    Infrastructure (permanent): $INFRA_COUNT sites"
 echo "    Directive-dispatch (TODO):  $DIRECTIVE_COUNT sites pending migration"

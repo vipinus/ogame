@@ -66,19 +66,23 @@ The first-time architecture sweep already moved most dispatchers to
 `execSimpleUpgrade` → `cpPostWithRetry`). The remaining direct callers
 are listed below and slated for migration.
 
-## 4. Current Audit (2026-06-01, updated after Phase 3)
+## 4. Current Audit (2026-06-01, COMPLETE after Phase 4)
 
 | File:Line | Path | Standard? | Notes |
 |---|---|---|---|
 | `fleet_api.ts:136` | inside `cpPostWithRetry` | ✅ wrapper | this IS the standard |
 | `fleet_api.ts:267` | inside `sendFleet` | ✅ wrapper | this IS the standard |
-| `api_executor.ts:545` | expedition legacy 3-stage POST helper | ❌ BYPASS | handrolled retry, multi-stage token chain |
-| `api_executor.ts:635` | expedition legacy sendFleet final | ❌ BYPASS | same context as 545 |
+| ~~`api_executor.ts:545`~~ | ~~expedition legacy 3-stage POST helper~~ | ✅ NUKED v0.0.560 | dead code since v0.0.439 — `execExpedition` delegates to `fleetApiSendFleet` |
+| ~~`api_executor.ts:635`~~ | ~~expedition legacy sendFleet final~~ | ✅ NUKED v0.0.560 | same dead method |
 | ~~`api_executor.ts:725`~~ | ~~jumpgate overlay token GET~~ | ✅ MIGRATED v0.0.558 | now `cpPostWithRetry({method:"GET"})` |
 | ~~`api_executor.ts:774`~~ | ~~jumpgate executeJump POST~~ | ✅ MIGRATED v0.0.558 | now `cpPostWithRetry({tokenProvider,refreshTokenOnInvalid,successCheck})` |
 | ~~`api_executor.ts:994`~~ | ~~discover/galaxy fetch~~ | ✅ MIGRATED v0.0.559 | now `cpPostWithRetry({successCheck:j=>!!j.system, tokenProvider:""})` |
 | ~~`api_executor.ts:1177`~~ | ~~discover POST~~ | ✅ MIGRATED v0.0.559 | now `cpPostWithRetry({tokenProvider, maxAttempts:1})`; business retry kept |
 | ~~`api_executor.ts:1256/1302`~~ | ~~discover token-refresh retry~~ | ✅ MIGRATED v0.0.559 | inline retries also via `cpPostWithRetry` maxAttempts=1 |
+
+**Directive bucket: 0 bypasses remaining.** All directive cp= fetches now flow
+through `cpPostWithRetry` or `sendFleet`. Infrastructure bucket (8 boot/data
+sites) stays grandfathered per §5 Bucket 1.
 | `boot.ts:854/866/884` | sniffer init triple-fetch | ❌ BYPASS | boot-time, low frequency, cp=any planet |
 | `boot.ts:1028/1597` | sandbox CASE B overlay re-fetch | ❌ BYPASS | rare |
 | `boot.ts:1856` | fetchResources periodic poll | ⚠️ safe | cp=operatorCp, no shift |
@@ -167,8 +171,11 @@ gets its own commit.
     caller; cpPost only standardizes cp= protection, not the 3-branch retry.
   - 2 inline retries (token-race, 資源不足) also use cpPostWithRetry maxAttempts=1
     with retry token from `parsed.newAjaxToken`.
-- **Phase 4 next**: migrate expedition 3-stage (545/635) — most complex token
-  chain, validate token-flow semantics carefully.
+- **Phase 4 DONE (v0.0.560)**: expedition 3-stage legacy was dead since
+  v0.0.439 (live `execExpedition` delegates to `fleetApiSendFleet`). The
+  ~167 lines holding the last 2 direct bypasses were nuked rather than
+  migrated — dead code is debt, not "reference". `ALLOW_LIST_DIRECTIVE`
+  now empty; the prebuild gate guarantees zero regression.
 
 ## 6. Enforcement
 
