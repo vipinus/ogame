@@ -731,57 +731,62 @@ function openGoalsSettings(
       roboticsFactory: "机械工厂", shipyard: "船坞", researchLab: "实验室", naniteFactory: "纳米工厂",
       terraformer: "地形改造",
     };
-    // Fetch current active goals to detect occupied planets (one goal per
-    // planet rule, operator 2026-06-01).
-    let activeGoals: Array<{ planet?: string; status: string; type: string }> = [];
-    try {
-      const gr = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals`);
-      if (gr.ok) {
-        const gj = await gr.json() as { goals?: Array<{ planet?: string; status: string; type: string }> };
-        activeGoals = (gj.goals ?? []).filter((g) => g.status !== "completed" && g.status !== "cancelled");
-      }
-    } catch { /* */ }
-    const occupiedCoords = new Set(activeGoals.map((g) => g.planet ?? "").filter(Boolean));
+    // v0.0.584 — operator 2026-06-01 "都是灰色是不对的, 多数星球上没有建造任务":
+    // occupied judgment was based on sidecar goal queue (always many blocked
+    // resource-shortage goals → all planets flagged occupied). Fix: read
+    // ogame's REAL build_q.ends_at — only planets actively building right
+    // now occupy a queue slot. Idle planets (no build_q OR build_q expired)
+    // are free for new tasks.
+    const nowMs = Date.now();
     const planetCoordById = new Map<string, string>();
     for (const k of sortedCoordKeys) {
       const { planet } = groupedByCoord.get(k)!;
       if (planet) planetCoordById.set(planet.id, k);
     }
+    type BuildQ = { ends_at?: number; tech?: string; level?: number } | null | undefined;
+    const planetBuildQ = (pid: string): BuildQ => {
+      const p = (storeRef?.state?.planets?.[pid] as { build_q?: BuildQ } | undefined);
+      return p?.build_q;
+    };
     const planetOccupied = (pid: string): boolean => {
-      const coord = planetCoordById.get(pid);
-      return coord ? occupiedCoords.has(coord) : false;
+      const bq = planetBuildQ(pid);
+      return !!bq && (bq.ends_at ?? 0) > nowMs;
     };
     body.innerHTML = `
       <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">普通任务 — 选 tab 创建任务. 已有 active goals 在主面板 Goals section 显示</div>
       <div data-tab-bar style="display:flex; gap:2px; margin-bottom:0;">${renderTabBar()}</div>
-      <!-- v0.0.583 — 星球建筑独立 pane -->
+      <!-- v0.0.583 — 星球建筑独立 pane / v0.0.584 — 2-col + ogame-real-occupancy -->
       <div data-pane="planet-build" style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选, 已有任务的星球灰显不可选)</div>
-          <div style="border:1px solid #2a3a52; border-radius:3px; max-height:220px; overflow-y:auto; background:#06090f;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选, 正在建造的星球灰显不可选)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; border-bottom:1px solid #1a2030;">
               <label data-pb-all-wrap style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-pb-planet type="radio" name="pb-planet-radio" value="all-planets" style="vertical-align:middle;"/>
                 <span>🌍 所有星球 (每个空闲星球各建一个)</span>
               </label>
             </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
             ${sortedCoordKeys
               .filter((k) => groupedByCoord.get(k)!.planet)
               .map((k) => {
                 const { planet } = groupedByCoord.get(k)!;
                 const p = planet!;
                 const occ = planetOccupied(p.id);
-                const tip = occ ? `title="已有任务进行中, 不可选 (一星球一任务)"` : "";
+                const bq = planetBuildQ(p.id);
+                const eta = occ && bq?.ends_at ? Math.max(0, Math.round((bq.ends_at - nowMs) / 60000)) : 0;
+                const tip = occ ? `title="ogame 在建中, ${eta}min 后完成"` : "";
                 const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
-                const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[已占用]</span>` : "";
-                return `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
-                  <span style="width:72px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
-                  <label style="flex:1; display:flex; align-items:center; gap:6px; color:#d0d8e0; font-size:11px; ${dim}" ${tip}>
+                const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[${eta}m]</span>` : "";
+                return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
+                  <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+                  <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; ${dim}" ${tip}>
                     <input data-pb-planet type="radio" name="pb-planet-radio" value="${escapeHtml(p.id)}" ${occ ? "disabled" : ""} style="vertical-align:middle;"/>
                     <span>🌍 ${escapeHtml(p.name ?? "殖民")}${occSuffix}</span>
                   </label>
                 </div>`;
               }).join("")}
+            </div>
           </div>
         </div>
         <div style="padding:6px 0;">
