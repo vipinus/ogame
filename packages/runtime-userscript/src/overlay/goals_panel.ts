@@ -763,7 +763,11 @@ function openGoalsSettings(
             <div style="padding:4px 8px; border-bottom:1px solid #1a2030;">
               <label data-pb-all-wrap style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-pb-planet type="radio" name="pb-planet-radio" value="all-planets" style="vertical-align:middle;"/>
-                <span>🌍 所有星球 (每个空闲星球各建一个)</span>
+                <span>🌍 所有星球</span>
+              </label>
+              <label data-pb-idle-wrap style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px; padding-top:3px;">
+                <input data-pb-planet type="radio" name="pb-planet-radio" value="idle-planets" style="vertical-align:middle;"/>
+                <span>🌍 空闲星球 (每个空闲星球各建一个)</span>
               </label>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
@@ -989,23 +993,9 @@ function openGoalsSettings(
     const pbPriorityInput = m.querySelector<HTMLInputElement>("[data-pb-priority]");
     const pbStatusEl = m.querySelector<HTMLElement>("[data-pb-status]");
     const pbCreateBtn = m.querySelector<HTMLButtonElement>("[data-pb-create]");
-    const pbAllRadio = m.querySelector<HTMLInputElement>('input[name="pb-planet-radio"][value="all-planets"]');
-    // If any planet is occupied, disable "all-planets" too (one-task-per-planet).
-    const anyOccupied = sortedCoordKeys.some((k) => {
-      const planet = groupedByCoord.get(k)?.planet;
-      return planet ? planetOccupied(planet.id) : false;
-    });
-    if (pbAllRadio) {
-      pbAllRadio.disabled = anyOccupied;
-      const wrap = m.querySelector<HTMLElement>("[data-pb-all-wrap]");
-      if (anyOccupied && wrap) {
-        wrap.style.opacity = "0.4";
-        wrap.style.cursor = "not-allowed";
-        wrap.title = "有星球被占用, 无法选 '所有星球' (一星球一任务)";
-        const span = wrap.querySelector("span");
-        if (span) span.textContent += " — 不可用 (有星球已占用)";
-      }
-    }
+    // v0.0.585 — operator 2026-06-01 "加, 不是改": two top radios coexist —
+    // "所有星球" (literal all) + "空闲星球" (only idle). Neither is disabled;
+    // submit handler does the filtering per semantics.
     const refreshPbDesc = (): void => {
       if (!pbDescEl) return;
       const planetRadio = pbPlanetRadios().find((r) => r.checked);
@@ -1018,6 +1008,8 @@ function openGoalsSettings(
       }
       const bLabel = PLANET_BUILDING_LABEL[buildingRadio.value] ?? buildingRadio.value;
       if (planetRadio.value === "all-planets") {
+        pbDescEl.textContent = `目标在 所有星球 建造 ${bLabel} ${lvl} 级`;
+      } else if (planetRadio.value === "idle-planets") {
         pbDescEl.textContent = `目标在 所有空闲星球 建造 ${bLabel} ${lvl} 级`;
       } else {
         const coord = planetCoordById.get(planetRadio.value) ?? "?";
@@ -1039,12 +1031,23 @@ function openGoalsSettings(
       if (!buildingRadio) { pbStatusEl.textContent = "请选建筑"; pbStatusEl.style.color = "#a06060"; return; }
       if (!lvl || lvl < 1 || lvl > 50) { pbStatusEl.textContent = "级别须 1-50"; pbStatusEl.style.color = "#a06060"; return; }
       pbStatusEl.textContent = "创建中…"; pbStatusEl.style.color = "#7080a0";
-      const planetsToCreate: string[] = planetRadio.value === "all-planets"
-        ? sortedCoordKeys
-            .map((k) => groupedByCoord.get(k)?.planet)
-            .filter((p): p is StorePlanet => !!p && !planetOccupied(p.id))
-            .map((p) => p.id)
-        : [planetRadio.value];
+      let planetsToCreate: string[];
+      if (planetRadio.value === "all-planets") {
+        // Literal all — include occupied (ogame may reject those, but
+        // operator explicitly asked for "all").
+        planetsToCreate = sortedCoordKeys
+          .map((k) => groupedByCoord.get(k)?.planet)
+          .filter((p): p is StorePlanet => !!p)
+          .map((p) => p.id);
+      } else if (planetRadio.value === "idle-planets") {
+        // Only idle (occupied filtered out).
+        planetsToCreate = sortedCoordKeys
+          .map((k) => groupedByCoord.get(k)?.planet)
+          .filter((p): p is StorePlanet => !!p && !planetOccupied(p.id))
+          .map((p) => p.id);
+      } else {
+        planetsToCreate = [planetRadio.value];
+      }
       let okCount = 0; const errs: string[] = [];
       for (const pid of planetsToCreate) {
         try {
