@@ -760,14 +760,14 @@ function openGoalsSettings(
         <div style="padding:6px 0;">
           <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选, 正在建造的星球灰显不可选)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
-            <div style="padding:4px 8px; border-bottom:1px solid #1a2030;">
-              <label data-pb-all-wrap style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+            <div style="padding:4px 8px; display:flex; gap:16px; border-bottom:1px solid #1a2030;">
+              <label data-pb-all-wrap style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-pb-planet type="radio" name="pb-planet-radio" value="all-planets" style="vertical-align:middle;"/>
                 <span>🌍 所有星球</span>
               </label>
-              <label data-pb-idle-wrap style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px; padding-top:3px;">
+              <label data-pb-idle-wrap style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-pb-planet type="radio" name="pb-planet-radio" value="idle-planets" style="vertical-align:middle;"/>
-                <span>🌍 空闲星球 (每个空闲星球各建一个)</span>
+                <span>🌍 空闲星球</span>
               </label>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
