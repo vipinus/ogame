@@ -1348,6 +1348,14 @@ export async function startSidecar(
                   const totalCoords = ((tgt.range ?? 10) * 2 + 1) * 15;
                   console.log(`[discovery] goal ${goalId} progress: ${completed.length}/${totalCoords} (added ${lastDispatched ?? "?"}${batchAdded > 0 ? ` + batch ${batchAdded} from system_states` : ""})`);
                 }
+                // v0.0.575 — operator 2026-06-01 "发现任务派的很慢": species_
+                // discovery left status="active" after each success, forcing
+                // priority_merger to wait for the 90s atomic stuck-recovery
+                // timeout (v0.0.573 added it to atomic list) before re-dispatch.
+                // Multi-coord scan thus took ~90s/coord = 8h for 315 coords.
+                // Reset status to "pending" so next tick re-plans IMMEDIATELY,
+                // bypassing the active-block stuck-recovery wait.
+                goalsStore.updateStatus(goalId, "pending");
               }
             }
             // build / research / build_ships / lifeform_building → no-op,
