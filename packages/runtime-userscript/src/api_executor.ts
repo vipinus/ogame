@@ -148,10 +148,26 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (directive.action === "jumpgate") return this.execJumpgate(directive, planetId);
       return this.execLegacy(directive, planetId);
     };
+    let result: { action: string; clicked: boolean };
+    let opSucceeded = false;
     try {
-      return await inner();
+      result = await inner();
+      opSucceeded = true;
+      return result;
     } finally {
-      await this.restoreSessionCp(operatorCp, planetId);
+      // v0.0.581 — operator 2026-06-01: JG completion 应 restore 到目标月球
+      // 的 cp (而不是 operator 入口时的视角). 跳跃后操作员通常想看 target
+      // 落地的舰队 — 自动 navigate 过去比拉回原视角更符合直觉. JG 失败时
+      // 仍 restore 原 operatorCp (避免操作员被无效导航打扰).
+      let restoreTo: string | null = operatorCp;
+      if (opSucceeded && directive.action === "jumpgate") {
+        const tgt = (directive.params as { target_moon_id?: string }).target_moon_id;
+        if (typeof tgt === "string" && tgt) {
+          restoreTo = tgt;
+          console.info(`[ApiExec] JG success → restore cp to target moon ${tgt} (operator-pre-cp was ${operatorCp})`);
+        }
+      }
+      await this.restoreSessionCp(restoreTo, planetId);
     }
   }
 
