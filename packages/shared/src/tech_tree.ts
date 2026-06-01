@@ -505,12 +505,17 @@ export const OGAME_DATA_TECHNOLOGY: Record<string, string> = {
  *  Also merges lifeform building IDs (111xx-141xx) imported lazily to avoid
  *  circular import. The extractor scrapes ALL li.technology[data-technology]
  *  values; without lifeform here it would silently drop them. */
-import { LIFEFORM_BUILDING_IDS } from "./tech_ids.js";
+import { LIFEFORM_BUILDING_IDS, LIFEFORM_RESEARCH_IDS } from "./tech_ids.js";
 export const OGAME_DATA_TECHNOLOGY_REVERSE: Record<string, string> = (() => {
   const out: Record<string, string> = Object.fromEntries(
     Object.entries(OGAME_DATA_TECHNOLOGY).map(([k, v]) => [v, k]),
   );
   for (const [name, id] of Object.entries(LIFEFORM_BUILDING_IDS)) {
+    out[String(id)] = name;
+  }
+  // v0.0.609 — operator 2026-06-01 "别猜了" → real IDs from
+  // alaingilbert/ogame protocol library (battle-tested vs ogame servers).
+  for (const [name, id] of Object.entries(LIFEFORM_RESEARCH_IDS)) {
     out[String(id)] = name;
   }
   return out;

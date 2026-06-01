@@ -35,16 +35,10 @@ export function extractTechLevels(doc: Document): Record<string, number> {
       out[stringId] = lvl;
       continue;
     }
-    // v0.0.607 — operator 2026-06-01 "要根据 ogame 当前数据显示". Unknown
-    // numeric IDs (e.g., lifeform research entries not yet catalogued in
-    // OGAME_DATA_TECHNOLOGY) preserved as raw `id_<num>` key so downstream
-    // stores still see count + level even without label resolution.
-    // Lifeform research IDs are typically 12xxx-14xxx range (humans
-    // 112xx, rocktal 122xx, mechas 132xx, kaelesh 142xx).
-    const nid = Number.parseInt(numericId, 10);
-    if (Number.isFinite(nid) && nid >= 11000 && nid < 15000) {
-      out[`id_${numericId}`] = lvl;
-    }
+    // v0.0.609 — operator 2026-06-01 "别猜了". LIFEFORM_RESEARCH_IDS now
+    // imported from alaingilbert/ogame protocol library, so reverse-map
+    // hits on all 72 entries. Drop the raw `id_<num>` fallback — unknown
+    // IDs at this point are genuine unknowns (skip).
   }
   return out;
 }

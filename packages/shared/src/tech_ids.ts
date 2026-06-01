@@ -128,6 +128,90 @@ export const DEFENSE_IDS = {
   interplanetaryMissile: 503,
 } as const;
 
+// v0.0.609 — Lifeform research IDs sourced from alaingilbert/ogame
+// (https://github.com/alaingilbert/ogame/blob/master/pkg/ogame/constants.go),
+// the canonical OGame protocol library — battle-tested against live ogame
+// servers. 18 research per species × 4 species = 72 entries.
+// Operator 2026-06-01 "别猜了, 不懂要去看官方文档".
+export const LIFEFORM_RESEARCH_IDS = {
+  // Humans 11201-11218
+  intergalacticEnvoys: 11201,
+  highPerformanceExtractors: 11202,
+  fusionDrives: 11203,
+  stealthFieldGenerator: 11204,
+  orbitalDen: 11205,
+  researchAI: 11206,
+  highPerformanceTerraformer: 11207,
+  enhancedProductionTechnologies: 11208,
+  lightFighterMkII: 11209,
+  cruiserMkII: 11210,
+  improvedLabTechnology: 11211,
+  plasmaTerraformer: 11212,
+  lowTemperatureDrives: 11213,
+  bomberMkII: 11214,
+  destroyerMkII: 11215,
+  battlecruiserMkII: 11216,
+  robotAssistants: 11217,
+  supercomputer: 11218,
+  // Rocktal 12201-12218
+  volcanicBatteries: 12201,
+  acousticScanning: 12202,
+  highEnergyPumpSystems: 12203,
+  cargoHoldExpansionCivilianShips: 12204,
+  magmaPoweredProduction: 12205,
+  geothermalPowerPlants: 12206,
+  depthSounding: 12207,
+  ionCrystalEnhancementHeavyFighter: 12208,
+  improvedStellarator: 12209,
+  hardenedDiamondDrillHeads: 12210,
+  seismicMiningTechnology: 12211,
+  magmaPoweredPumpSystems: 12212,
+  ionCrystalModules: 12213,
+  optimisedSiloConstructionMethod: 12214,
+  diamondEnergyTransmitter: 12215,
+  obsidianShieldReinforcement: 12216,
+  runeShields: 12217,
+  rocktalCollectorEnhancement: 12218,
+  // Mechas 13201-13218
+  catalyserTechnology: 13201,
+  plasmaDrive: 13202,
+  efficiencyModule: 13203,
+  depotAI: 13204,
+  generalOverhaulLightFighter: 13205,
+  automatedTransportLines: 13206,
+  improvedDroneAI: 13207,
+  experimentalRecyclingTechnology: 13208,
+  generalOverhaulCruiser: 13209,
+  slingshotAutopilot: 13210,
+  highTemperatureSuperconductors: 13211,
+  generalOverhaulBattleship: 13212,
+  artificialSwarmIntelligence: 13213,
+  generalOverhaulBattlecruiser: 13214,
+  generalOverhaulBomber: 13215,
+  generalOverhaulDestroyer: 13216,
+  experimentalWeaponsTechnology: 13217,
+  mechanGeneralEnhancement: 13218,
+  // Kaelesh 14201-14218
+  heatRecovery: 14201,
+  sulphideProcess: 14202,
+  psionicNetwork: 14203,
+  telekineticTractorBeam: 14204,
+  enhancedSensorTechnology: 14205,
+  neuromodalCompressor: 14206,
+  neuroInterface: 14207,
+  interplanetaryAnalysisNetwork: 14208,
+  overclockingHeavyFighter: 14209,
+  telekineticDrive: 14210,
+  sixthSense: 14211,
+  psychoharmoniser: 14212,
+  efficientSwarmIntelligence: 14213,
+  overclockingLargeCargo: 14214,
+  gravitationSensors: 14215,
+  overclockingBattleship: 14216,
+  psionicShieldMatrix: 14217,
+  kaeleshDiscovererEnhancement: 14218,
+} as const;
+
 // ─── Unified registry ─────────────────────────────────────────────────────
 export const TECH_ID_BY_NAME: Record<string, number> = {
   ...BUILDING_IDS,
@@ -135,6 +219,7 @@ export const TECH_ID_BY_NAME: Record<string, number> = {
   ...SHIP_IDS_BY_NAME,
   ...DEFENSE_IDS,
   ...LIFEFORM_BUILDING_IDS,
+  ...LIFEFORM_RESEARCH_IDS,
 };
 
 /** Reverse map: numeric id → canonical name. */
@@ -153,12 +238,18 @@ export function idToName(id: number): string | undefined {
 }
 
 /** Kind classification by ID range — useful for routing logic. */
-export function idKind(id: number): "building" | "research" | "ship" | "defense" | "lifeform_building" | "unknown" {
+export function idKind(id: number): "building" | "research" | "ship" | "defense" | "lifeform_building" | "lifeform_research" | "unknown" {
   if (id >= 1 && id <= 99) return "building";
   if (id >= 100 && id <= 199) return "research";
   if (id >= 200 && id <= 299) return "ship";
   if (id >= 400 && id <= 599) return "defense";
-  // Lifeform: 111xx (humans), 121xx (rocktal), 131xx (mechas), 141xx (kaelesh).
-  if (id >= 11000 && id <= 15000) return "lifeform_building";
+  // v0.0.609 — lifeform building/research range split (verified via
+  // alaingilbert/ogame): xxx01-xxx99 building, xxx201-xxx218 research.
+  // 11xxx humans / 12xxx rocktal / 13xxx mechas / 14xxx kaelesh.
+  const tens = id % 1000;
+  if (id >= 11000 && id < 15000) {
+    if (tens >= 200 && tens < 300) return "lifeform_research";
+    return "lifeform_building";
+  }
   return "unknown";
 }
