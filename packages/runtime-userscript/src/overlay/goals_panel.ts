@@ -11,6 +11,7 @@
  * Operator HTTP endpoints are no-auth on the sidecar — same threat model
  * as the existing /v1/debug page.
  */
+import { LIFEFORM_TECH } from "@ogamex/shared";
 
 /** Prereq tree node — recursive structure mirroring TECH_TREE's `requires`
  *  graph for the player's main goal. Attached by sidecar listGoals only on
@@ -893,7 +894,79 @@ function openGoalsSettings(
           <button data-mb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
         </div>
       </div>
-      <!-- Shared pane (used by 4 non-planet/moon-build tabs) -->
+      <!-- v0.0.593 — 生命建筑独立 pane -->
+      <div data-pane="lf-build" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命形态 (单选, 决定可建建筑列表)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="humans" style="vertical-align:middle;"/><span>人类</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="rocktal" style="vertical-align:middle;"/><span>岩族</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="mechas" style="vertical-align:middle;"/><span>机械族</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>凯莱什</span></label>
+          </div>
+        </div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选, lifeform 仅星球可建)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
+            <div style="padding:4px 8px; display:flex; gap:16px; border-bottom:1px solid #1a2030;">
+              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                <input data-lf-planet type="radio" name="lf-planet-radio" value="all-planets" style="vertical-align:middle;"/>
+                <span>🌍 所有星球</span>
+              </label>
+              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                <input data-lf-planet type="radio" name="lf-planet-radio" value="idle-planets" style="vertical-align:middle;"/>
+                <span>🌍 空闲星球</span>
+              </label>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
+            ${sortedCoordKeys
+              .filter((k) => groupedByCoord.get(k)!.planet)
+              .map((k) => {
+                const { planet } = groupedByCoord.get(k)!;
+                const p = planet!;
+                // lf-build occupancy: planet has lf_build_q.ends_at > now
+                const lfBq = (storeRef?.state?.planets?.[p.id] as { lf_build_q?: { ends_at?: number } } | undefined)?.lf_build_q;
+                const occ = !!lfBq && (lfBq.ends_at ?? 0) > nowMs;
+                const eta = occ && lfBq?.ends_at ? Math.max(0, Math.round((lfBq.ends_at - nowMs) / 60000)) : 0;
+                const tip = occ ? `title="生命建筑队列在建中, ${eta}min 后完成"` : "";
+                const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
+                const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[${eta}m]</span>` : "";
+                return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
+                  <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+                  <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; ${dim}" ${tip}>
+                    <input data-lf-planet type="radio" name="lf-planet-radio" value="${escapeHtml(p.id)}" ${occ ? "disabled" : ""} style="vertical-align:middle;"/>
+                    <span>🌍 ${escapeHtml(p.name ?? "殖民")}${occSuffix}</span>
+                  </label>
+                </div>`;
+              }).join("")}
+            </div>
+          </div>
+        </div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命建筑 (单选, 切换 species 时重新加载)</div>
+          <div data-lf-building-list style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
+            <span style="color:#5a7090; font-size:11px;">loading…</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <input data-lf-level type="number" min="1" max="50" value="" placeholder="例: 3" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
+        </div>
+        <div style="padding:6px 0; min-height:22px;">
+          <span data-lf-desc style="color:#7cfc00; font-size:11px;"></span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <input data-lf-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
+          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
+          <span data-lf-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+          <button data-lf-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+        </div>
+      </div>
+      <!-- Shared pane (used by 3 non-planet/moon/lf-build tabs) -->
       <div data-pane="shared" style="display:none;">
       <!-- Operator 2026-05-29: 自然语言入口 — Gemini 解析 → 填表单 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
@@ -983,7 +1056,9 @@ function openGoalsSettings(
     // v0.0.582 — tab switching. Activate "planet-build" by default.
     const planetBuildPane = m.querySelector<HTMLElement>('[data-pane="planet-build"]');
     const moonBuildPane = m.querySelector<HTMLElement>('[data-pane="moon-build"]');
+    const lfBuildPane = m.querySelector<HTMLElement>('[data-pane="lf-build"]');
     const sharedPane = m.querySelector<HTMLElement>('[data-pane="shared"]');
+    const isDedicatedPane = (id: TabId): boolean => id === "planet-build" || id === "moon-build" || id === "lf-build";
     const applyTab = (tabId: TabId): void => {
       const tab = TAB_DEFS.find((t) => t.id === tabId);
       if (!tab) return;
@@ -995,12 +1070,12 @@ function openGoalsSettings(
         btn.style.borderColor = active ? "#3a5a82" : "#2a3a52";
         btn.style.fontWeight = active ? "600" : "normal";
       }
-      // v0.0.583 — pane switch: planet-build / moon-build have dedicated
-      // forms; the other 4 tabs share the legacy form.
+      // v0.0.583/589/593 — pane switch: 3 dedicated panes + 1 shared (3 tabs left).
       if (planetBuildPane) planetBuildPane.style.display = tabId === "planet-build" ? "" : "none";
       if (moonBuildPane) moonBuildPane.style.display = tabId === "moon-build" ? "" : "none";
-      if (sharedPane) sharedPane.style.display = (tabId === "planet-build" || tabId === "moon-build") ? "none" : "";
-      if (tabId === "planet-build" || tabId === "moon-build") return; // skip shared-form filtering below
+      if (lfBuildPane) lfBuildPane.style.display = tabId === "lf-build" ? "" : "none";
+      if (sharedPane) sharedPane.style.display = isDedicatedPane(tabId) ? "none" : "";
+      if (isDedicatedPane(tabId)) return; // skip shared-form filtering below
       if (!typeSel) return;
       // Refilter goal type options
       typeSel.innerHTML = tab.goalTypes
@@ -1267,6 +1342,134 @@ function openGoalsSettings(
         mbStatusEl.style.color = "#a06060";
       }
     });
+
+    // v0.0.593 — lf-build pane wiring (lifeform buildings per species).
+    // Static import below (top-level dynamic import breaks IIFE/code-splitting).
+    {
+      const lfSpeciesRadios = (): HTMLInputElement[] => Array.from(
+        m.querySelectorAll<HTMLInputElement>('input[name="lf-species-radio"]'),
+      );
+      const lfPlanetRadios = (): HTMLInputElement[] => Array.from(
+        m.querySelectorAll<HTMLInputElement>('input[name="lf-planet-radio"]'),
+      );
+      const lfBuildingRadios = (): HTMLInputElement[] => Array.from(
+        m.querySelectorAll<HTMLInputElement>('input[name="lf-building-radio"]'),
+      );
+      const lfBuildingList = m.querySelector<HTMLElement>("[data-lf-building-list]");
+      const lfLevelInput = m.querySelector<HTMLInputElement>("[data-lf-level]");
+      const lfDescEl = m.querySelector<HTMLElement>("[data-lf-desc]");
+      const lfPriorityInput = m.querySelector<HTMLInputElement>("[data-lf-priority]");
+      const lfStatusEl = m.querySelector<HTMLElement>("[data-lf-status]");
+      const lfCreateBtn = m.querySelector<HTMLButtonElement>("[data-lf-create]");
+      type LfBuilding = { id: string; display_name_zh?: string; display_name_en?: string };
+      const currentBuildings = new Map<string, string>(); // id → display name
+      const renderLfBuildings = (species: string): void => {
+        if (!lfBuildingList) return;
+        const cat = (LIFEFORM_TECH as Record<string, { buildings?: Record<string, LfBuilding> }>)[species];
+        const buildings = cat?.buildings ?? {};
+        const entries = Object.entries(buildings);
+        currentBuildings.clear();
+        for (const [k, v] of entries) currentBuildings.set(k, v.display_name_zh ?? v.display_name_en ?? k);
+        lfBuildingList.innerHTML = entries.map(([k, v]) => {
+          const name = v.display_name_zh ?? v.display_name_en ?? k;
+          return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="lf-building-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)}</span></label>`;
+        }).join("");
+        for (const r of lfBuildingRadios()) r.addEventListener("change", refreshLfDesc);
+      };
+      const refreshLfDesc = (): void => {
+        if (!lfDescEl) return;
+        const speciesRadio = lfSpeciesRadios().find((r) => r.checked);
+        const planetRadio = lfPlanetRadios().find((r) => r.checked);
+        const buildingRadio = lfBuildingRadios().find((r) => r.checked);
+        const lvl = parseInt(lfLevelInput?.value ?? "", 10);
+        if (!speciesRadio || !planetRadio || !buildingRadio || !lvl) {
+          lfDescEl.textContent = "（选物种 + 星球 + 建筑 + 级别后显示）";
+          lfDescEl.style.color = "#5a7090";
+          return;
+        }
+        const bLabel = currentBuildings.get(buildingRadio.value) ?? buildingRadio.value;
+        const speciesLabel: Record<string, string> = { humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什" };
+        const sn = speciesLabel[speciesRadio.value] ?? speciesRadio.value;
+        if (planetRadio.value === "all-planets") {
+          lfDescEl.textContent = `目标在 所有星球 建造 ${bLabel} ${lvl} 级 (${sn})`;
+        } else if (planetRadio.value === "idle-planets") {
+          lfDescEl.textContent = `目标在 所有空闲星球 建造 ${bLabel} ${lvl} 级 (${sn})`;
+        } else {
+          const coord = planetCoordById.get(planetRadio.value) ?? "?";
+          lfDescEl.textContent = `目标在 ${coord} 建造 ${bLabel} ${lvl} 级 (${sn})`;
+        }
+        lfDescEl.style.color = "#7cfc00";
+      };
+      // Initial render (kaelesh default per operator memory).
+      const initSpecies = lfSpeciesRadios().find((r) => r.checked)?.value ?? "kaelesh";
+      renderLfBuildings(initSpecies);
+      for (const r of lfSpeciesRadios()) r.addEventListener("change", () => {
+        renderLfBuildings(r.value);
+        refreshLfDesc();
+      });
+      for (const r of lfPlanetRadios()) r.addEventListener("change", refreshLfDesc);
+      lfLevelInput?.addEventListener("input", refreshLfDesc);
+      // anyOccupied / anyIdle for lf-build (use lf_build_q for occupancy).
+      let anyLfOccupied = false, anyLfIdle = false;
+      for (const k of sortedCoordKeys) {
+        const planet = groupedByCoord.get(k)?.planet;
+        if (!planet) continue;
+        const lfBq = (storeRef?.state?.planets?.[planet.id] as { lf_build_q?: { ends_at?: number } } | undefined)?.lf_build_q;
+        const occ = !!lfBq && (lfBq.ends_at ?? 0) > nowMs;
+        if (occ) anyLfOccupied = true; else anyLfIdle = true;
+      }
+      const lfAllRadio = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="all-planets"]');
+      const lfIdleRadio = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="idle-planets"]');
+      if (anyLfOccupied) dimRadio(lfAllRadio, "有星球生命建筑队列在建, 不能选 '所有星球'");
+      if (!anyLfIdle) dimRadio(lfIdleRadio, "无空闲星球, 不能选 '空闲星球'");
+      refreshLfDesc();
+      lfCreateBtn?.addEventListener("click", async () => {
+        if (!lfStatusEl) return;
+        const planetRadio = lfPlanetRadios().find((r) => r.checked);
+        const buildingRadio = lfBuildingRadios().find((r) => r.checked);
+        const lvl = parseInt(lfLevelInput?.value ?? "", 10);
+        const pri = parseInt(lfPriorityInput?.value ?? "5", 10) || 5;
+        if (!planetRadio) { lfStatusEl.textContent = "请选星球"; lfStatusEl.style.color = "#a06060"; return; }
+        if (!buildingRadio) { lfStatusEl.textContent = "请选建筑"; lfStatusEl.style.color = "#a06060"; return; }
+        if (!lvl || lvl < 1 || lvl > 50) { lfStatusEl.textContent = "级别须 1-50"; lfStatusEl.style.color = "#a06060"; return; }
+        lfStatusEl.textContent = "创建中…"; lfStatusEl.style.color = "#7080a0";
+        const lfOccCheck = (pid: string): boolean => {
+          const lfBq = (storeRef?.state?.planets?.[pid] as { lf_build_q?: { ends_at?: number } } | undefined)?.lf_build_q;
+          return !!lfBq && (lfBq.ends_at ?? 0) > nowMs;
+        };
+        let planetsToCreate: string[];
+        if (planetRadio.value === "all-planets") {
+          planetsToCreate = sortedCoordKeys.map((k) => groupedByCoord.get(k)?.planet).filter((p): p is StorePlanet => !!p).map((p) => p.id);
+        } else if (planetRadio.value === "idle-planets") {
+          planetsToCreate = sortedCoordKeys.map((k) => groupedByCoord.get(k)?.planet).filter((p): p is StorePlanet => !!p && !lfOccCheck(p.id)).map((p) => p.id);
+        } else {
+          planetsToCreate = [planetRadio.value];
+        }
+        let okCount = 0; const errs: string[] = [];
+        for (const pid of planetsToCreate) {
+          try {
+            const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "lifeform_building",
+                target: { building: buildingRadio.value, level: lvl },
+                planet: pid,
+                priority: pri,
+              }),
+            });
+            if (r.ok) okCount++; else errs.push(`${pid}: HTTP ${r.status}`);
+          } catch (e) { errs.push(`${pid}: ${(e as Error).message ?? e}`); }
+        }
+        if (errs.length === 0) {
+          lfStatusEl.textContent = `✓ 已创建 ${okCount} 个任务`;
+          lfStatusEl.style.color = "#7cfc00";
+        } else {
+          lfStatusEl.textContent = `部分失败: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
+          lfStatusEl.style.color = "#a06060";
+        }
+      });
+    }
 
     // Operator 2026-05-29: planet radio change → auto-fill the coord prefix
     // into the NL textarea so the operator can keep typing the rest of the
