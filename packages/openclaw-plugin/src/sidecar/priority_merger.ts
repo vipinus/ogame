@@ -94,8 +94,10 @@ export class PriorityMerger {
   // within timeout window AND goal status is still "active" without ack,
   // skip re-dispatch this tick (defense-in-depth vs. userscript dedup).
   private readonly dispatchedAt = new Map<string, number>();
-  private readonly STUCK_TIMEOUT_MS = 30_000;          // build / research
-  private readonly STUCK_TIMEOUT_MS_ATOMIC = 90_000;   // atomic fleet ops
+  // v0.0.576 — operator 2026-06-01 "所有都改成15秒". Unify stuck-recovery
+  // window across goal types (was 30s build/research vs 90s atomic fleet).
+  private readonly STUCK_TIMEOUT_MS = 15_000;          // build / research
+  private readonly STUCK_TIMEOUT_MS_ATOMIC = 15_000;   // atomic fleet ops
 
   constructor(deps: PriorityMergerDeps) {
     this.store = deps.store;

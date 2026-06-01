@@ -1264,10 +1264,13 @@ export async function startSidecar(
               if (isFleetPost) {
                 priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "operator_retry"]);
               } else {
-                priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "backoff_60s"]);
+                // v0.0.576 — operator 2026-06-01 "所有都改成15秒": shorten
+                // failure backoff from 60s → 15s for non-fleet-POST types
+                // (build/research/build_ships/lifeform_building/species_discovery).
+                priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "backoff_15s"]);
                 setTimeout(() => {
-                  priorityMergerRef?.clearAwaiting(goalId, "backoff_60s");
-                }, 60_000);
+                  priorityMergerRef?.clearAwaiting(goalId, "backoff_15s");
+                }, 15_000);
               }
               // v0.0.478: also clear dispatch stamp — directive completed
               // (with failure), so stuck-recovery's "in-flight" gate releases.
