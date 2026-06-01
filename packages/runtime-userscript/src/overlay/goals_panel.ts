@@ -1645,8 +1645,23 @@ function openGoalsSettings(
       const rsStatusEl = m.querySelector<HTMLElement>("[data-rs-status]");
       const rsCreateBtn = m.querySelector<HTMLButtonElement>("[data-rs-create]");
       const rsQueueEl = m.querySelector<HTMLElement>("[data-rs-queue]");
-      // Render current global research queue status (live read; ack-driven
-      // refresh isn't critical since modal opens are user-initiated).
+      // v0.0.601 — operator 2026-06-01 "引力技术如果已经研究了, 就变成灰色".
+      // gravitonTech is a one-shot research (L1 unlocks deathstar — ogame
+      // doesn't let it go higher without re-researching for cost cycles).
+      // Disable the radio when already at L1+.
+      {
+        const rsLevelsInit = (storeRef?.state as { research?: { levels?: Record<string, number> } } | undefined)?.research?.levels ?? {};
+        const gravRadio = m.querySelector<HTMLInputElement>('input[name="rs-tech-radio"][value="gravitonTech"]');
+        if (gravRadio && (rsLevelsInit["gravitonTech"] ?? 0) >= 1) {
+          gravRadio.disabled = true;
+          const lbl = gravRadio.closest("label") as HTMLElement | null;
+          if (lbl) {
+            lbl.style.opacity = "0.4";
+            lbl.style.cursor = "not-allowed";
+            lbl.title = `引力技术已研究 (L${rsLevelsInit["gravitonTech"]}) — 一次性研究, 不能重做`;
+          }
+        }
+      }
       const rq = (storeRef?.state as { research?: { queue?: { tech?: string; level?: number; ends_at?: number } | null } } | undefined)?.research?.queue;
       if (rsQueueEl) {
         if (rq && rq.ends_at && rq.ends_at > nowMs) {
