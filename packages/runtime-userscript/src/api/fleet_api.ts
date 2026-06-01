@@ -176,12 +176,29 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
         : { "X-Requested-With": "XMLHttpRequest" },
     };
     if (method === "POST" && body) requestInit.body = body;
-    const r = await fetchWithCpBypassBusy(
-      opts.endpoint,
-      requestInit,
-      opts.sourcePlanetId,
-      opts.skipRestore === true ? { skipRestore: true } : {},
-    );
+    // v0.0.578 — fetchWithCpBypassBusy now has 30s default timeout. AbortError
+    // here means ogame hang; treat as transient race so retry kicks in.
+    let r: Response;
+    try {
+      r = await fetchWithCpBypassBusy(
+        opts.endpoint,
+        requestInit,
+        opts.sourcePlanetId,
+        opts.skipRestore === true ? { skipRestore: true } : {},
+      );
+    } catch (e) {
+      const errName = (e as { name?: string }).name;
+      if (errName === "AbortError") {
+        if (attempt < maxAttempts) {
+          const backoffMs = 200 * attempt;
+          console.warn(`[cpPost/${opts.action}] attempt=${attempt} FETCH TIMEOUT (30s) — backoff ${backoffMs}ms then retry`);
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          continue;
+        }
+        throw new FleetApiError(`${opts.action} timeout after ${attempt} attempts (ogame hang)`);
+      }
+      throw e;
+    }
     const raw = await r.text();
     let json: Record<string, unknown> | null;
     try { json = JSON.parse(raw) as Record<string, unknown>; } catch { json = null; }
@@ -275,10 +292,64 @@ async function acquireSendFleetSlot(): Promise<() => void> {
   return release;
 }
 
+// v0.0.567 — operator 2026-06-01 "不止是回收任务, 所有舰队任务都不要重复发送".
+// Module-level payload dedup applied to EVERY sendFleet caller (api_executor
+// expedition/colonize/transport, wire.ts debris harvest, emergency FSM, etc).
+// Mutex above (sendFleetChain) serializes timing but doesn't dedup payloads —
+// two callers with identical (source, mission, dest, ships) racing get TWO
+// fleets dispatched. This dedup throws DUPLICATE_SEND_FLEET if the same key
+// fired within TTL.
+//
+// Key shape: `${cp}|m${mission}|t${destType}|${gx}:${sy}:${pos}|h${holding}|${shipsCsv}`.
+// `shipsCsv` is sorted-key explorer:N,smallCargo:M,... so {a:1,b:2} === {b:2,a:1}.
+// Cargo is NOT in key — same fleet, different load is still a duplicate launch.
+//
+// TTL = 60s. Long enough to cover ogame transient race window + sidecar tick
+// (~30s); short enough that a real follow-up dispatch (e.g., chain leg 2
+// running on the same source 90s later) is not blocked. Operator can verify
+// with /v1/debug/log mirror `dedup` tag.
+//
+// Mark on entry (before mutex acquire) so a slow ogame POST can't be raced
+// by a second caller waiting for mutex. Failed dispatches re-mark on next
+// entry via natural TTL expiry — no manual rollback, intentionally conservative.
+const recentSendFleet = new Map<string, number>();
+const SEND_FLEET_DEDUP_TTL_MS = 60 * 1000;
+
+function sendFleetDedupKey(p: SendFleetParams): string {
+  const cp = p.sourcePlanetId ?? "_";
+  const shipKeys = Object.keys(p.ships).sort();
+  const shipsCsv = shipKeys.map((k) => `${k}:${(p.ships as Record<string, number | undefined>)[k] ?? 0}`).join(",");
+  return `${cp}|m${p.mission}|t${p.destType}|${p.coords.join(":")}|h${p.holdingTime ?? 0}|${shipsCsv}`;
+}
+
 export async function sendFleet(
   p: SendFleetParams,
   ctx: SendFleetCtx,
 ): Promise<SendFleetResult> {
+  const key = sendFleetDedupKey(p);
+  const nowMs = Date.now();
+  const lastTs = recentSendFleet.get(key) ?? 0;
+  if (lastTs > 0 && (nowMs - lastTs) < SEND_FLEET_DEDUP_TTL_MS) {
+    const ageS = Math.floor((nowMs - lastTs) / 1000);
+    const dupMsg = `DUPLICATE_SEND_FLEET key=${key} last=${ageS}s ago, ttl=${SEND_FLEET_DEDUP_TTL_MS / 1000}s`;
+    console.warn(`[fleet_api/sendFleet] ${dupMsg}`);
+    try {
+      const ctxWin = (typeof window !== "undefined" ? window : (globalThis as unknown)) as Window & { localStorage?: Storage };
+      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+      void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+        method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: "sendFleet-dedup", text: dupMsg }),
+      }).catch(() => { /* */ });
+    } catch { /* */ }
+    throw new FleetApiError(dupMsg);
+  }
+  // Opportunistic GC of expired entries.
+  for (const [k, ts] of Array.from(recentSendFleet.entries())) {
+    if (nowMs - ts > SEND_FLEET_DEDUP_TTL_MS) recentSendFleet.delete(k);
+  }
+  // Mark BEFORE mutex acquire — a slow ogame POST in flight on caller A
+  // must block caller B even while B is queued behind the mutex.
+  recentSendFleet.set(key, nowMs);
   const release = await acquireSendFleetSlot();
   try {
     return await sendFleetInner(p, ctx);
@@ -320,19 +391,42 @@ async function sendFleetInner(
       }).catch(() => {});
     } catch { /* */ }
     }
-    const res = sourcePID
-      ? await fetchWithCpBypassBusy(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-          body: body.toString(),
-          credentials: "same-origin",
-        }, sourcePID)
-      : await ctx.fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-          body: body.toString(),
-          credentials: "same-origin",
-        });
+    // v0.0.578 — 30s timeout via AbortController. AbortError → caught as
+    // FleetApiError with isTransientRace-flagged message so retry kicks in.
+    const sendAc = new AbortController();
+    const sendTimer = setTimeout(() => sendAc.abort(), 30_000);
+    let res: Response;
+    try {
+      res = sourcePID
+        ? await fetchWithCpBypassBusy(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+            body: body.toString(),
+            credentials: "same-origin",
+            signal: sendAc.signal,
+          }, sourcePID)
+        : await ctx.fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+            body: body.toString(),
+            credentials: "same-origin",
+            signal: sendAc.signal,
+          });
+    } catch (e) {
+      const errName = (e as { name?: string }).name;
+      if (errName === "AbortError") {
+        if (attempt < 4) {
+          const backoffMs = 200 * attempt;
+          console.warn(`[fleet_api/sendFleet] attempt=${attempt} FETCH TIMEOUT (30s) — backoff ${backoffMs}ms then retry`);
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          continue;
+        }
+        throw new FleetApiError(`sendFleet timeout after ${attempt} attempts (ogame hang)`);
+      }
+      throw e;
+    } finally {
+      clearTimeout(sendTimer);
+    }
     if (!res.ok) throw new FleetApiError(`HTTP ${res.status}`);
     const rawText = await res.text();
     let json: SendFleetResult["raw"];
@@ -464,15 +558,38 @@ async function recallFleetInner(fleetId: number, ctx: SendFleetCtx): Promise<voi
     body.set("fleetId", String(fleetId));
     body.set("token", token);
     console.log(`[fleet_api/recallFleet] attempt=${attempt} POST ${RECALL_ENDPOINT} body=fleetId=${fleetId}&token=***`);
-    const res = await ctx.fetch(RECALL_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: body.toString(),
-      credentials: "same-origin",
-    });
+    // v0.0.578 — 30s fetch timeout via AbortController so ogame hang
+    // doesn't lock recallFleet forever. AbortError caught by outer loop;
+    // bare-fail backoff handles retry.
+    const ac = new AbortController();
+    const tTimer = setTimeout(() => ac.abort(), 30_000);
+    let res: Response;
+    try {
+      res = await ctx.fetch(RECALL_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        body: body.toString(),
+        credentials: "same-origin",
+        signal: ac.signal,
+      });
+    } catch (e) {
+      const errName = (e as { name?: string }).name;
+      if (errName === "AbortError") {
+        if (attempt < 4) {
+          const backoffMs = 250 * attempt;
+          console.warn(`[fleet_api/recallFleet] attempt=${attempt} FETCH TIMEOUT (30s) — backoff ${backoffMs}ms then retry`);
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          continue;
+        }
+        throw new FleetApiError(`recallFleet timeout after ${attempt} attempts (ogame hang)`);
+      }
+      throw e;
+    } finally {
+      clearTimeout(tTimer);
+    }
     const rawText = await res.text();
     console.log(`[fleet_api/recallFleet] attempt=${attempt} HTTP ${res.status} raw[0:400]=${rawText.slice(0, 400)}`);
     if (!res.ok) throw new FleetApiError(`HTTP ${res.status}: ${rawText.slice(0, 200)}`);

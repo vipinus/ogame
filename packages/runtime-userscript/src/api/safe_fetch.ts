@@ -112,6 +112,47 @@ export interface FetchWithCpOpts {
   /** Skip the post-fetch session-cp restore. Use when you know operatorCp===sourcePID
    *  (no shift happened) or caller will do its own restore. */
   skipRestore?: boolean;
+  /** v0.0.578 — fetch timeout in ms. Defaults to 30000 (30s). Set 0/Infinity
+   *  to disable (rare; only useful for explicitly long-running ops). Hitting
+   *  the timeout aborts the fetch and throws — caller's retry loop handles. */
+  timeoutMs?: number;
+}
+
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Fetch wrapper with AbortController-driven timeout. Happy path: 0 overhead
+ * (clearTimeout cancels the abort scheduling on success). Failure path: throws
+ * AbortError after timeoutMs, letting caller retry loop kick in.
+ *
+ * Operator 2026-06-01 "全 api 操作通过返回值执行后续, 为什么要等待": fetch
+ * without timeout was the silent killer — ogame hang → fetch promise pending
+ * forever → cpFetchChain mutex locked forever → all subsequent cp= ops dead.
+ * Adding timeout makes "hang" indistinguishable from "fail" — both go through
+ * caller's retry → ack-failed → auto-recovery.
+ */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  if (!_winRef) throw new Error("[safe_fetch] not initialized");
+  if (!timeoutMs || timeoutMs === Infinity) {
+    return _winRef.fetch(url, init);
+  }
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    // Merge caller signal if any.
+    const callerSignal = (init as { signal?: AbortSignal }).signal;
+    if (callerSignal) {
+      if (callerSignal.aborted) ac.abort();
+      else callerSignal.addEventListener("abort", () => ac.abort(), { once: true });
+    }
+    return await _winRef.fetch(url, { ...init, signal: ac.signal });
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 /**
@@ -154,8 +195,9 @@ export async function fetchWithCp(
   const sourceStr = String(sourcePID);
   const sep = baseUrl.includes("?") ? "&" : "?";
   const fullUrl = `${baseUrl}${sep}cp=${encodeURIComponent(sourceStr)}`;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   try {
-    return await _winRef.fetch(fullUrl, init);
+    return await fetchWithTimeout(fullUrl, init, timeoutMs);
   } finally {
     try {
       if (!opts.skipRestore && operatorCp && operatorCp !== sourceStr) {
@@ -170,10 +212,11 @@ export async function fetchWithCp(
         // about them (operator: "没有恢复cp和token").
         try {
           const restoreUrl = `/game/index.php?page=componentOnly&component=overview&ajax=1&cp=${encodeURIComponent(operatorCp)}`;
-          const restoreRes = await _winRef.fetch(restoreUrl, {
+          // v0.0.578 — restore也加 10s timeout, 防止 hang lock mutex
+          const restoreRes = await fetchWithTimeout(restoreUrl, {
             credentials: "same-origin",
             headers: { "X-Requested-With": "XMLHttpRequest" },
-          });
+          }, 10_000);
           // Surface restore-side newAjaxToken on documentElement.dataset so
           // tokenManager.refresh() (which reads dataset.ogamexToken) picks it
           // up on next read. fire-and-forget body parse — must not throw.
