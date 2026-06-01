@@ -1657,17 +1657,28 @@ function openGoalsSettings(
           rsQueueEl.innerHTML = `global queue: <span style="color:#7cfc00;">空闲</span>`;
         }
       }
+      // v0.0.600 — operator 2026-06-01 "点对应的科技, 下面显示这个科技的当前
+      // 等级". When operator selects a tech radio, show current level from
+      // store.research.levels so they know what target level to type.
       const refreshRsDesc = (): void => {
         if (!rsDescEl) return;
         const techRadio = rsTechRadios().find((r) => r.checked);
         const lvl = parseInt(rsLevelInput?.value ?? "", 10);
-        if (!techRadio || !lvl) {
+        if (!techRadio) {
           rsDescEl.textContent = "（选研究项目 + 级别后显示）";
           rsDescEl.style.color = "#5a7090";
           return;
         }
         const tLabel = RESEARCH_LABEL[techRadio.value] ?? techRadio.value;
-        rsDescEl.textContent = `目标研究 ${tLabel} ${lvl} 级`;
+        const levels = (storeRef?.state as { research?: { levels?: Record<string, number> } } | undefined)?.research?.levels ?? {};
+        const curLvl = levels[techRadio.value] ?? 0;
+        const curPart = `当前 ${tLabel} L${curLvl}`;
+        if (!lvl) {
+          rsDescEl.textContent = `${curPart}（输入目标级别即可创建）`;
+          rsDescEl.style.color = "#7cfc00";
+          return;
+        }
+        rsDescEl.textContent = `${curPart} → 目标 L${lvl}`;
         rsDescEl.style.color = "#7cfc00";
       };
       for (const r of rsTechRadios()) r.addEventListener("change", refreshRsDesc);
