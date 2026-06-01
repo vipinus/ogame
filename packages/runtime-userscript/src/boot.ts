@@ -1166,7 +1166,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.597";
+  const USERSCRIPT_VERSION = "0.0.598";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2541,22 +2541,30 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (hasAny) {
           const cur = patchPlanets[pid];
           const curResources = (cur as { resources?: { m?: number; c?: number; d?: number; e?: number } }).resources ?? { m: 0, c: 0, d: 0, e: 0 };
-          // v0.0.596 — operator 2026-06-01 "怎么都是未设置, 全部设置过了":
-          // pollEmpire was writing lifeform_buildings but NOT lifeform.species,
-          // and refreshOnePage's species detection only fires when operator
-          // visits lfbuildings tab. Detect species here from lifeform_buildings
-          // prefix (111xx humans / 121xx rocktal / 131xx mechas / 141xx kaelesh)
-          // so any ogame poll auto-fills species.
-          let detectedSpecies: string | null = null;
+          // v0.0.598 — operator 2026-06-01 "星球的当前种族类型的不对".
+          // Earlier detection took the FIRST building with lvl>0; but ogame
+          // allows multiple species' buildings on the same planet (operator
+          // switched species). Historical buildings linger at low levels;
+          // the ACTIVE species has the highest-level buildings.
+          //
+          // Fix: pick the species whose buildings have the MAX level (and
+          // among species at same max, the one with the most total buildings).
+          // Example: 4:241:8 had residentialSector=17 (humans) + sanctuary=50
+          // (kaelesh) — max=50 → kaelesh wins.
+          const speciesMaxLevel: Record<string, number> = {};
           for (const [name, lvl] of Object.entries(lifeform_buildings)) {
             if (lvl <= 0) continue;
             const tid = TECH_ID_BY_NAME[name];
             if (typeof tid !== "number") continue;
             const prefix = Math.floor(tid / 1000);
-            if (prefix === 11) { detectedSpecies = "humans"; break; }
-            if (prefix === 12) { detectedSpecies = "rocktal"; break; }
-            if (prefix === 13) { detectedSpecies = "mechas"; break; }
-            if (prefix === 14) { detectedSpecies = "kaelesh"; break; }
+            const sp = prefix === 11 ? "humans" : prefix === 12 ? "rocktal" : prefix === 13 ? "mechas" : prefix === 14 ? "kaelesh" : null;
+            if (!sp) continue;
+            speciesMaxLevel[sp] = Math.max(speciesMaxLevel[sp] ?? 0, lvl);
+          }
+          let detectedSpecies: string | null = null;
+          let bestMax = 0;
+          for (const [sp, mx] of Object.entries(speciesMaxLevel)) {
+            if (mx > bestMax) { bestMax = mx; detectedSpecies = sp; }
           }
           const existingLf = (cur as { lifeform?: { species?: string } | null }).lifeform ?? null;
           const lifeformPatch = detectedSpecies !== null && (existingLf === null || existingLf.species !== detectedSpecies)

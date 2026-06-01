@@ -1423,19 +1423,25 @@ function openGoalsSettings(
         if (!p) return null;
         const direct = p.lifeform?.species;
         if (direct) return direct;
-        // Fallback — prefix-derive.
+        // v0.0.598 fallback — pick MAX-level building's species (active
+        // species, not residual historical buildings).
         const lfb = p.lifeform_buildings ?? {};
+        const speciesMaxLevel: Record<string, number> = {};
         for (const [name, lvl] of Object.entries(lfb)) {
           if (lvl <= 0) continue;
           const tid = TECH_ID_BY_NAME[name];
           if (typeof tid !== "number") continue;
           const prefix = Math.floor(tid / 1000);
-          if (prefix === 11) return "humans";
-          if (prefix === 12) return "rocktal";
-          if (prefix === 13) return "mechas";
-          if (prefix === 14) return "kaelesh";
+          const sp = prefix === 11 ? "humans" : prefix === 12 ? "rocktal" : prefix === 13 ? "mechas" : prefix === 14 ? "kaelesh" : null;
+          if (!sp) continue;
+          speciesMaxLevel[sp] = Math.max(speciesMaxLevel[sp] ?? 0, lvl);
         }
-        return null;
+        let best: string | null = null;
+        let bestMax = 0;
+        for (const [sp, mx] of Object.entries(speciesMaxLevel)) {
+          if (mx > bestMax) { bestMax = mx; best = sp; }
+        }
+        return best;
       };
       const refreshSpeciesTags = (): void => {
         for (const radio of lfPlanetRadios()) {
