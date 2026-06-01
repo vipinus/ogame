@@ -376,7 +376,13 @@ export async function startSidecar(
   // v0.0.502 — also track last arrival_at so we can detect phase transition
   // (arrival_at jumps from past to future = fleet entered next phase, which
   // for expedition mission means exploration ended → returning home).
-  const expLastSeen = new Map<string, { origin: readonly number[]; dest: readonly number[]; arrival_at: number | null }>();
+  // v0.0.574 — also track return_at so Signal B can distinguish:
+  //   - fleet disappear with return_at === null → entered HOLDING (skip)
+  //   - fleet disappear with return_at !== null → truly RETURNED HOME (fire)
+  // operator 2026-06-01 实证: fleet 2353595 1:486 entered holding at 15:19,
+  // disappeared from /movement, Signal B mis-fired (太早, no debris yet),
+  // dedup then blocked the real "returned home" disappear @ 15:40 → no harvest.
+  const expLastSeen = new Map<string, { origin: readonly number[]; dest: readonly number[]; arrival_at: number | null; return_at: number | null }>();
   const triggerDispatch = (): void => {
     if (!priorityMergerRef) return;
     try { priorityMergerRef.dispatch(stateRef.current ?? emptyWorldState()); }
@@ -1568,7 +1574,7 @@ export async function startSidecar(
           currentExpIds.add(f.id);
           const prev = expLastSeen.get(f.id);
           const prevArrival = prev?.arrival_at ?? null;
-          expLastSeen.set(f.id, { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null });
+          expLastSeen.set(f.id, { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null, return_at: f.return_at ?? null });
           // Signal A — return_at appeared
           if (f.return_at !== null && f.return_at !== undefined) {
             fireFor(f.id, f.origin, f.dest, `return_at set (=${f.return_at})`);
@@ -1579,16 +1585,35 @@ export async function startSidecar(
             fireFor(f.id, f.origin, f.dest, `arrival_at jumped past→future (${prevArrival}→${f.arrival_at}) — phase transition`);
           }
         }
-        // Signal B: any expLastSeen entry NOT in current snapshot → fleet disappeared (returned home).
+        // Signal B: fleet disappeared from outbound. ogame removes mission=15
+        // fleet from /movement when it's HOLDING at :16 (60min) — same
+        // disappearance event as truly returning home. Distinguish:
+        //   - last-seen return_at === null → fleet entered HOLDING, skip
+        //     (debris not yet generated, fleet will reappear as RETURNING)
+        //   - last-seen return_at !== null → fleet was returning, now home
+        //     (fire harvest)
+        // v0.0.574 — operator 2026-06-01 实证: 1:486 fleet 2353595 false-fired
+        // at holding-entry, dedup then blocked real return → no harvest.
         for (const [fid, info] of Array.from(expLastSeen.entries())) {
           if (currentExpIds.has(fid)) continue;
-          fireFor(fid, info.origin, info.dest, "fleet disappeared from outbound (returned home)");
+          if (info.return_at === null) {
+            // Holding entry — keep expLastSeen so the next reappearance
+            // (returning phase) can update return_at and Signal A/B will
+            // fire correctly.
+            continue;
+          }
+          fireFor(fid, info.origin, info.dest, "fleet disappeared from outbound (was returning → home)");
           expLastSeen.delete(fid);
         }
-        // GC firedDebrisCheckFor for fleet IDs no longer present.
-        for (const fid of Array.from(firedDebrisCheckFor)) {
-          if (!currentExpIds.has(fid)) firedDebrisCheckFor.delete(fid);
-        }
+        // v0.0.567 — GC removed. Operator 2026-06-01 observed 3 mission=8
+        // fleets dispatched for the SAME expedition return. Root cause: the
+        // old GC deleted fid from firedDebrisCheckFor as soon as the fleet
+        // left current outbound. But ogame /movement scrape returns the
+        // returning-phase fleet INTERMITTENTLY (flap in/out across snapshots),
+        // and on each re-appearance Signal A's `return_at` check fired with
+        // an empty dedup Set → re-dispatch. fleet IDs are monotonic per
+        // ogame universe; retaining the Set has negligible memory cost
+        // (~few hundred entries/day, sidecar restart clears it).
       } catch (e) {
         console.error("[ogamex/sidecar] debris-check threw", e);
       }
