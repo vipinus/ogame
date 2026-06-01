@@ -1143,7 +1143,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.595";
+  const USERSCRIPT_VERSION = "0.0.596";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2518,6 +2518,27 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (hasAny) {
           const cur = patchPlanets[pid];
           const curResources = (cur as { resources?: { m?: number; c?: number; d?: number; e?: number } }).resources ?? { m: 0, c: 0, d: 0, e: 0 };
+          // v0.0.596 — operator 2026-06-01 "怎么都是未设置, 全部设置过了":
+          // pollEmpire was writing lifeform_buildings but NOT lifeform.species,
+          // and refreshOnePage's species detection only fires when operator
+          // visits lfbuildings tab. Detect species here from lifeform_buildings
+          // prefix (111xx humans / 121xx rocktal / 131xx mechas / 141xx kaelesh)
+          // so any ogame poll auto-fills species.
+          let detectedSpecies: string | null = null;
+          for (const [name, lvl] of Object.entries(lifeform_buildings)) {
+            if (lvl <= 0) continue;
+            const tid = TECH_ID_BY_NAME[name];
+            if (typeof tid !== "number") continue;
+            const prefix = Math.floor(tid / 1000);
+            if (prefix === 11) { detectedSpecies = "humans"; break; }
+            if (prefix === 12) { detectedSpecies = "rocktal"; break; }
+            if (prefix === 13) { detectedSpecies = "mechas"; break; }
+            if (prefix === 14) { detectedSpecies = "kaelesh"; break; }
+          }
+          const existingLf = (cur as { lifeform?: { species?: string } | null }).lifeform ?? null;
+          const lifeformPatch = detectedSpecies !== null && (existingLf === null || existingLf.species !== detectedSpecies)
+            ? { lifeform: { ...(existingLf ?? {}), species: detectedSpecies } }
+            : {};
           const merged = {
             ...cur,
             ships: { ...((cur as { ships?: Record<string, number> }).ships ?? {}), ...ships },
@@ -2527,6 +2548,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             ...(Object.keys(lifeform_buildings).length > 0 ? {
               lifeform_buildings: { ...((cur as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {}), ...lifeform_buildings },
             } : {}),
+            ...lifeformPatch,
             ...(hasResources ? { resources: { ...curResources, ...candResources } } : {}),
             build_q: buildQEffective, // ALWAYS present (no `... ? : {}` gate)
           };

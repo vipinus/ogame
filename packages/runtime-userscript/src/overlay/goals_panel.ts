@@ -12,6 +12,7 @@
  * as the existing /v1/debug page.
  */
 import { LIFEFORM_TECH } from "@ogamex/shared";
+import { TECH_ID_BY_NAME } from "@ogamex/shared";
 
 /** Prereq tree node — recursive structure mirroring TECH_TREE's `requires`
  *  graph for the player's main goal. Attached by sidecar listGoals only on
@@ -1407,13 +1408,34 @@ function openGoalsSettings(
       const speciesLabelMap: Record<string, string> = {
         humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什",
       };
-      // v0.0.595 — operator 2026-06-01 "重新选择种族的时候更新你的数据":
-      // read species LIVE from store every refresh (no snapshot). store is
-      // live reference — boot.ts sniffer auto-updates lifeform.species when
-      // ogame UI reflects a change.
+      // v0.0.595/596 — operator 2026-06-01 "没有拿种族的 api 吗 / 怎么都
+      // 是未设置, 全部设置过了". Two-tier species lookup:
+      //   1. store.planets[pid].lifeform.species (if boot.ts refreshOnePage
+      //      visited lfbuildings page) — direct answer
+      //   2. Fallback: infer from lifeform_buildings prefix. Building IDs
+      //      111xx = humans, 121xx = rocktal, 131xx = mechas, 141xx = kaelesh.
+      //      Take any building with lvl > 0, look up its tech ID, prefix → species.
       const livePlanetSpecies = (pid: string): string | null => {
-        const lf = (storeRef?.state?.planets?.[pid] as { lifeform?: { species?: string } | null } | undefined)?.lifeform;
-        return lf?.species ?? null;
+        const p = storeRef?.state?.planets?.[pid] as {
+          lifeform?: { species?: string } | null;
+          lifeform_buildings?: Record<string, number>;
+        } | undefined;
+        if (!p) return null;
+        const direct = p.lifeform?.species;
+        if (direct) return direct;
+        // Fallback — prefix-derive.
+        const lfb = p.lifeform_buildings ?? {};
+        for (const [name, lvl] of Object.entries(lfb)) {
+          if (lvl <= 0) continue;
+          const tid = TECH_ID_BY_NAME[name];
+          if (typeof tid !== "number") continue;
+          const prefix = Math.floor(tid / 1000);
+          if (prefix === 11) return "humans";
+          if (prefix === 12) return "rocktal";
+          if (prefix === 13) return "mechas";
+          if (prefix === 14) return "kaelesh";
+        }
+        return null;
       };
       const refreshSpeciesTags = (): void => {
         for (const radio of lfPlanetRadios()) {
