@@ -826,7 +826,71 @@ function openGoalsSettings(
           <button data-pb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
         </div>
       </div>
-      <!-- Shared pane (used by 5 non-planet-build tabs) -->
+      <!-- v0.0.589 — 月球建筑独立 pane (类似 planet-build, 仅月球 + 月球建筑) -->
+      <div data-pane="moon-build" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">月球 (单选, 正在建造的月球灰显不可选)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
+            <div style="padding:4px 8px; display:flex; gap:16px; border-bottom:1px solid #1a2030;">
+              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                <input data-mb-moon type="radio" name="mb-moon-radio" value="all-moons" style="vertical-align:middle;"/>
+                <span>🌙 所有月球</span>
+              </label>
+              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
+                <input data-mb-moon type="radio" name="mb-moon-radio" value="idle-moons" style="vertical-align:middle;"/>
+                <span>🌙 空闲月球</span>
+              </label>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
+            ${sortedCoordKeys
+              .filter((k) => groupedByCoord.get(k)!.moon)
+              .map((k) => {
+                const { moon } = groupedByCoord.get(k)!;
+                const mb = moon!;
+                const occ = planetOccupied(mb.id);
+                const bq = planetBuildQ(mb.id);
+                const eta = occ && bq?.ends_at ? Math.max(0, Math.round((bq.ends_at - nowMs) / 60000)) : 0;
+                const tip = occ ? `title="ogame 在建中, ${eta}min 后完成"` : "";
+                const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
+                const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[${eta}m]</span>` : "";
+                return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
+                  <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+                  <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; ${dim}" ${tip}>
+                    <input data-mb-moon type="radio" name="mb-moon-radio" value="${escapeHtml(mb.id)}" ${occ ? "disabled" : ""} style="vertical-align:middle;"/>
+                    <span>🌙 ${escapeHtml(mb.name ?? "月球")}${occSuffix}</span>
+                  </label>
+                </div>`;
+              }).join("")}
+            </div>
+          </div>
+        </div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">建筑 (单选)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="lunarBase" style="vertical-align:middle;"/><span>月球基地</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="sensorPhalanx" style="vertical-align:middle;"/><span>传感器</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="jumpgate" style="vertical-align:middle;"/><span>跳跃门</span></label>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <input data-mb-level type="number" min="1" max="50" value="" placeholder="例: 2" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
+        </div>
+        <div style="padding:6px 0; min-height:22px;">
+          <span data-mb-desc style="color:#7cfc00; font-size:11px;"></span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <input data-mb-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
+          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
+          <span data-mb-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+          <button data-mb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+        </div>
+      </div>
+      <!-- Shared pane (used by 4 non-planet/moon-build tabs) -->
       <div data-pane="shared" style="display:none;">
       <!-- Operator 2026-05-29: 自然语言入口 — Gemini 解析 → 填表单 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
@@ -915,6 +979,7 @@ function openGoalsSettings(
 
     // v0.0.582 — tab switching. Activate "planet-build" by default.
     const planetBuildPane = m.querySelector<HTMLElement>('[data-pane="planet-build"]');
+    const moonBuildPane = m.querySelector<HTMLElement>('[data-pane="moon-build"]');
     const sharedPane = m.querySelector<HTMLElement>('[data-pane="shared"]');
     const applyTab = (tabId: TabId): void => {
       const tab = TAB_DEFS.find((t) => t.id === tabId);
@@ -927,15 +992,12 @@ function openGoalsSettings(
         btn.style.borderColor = active ? "#3a5a82" : "#2a3a52";
         btn.style.fontWeight = active ? "600" : "normal";
       }
-      // v0.0.583 — pane switch: planet-build has its own dedicated form,
-      // other 5 tabs share the legacy form.
-      if (tabId === "planet-build") {
-        if (planetBuildPane) planetBuildPane.style.display = "";
-        if (sharedPane) sharedPane.style.display = "none";
-        return; // skip shared-form filtering below
-      }
-      if (planetBuildPane) planetBuildPane.style.display = "none";
-      if (sharedPane) sharedPane.style.display = "";
+      // v0.0.583 — pane switch: planet-build / moon-build have dedicated
+      // forms; the other 4 tabs share the legacy form.
+      if (planetBuildPane) planetBuildPane.style.display = tabId === "planet-build" ? "" : "none";
+      if (moonBuildPane) moonBuildPane.style.display = tabId === "moon-build" ? "" : "none";
+      if (sharedPane) sharedPane.style.display = (tabId === "planet-build" || tabId === "moon-build") ? "none" : "";
+      if (tabId === "planet-build" || tabId === "moon-build") return; // skip shared-form filtering below
       if (!typeSel) return;
       // Refilter goal type options
       typeSel.innerHTML = tab.goalTypes
@@ -1074,6 +1136,100 @@ function openGoalsSettings(
       } else {
         pbStatusEl.textContent = `部分失败: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
         pbStatusEl.style.color = "#a06060";
+      }
+    });
+
+    // v0.0.589 — moon-build pane wiring (mirrors planet-build).
+    const MOON_BUILDING_LABEL: Record<string, string> = {
+      lunarBase: "月球基地", sensorPhalanx: "传感器", jumpgate: "跳跃门",
+    };
+    const moonCoordById = new Map<string, string>();
+    for (const k of sortedCoordKeys) {
+      const { moon } = groupedByCoord.get(k)!;
+      if (moon) moonCoordById.set(moon.id, k);
+    }
+    const mbMoonRadios = (): HTMLInputElement[] => Array.from(
+      m.querySelectorAll<HTMLInputElement>('input[name="mb-moon-radio"]'),
+    );
+    const mbBuildingRadios = (): HTMLInputElement[] => Array.from(
+      m.querySelectorAll<HTMLInputElement>('input[name="mb-building-radio"]'),
+    );
+    const mbLevelInput = m.querySelector<HTMLInputElement>("[data-mb-level]");
+    const mbDescEl = m.querySelector<HTMLElement>("[data-mb-desc]");
+    const mbPriorityInput = m.querySelector<HTMLInputElement>("[data-mb-priority]");
+    const mbStatusEl = m.querySelector<HTMLElement>("[data-mb-status]");
+    const mbCreateBtn = m.querySelector<HTMLButtonElement>("[data-mb-create]");
+    const refreshMbDesc = (): void => {
+      if (!mbDescEl) return;
+      const moonRadio = mbMoonRadios().find((r) => r.checked);
+      const buildingRadio = mbBuildingRadios().find((r) => r.checked);
+      const lvl = parseInt(mbLevelInput?.value ?? "", 10);
+      if (!moonRadio || !buildingRadio || !lvl) {
+        mbDescEl.textContent = "（选月球 + 建筑 + 级别后显示）";
+        mbDescEl.style.color = "#5a7090";
+        return;
+      }
+      const bLabel = MOON_BUILDING_LABEL[buildingRadio.value] ?? buildingRadio.value;
+      if (moonRadio.value === "all-moons") {
+        mbDescEl.textContent = `目标在 所有月球 建造 ${bLabel} ${lvl} 级`;
+      } else if (moonRadio.value === "idle-moons") {
+        mbDescEl.textContent = `目标在 所有空闲月球 建造 ${bLabel} ${lvl} 级`;
+      } else {
+        const coord = moonCoordById.get(moonRadio.value) ?? "?";
+        mbDescEl.textContent = `目标在 ${coord}(月球) 建造 ${bLabel} ${lvl} 级`;
+      }
+      mbDescEl.style.color = "#7cfc00";
+    };
+    for (const r of mbMoonRadios()) r.addEventListener("change", refreshMbDesc);
+    for (const r of mbBuildingRadios()) r.addEventListener("change", refreshMbDesc);
+    mbLevelInput?.addEventListener("input", refreshMbDesc);
+    refreshMbDesc();
+    mbCreateBtn?.addEventListener("click", async () => {
+      if (!mbStatusEl) return;
+      const moonRadio = mbMoonRadios().find((r) => r.checked);
+      const buildingRadio = mbBuildingRadios().find((r) => r.checked);
+      const lvl = parseInt(mbLevelInput?.value ?? "", 10);
+      const pri = parseInt(mbPriorityInput?.value ?? "5", 10) || 5;
+      if (!moonRadio) { mbStatusEl.textContent = "请选月球"; mbStatusEl.style.color = "#a06060"; return; }
+      if (!buildingRadio) { mbStatusEl.textContent = "请选建筑"; mbStatusEl.style.color = "#a06060"; return; }
+      if (!lvl || lvl < 1 || lvl > 50) { mbStatusEl.textContent = "级别须 1-50"; mbStatusEl.style.color = "#a06060"; return; }
+      mbStatusEl.textContent = "创建中…"; mbStatusEl.style.color = "#7080a0";
+      let moonsToCreate: string[];
+      if (moonRadio.value === "all-moons") {
+        moonsToCreate = sortedCoordKeys
+          .map((k) => groupedByCoord.get(k)?.moon)
+          .filter((p): p is StorePlanet => !!p)
+          .map((p) => p.id);
+      } else if (moonRadio.value === "idle-moons") {
+        moonsToCreate = sortedCoordKeys
+          .map((k) => groupedByCoord.get(k)?.moon)
+          .filter((p): p is StorePlanet => !!p && !planetOccupied(p.id))
+          .map((p) => p.id);
+      } else {
+        moonsToCreate = [moonRadio.value];
+      }
+      let okCount = 0; const errs: string[] = [];
+      for (const mid of moonsToCreate) {
+        try {
+          const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "build",
+              target: { building: buildingRadio.value, level: lvl },
+              planet: mid,
+              priority: pri,
+            }),
+          });
+          if (r.ok) okCount++; else errs.push(`${mid}: HTTP ${r.status}`);
+        } catch (e) { errs.push(`${mid}: ${(e as Error).message ?? e}`); }
+      }
+      if (errs.length === 0) {
+        mbStatusEl.textContent = `✓ 已创建 ${okCount} 个任务`;
+        mbStatusEl.style.color = "#7cfc00";
+      } else {
+        mbStatusEl.textContent = `部分失败: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
+        mbStatusEl.style.color = "#a06060";
       }
     });
 
