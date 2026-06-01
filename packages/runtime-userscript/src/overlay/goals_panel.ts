@@ -1872,9 +1872,38 @@ function openGoalsSettings(
         }
         lrDescEl.style.color = "#7cfc00";
       };
+      const speciesLabelLrMap: Record<string, string> = { humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什" };
+      // v0.0.607 — operator 2026-06-01 bug ①: species change should dim
+      // planet rows whose species ≠ selected (mirror lf-build).
+      const applyLrSpeciesFilter = (species: string): void => {
+        for (const radio of lrPlanetRadios()) {
+          const pid = radio.value;
+          const sp = livePlanetSpecies(pid);
+          const matches = sp === species;
+          const label = radio.closest("label") as HTMLElement | null;
+          if (!label) continue;
+          if (!matches) {
+            radio.disabled = true;
+            label.style.opacity = "0.3";
+            label.style.cursor = "not-allowed";
+            label.title = sp
+              ? `该星球 species=${speciesLabelLrMap[sp] ?? sp}, 不匹配当前选择 (${speciesLabelLrMap[species] ?? species})`
+              : `该星球未识别 species`;
+          } else {
+            radio.disabled = false;
+            label.style.opacity = "1";
+            label.style.cursor = "pointer";
+            label.title = "";
+          }
+        }
+        const checked = lrPlanetRadios().find((r) => r.checked);
+        if (checked?.disabled) checked.checked = false;
+      };
       const initLrSpecies = lrSpeciesRadios().find((r) => r.checked)?.value ?? "kaelesh";
       renderLrResearch(initLrSpecies);
+      applyLrSpeciesFilter(initLrSpecies);
       for (const r of lrSpeciesRadios()) r.addEventListener("change", () => {
+        applyLrSpeciesFilter(r.value);
         renderLrResearch(r.value);
         refreshLrDesc();
       });

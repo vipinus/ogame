@@ -23,15 +23,28 @@ export function extractTechLevels(doc: Document): Record<string, number> {
   for (const li of items) {
     const numericId = li.getAttribute("data-technology");
     if (!numericId) continue;
-    const stringId = OGAME_DATA_TECHNOLOGY_REVERSE[numericId];
-    if (!stringId) continue;
     const levelEl = li.querySelector<HTMLElement>(".level");
     if (!levelEl) continue;
     const dv = levelEl.getAttribute("data-value");
     const txt = levelEl.textContent?.trim();
     const raw = dv ?? txt ?? "";
     const lvl = Number.parseInt(raw, 10);
-    if (Number.isFinite(lvl)) out[stringId] = lvl;
+    if (!Number.isFinite(lvl)) continue;
+    const stringId = OGAME_DATA_TECHNOLOGY_REVERSE[numericId];
+    if (stringId) {
+      out[stringId] = lvl;
+      continue;
+    }
+    // v0.0.607 — operator 2026-06-01 "要根据 ogame 当前数据显示". Unknown
+    // numeric IDs (e.g., lifeform research entries not yet catalogued in
+    // OGAME_DATA_TECHNOLOGY) preserved as raw `id_<num>` key so downstream
+    // stores still see count + level even without label resolution.
+    // Lifeform research IDs are typically 12xxx-14xxx range (humans
+    // 112xx, rocktal 122xx, mechas 132xx, kaelesh 142xx).
+    const nid = Number.parseInt(numericId, 10);
+    if (Number.isFinite(nid) && nid >= 11000 && nid < 15000) {
+      out[`id_${numericId}`] = lvl;
+    }
   }
   return out;
 }
