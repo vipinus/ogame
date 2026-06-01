@@ -91,8 +91,14 @@ export interface CpPostOptions {
   endpoint: string;
   /** Source planet/moon PID → cp= URL param + session-cp shift. */
   sourcePlanetId: string;
-  /** Token manager. cpPostWithRetry refreshes / invalidates as needed. */
-  token: TokenManager;
+  /**
+   * Token manager — default token source. cpPostWithRetry calls
+   * `getFreshToken()` per attempt and `set(newAjaxToken)` on success.
+   * OPTIONAL when `tokenProvider` is set (v0.0.557 extension for flows
+   * that don't share the global fleet ajax token: jumpgate overlay
+   * token, discover galaxy token cache, etc).
+   */
+  token?: TokenManager;
   /** Action label for logs. */
   action: string;
   /** "GET" for overlay fetches; "POST" (default) for everything else. */
@@ -104,6 +110,35 @@ export interface CpPostOptions {
   maxAttempts?: number;
   /** Pass-through to fetchWithCpBypassBusy. */
   skipRestore?: boolean;
+  /**
+   * v0.0.557 — Custom token provider. When set, REPLACES the default
+   * `opts.token.getFreshToken()` initial fetch. Use for flows whose
+   * token comes from a non-TokenManager source: jumpgate overlay HTML
+   * scrape, discover galaxy chain cache (`__ogamexLastGalaxyToken`),
+   * etc. Called once at the start of cpPostWithRetry; subsequent
+   * iterations use the local `token` var (updated by newAjaxToken in
+   * responses) UNLESS `refreshTokenOnInvalid` re-fires it.
+   */
+  tokenProvider?: () => Promise<string>;
+  /**
+   * v0.0.557 — Custom success-flag detector. When set, REPLACES the
+   * default `success===true || status===true || status==="success"`
+   * check. Use for endpoints that return data without a success flag
+   * (galaxy fetchGalaxyContent returns `{token, system: {...}}` with
+   * no top-level success). Return true → cpPostWithRetry treats as
+   * success → captures newAjaxToken (if present + opts.token set) and
+   * returns json+raw. Return false → falls into error/retry path.
+   */
+  successCheck?: (json: Record<string, unknown>) => boolean;
+  /**
+   * v0.0.557 — Custom token-refresh on TOKEN_INVALID. When set,
+   * REPLACES the default `opts.token.invalidate() + getFreshToken()`
+   * path. Use for flows whose token is refreshed by a domain-specific
+   * step: re-GET overlay (jumpgate), re-fetch galaxy chunk (discover).
+   * Called when attempt 1 hits TOKEN_INVALID_RE; the returned token
+   * becomes the local `token` for attempt 2's buildBody.
+   */
+  refreshTokenOnInvalid?: () => Promise<string>;
 }
 
 export interface CpPostResult {
@@ -119,7 +154,15 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
   const { fetchWithCpBypassBusy } = await import("./safe_fetch.js");
   const maxAttempts = opts.maxAttempts ?? 4;
   const method = opts.method ?? "POST";
-  let token = opts.token.getFreshToken();
+  // v0.0.557 — token sourcing via tokenProvider OR opts.token. Caller
+  // must supply at least one; both undefined is a programmer error.
+  if (!opts.token && !opts.tokenProvider) {
+    throw new FleetApiError(`${opts.action}: cpPostWithRetry needs opts.token (TokenManager) or opts.tokenProvider`);
+  }
+  const initialToken = opts.tokenProvider
+    ? await opts.tokenProvider()
+    : opts.token!.getFreshToken();
+  let token = initialToken;
   let lastErrMsg = "";
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const body = opts.buildBody ? opts.buildBody(token) : undefined;
@@ -147,10 +190,14 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
     if (!json) return { json: null, raw, status: r.status };
     // v0.0.555 — accept "status":"success" string form too (ogame v12
     // buildlistactions endpoint returns it instead of success:true boolean).
-    const okFlag = json["success"] === true || json["status"] === true || json["status"] === "success";
+    // v0.0.557 — custom successCheck overrides default for endpoints without
+    // a success flag (e.g. galaxy fetchGalaxyContent).
+    const okFlag = opts.successCheck
+      ? opts.successCheck(json)
+      : (json["success"] === true || json["status"] === true || json["status"] === "success");
     if (okFlag) {
       const newToken = (json as { newAjaxToken?: unknown }).newAjaxToken;
-      if (typeof newToken === "string") opts.token.set(newToken);
+      if (typeof newToken === "string" && opts.token) opts.token.set(newToken);
       return { json, raw, status: r.status };
     }
     const errsField = (json as { errors?: Array<{ message?: string }> }).errors;
@@ -160,15 +207,25 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
       ?? `success=${json["success"]} raw=${raw.slice(0, 200)}`;
     lastErrMsg = errMsg;
     if (attempt === 1 && TOKEN_INVALID_RE.test(errMsg)) {
-      await opts.token.invalidate();
-      token = opts.token.getFreshToken();
+      // v0.0.557 — refreshTokenOnInvalid hook overrides default
+      // TokenManager.invalidate+getFreshToken path. Use for domain-
+      // specific refresh (re-GET overlay, re-fetch galaxy chunk).
+      if (opts.refreshTokenOnInvalid) {
+        token = await opts.refreshTokenOnInvalid();
+      } else if (opts.token) {
+        await opts.token.invalidate();
+        token = opts.token.getFreshToken();
+      }
       continue;
     }
     if (TRANSIENT_RACE_RE.test(errMsg) && attempt < maxAttempts) {
       const backoffMs = 200 * attempt;
       console.warn(`[cpPost/${opts.action}] attempt=${attempt} transient race (${errMsg.slice(0, 80)}) — backoff ${backoffMs}ms`);
       const newToken = (json as { newAjaxToken?: unknown }).newAjaxToken;
-      if (typeof newToken === "string") { opts.token.set(newToken); token = newToken; }
+      if (typeof newToken === "string") {
+        if (opts.token) opts.token.set(newToken);
+        token = newToken;
+      }
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
       continue;
     }
