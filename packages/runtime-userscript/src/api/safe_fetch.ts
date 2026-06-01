@@ -210,24 +210,46 @@ export async function fetchWithCp(
         // newAjaxToken from response — fire-and-forget was leaking token
         // rotations to global ogame state without our tokenManager learning
         // about them (operator: "没有恢复cp和token").
-        try {
-          const restoreUrl = `/game/index.php?page=componentOnly&component=overview&ajax=1&cp=${encodeURIComponent(operatorCp)}`;
-          // v0.0.578 — restore也加 10s timeout, 防止 hang lock mutex
-          const restoreRes = await fetchWithTimeout(restoreUrl, {
-            credentials: "same-origin",
-            headers: { "X-Requested-With": "XMLHttpRequest" },
-          }, 10_000);
-          // Surface restore-side newAjaxToken on documentElement.dataset so
-          // tokenManager.refresh() (which reads dataset.ogamexToken) picks it
-          // up on next read. fire-and-forget body parse — must not throw.
+        // v0.0.580 — restore retry × 3 with 250/500/1000ms backoff. Operator
+        // 2026-06-01 "会不会又发生 cp shift 跳屏": single-attempt restore
+        // could leave operator stuck on origin planet if that ONE call also
+        // hit timeout/network blip. Three attempts make the failure rate
+        // ≈ (single-fail-rate)³ — typically <0.1% even under flaky network.
+        // Restore is idempotent (cp= overview ajax) so retry is safe.
+        const restoreUrl = `/game/index.php?page=componentOnly&component=overview&ajax=1&cp=${encodeURIComponent(operatorCp)}`;
+        let restoreOk = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
           try {
-            const text = await restoreRes.text();
-            const m = text.match(/["']newAjaxToken["']\s*:\s*["']([a-zA-Z0-9_-]+)["']/);
-            if (m && _docRef) {
-              (_docRef.documentElement as HTMLElement).dataset["ogamexToken"] = m[1]!;
+            const restoreRes = await fetchWithTimeout(restoreUrl, {
+              credentials: "same-origin",
+              headers: { "X-Requested-With": "XMLHttpRequest" },
+            }, 10_000);
+            if (restoreRes.ok) {
+              // Surface restore-side newAjaxToken on documentElement.dataset so
+              // tokenManager.refresh() (which reads dataset.ogamexToken) picks it
+              // up on next read. fire-and-forget body parse — must not throw.
+              try {
+                const text = await restoreRes.text();
+                const m = text.match(/["']newAjaxToken["']\s*:\s*["']([a-zA-Z0-9_-]+)["']/);
+                if (m && _docRef) {
+                  (_docRef.documentElement as HTMLElement).dataset["ogamexToken"] = m[1]!;
+                }
+              } catch (_) { /* token capture is best-effort */ }
+              restoreOk = true;
+              break;
             }
-          } catch (_) { /* token capture is best-effort */ }
-        } catch (_) { /* best-effort restore */ }
+            console.warn(`[safe_fetch/restore] attempt=${attempt} HTTP ${restoreRes.status} — backoff before retry`);
+          } catch (e) {
+            const errName = (e as { name?: string }).name;
+            console.warn(`[safe_fetch/restore] attempt=${attempt} ${errName === "AbortError" ? "TIMEOUT" : "ERROR"}: ${(e as Error).message ?? e}`);
+          }
+          if (attempt < 3) {
+            await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+          }
+        }
+        if (!restoreOk) {
+          console.warn(`[safe_fetch/restore] gave up after 3 attempts for cp=${operatorCp} — operator may see top-bar stuck on ${sourceStr}; manual click recovers`);
+        }
       }
     } finally {
       inFlightCpFetches.delete(lockPromise);
