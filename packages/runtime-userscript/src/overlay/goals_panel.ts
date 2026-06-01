@@ -1059,9 +1059,28 @@ function openGoalsSettings(
     const pbPriorityInput = m.querySelector<HTMLInputElement>("[data-pb-priority]");
     const pbStatusEl = m.querySelector<HTMLElement>("[data-pb-status]");
     const pbCreateBtn = m.querySelector<HTMLButtonElement>("[data-pb-create]");
-    // v0.0.585 — operator 2026-06-01 "加, 不是改": two top radios coexist —
-    // "所有星球" (literal all) + "空闲星球" (only idle). Neither is disabled;
-    // submit handler does the filtering per semantics.
+    // v0.0.590 — operator 2026-06-01 "有月球不能选, 所有月球就不能选, 星球
+    // 页面也是": if ANY body is occupied, the "所有" radio doesn't make sense
+    // (literally cannot include them). Disable + gray it out, force operator
+    // to pick "空闲" or a single body. "空闲" remains available always.
+    // v0.0.590-591 — "有占用 ⇒ disable 所有", "无空闲 ⇒ disable 空闲".
+    let anyPlanetOccupied = false, anyPlanetIdle = false;
+    for (const k of sortedCoordKeys) {
+      const planet = groupedByCoord.get(k)?.planet;
+      if (!planet) continue;
+      if (planetOccupied(planet.id)) anyPlanetOccupied = true;
+      else anyPlanetIdle = true;
+    }
+    const dimRadio = (radio: HTMLInputElement | null, tip: string): void => {
+      if (!radio) return;
+      radio.disabled = true;
+      const lbl = radio.closest("label") as HTMLElement | null;
+      if (lbl) { lbl.style.opacity = "0.4"; lbl.style.cursor = "not-allowed"; lbl.title = tip; }
+    };
+    const pbAllPlanetsRadio = m.querySelector<HTMLInputElement>('input[name="pb-planet-radio"][value="all-planets"]');
+    const pbIdlePlanetsRadio = m.querySelector<HTMLInputElement>('input[name="pb-planet-radio"][value="idle-planets"]');
+    if (anyPlanetOccupied) dimRadio(pbAllPlanetsRadio, "有星球被占用, 不能选 '所有星球' (改选 '空闲星球' 或单个)");
+    if (!anyPlanetIdle) dimRadio(pbIdlePlanetsRadio, "无空闲星球, 不能选 '空闲星球'");
     const refreshPbDesc = (): void => {
       if (!pbDescEl) return;
       const planetRadio = pbPlanetRadios().find((r) => r.checked);
@@ -1159,6 +1178,18 @@ function openGoalsSettings(
     const mbPriorityInput = m.querySelector<HTMLInputElement>("[data-mb-priority]");
     const mbStatusEl = m.querySelector<HTMLElement>("[data-mb-status]");
     const mbCreateBtn = m.querySelector<HTMLButtonElement>("[data-mb-create]");
+    // v0.0.590-591 — same rule as planet pane.
+    let anyMoonOccupied = false, anyMoonIdle = false;
+    for (const k of sortedCoordKeys) {
+      const moon = groupedByCoord.get(k)?.moon;
+      if (!moon) continue;
+      if (planetOccupied(moon.id)) anyMoonOccupied = true;
+      else anyMoonIdle = true;
+    }
+    const mbAllMoonsRadio = m.querySelector<HTMLInputElement>('input[name="mb-moon-radio"][value="all-moons"]');
+    const mbIdleMoonsRadio = m.querySelector<HTMLInputElement>('input[name="mb-moon-radio"][value="idle-moons"]');
+    if (anyMoonOccupied) dimRadio(mbAllMoonsRadio, "有月球被占用, 不能选 '所有月球' (改选 '空闲月球' 或单个)");
+    if (!anyMoonIdle) dimRadio(mbIdleMoonsRadio, "无空闲月球, 不能选 '空闲月球'");
     const refreshMbDesc = (): void => {
       if (!mbDescEl) return;
       const moonRadio = mbMoonRadios().find((r) => r.checked);
