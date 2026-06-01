@@ -219,6 +219,8 @@ export function planGoal(goal: Goal, state: WorldState): PlanResult {
       return planFleetSendGoal(goal, state);
     case "lifeform_building":
       return planLifeformBuildingGoal(goal, state);
+    case "lifeform_research":
+      return planLifeformResearchGoal(goal, state);
     case "species_discovery":
       return planSpeciesDiscoveryGoal(goal, state);
     case "jumpgate":
@@ -491,6 +493,53 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
     preconds: [],
     expires_at: Date.now() + DIRECTIVE_TTL_MS,
     reason: `lifeform build ${building} L${current + 1} on ${planet.coords?.join(":") ?? planet.id}`,
+    goal_id: goal.id,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// lifeform_research (v0.0.602 — operator 2026-06-01)
+// ────────────────────────────────────────────────────────────────────────────
+
+function planLifeformResearchGoal(goal: Goal, state: WorldState): PlanResult {
+  const target = goal.target as { tech?: string; level?: number; planet?: string };
+  const tech = typeof target.tech === "string" ? target.tech : "";
+  const level = typeof target.level === "number" ? target.level : 0;
+  if (!tech) return { blocked: "lifeform_research goal missing target.tech" };
+  if (level <= 0) return { blocked: "lifeform_research goal needs target.level > 0" };
+  const planet = resolvePlanet(target.planet ?? goal.planet, state) ?? Object.values(state.planets ?? {})[0];
+  if (!planet) return { blocked: "lifeform_research: no planet" };
+  const species = ((planet.lifeform as { species?: string } | null)?.species ?? "humans") as keyof typeof LIFEFORM_TECH;
+  const catalog = LIFEFORM_TECH[species];
+  if (!catalog) return { blocked: `lifeform_research: unknown species ${species}` };
+  const entry = catalog.research[tech];
+  if (!entry) return { blocked: `lifeform_research: ${tech} not in ${species} catalog` };
+  // Current level lookup — ogame stores lifeform research per-planet too,
+  // but our extractor doesn't surface it yet (TODO: add lifeform_research
+  // field to planet state). For now compare against 0 → always allow up to
+  // target. ApiExec will dispatch via lfresearch component endpoint; if
+  // already at target ogame returns no-op + ack.
+  const lfResearch = (planet as { lifeform_research?: Record<string, number> }).lifeform_research ?? {};
+  const current = lfResearch[tech] ?? 0;
+  if (current >= level) {
+    return { blocked: `lifeform_research: already at or above target — ${tech} L${current} ≥ ${level}` };
+  }
+  // Output directive — ApiExec dispatch handles via lfresearch component.
+  return {
+    id: `dir-${randomUUID()}`,
+    source: "goal",
+    method: "ui",
+    priority: goal.priority,
+    action: "lifeform_research",
+    params: {
+      planet_id: planet.id,
+      tech,
+      level: current + 1,
+      species,
+    },
+    preconds: [],
+    expires_at: Date.now() + DIRECTIVE_TTL_MS,
+    reason: `lifeform research ${tech} L${current + 1} on ${planet.coords?.join(":") ?? planet.id} (${species})`,
     goal_id: goal.id,
   };
 }

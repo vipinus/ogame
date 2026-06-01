@@ -214,6 +214,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     }
     // TIER 2 — fall through to inline handlers (GET-based guesses).
     if (directive.action === "research")    return this.execSimpleUpgrade("research", directive, planetId);
+    // v0.0.602 — operator 2026-06-01 "生命研究 tab". Same unified endpoint
+    // (buildlistactions/scheduleEntry) as building/research; component=lfresearch
+    // for token routing. Requires technology_id in directive.params (planner
+    // currently doesn't emit one — TODO add LIFEFORM_RESEARCH_IDS to tech_ids;
+    // for now ApiExec will throw "no numeric id" with a clear message).
+    if (directive.action === "lifeform_research") return this.execSimpleUpgrade("lfresearch", directive, planetId);
     if (directive.action === "build_ships") return this.execShipBuild(directive, planetId);
     if (directive.action === "build") {
       const building = (directive.params as { building?: string }).building ?? "";
@@ -305,11 +311,11 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   }
 
   private async execSimpleUpgrade(
-    component: "research" | "supplies" | "facilities" | "lfbuildings",
+    component: "research" | "supplies" | "facilities" | "lfbuildings" | "lfresearch",
     directive: Directive,
     planetId: string,
   ): Promise<{ action: string; clicked: boolean }> {
-    const targetName = component === "research"
+    const targetName = (component === "research" || component === "lfresearch")
       ? ((directive.params as { tech?: string }).tech ?? "")
       : ((directive.params as { building?: string }).building ?? "");
     // Prefer numeric ID from directive (Pass 2: emitted by planner) over

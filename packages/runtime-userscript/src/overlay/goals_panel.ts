@@ -1011,7 +1011,60 @@ function openGoalsSettings(
           <button data-rs-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
         </div>
       </div>
-      <!-- Shared pane (used by 2 non-dedicated tabs) -->
+      <!-- v0.0.602 — 生命研究独立 pane (per-species catalog.research) -->
+      <div data-pane="lf-research" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命形态 (单选, 决定可研究列表)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="humans" style="vertical-align:middle;"/><span>人类</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="rocktal" style="vertical-align:middle;"/><span>岩族</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="mechas" style="vertical-align:middle;"/><span>机械族</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>凯莱什</span></label>
+          </div>
+        </div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选, lifeform research per-planet)</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f; display:grid; grid-template-columns:1fr 1fr; gap:0;">
+            ${sortedCoordKeys
+              .filter((k) => groupedByCoord.get(k)!.planet)
+              .map((k) => {
+                const { planet } = groupedByCoord.get(k)!;
+                const p = planet!;
+                return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
+                  <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+                  <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; cursor:pointer;">
+                    <input data-lr-planet type="radio" name="lr-planet-radio" value="${escapeHtml(p.id)}" style="vertical-align:middle;"/>
+                    <span>🌍 ${escapeHtml(p.name ?? "殖民")}</span>
+                  </label>
+                </div>`;
+              }).join("")}
+          </div>
+        </div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命研究项目 (单选, 切换 species 重新加载)</div>
+          <div data-lr-research-list style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
+            <span style="color:#5a7090; font-size:11px;">loading…</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <input data-lr-level type="number" min="1" max="50" value="" placeholder="例: 3" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
+        </div>
+        <div style="padding:6px 0; min-height:22px;">
+          <span data-lr-desc style="color:#7cfc00; font-size:11px;"></span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <input data-lr-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
+          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
+          <span data-lr-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+          <button data-lr-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+        </div>
+      </div>
+      <!-- Shared pane (used by 1 non-dedicated tab) -->
       <div data-pane="shared" style="display:none;">
       <!-- Operator 2026-05-29: 自然语言入口 — Gemini 解析 → 填表单 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
@@ -1103,8 +1156,9 @@ function openGoalsSettings(
     const moonBuildPane = m.querySelector<HTMLElement>('[data-pane="moon-build"]');
     const lfBuildPane = m.querySelector<HTMLElement>('[data-pane="lf-build"]');
     const researchPane = m.querySelector<HTMLElement>('[data-pane="research"]');
+    const lfResearchPane = m.querySelector<HTMLElement>('[data-pane="lf-research"]');
     const sharedPane = m.querySelector<HTMLElement>('[data-pane="shared"]');
-    const isDedicatedPane = (id: TabId): boolean => id === "planet-build" || id === "moon-build" || id === "lf-build" || id === "research";
+    const isDedicatedPane = (id: TabId): boolean => id === "planet-build" || id === "moon-build" || id === "lf-build" || id === "research" || id === "lf-research";
     const applyTab = (tabId: TabId): void => {
       const tab = TAB_DEFS.find((t) => t.id === tabId);
       if (!tab) return;
@@ -1121,6 +1175,7 @@ function openGoalsSettings(
       if (moonBuildPane) moonBuildPane.style.display = tabId === "moon-build" ? "" : "none";
       if (lfBuildPane) lfBuildPane.style.display = tabId === "lf-build" ? "" : "none";
       if (researchPane) researchPane.style.display = tabId === "research" ? "" : "none";
+      if (lfResearchPane) lfResearchPane.style.display = tabId === "lf-research" ? "" : "none";
       if (sharedPane) sharedPane.style.display = isDedicatedPane(tabId) ? "none" : "";
       if (isDedicatedPane(tabId)) return; // skip shared-form filtering below
       if (!typeSel) return;
@@ -1727,6 +1782,100 @@ function openGoalsSettings(
         } catch (e) {
           rsStatusEl.textContent = `error: ${(e as Error).message ?? e}`;
           rsStatusEl.style.color = "#a06060";
+        }
+      });
+    }
+
+    // v0.0.602 — lf-research pane wiring (per-species research catalog).
+    {
+      type LfResearch = { id: string; display_name_zh?: string; display_name_en?: string };
+      const lrSpeciesRadios = (): HTMLInputElement[] => Array.from(
+        m.querySelectorAll<HTMLInputElement>('input[name="lr-species-radio"]'),
+      );
+      const lrPlanetRadios = (): HTMLInputElement[] => Array.from(
+        m.querySelectorAll<HTMLInputElement>('input[name="lr-planet-radio"]'),
+      );
+      const lrTechRadios = (): HTMLInputElement[] => Array.from(
+        m.querySelectorAll<HTMLInputElement>('input[name="lr-tech-radio"]'),
+      );
+      const lrResearchList = m.querySelector<HTMLElement>("[data-lr-research-list]");
+      const lrLevelInput = m.querySelector<HTMLInputElement>("[data-lr-level]");
+      const lrDescEl = m.querySelector<HTMLElement>("[data-lr-desc]");
+      const lrPriorityInput = m.querySelector<HTMLInputElement>("[data-lr-priority]");
+      const lrStatusEl = m.querySelector<HTMLElement>("[data-lr-status]");
+      const lrCreateBtn = m.querySelector<HTMLButtonElement>("[data-lr-create]");
+      const currentLrLabels = new Map<string, string>();
+      const renderLrResearch = (species: string): void => {
+        if (!lrResearchList) return;
+        const cat = (LIFEFORM_TECH as Record<string, { research?: Record<string, LfResearch> }>)[species];
+        const items = cat?.research ?? {};
+        currentLrLabels.clear();
+        const html = Object.entries(items).map(([k, v]) => {
+          const name = v.display_name_zh ?? v.display_name_en ?? k;
+          currentLrLabels.set(k, name);
+          return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)}</span></label>`;
+        }).join("");
+        lrResearchList.innerHTML = html || `<span style="color:#5a7090; font-size:11px;">(${species} 无研究项目)</span>`;
+        for (const r of lrTechRadios()) r.addEventListener("change", refreshLrDesc);
+      };
+      const speciesLabelMapLr: Record<string, string> = { humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什" };
+      const refreshLrDesc = (): void => {
+        if (!lrDescEl) return;
+        const speciesRadio = lrSpeciesRadios().find((r) => r.checked);
+        const planetRadio = lrPlanetRadios().find((r) => r.checked);
+        const techRadio = lrTechRadios().find((r) => r.checked);
+        const lvl = parseInt(lrLevelInput?.value ?? "", 10);
+        if (!speciesRadio || !planetRadio || !techRadio || !lvl) {
+          lrDescEl.textContent = "（选物种 + 星球 + 研究 + 级别后显示）";
+          lrDescEl.style.color = "#5a7090";
+          return;
+        }
+        const tLabel = currentLrLabels.get(techRadio.value) ?? techRadio.value;
+        const sn = speciesLabelMapLr[speciesRadio.value] ?? speciesRadio.value;
+        const coord = planetCoordById.get(planetRadio.value) ?? "?";
+        lrDescEl.textContent = `目标在 ${coord} 研究 ${tLabel} ${lvl} 级 (${sn})`;
+        lrDescEl.style.color = "#7cfc00";
+      };
+      const initLrSpecies = lrSpeciesRadios().find((r) => r.checked)?.value ?? "kaelesh";
+      renderLrResearch(initLrSpecies);
+      for (const r of lrSpeciesRadios()) r.addEventListener("change", () => {
+        renderLrResearch(r.value);
+        refreshLrDesc();
+      });
+      for (const r of lrPlanetRadios()) r.addEventListener("change", refreshLrDesc);
+      lrLevelInput?.addEventListener("input", refreshLrDesc);
+      refreshLrDesc();
+      lrCreateBtn?.addEventListener("click", async () => {
+        if (!lrStatusEl) return;
+        const planetRadio = lrPlanetRadios().find((r) => r.checked);
+        const techRadio = lrTechRadios().find((r) => r.checked);
+        const lvl = parseInt(lrLevelInput?.value ?? "", 10);
+        const pri = parseInt(lrPriorityInput?.value ?? "5", 10) || 5;
+        if (!planetRadio) { lrStatusEl.textContent = "请选星球"; lrStatusEl.style.color = "#a06060"; return; }
+        if (!techRadio) { lrStatusEl.textContent = "请选研究项目"; lrStatusEl.style.color = "#a06060"; return; }
+        if (!lvl || lvl < 1 || lvl > 50) { lrStatusEl.textContent = "级别须 1-50"; lrStatusEl.style.color = "#a06060"; return; }
+        lrStatusEl.textContent = "创建中…"; lrStatusEl.style.color = "#7080a0";
+        try {
+          const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "lifeform_research",
+              target: { tech: techRadio.value, level: lvl },
+              planet: planetRadio.value,
+              priority: pri,
+            }),
+          });
+          if (r.ok) {
+            lrStatusEl.textContent = `✓ 已创建生命研究任务`;
+            lrStatusEl.style.color = "#7cfc00";
+          } else {
+            lrStatusEl.textContent = `HTTP ${r.status}`;
+            lrStatusEl.style.color = "#a06060";
+          }
+        } catch (e) {
+          lrStatusEl.textContent = `error: ${(e as Error).message ?? e}`;
+          lrStatusEl.style.color = "#a06060";
         }
       });
     }
