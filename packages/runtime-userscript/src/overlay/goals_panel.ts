@@ -1827,7 +1827,11 @@ function openGoalsSettings(
           ? ((storeRef?.state?.planets?.[planetRadio.value] as { lifeform_research?: Record<string, number> } | undefined)?.lifeform_research ?? {})
           : {};
         currentLrLabels.clear();
-        const entries = Object.entries(lfr);
+        // v0.0.610 — operator 2026-06-01 "显示对应星球上当前的科技, 不是
+        // 全部科技". Only show entries with lvl > 0 (operator unlocked).
+        // ogame lfresearch page lists all 18 per species including lvl=0
+        // (not-yet-unlocked) — those are noise for the panel.
+        const entries = Object.entries(lfr).filter(([, lvl]) => lvl > 0);
         if (entries.length === 0) {
           lrResearchList.innerHTML = planetRadio
             ? `<span style="color:#5a7090; font-size:11px;">该星球未 unlock 任何生命研究 — 请先在 ogame UI 进入 lfresearch 页, 系统会自动同步数据</span>`

@@ -1188,7 +1188,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.609";
+  const USERSCRIPT_VERSION = "0.0.610";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2584,18 +2584,19 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (hasAny) {
           const cur = patchPlanets[pid];
           const curResources = (cur as { resources?: { m?: number; c?: number; d?: number; e?: number } }).resources ?? { m: 0, c: 0, d: 0, e: 0 };
-          // v0.0.598 — operator 2026-06-01 "星球的当前种族类型的不对".
-          // Earlier detection took the FIRST building with lvl>0; but ogame
-          // allows multiple species' buildings on the same planet (operator
-          // switched species). Historical buildings linger at low levels;
-          // the ACTIVE species has the highest-level buildings.
-          //
-          // Fix: pick the species whose buildings have the MAX level (and
-          // among species at same max, the one with the most total buildings).
-          // Example: 4:241:8 had residentialSector=17 (humans) + sanctuary=50
-          // (kaelesh) — max=50 → kaelesh wins.
+          // v0.0.610 — operator 2026-06-01 "选种族的时候, 只有对应种族的
+          // 星球亮起 — 这个问题修了 5 次了". Root cause: pollEmpire's
+          // empire/standalone page doesn't include lifeform building
+          // data-technology entries — refreshOnePage (lfbuildings page)
+          // is what actually populates lifeform_buildings. pollEmpire's
+          // detection block saw an empty local map → detectedSpecies null
+          // → lifeform.species never written. Fix: read existing store
+          // lifeform_buildings as fallback when the local extract is empty.
+          const lfbForDetection: Record<string, number> = Object.keys(lifeform_buildings).length > 0
+            ? lifeform_buildings
+            : ((cur as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {});
           const speciesMaxLevel: Record<string, number> = {};
-          for (const [name, lvl] of Object.entries(lifeform_buildings)) {
+          for (const [name, lvl] of Object.entries(lfbForDetection)) {
             if (lvl <= 0) continue;
             const tid = TECH_ID_BY_NAME[name];
             if (typeof tid !== "number") continue;
