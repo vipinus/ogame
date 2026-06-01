@@ -991,18 +991,29 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const CACHE_TTL = 30 * 60 * 1000;  // operator 2026-05-27: 5min → 30min (batch sweep)
     if (!cache || Date.now() - cache.ts > CACHE_TTL) {
       try {
-        const galResp = await fetchWithCpBypassBusy(
-          `/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1`,
-          {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-            body: `galaxy=${galaxy}&system=${system}`,
+        // v0.0.559 Phase 3 — galaxy fetch via cpPostWithRetry. Response has
+        // no `success` field (returns `{token, system:{...}}`); successCheck
+        // gates on system field presence. tokenProvider supplies "" since
+        // galaxy fetch body doesn't carry a token.
+        if (!this.tokenManager) throw new Error("discover: no tokenManager wired");
+        const galRes = await cpPostWithRetry({
+          endpoint: `/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1`,
+          sourcePlanetId: planetId,
+          token: this.tokenManager,
+          action: "discover:galaxy",
+          method: "POST",
+          tokenProvider: async () => "",
+          buildBody: () => {
+            const b = new URLSearchParams();
+            b.set("galaxy", String(galaxy));
+            b.set("system", String(system));
+            return b;
           },
-          planetId,
-          { skipRestore: true },
-        );
-        const galTxt = await galResp.text();
+          successCheck: (j) => !!j["system"],
+          maxAttempts: 1,
+          skipRestore: true,
+        });
+        const galTxt = galRes.raw;
         // Response is JSON. Verified shape from operator sniff:
         //   { reservedPositions, token, filterSettings,
         //     system: {
@@ -1166,24 +1177,40 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       token = cached;
     }
 
-    // outer execute() owns the single restoreSessionCp call.
-    const body = new URLSearchParams({
-      galaxy: String(galaxy),
-      system: String(system),
-      position: String(position),
-      token,
-    });
+    // v0.0.559 Phase 3 — discover POST via cpPostWithRetry maxAttempts=1.
+    // tokenProvider supplies cached galaxy token. successCheck gates on
+    // nested `response.success` OR top-level `success` (defensive: ogame
+    // sometimes returns nested, sometimes flat). Business retry logic
+    // (cooldown/token-race/资源不足) lives below — too branchy for cpPost's
+    // single-retry-path semantics.
+    if (!this.tokenManager) throw new Error("discover: no tokenManager wired");
+    const buildDiscBody = (tk: string): URLSearchParams => {
+      const b = new URLSearchParams();
+      b.set("galaxy", String(galaxy));
+      b.set("system", String(system));
+      b.set("position", String(position));
+      b.set("token", tk);
+      return b;
+    };
     console.info(`[ApiExec/discover] POST ${galaxy}:${system}:${position} from planet ${planetId}`);
-    const r = await fetchWithCpBypassBusy(
-      `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
-      { method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-        body },
-      planetId,
-      { skipRestore: true },
-    );
-    if (!r.ok) throw new Error(`discover: HTTP ${r.status}`);
-    const respText = await r.text();
+    const discRes = await cpPostWithRetry({
+      endpoint: `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
+      sourcePlanetId: planetId,
+      token: this.tokenManager,
+      action: "discover:send",
+      method: "POST",
+      tokenProvider: async () => token,
+      buildBody: buildDiscBody,
+      // successCheck always true → cpPostWithRetry returns json unconditionally;
+      // business logic below classifies. Avoids cpPost auto-retry on the
+      // discover-specific failure messages (cooldown / 資源不足 / 在您最後…)
+      // that aren't in TRANSIENT_RACE_RE and need bespoke handling.
+      successCheck: () => true,
+      maxAttempts: 1,
+      skipRestore: true,
+    });
+    const respText = discRes.raw;
+    if (discRes.status !== 200) throw new Error(`discover: HTTP ${discRes.status}`);
     // ogame v12 sendDiscoveryFleet response shape (verified from real POST):
     //   { "response": { "success": boolean, "message": "..." },
     //     "components": [], "newAjaxToken": "..." }
@@ -1196,7 +1223,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       message?: string;
     } | null = null;
     try { parsed = JSON.parse(respText); } catch { /* HTML */ }
-    console.info(`[ApiExec/discover] resp HTTP ${r.status} body[0:200]=${respText.slice(0, 200).replace(/\s+/g, " ")}`);
+    console.info(`[ApiExec/discover] resp HTTP ${discRes.status} body[0:200]=${respText.slice(0, 200).replace(/\s+/g, " ")}`);
     // Operator 2026-05-25: ogame sometimes returns plain text like
     // "An error has occured!" with HTTP 200 but no JSON. Without
     // detecting this, we treat it as "success", don't rotate token,
@@ -1251,19 +1278,21 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         const cacheStoreInv = (this.win as Window & { __ogamexGalaxyDiscovery?: Map<string, { ts: number; states: Map<number, string> }> }).__ogamexGalaxyDiscovery;
         cacheStoreInv?.delete(cacheKey);
         (this.win as Window & { __ogamexLastGalaxyToken?: string }).__ogamexLastGalaxyToken = undefined;
-        const retryToken = parsed?.newAjaxToken ?? token;
-        const retryBody = new URLSearchParams({ galaxy: String(galaxy), system: String(system), position: String(position), token: retryToken });
-        const r2 = await fetchWithCpBypassBusy(
-          `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
-          { method: "POST", credentials: "same-origin",
-            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-            body: retryBody },
-          planetId,
-          { skipRestore: true },
-        );
-        const retryText = await r2.text();
-        let retryParsed: typeof parsed = null;
-        try { retryParsed = JSON.parse(retryText); } catch { /* */ }
+        const retryTokenRace = parsed?.newAjaxToken ?? token;
+        const r2 = await cpPostWithRetry({
+          endpoint: `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
+          sourcePlanetId: planetId,
+          token: this.tokenManager,
+          action: "discover:retry-token-race",
+          method: "POST",
+          tokenProvider: async () => retryTokenRace,
+          buildBody: buildDiscBody,
+          successCheck: () => true,
+          maxAttempts: 1,
+          skipRestore: true,
+        });
+        const retryText = r2.raw;
+        const retryParsed = r2.json as typeof parsed;
         console.info(`[ApiExec/discover] token-race retry ${galaxy}:${system}:${position} resp[0:200]=${retryText.slice(0, 200).replace(/\s+/g, " ")}`);
         if (retryParsed?.newAjaxToken) {
           (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = retryParsed.newAjaxToken;
@@ -1297,19 +1326,21 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         const aboveThreshold = m >= 5000 && c >= 1000 && d >= 500;
         if (aboveThreshold) {
           console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} 資源不足 误报 (store m=${m} c=${c} d=${d}) — single retry`);
-          const retryToken = parsed?.newAjaxToken ?? token;
-          const retryBody = new URLSearchParams({ galaxy: String(galaxy), system: String(system), position: String(position), token: retryToken });
-          const r2 = await fetchWithCpBypassBusy(
-            `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
-            { method: "POST", credentials: "same-origin",
-              headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-              body: retryBody },
-            planetId,
-            { skipRestore: true },
-          );
-          const retryText = await r2.text();
-          let retryParsed: typeof parsed = null;
-          try { retryParsed = JSON.parse(retryText); } catch { /* */ }
+          const retryTokenRes = parsed?.newAjaxToken ?? token;
+          const r2 = await cpPostWithRetry({
+            endpoint: `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
+            sourcePlanetId: planetId,
+            token: this.tokenManager,
+            action: "discover:retry-resource",
+            method: "POST",
+            tokenProvider: async () => retryTokenRes,
+            buildBody: buildDiscBody,
+            successCheck: () => true,
+            maxAttempts: 1,
+            skipRestore: true,
+          });
+          const retryText = r2.raw;
+          const retryParsed = r2.json as typeof parsed;
           console.info(`[ApiExec/discover] retry ${galaxy}:${system}:${position} resp[0:200]=${retryText.slice(0, 200).replace(/\s+/g, " ")}`);
           if (retryParsed?.newAjaxToken) {
             (this.doc.documentElement as HTMLElement).dataset["ogamexToken"] = retryParsed.newAjaxToken;

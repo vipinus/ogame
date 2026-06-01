@@ -45,17 +45,14 @@ EOF
 # --- Bucket 2: DIRECTIVE-DISPATCH (TODO migrate to cpPostWithRetry) -----
 # Phase 1 DONE (v0.0.557): extended cpPostWithRetry with tokenProvider /
 #   successCheck / refreshTokenOnInvalid hooks.
-# Phase 2 DONE (v0.0.558): jumpgate overlay GET + executeJump POST migrated
-#   to cpPostWithRetry. Sites 725/774 removed from allow list.
-# Phase 3 next: api_executor.ts:994/1177/1256/1302 (discover-galaxy chain)
-# Phase 4 next: api_executor.ts:545/635 (expedition 3-stage chain)
+# Phase 2 DONE (v0.0.558): jumpgate overlay GET + executeJump POST migrated.
+# Phase 3 DONE (v0.0.559): discover/galaxy chain migrated — galaxy fetch +
+#   sendDiscoveryFleet + 2 inline business retries all through cpPostWithRetry
+#   maxAttempts=1 (business retry logic kept; only cp= fetch standardized).
+# Phase 4 next: api_executor.ts:545/635 (expedition 3-stage chain).
 ALLOW_LIST_DIRECTIVE=$(cat <<'EOF'
 src/api_executor.ts:545
 src/api_executor.ts:635
-src/api_executor.ts:994
-src/api_executor.ts:1177
-src/api_executor.ts:1256
-src/api_executor.ts:1302
 EOF
 )
 

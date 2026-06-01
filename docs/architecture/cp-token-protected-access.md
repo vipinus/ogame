@@ -66,7 +66,7 @@ The first-time architecture sweep already moved most dispatchers to
 `execSimpleUpgrade` → `cpPostWithRetry`). The remaining direct callers
 are listed below and slated for migration.
 
-## 4. Current Audit (2026-06-01, updated after Phase 2)
+## 4. Current Audit (2026-06-01, updated after Phase 3)
 
 | File:Line | Path | Standard? | Notes |
 |---|---|---|---|
@@ -76,9 +76,9 @@ are listed below and slated for migration.
 | `api_executor.ts:635` | expedition legacy sendFleet final | ❌ BYPASS | same context as 545 |
 | ~~`api_executor.ts:725`~~ | ~~jumpgate overlay token GET~~ | ✅ MIGRATED v0.0.558 | now `cpPostWithRetry({method:"GET"})` |
 | ~~`api_executor.ts:774`~~ | ~~jumpgate executeJump POST~~ | ✅ MIGRATED v0.0.558 | now `cpPostWithRetry({tokenProvider,refreshTokenOnInvalid,successCheck})` |
-| `api_executor.ts:994` | discover/galaxy fetch | ❌ BYPASS | galaxy token chain (separate from TokenManager — legacy) |
-| `api_executor.ts:1177` | discover POST | ❌ BYPASS | same |
-| `api_executor.ts:1256/1302` | discover token-refresh retry | ❌ BYPASS | same |
+| ~~`api_executor.ts:994`~~ | ~~discover/galaxy fetch~~ | ✅ MIGRATED v0.0.559 | now `cpPostWithRetry({successCheck:j=>!!j.system, tokenProvider:""})` |
+| ~~`api_executor.ts:1177`~~ | ~~discover POST~~ | ✅ MIGRATED v0.0.559 | now `cpPostWithRetry({tokenProvider, maxAttempts:1})`; business retry kept |
+| ~~`api_executor.ts:1256/1302`~~ | ~~discover token-refresh retry~~ | ✅ MIGRATED v0.0.559 | inline retries also via `cpPostWithRetry` maxAttempts=1 |
 | `boot.ts:854/866/884` | sniffer init triple-fetch | ❌ BYPASS | boot-time, low frequency, cp=any planet |
 | `boot.ts:1028/1597` | sandbox CASE B overlay re-fetch | ❌ BYPASS | rare |
 | `boot.ts:1856` | fetchResources periodic poll | ⚠️ safe | cp=operatorCp, no shift |
@@ -157,9 +157,16 @@ gets its own commit.
   tokenProvider, refreshTokenOnInvalid:fetchOverlayToken, successCheck:strict
   ghost-ack defense, buildBody, skipRestore:true})`. Inline 4-attempt loop +
   local TRANSIENT_RACE_RE / TOKEN_INVALID_RE removed (now centralized).
-- **Phase 3 next**: migrate discover/galaxy chain (994/1177/1256/1302) — uses
-  galaxy token cache (`__ogamexLastGalaxyToken`). `tokenProvider` reads the
-  cache, `refreshTokenOnInvalid` re-fetches galaxy chunk.
+- **Phase 3 DONE (v0.0.559)**: migrated discover/galaxy chain.
+  - galaxy fetchGalaxyContent → `cpPostWithRetry({tokenProvider:async()=>"",
+    successCheck:j=>!!j["system"], maxAttempts:1})`. No `success` field; gates
+    on `system` field presence.
+  - sendDiscoveryFleet → `cpPostWithRetry({tokenProvider:async()=>cachedToken,
+    buildBody, successCheck:()=>true, maxAttempts:1})`. successCheck always
+    true → business retry logic (cooldown / token-race / 資源不足) lives in
+    caller; cpPost only standardizes cp= protection, not the 3-branch retry.
+  - 2 inline retries (token-race, 資源不足) also use cpPostWithRetry maxAttempts=1
+    with retry token from `parsed.newAjaxToken`.
 - **Phase 4 next**: migrate expedition 3-stage (545/635) — most complex token
   chain, validate token-flow semantics carefully.
 
