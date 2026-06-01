@@ -427,10 +427,25 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   }
   // safe_fetch will keep this mirror count current on each fetch start/end.
   // Polled here as a cheap fallback in case mirror gets out of sync.
+  // v0.0.597 — also poll for lifeform-change signal from sniffer (page-world
+  // script writes dataset.ogamexLfChangeTs on lfsettings/pickLifeform URLs).
+  let lastSeenLfChangeTs = 0;
   setInterval(async () => {
     try {
       const { cpInFlightCount } = await import("./api/safe_fetch.js");
       (env.win as Window & { __ogamexCpInFlight?: number }).__ogamexCpInFlight = cpInFlightCount();
+      // Event-driven species refresh: if sniffer detected an lfsettings hit,
+      // immediately trigger pollEmpire(force) so species lands in store.
+      const lfTsRaw = env.doc.documentElement.dataset["ogamexLfChangeTs"];
+      const lfTs = lfTsRaw ? parseInt(lfTsRaw, 10) : 0;
+      if (lfTs > lastSeenLfChangeTs) {
+        lastSeenLfChangeTs = lfTs;
+        const pollFn = (env.win as Window & { __ogamexPollEmpire?: (opts: { force?: boolean }) => Promise<void> }).__ogamexPollEmpire;
+        if (typeof pollFn === "function") {
+          console.info(`[OgameX/species] lifeform change detected by sniffer @ ts=${lfTs} — firing pollEmpire(force)`);
+          void pollFn({ force: true }).catch((e) => console.warn("[OgameX/species] post-lf pollEmpire failed", e));
+        }
+      }
     } catch { /* */ }
   }, 200);
   void clickInterceptHandler; // unused (kept for reference)
@@ -528,6 +543,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             const rec = { ts: Date.now(), kind, url: u, body: String(body || "").slice(0, 500), status };
             if (isJump && respText) rec.resp = String(respText).slice(0, 2000);
             persist(rec);
+          }
+          // v0.0.597 — operator 2026-06-01 "星球切换种族类型的时候, 重新拿
+          // 种族类型, 事件触发". Detect lifeform pick / lfsettings change
+          // and bump a dataset timestamp so the sandbox-side mirror tick
+          // can trigger pollEmpire(force) immediately (no waiting for the
+          // periodic ~5s empire poll).
+          if (/lfsettings|pickLifeform|component=lfsettings/i.test(u)) {
+            document.documentElement.dataset.ogamexLfChangeTs = String(Date.now());
           }
         };
         // Expose a one-liner dump helper for operator. Reads OGAMEX_API_CAPTURES
@@ -1143,7 +1166,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.596";
+  const USERSCRIPT_VERSION = "0.0.597";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
