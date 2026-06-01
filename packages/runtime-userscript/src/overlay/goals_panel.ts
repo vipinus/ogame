@@ -1852,7 +1852,31 @@ function openGoalsSettings(
         renderLrResearch(r.value);
         refreshLrDesc();
       });
-      for (const r of lrPlanetRadios()) r.addEventListener("change", refreshLrDesc);
+      // v0.0.604 — operator 2026-06-01 "选择星球的时候, 显示当前星球的生命
+      // 科技". Two-piece UX: (a) annotate each planet row with [species tag]
+      // (b) on planet change, auto-pick the matching species radio so the
+      // research catalog re-renders for the planet's actual species.
+      for (const radio of lrPlanetRadios()) {
+        const pid = radio.value;
+        const sp = livePlanetSpecies(pid);
+        const tag = sp ? speciesLabelMapLr[sp] ?? sp : "未设置";
+        const span = radio.parentElement?.querySelector("span");
+        if (span && !span.textContent?.includes("[")) {
+          span.textContent = `${span.textContent} [${tag}]`;
+        }
+      }
+      for (const r of lrPlanetRadios()) r.addEventListener("change", () => {
+        // Auto-sync species selector to this planet's species.
+        const sp = livePlanetSpecies(r.value);
+        if (sp) {
+          const target = m.querySelector<HTMLInputElement>(`input[name="lr-species-radio"][value="${sp}"]`);
+          if (target) {
+            target.checked = true;
+            renderLrResearch(sp);
+          }
+        }
+        refreshLrDesc();
+      });
       lrLevelInput?.addEventListener("input", refreshLrDesc);
       refreshLrDesc();
       lrCreateBtn?.addEventListener("click", async () => {
