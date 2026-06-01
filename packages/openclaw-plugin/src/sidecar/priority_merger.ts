@@ -298,18 +298,24 @@ export class PriorityMerger {
         } else if (goalType === "lifeform_building") {
           const lfq = (planet as { lf_build_q?: { ends_at?: number } | null } | undefined)?.lf_build_q;
           slotEmpty = !lfq || (lfq.ends_at ?? 0) <= now;
-        } else if (goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport") {
+        } else if (goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport" || goalType === "species_discovery") {
           // v0.0.466 + v0.0.467: atomic fleet ops stuck recovery. Operator
           // 2026-05-29 "do" → extend pattern from expedition to colonize/
           // deploy/transport. Signal = "no outbound fleet of matching
           // mission originating from this goal's source planet". If zero
           // matching fleets and snapshot newer than dispatch → directive
           // presumed lost. Same N=2 demote logic shared with build/research.
+          // v0.0.573 — operator 2026-06-01 "发现派不出船": species_discovery
+          // (mission=18 sendDiscoveryFleet) was missing from this list, so
+          // its active-status goal NEVER hit stuck-recovery and forever
+          // skipped re-dispatch after ack cleared dispatchedAt. Adding it
+          // restores the re-dispatch path.
           const missionByType: Record<string, number> = {
             expedition: 15,
             colonize: 7,
             deploy: 4,
             transport: 3,
+            species_discovery: 18,
           };
           const expectedMission = missionByType[goalType];
           const targetParams = row.goal.target as { source_planet?: string };
@@ -331,7 +337,7 @@ export class PriorityMerger {
         // between moons with no outbound fleet visible. Needs cooldown
         // detection (separate enhancement) — left for operator pause+resume.
         const snapshotFresher = (state.last_update ?? 0) > (row.updated_at ?? 0);
-        const isAtomic = goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport";
+        const isAtomic = goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport" || goalType === "species_discovery";
         const timeoutMs = isAtomic ? this.STUCK_TIMEOUT_MS_ATOMIC : this.STUCK_TIMEOUT_MS;
         // Anchor on dispatch time, not snapshot count. Fall back to
         // row.updated_at when dispatchedAt is missing (e.g. after server
