@@ -90,27 +90,72 @@ are listed below and slated for migration.
 row above still goes through `safe_fetch.ts` (so the mutex + restore still
 fire), but it skips `cpPostWithRetry`'s retry/token-refresh standard.
 
-## 5. Migration Plan (separate sprint)
+## 5. Migration Plan
 
-Each BYPASS row needs:
-1. Replace the inline `fetchWithCpBypassBusy(...)` with `cpPostWithRetry({
-   endpoint, sourcePlanetId, token, action, method, buildBody })`
-2. Delete the handrolled retry / token-rotation block
-3. Trust `cpPostWithRetry` for: TOKEN_INVALID refresh, TRANSIENT_RACE
-   backoff, 4-attempt retry, newAjaxToken capture
+The 16 grandfathered sites split into 2 buckets (operator A 2026-06-01
+拍板 "all → 0", refined after honest scope re-read):
 
-Special cases:
-- **Multi-stage flows** (expedition legacy 3-stage at line 541-685):
-  `cpPostWithRetry` supports per-call `buildBody`; each stage = one call.
-  Token chains naturally because each call's `newAjaxToken` updates the
-  shared `TokenManager`.
-- **Discover/galaxy** (1018+): has its own token cache
-  (`__ogamexLastGalaxyToken`, `dataset.ogamexToken`) intentionally — galaxy
-  POST tokens have different lifetime than fleet tokens. Migration here
-  needs a parallel `cpPostWithRetry` variant or a TokenManager-galaxy
-  shim.
-- **boot.ts:854/866/884** sniffer init: one-shot at boot, low risk; could
-  stay or migrate for consistency.
+### Bucket 1: INFRASTRUCTURE (8 sites — permanent allow)
+
+These are userscript-internal data fetches (NOT directive dispatchers).
+They use `fetchWithCp[BypassBusy]` directly because:
+- One-shot at boot OR periodic poll
+- cp = operator's current planet (no actual session shift)
+- Read-only data harvesting (no token rotation required)
+- cpPostWithRetry's POST-retry / TOKEN_INVALID semantics don't apply
+
+Sites:
+- `boot.ts:854/866/884` — cargo-probe boot 3-stage (token harvested from
+  responses, used immediately, no cross-flow lifetime)
+- `boot.ts:1028/1597` — sandbox CASE B overlay re-fetch (rare, internal)
+- `boot.ts:1856` — fetchResources periodic poll (cp=operator)
+- `boot.ts:2003` — refreshOnePage chunk fetch (cp=operator)
+- `boot.ts:2697` — fetchShips inline GET (single read, no retry needed)
+
+Decision: **stay grandfathered** in `ALLOW_LIST_INFRA`. cp= protection
+still active via `safe_fetch.ts` (mutex + restore + click-lock). Reviewed.
+
+### Bucket 2: DIRECTIVE-DISPATCH (8 sites — TODO migrate)
+
+`api_executor.ts` multi-stage flows that DO dispatch directives. Each
+has custom token handling that requires `cpPostWithRetry` extension OR
+careful per-stage refactoring.
+
+| File:Line | Flow | Migration complexity |
+|---|---|---|
+| `api_executor.ts:545` | expedition legacy 3-stage POST helper | HIGH — token chain across 3 calls, each stage's newAjaxToken feeds next |
+| `api_executor.ts:635` | expedition legacy sendFleet final | HIGH — same context as 545 |
+| `api_executor.ts:725` | jumpgate overlay token GET | LOW — single GET, parse HTML for token |
+| `api_executor.ts:774` | jumpgate executeJump POST | MEDIUM — handrolled 4-attempt retry duplicates cpPostWithRetry; token comes from overlay, not TokenManager |
+| `api_executor.ts:1018` | discover/galaxy fetch | LOW — single POST, no retry, response has no success field |
+| `api_executor.ts:1201` | discover sendDiscoveryFleet POST | MEDIUM — uses galaxy-specific token cache (`__ogamexLastGalaxyToken`) |
+| `api_executor.ts:1280/1326` | discover token-refresh retry | MEDIUM — refetches galaxy when token stale |
+
+### Required cpPostWithRetry extensions (proposed)
+
+1. **Custom token provider**: today `cpPostWithRetry` reads token only via
+   `opts.token: TokenManager`. For JG / discover flows that have their
+   own token source (overlay HTML, galaxy cache), need `opts.tokenProvider:
+   () => Promise<string>` to override.
+2. **Custom success-check**: today okFlag = `success===true ||
+   status==="success"`. Galaxy response has no such field; needs caller
+   to specify `opts.successCheck: (json) => boolean`.
+3. **Token-refresh hook**: on TOKEN_INVALID, today `cpPostWithRetry`
+   calls `opts.token.invalidate()`. Galaxy/JG need a different refetch
+   path (re-GET overlay, re-fetch galaxy). Hook: `opts.refreshTokenOnInvalid:
+   () => Promise<string>`.
+
+Once these extensions land, migration is mechanical per row. Each row
+gets its own commit.
+
+### Migration phases (proposed)
+
+- **Phase 1**: extend `cpPostWithRetry` with the 3 hooks above + tests
+- **Phase 2**: migrate jumpgate (725/774) — simplest, validates extensions
+- **Phase 3**: migrate discover/galaxy chain (1018/1201/1280/1326) — uses
+  galaxy token cache
+- **Phase 4**: migrate expedition 3-stage (545/635) — most complex token
+  chain, validate token-flow semantics carefully
 
 ## 6. Enforcement
 
