@@ -870,6 +870,9 @@ function openGoalsSettings(
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="lunarBase" style="vertical-align:middle;"/><span>月球基地</span></label>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="sensorPhalanx" style="vertical-align:middle;"/><span>传感器</span></label>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="jumpgate" style="vertical-align:middle;"/><span>跳跃门</span></label>
+            <!-- v0.0.592 — operator 2026-06-01 "月球缺机器人工厂和造船厂, 和星球分开": ogame moon has its own independent roboticsFactory / shipyard counters from the planet sibling. Adding to moon-build options. -->
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="roboticsFactory" style="vertical-align:middle;"/><span>机械工厂</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="shipyard" style="vertical-align:middle;"/><span>船坞</span></label>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
@@ -1161,6 +1164,7 @@ function openGoalsSettings(
     // v0.0.589 — moon-build pane wiring (mirrors planet-build).
     const MOON_BUILDING_LABEL: Record<string, string> = {
       lunarBase: "月球基地", sensorPhalanx: "传感器", jumpgate: "跳跃门",
+      roboticsFactory: "机械工厂", shipyard: "船坞",
     };
     const moonCoordById = new Map<string, string>();
     for (const k of sortedCoordKeys) {
