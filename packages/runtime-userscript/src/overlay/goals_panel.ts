@@ -1805,17 +1805,43 @@ function openGoalsSettings(
       const lrStatusEl = m.querySelector<HTMLElement>("[data-lr-status]");
       const lrCreateBtn = m.querySelector<HTMLButtonElement>("[data-lr-create]");
       const currentLrLabels = new Map<string, string>();
-      const renderLrResearch = (species: string): void => {
+      // v0.0.605 — operator 2026-06-01 真相: lifeform_research is per-planet,
+      // not per-species globally. ogame may carry research entries from
+      // multiple species on the same planet (historical species switches).
+      // Render the radio list from selected planet's lifeform_research keys
+      // (live store), with labels resolved from any catalog match across all
+      // species (catalog is just a label-lookup, not the source of truth).
+      const allLifeformResearchLabels = new Map<string, string>();
+      for (const sp of ["humans", "rocktal", "mechas", "kaelesh"] as const) {
+        const cat = (LIFEFORM_TECH as Record<string, { research?: Record<string, LfResearch> }>)[sp];
+        for (const [k, v] of Object.entries(cat?.research ?? {})) {
+          if (!allLifeformResearchLabels.has(k)) {
+            allLifeformResearchLabels.set(k, v.display_name_zh ?? v.display_name_en ?? k);
+          }
+        }
+      }
+      const renderLrResearch = (_species: string): void => {
         if (!lrResearchList) return;
-        const cat = (LIFEFORM_TECH as Record<string, { research?: Record<string, LfResearch> }>)[species];
-        const items = cat?.research ?? {};
+        const planetRadio = lrPlanetRadios().find((r) => r.checked);
+        const lfr = planetRadio
+          ? ((storeRef?.state?.planets?.[planetRadio.value] as { lifeform_research?: Record<string, number> } | undefined)?.lifeform_research ?? {})
+          : {};
         currentLrLabels.clear();
-        const html = Object.entries(items).map(([k, v]) => {
-          const name = v.display_name_zh ?? v.display_name_en ?? k;
-          currentLrLabels.set(k, name);
-          return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)}</span></label>`;
-        }).join("");
-        lrResearchList.innerHTML = html || `<span style="color:#5a7090; font-size:11px;">(${species} 无研究项目)</span>`;
+        const entries = Object.entries(lfr);
+        if (entries.length === 0) {
+          lrResearchList.innerHTML = planetRadio
+            ? `<span style="color:#5a7090; font-size:11px;">该星球未 unlock 任何生命研究 — 请先在 ogame UI 进入 lfresearch 页, 系统会自动同步数据</span>`
+            : `<span style="color:#5a7090; font-size:11px;">请先选星球</span>`;
+          return;
+        }
+        const html = entries
+          .sort(([, a], [, b]) => b - a)  // higher levels first
+          .map(([k, lvl]) => {
+            const name = allLifeformResearchLabels.get(k) ?? k;
+            currentLrLabels.set(k, name);
+            return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="当前 L${lvl}"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)} <span style="color:#7080a0;">L${lvl}</span></span></label>`;
+          }).join("");
+        lrResearchList.innerHTML = html;
         for (const r of lrTechRadios()) r.addEventListener("change", refreshLrDesc);
       };
       const speciesLabelMapLr: Record<string, string> = { humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什" };
@@ -1866,15 +1892,15 @@ function openGoalsSettings(
         }
       }
       for (const r of lrPlanetRadios()) r.addEventListener("change", () => {
-        // Auto-sync species selector to this planet's species.
+        // v0.0.605 — research list is per-planet (live lifeform_research keys),
+        // so always re-render when planet changes. Also auto-sync species
+        // radio for cosmetic consistency (panel still shows species tag).
         const sp = livePlanetSpecies(r.value);
         if (sp) {
           const target = m.querySelector<HTMLInputElement>(`input[name="lr-species-radio"][value="${sp}"]`);
-          if (target) {
-            target.checked = true;
-            renderLrResearch(sp);
-          }
+          if (target) target.checked = true;
         }
+        renderLrResearch(sp ?? "kaelesh");
         refreshLrDesc();
       });
       lrLevelInput?.addEventListener("input", refreshLrDesc);

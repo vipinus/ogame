@@ -1166,7 +1166,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.604";
+  const USERSCRIPT_VERSION = "0.0.605";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2075,7 +2075,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             }
             continue;
           }
-          // v0.0.603 — lifeform research detection: catalog name match.
+          // v0.0.605 — operator 2026-06-01 "每个星球对应的生命形式科技也是
+          // 不同的, 不是所有科技都有, 也可以有不同种族的科技, 要根据 ogame
+          // 当前数据显示". Page-aware bucket: when extracting from lfresearch
+          // page, ALL entries are lifeform research (regardless of catalog
+          // completeness or species — same planet may carry items from
+          // multiple species due to historical switches).
+          if (page === "lfresearch") { lifeform_research[id] = lvl; continue; }
+          // For other pages (research/lfbuildings/etc), fall back to catalog
+          // name match for lifeform research (rare cross-listed cases).
           if (lfResearchNames.has(id)) { lifeform_research[id] = lvl; continue; }
           const entry = (TECH_TREE as Record<string, { kind: string }>)[id];
           if (!entry) continue;
