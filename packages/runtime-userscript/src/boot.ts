@@ -1188,7 +1188,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.610";
+  const USERSCRIPT_VERSION = "0.0.611";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2592,9 +2592,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           // detection block saw an empty local map → detectedSpecies null
           // → lifeform.species never written. Fix: read existing store
           // lifeform_buildings as fallback when the local extract is empty.
+          // v0.0.611 — `cur` here is patchPlanets[pid], not live store —
+          // it's a fresh patch being built this cycle and doesn't carry
+          // historical lifeform_buildings. Pull from store.state.planets
+          // directly so the fallback actually has data.
+          const storePlanet = store.state.planets[pid] as { lifeform_buildings?: Record<string, number> } | undefined;
           const lfbForDetection: Record<string, number> = Object.keys(lifeform_buildings).length > 0
             ? lifeform_buildings
-            : ((cur as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {});
+            : (storePlanet?.lifeform_buildings ?? {});
           const speciesMaxLevel: Record<string, number> = {};
           for (const [name, lvl] of Object.entries(lfbForDetection)) {
             if (lvl <= 0) continue;

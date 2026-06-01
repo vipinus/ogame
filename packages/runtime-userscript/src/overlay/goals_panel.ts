@@ -693,6 +693,39 @@ function openGoalsSettings(
       }
       return 0;
     });
+    // v0.0.611 — operator 2026-06-01 "选种族的时候只有对应种族的星球亮起
+    // — 这个问题修了 6 次了". Root cause across multiple panes: each pane's
+    // {} block scoped its own copy of livePlanetSpecies; lf-research's
+    // copy referenced the lf-build version (out of block scope) → silent
+    // ReferenceError, applyLrSpeciesFilter never fired. Lift the helper
+    // to modal-outer scope so every pane reuses the same function.
+    const livePlanetSpecies = (pid: string): string | null => {
+      const p = storeRef?.state?.planets?.[pid] as {
+        lifeform?: { species?: string } | null;
+        lifeform_buildings?: Record<string, number>;
+      } | undefined;
+      if (!p) return null;
+      const direct = p.lifeform?.species;
+      if (direct) return direct;
+      const lfb = p.lifeform_buildings ?? {};
+      const speciesMaxLevel: Record<string, number> = {};
+      for (const [name, lvl] of Object.entries(lfb)) {
+        if (lvl <= 0) continue;
+        const tid = TECH_ID_BY_NAME[name];
+        if (typeof tid !== "number") continue;
+        const prefix = Math.floor(tid / 1000);
+        const sp = prefix === 11 ? "humans" : prefix === 12 ? "rocktal" : prefix === 13 ? "mechas" : prefix === 14 ? "kaelesh" : null;
+        if (!sp) continue;
+        speciesMaxLevel[sp] = Math.max(speciesMaxLevel[sp] ?? 0, lvl);
+      }
+      let best: string | null = null;
+      let bestMax = 0;
+      for (const [sp, mx] of Object.entries(speciesMaxLevel)) {
+        if (mx > bestMax) { bestMax = mx; best = sp; }
+      }
+      return best;
+    };
+
     // v0.0.582 — operator 2026-06-01: tab mode. 6 tabs:
     //   1. 星球建筑 — build (planet), build_universal, terraformer_to
     //   2. 月球建筑 — build (moon-only buildings: jumpgate, sensorPhalanx, lunarBase, moonShield)
@@ -1516,34 +1549,10 @@ function openGoalsSettings(
       //   2. Fallback: infer from lifeform_buildings prefix. Building IDs
       //      111xx = humans, 121xx = rocktal, 131xx = mechas, 141xx = kaelesh.
       //      Take any building with lvl > 0, look up its tech ID, prefix → species.
-      const livePlanetSpecies = (pid: string): string | null => {
-        const p = storeRef?.state?.planets?.[pid] as {
-          lifeform?: { species?: string } | null;
-          lifeform_buildings?: Record<string, number>;
-        } | undefined;
-        if (!p) return null;
-        const direct = p.lifeform?.species;
-        if (direct) return direct;
-        // v0.0.598 fallback — pick MAX-level building's species (active
-        // species, not residual historical buildings).
-        const lfb = p.lifeform_buildings ?? {};
-        const speciesMaxLevel: Record<string, number> = {};
-        for (const [name, lvl] of Object.entries(lfb)) {
-          if (lvl <= 0) continue;
-          const tid = TECH_ID_BY_NAME[name];
-          if (typeof tid !== "number") continue;
-          const prefix = Math.floor(tid / 1000);
-          const sp = prefix === 11 ? "humans" : prefix === 12 ? "rocktal" : prefix === 13 ? "mechas" : prefix === 14 ? "kaelesh" : null;
-          if (!sp) continue;
-          speciesMaxLevel[sp] = Math.max(speciesMaxLevel[sp] ?? 0, lvl);
-        }
-        let best: string | null = null;
-        let bestMax = 0;
-        for (const [sp, mx] of Object.entries(speciesMaxLevel)) {
-          if (mx > bestMax) { bestMax = mx; best = sp; }
-        }
-        return best;
-      };
+      // v0.0.611 — livePlanetSpecies moved to modal-outer scope above (just
+      // before tab bar). lf-build's prior local definition removed; closure
+      // resolves to the outer version. Same applies to lf-research and any
+      // future pane that needs species detection.
       const refreshSpeciesTags = (): void => {
         for (const radio of lfPlanetRadios()) {
           const pid = radio.value;

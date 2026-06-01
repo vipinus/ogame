@@ -38,7 +38,7 @@ src/boot.ts:1073
 src/boot.ts:1642
 src/boot.ts:1901
 src/boot.ts:2048
-src/boot.ts:2796
+src/boot.ts:2801
 EOF
 )
 
