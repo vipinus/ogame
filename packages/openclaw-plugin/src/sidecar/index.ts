@@ -413,6 +413,20 @@ export async function startSidecar(
   const lastSeen: { at: number | null } = { at: null };
   const sidecarStartedAt = Date.now();
 
+  // Phase 9c.1 — per-user WorldState mirror. state.snapshot handler routes
+  // by ALS user_id when present; PriorityMerger / SaveCoord / FailureAgg
+  // still operate on the legacy single-tenant stateRef (9c.2/3 will lift
+  // those). Read paths (/v1/state with Bearer, /api/me/state in Next.js
+  // via Drizzle) already prefer the per-user partition.
+  const userStates = new Map<string, WorldState>();
+  const userLastSeen = new Map<string, number>();
+  /** Lookup a user's latest snapshot, falling back to operator legacy. */
+  const getUserState = (userId: string | undefined): WorldState | null => {
+    if (userId && userStates.has(userId)) return userStates.get(userId) ?? null;
+    return stateRef.current;
+  };
+  void getUserState; // re-export later as we wire read paths
+
   // Hydrate stateRef from persisted blob BEFORE transports start. Lets
   // priorityMerger / health / debug endpoints have a real WorldState even
   // before the userscript's first state.snapshot. Corrupt blob → null +
@@ -534,6 +548,16 @@ export async function startSidecar(
       llmPing: () => pingGemini(geminiClient),
       stateRef,
       strategyVersion: () => strategyManager.load().version,
+      // Phase 9c.1 — multi-tenant snapshot observability.
+      multiTenantSnapshot: () => {
+        const tracked = userStates.size;
+        let maxAge: number | null = null;
+        if (userLastSeen.size > 0) {
+          const oldest = Math.min(...Array.from(userLastSeen.values()));
+          maxAge = Math.round((Date.now() - oldest) / 1000);
+        }
+        return { users_tracked: tracked, last_seen_max_age_seconds: maxAge };
+      },
       // v0.0.638 — surface persistence-tier stats so operators can confirm
       // the SQLite store is non-empty / not silently truncated. Wrapped in
       // try/catch inside buildHealthReport already.
@@ -1757,6 +1781,15 @@ export async function startSidecar(
   // -------------------------------------------------------------------------
 
   ws.on("state.snapshot", (msg) => {
+    // Phase 9c.1 — route by ALS user_id when set. Per-user store always
+    // updated; legacy stateRef ALSO updated (so PriorityMerger /
+    // SaveCoord / FailureAgg still see the latest snapshot from whichever
+    // user is most active — this matches pre-9c semantics).
+    const ctxUid = getCurrentUserId();
+    if (ctxUid) {
+      userStates.set(ctxUid, msg.snapshot);
+      userLastSeen.set(ctxUid, Date.now());
+    }
     const prev = stateRef.current;
     stateRef.current = msg.snapshot;
     lastSeen.at = Date.now();

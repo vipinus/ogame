@@ -31,6 +31,13 @@ export interface HealthDeps {
   stateRef: { current: WorldState | null };
   /** Current strategy version (from StrategyManager.load().version). */
   strategyVersion: () => number;
+  /** Phase 9c.1 — number of distinct user_ids whose state.snapshot has
+   *  landed since this sidecar booted. 0 = single-tenant operator-only
+   *  legacy mode. ≥1 = real multi-tenant flow. */
+  multiTenantSnapshot?: () => {
+    users_tracked: number;
+    last_seen_max_age_seconds: number | null;
+  };
   /** Optional persistence-tier stats. When absent, the `persistence` field
    *  is omitted from the report (older sidecars / unit tests that don't
    *  wire SQLite). */
@@ -81,6 +88,10 @@ export interface HealthReport {
   };
   strategy: {
     version: number;
+  };
+  multi_tenant?: {
+    users_tracked: number;
+    last_seen_max_age_seconds: number | null;
   };
   persistence?: {
     db_path: string;
@@ -145,6 +156,11 @@ export async function buildHealthReport(deps: HealthDeps): Promise<HealthReport>
     try { persistenceSlice = deps.persistenceStats(); }
     catch (e) { console.warn("[health] persistenceStats threw", e); }
   }
+  let multiTenantSlice: HealthReport["multi_tenant"] | undefined;
+  if (deps.multiTenantSnapshot) {
+    try { multiTenantSlice = deps.multiTenantSnapshot(); }
+    catch (e) { console.warn("[health] multiTenantSnapshot threw", e); }
+  }
 
   return {
     ok: bridgeOpen && llmOk && hasSnapshot,
@@ -173,6 +189,7 @@ export async function buildHealthReport(deps: HealthDeps): Promise<HealthReport>
       hostile_events_count: hostileEventsCount,
     },
     strategy: { version: strategyVersion },
+    ...(multiTenantSlice !== undefined ? { multi_tenant: multiTenantSlice } : {}),
     ...(persistenceSlice !== undefined ? { persistence: persistenceSlice } : {}),
   };
 }
