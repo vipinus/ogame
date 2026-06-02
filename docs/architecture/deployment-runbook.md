@@ -110,13 +110,24 @@ systemctl --user stop ogamex-sidecar ogamex-discord-bridge
 
 ### discord-bridge (老 .mjs daemon)
 
-历史包袱: 单文件 `ogamex_discord_bridge.mjs` 没有 TS source, 改动靠 Python AST 替换或直接 edit。
+历史包袱: 单文件 `ogamex_discord_bridge.mjs` 没有 TS source, 也不在本仓库里 (canonical 是远端 `/home/ddxs/.openclaw/extensions/ogamex/runtime/ogamex_discord_bridge.mjs`)。改动靠 ssh `sed`/直接 edit 远端, 或 scp 覆盖。
 
 ```bash
-# 改完
-scp ogamex_discord_bridge.mjs ddxs@192.168.2.100:/home/ddxs/.openclaw/extensions/ogamex/runtime/ogamex_discord_bridge.mjs
+# 改完远端文件后
 ssh ddxs@192.168.2.100 'systemctl --user restart ogamex-discord-bridge'
+# 或直接 kill, openclaw gateway (PPID 6201) 会自动拉
+ssh ddxs@192.168.2.100 'kill -TERM <PID>'
 ```
+
+**⚠️ 重要**: daemon 在 line 25 硬编 `const DB_PATH = "<path>/goals.db"`, 自己用 better-sqlite3 直接打开同一份 goals.db 跟 sidecar 共享。每次迁移 sidecar 持久化路径 (`run_sidecar.mjs` 的 `goalsDbPath` 等), 必须 **同步改 daemon 的 DB_PATH 并重启 daemon**。否则:
+
+- daemon 句柄绑在被 rename / 移除路径的 inode 上 (Linux open-fd 行为)
+- daemon 把新 expedition goal 写到孤儿 inode
+- sidecar 在新路径 goals.db 看不到这些 goal, panel /v1/goals 显示 0 expedition
+- daemon 自己的 `activeExpInQueue` 算到 5, 触发 backlog full 拒绝 dispatch
+- 实际表象: **"远征有空槽没飞"** (2026-06-01 实证, S10 迁路径漏 daemon 同步导致)
+
+修法: ssh sed 替换 line 25 DB_PATH → kill -TERM daemon PID → gateway 自动拉新进程, 10s 后正常 dispatch。
 
 ## 历史 — 为什么从 screen 搬到 systemd
 
