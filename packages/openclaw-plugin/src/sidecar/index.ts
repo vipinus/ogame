@@ -1861,6 +1861,17 @@ export async function startSidecar(
         await pgStore!.upsertGoal(uid, row);
       });
     },
+    // v0.0.671 — Phase 6a: inject the async reader the merger reads from
+    // when env OGAMEX_DB_MODE flips off "sqlite". Three states:
+    //   - sqlite: reader undefined → merger reads SQLite (pre-Phase-6).
+    //   - dual:   reader = DualReadGoalsStore → SQLite primary + PG drift.
+    //   - pg:     reader = GoalsStorePg → PG primary, SQLite shadow.
+    // Rollback = flip OGAMEX_DB_MODE env + SIGHUP. No code redeploy.
+    ...(dbMode === "pg" && goalsStorePg
+      ? { reader: goalsStorePg }
+      : dbMode === "dual" && dualGoalsStore
+      ? { reader: dualGoalsStore }
+      : {}),
   });
   // v0.0.459 forward-ref assignment — CRUD endpoints + directive_completed
   // handler use priorityMergerRef + triggerDispatch via closure (declared

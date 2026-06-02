@@ -347,7 +347,14 @@ export class WorldStateStorePg {
             reason = EXCLUDED.reason,
             is_main_goal = EXCLUDED.is_main_goal,
             updated_at = EXCLUDED.updated_at
+        WHERE EXCLUDED.updated_at >= ogame_goals.updated_at
     `;
+    // ^ v0.0.671 — Phase 6a timestamp guard: a late-arriving upsert
+    //   (e.g. merger's status=active mirror racing the
+    //   directive_completed handler's status=completed update) must
+    //   NOT clobber a newer row. Without this clause we saw drift like
+    //   sqlite=9 pg=11 — stale "active" persisted in PG after SQLite
+    //   had already moved to "completed".
   }
 
   /** Mirror GoalsStore.updateStatus — sets status, reason, updated_at. */

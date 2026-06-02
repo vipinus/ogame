@@ -19,6 +19,7 @@
  */
 import type { Directive, DownstreamMsg, Goal, WorldState } from "@ogamex/shared";
 import type { GoalsStore, GoalRow, GoalStatus } from "./goals_store.js";
+import type { IGoalsStoreReader } from "./goals_store_iface.js";
 
 export interface PriorityMergerDeps {
   store: GoalsStore;
@@ -32,6 +33,12 @@ export interface PriorityMergerDeps {
    *  (upsertGoal) — converges even when the goal never existed in PG
    *  (e.g. created via a path that pre-dated Phase 0 shadowFire wiring). */
   onStatusChange?: (row: GoalRow, userId: string | undefined) => void;
+  /** Phase 6a — optional async reader. When supplied, dispatch() reads
+   *  active goals from this surface instead of `store.listActive*` sync
+   *  SQLite. Writes (updateStatus) still go through `store` for now
+   *  (Phase 6b removes the dual-write). Mode is env-controlled (sqlite/
+   *  dual/pg via OGAMEX_DB_MODE); env flip is the rollback button. */
+  reader?: IGoalsStoreReader;
 }
 
 export interface DispatchResult {
@@ -114,6 +121,7 @@ export class PriorityMerger {
   private readonly STUCK_TIMEOUT_MS_ATOMIC = 30_000;
 
   private readonly onStatusChange: ((row: GoalRow, userId: string | undefined) => void) | undefined;
+  private readonly reader: IGoalsStoreReader | undefined;
   /** Set at start of dispatch(), threaded through to onStatusChange so
    *  the PG mirror knows which tenant the status mutation belongs to. */
   private currentDispatchUid: string | undefined = undefined;
@@ -123,6 +131,7 @@ export class PriorityMerger {
     this.planGoal = deps.planGoal;
     this.send = deps.send;
     this.onStatusChange = deps.onStatusChange;
+    this.reader = deps.reader;
   }
 
   /** v0.0.670 — Phase 5c: helper that mirrors every status mutation to
@@ -222,11 +231,27 @@ export class PriorityMerger {
     // v0.0.670 — Phase 5c: thread userId through so the mirror callback
     // knows the tenant. updateStatusAndMirror reads this each call.
     this.currentDispatchUid = userId;
-    const rows = (
-      typeof userId === "string" && userId
-        ? [...(await this.store.listActiveByUser(userId))]
-        : [...(await this.store.listActive())]
-    ).sort(compareRows);
+    // v0.0.671 — Phase 6a: when `reader` is supplied (env OGAMEX_DB_MODE=
+    // pg|dual), pull active rows from the async reader (PG or wrapper).
+    // Falls back to SQLite-direct read when reader is absent (mode=
+    // sqlite — pre-Phase-6 behaviour, safe rollback).
+    //
+    // listActive() (cross-tenant) is intentionally NOT supplied by
+    // IGoalsStoreReader — PG path scans by tenant. When userId is
+    // missing AND reader is present, we still use the sync SQLite path
+    // (legacy single-tenant fallback). Multi-tenant push always carries
+    // an ALS-resolved userId so the async reader is hit normally.
+    let rows: GoalRow[];
+    if (this.reader && typeof userId === "string" && userId) {
+      rows = [...(await this.reader.listActiveByUser(userId))];
+    } else {
+      rows = (
+        typeof userId === "string" && userId
+          ? [...(await this.store.listActiveByUser(userId))]
+          : [...(await this.store.listActive())]
+      );
+    }
+    rows = rows.sort(compareRows);
 
     const dispatched: Directive[] = [];
     const blocked: { goal_id: string; reason: string }[] = [];
