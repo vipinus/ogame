@@ -13,6 +13,7 @@
  */
 import { LIFEFORM_TECH } from "@ogamex/shared";
 import { TECH_ID_BY_NAME } from "@ogamex/shared";
+import { t } from "../i18n/t.js";
 
 /** Prereq tree node — recursive structure mirroring TECH_TREE's `requires`
  *  graph for the player's main goal. Attached by sidecar listGoals only on
@@ -211,7 +212,7 @@ function openEmergencySettings(doc: Document): void {
     ${renderToggleRow("侦察触发 FS", spyOn, "em-spy", "ON = spy event 也走 FS 链路 (默认开); OFF = 仅 attack 触发")}
     <div style="color:#5a7090; font-size:10px; padding-top:10px;">变更立即生效, 无需保存.</div>
   `;
-  openSettingsModal(doc, "emergency", "🚨 紧急任务设置", bodyHTML, (m) => {
+  openSettingsModal(doc, "emergency", t("modal.emergency.title"), bodyHTML, (m) => {
     const reflect = (sel: string, isOn: boolean): void => {
       const btn = m.querySelector<HTMLElement>(sel);
       if (!btn) return;
@@ -362,7 +363,7 @@ function openExpeditionSettings(
     { key: "explorer",       label: "探路者 (PF)" },
   ];
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading expedition config…</div>`;
-  openSettingsModal(doc, "expedition", "🛸 远征任务设置", placeholder, async (m) => {
+  openSettingsModal(doc, "expedition", t("modal.expedition.title"), placeholder, async (m) => {
     const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
     if (!body) return;
     let initial: { template?: Record<string, number>; paused?: boolean; enabled?: boolean; enabled_planets?: string[]; auto_build_ships?: boolean } = {};
@@ -760,7 +761,7 @@ function openGoalsSettings(
     { value: "transport",         label: "transport · 运输",        planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","ships":{"largeCargo":100},"cargo":{"m":1000000,"c":0,"d":0}}` },
   ];
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading planet list…</div>`;
-  openSettingsModal(doc, "goals", "🪐 普通任务设置", placeholder, async (m) => {
+  openSettingsModal(doc, "goals", t("modal.goals.title"), placeholder, async (m) => {
     const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
     if (!body) return;
     interface StorePlanet { id: string; type?: string; coords?: number[]; name?: string }
@@ -2343,7 +2344,7 @@ function openTransportSettings(
   prefill?: { targetPlanetId?: string; cargo?: { m: number; c: number; d: number } },
 ): void {
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading state…</div>`;
-  openSettingsModal(doc, "transport", "🚚 运输设置", placeholder, async (m) => {
+  openSettingsModal(doc, "transport", t("modal.transport.title"), placeholder, async (m) => {
     const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
     if (!body) return;
     interface StorePlanet { id: string; type?: string; coords?: number[]; name?: string; resources?: { m?: number; c?: number; d?: number }; ships?: Record<string, number> }
@@ -3856,19 +3857,19 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const latestVersion = ((typeof window !== "undefined" ? window : globalThis) as { __ogamexLatestVersion?: string }).__ogamexLatestVersion ?? "";
     const hasUpdate = latestVersion !== "" && latestVersion !== currentVersion && cmpSemver(latestVersion, currentVersion) > 0;
     const updateBtn = hasUpdate
-      ? `<button data-action="update-runtime" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:10px;" title="新版 v${escapeHtml(latestVersion)} 可用 — 点击安装">🔄 v${escapeHtml(latestVersion)}</button>`
+      ? `<button data-action="update-runtime" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:10px;" title="${escapeHtml(t("panel.btn.update_tooltip", { version: latestVersion }))}">${escapeHtml(t("panel.btn.update", { version: latestVersion }))}</button>`
       : "";
     const header = `
       <div data-ogamex-drag="1" style="display:flex; align-items:center; justify-content:space-between; padding-bottom:4px; cursor:move; user-select:none;">
-        <strong style="color:#e0e8f0;">🪐 ${escapeHtml(serverSlug)} v${escapeHtml(currentVersion)}</strong>
+        <strong style="color:#e0e8f0;">${escapeHtml(t("panel.title_prefix"))} ${escapeHtml(serverSlug)} v${escapeHtml(currentVersion)}</strong>
         <span style="display:flex; gap:4px; align-items:center;">
           ${updateBtn}
-          <button data-action="open-audit" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="审计日志 — sidecar 持久化 events 表">📋</button>
-          <button data-action="collapse" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "▸" : "▾"}</button>
-          <button data-action="close" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="Close (panel will re-mount on next page load)">×</button>
+          <button data-action="open-audit" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="${escapeHtml(t("panel.btn.audit"))}">📋</button>
+          <button data-action="collapse" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${escapeHtml(collapsed ? t("panel.btn.collapse_expand") : t("panel.btn.collapse_collapse"))}">${collapsed ? "▸" : "▾"}</button>
+          <button data-action="close" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${escapeHtml(t("panel.btn.close"))}">×</button>
         </span>
       </div>
-      <div style="color:#8090a8; font-size:10px;">${filtered.length} active${err ? ` — ${escapeHtml(err)}` : ""}</div>`;
+      <div style="color:#8090a8; font-size:10px;">${escapeHtml(t("panel.counter.active", { n: filtered.length }))}${err ? ` — ${escapeHtml(err)}` : ""}</div>`;
     const empty = filtered.length === 0 && !err
       ? `<div style="color:#666; text-align:center; padding:12px;">(no active goals)</div>`
       : "";
