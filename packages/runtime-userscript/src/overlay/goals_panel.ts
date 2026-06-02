@@ -3277,7 +3277,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const now = Date.now();
 
     // L1
-    if (isPaused(g)) return { label: "paused", color: "#8a8aff" };
+    if (isPaused(g)) return { label: t("goal.state.paused"), color: "#8a8aff" };
     // L2 — body's ogame queue is ground truth FOR BUILD/RESEARCH FAMILY ONLY.
     // v0.0.510 — operator 2026-05-31: deploy/transport/jumpgate chain leg
     // 誤顯示 "building <body's tech>" 因爲 body_build_q 跟 deploy 語義無關。
@@ -3289,29 +3289,31 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     if (isBuildFamily && bq && bq.ends_at > now) {
       const lvLabel = bq.level !== null && bq.level !== undefined ? ` L${bq.level}` : "";
       const etaMin = Math.max(0, Math.round((bq.ends_at - now) / 60_000));
-      const queueLabel = bq.queue === "lf_build" ? "building (lifeform)" : bq.queue === "shipyard" ? "constructing" : "building";
-      return { label: `${queueLabel} ${bq.tech}${lvLabel} (~${etaMin}m)`, color: "#7cfc00" };
+      const tplKey = bq.queue === "lf_build" ? "goal.state.body_q.lifeform_template"
+        : bq.queue === "shipyard" ? "goal.state.body_q.constructing_template"
+        : "goal.state.body_q.building_template";
+      return { label: t(tplKey, { tech: bq.tech, lvl: lvLabel, eta: etaMin }), color: "#7cfc00" };
     }
     // L3 — planner's eta_at for this goal's tech is in the future
     if (typeof g.eta_at === "number" && g.eta_at > now) {
       const slot = cs ? stepLabel : t("goal.state.in_queue");
-      if (cs?.kind === "research") return { label: `researching ${slot}`, color: "#7cc0ff" };
-      if (goalType === "build_ships" || goalType === "build_defense") return { label: `building ships`, color: "#7cfc00" };
-      if (goalType === "lifeform_building") return { label: `building (lifeform) ${slot}`, color: "#7cfc00" };
-      return { label: `building ${slot}`, color: "#7cfc00" };
+      if (cs?.kind === "research") return { label: t("goal.state.researching_with_step", { step: slot }), color: "#7cc0ff" };
+      if (goalType === "build_ships" || goalType === "build_defense") return { label: t("goal.state.building_ships"), color: "#7cfc00" };
+      if (goalType === "lifeform_building") return { label: t("goal.state.building_lifeform_with_step", { step: slot }), color: "#7cfc00" };
+      return { label: t("goal.state.building_with_step", { step: slot }), color: "#7cfc00" };
     }
     // L4 — active status without eta_at (fleet ops or initial dispatch)
     if (g.status === "active") {
       if (goalType === "research") return { label: cs ? t("goal.state.researching_with_step", { step: stepLabel }) : t("goal.state.researching"), color: "#7cc0ff" };
       if (goalType === "build" || goalType === "build_universal") return { label: cs ? t("goal.state.building_with_step", { step: stepLabel }) : t("goal.state.building"), color: "#7cfc00" };
-      if (goalType === "build_ships" || goalType === "build_defense") return { label: "constructing ships", color: "#7cfc00" };
+      if (goalType === "build_ships" || goalType === "build_defense") return { label: t("goal.state.constructing_ships"), color: "#7cfc00" };
       if (goalType === "lifeform_building") return { label: cs ? t("goal.state.building_lifeform_with_step", { step: stepLabel }) : t("goal.state.building_lifeform"), color: "#7cfc00" };
       if (goalType === "expedition") return { label: t("goal.state.expedition_flying"), color: "#80c0ff" };
-      if (goalType === "colonize") return { label: "colonizing", color: "#80c0ff" };
-      if (goalType === "deploy") return { label: "deploying", color: "#80c0ff" };
-      if (goalType === "transport") return { label: "transporting", color: "#80c0ff" };
-      if (goalType === "jumpgate") return { label: "jumping", color: "#80c0ff" };
-      return { label: "active", color: "#7cfc00" };
+      if (goalType === "colonize") return { label: t("goal.state.colonizing"), color: "#80c0ff" };
+      if (goalType === "deploy") return { label: t("goal.state.deploying"), color: "#80c0ff" };
+      if (goalType === "transport") return { label: t("goal.state.transporting"), color: "#80c0ff" };
+      if (goalType === "jumpgate") return { label: t("goal.state.jumping"), color: "#80c0ff" };
+      return { label: t("goal.state.active"), color: "#7cfc00" };
     }
     // L5 + L6 — blocked on resources. Use current_step for specificity.
     // Body has no production (moon or 0-prod planet) → must be operator-fed
@@ -3324,10 +3326,10 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const target = cs ? stepLabel : "";
       // L5 — no local production → awaiting transport
       if (subtreeEta <= 0) {
-        return { label: target ? `awaiting transport · ${target}` : "awaiting transport", color: "#ffaa55" };
+        return { label: target ? t("goal.state.awaiting_transport_step", { step: target }) : t("goal.state.awaiting_transport"), color: "#ffaa55" };
       }
       // L6 — has production, just need to fill up
-      return { label: target ? `waiting resources · ${target}` : "waiting resources", color: "#ff9b6b" };
+      return { label: target ? t("goal.state.waiting_resources_step", { step: target }) : t("goal.state.waiting_resources"), color: "#ff9b6b" };
     }
     // L7 — same slot-family sibling currently building (queued behind)
     const slotFamily = (gg: GoalRowFromHttp): string | null => {
@@ -3351,29 +3353,29 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         const sib = sibling.current_step;
         const sibLabel = sib ? `${sib.tech} L${sib.level}` : sibling.type;
         const etaMin = Math.max(0, Math.round(((sibling.eta_at ?? 0) - now) / 60_000));
-        return { label: `queued · waiting ${sibLabel} (~${etaMin}m)`, color: "#bdb76b" };
+        return { label: t("goal.state.queued_waiting", { step: sibLabel, eta: etaMin }), color: "#bdb76b" };
       }
     }
     // L8 — blocked with other reason patterns
     if (g.status === "blocked") {
-      if (/build slot.*in use|shipyard slot.*in use|research slot.*in use|lf build slot.*in use/i.test(reason)) return { label: "queued (slot busy)", color: "#bdb76b" };
-      if (/moon fields nearly full/i.test(reason)) return { label: "fields full → LB", color: "#ff9b6b" };
-      if (/chain prereq.*waiting/i.test(reason)) return { label: "chain wait", color: "#bdb76b" };
-      if (/has \d+× .*, need \d+|insufficient.*ship|0× .*, need/i.test(reason)) return { label: "ships short", color: "#ff9b6b" };
-      if (/expedition slots full|fleet slots full|early skip, not queued/i.test(reason)) return { label: "slots full", color: "#bdb76b" };
-      if (/storage.*insufficient|insufficient.*storage|倉存容量不足|倉存容量不足|140028/i.test(reason)) return { label: "dest storage full", color: "#ff9b6b" };
-      if (/transient race|140043|請稍後再試|請稍後再試|try again later/i.test(reason)) return { label: "ogame race, retrying", color: "#bdb76b" };
-      if (/100001|未知的錯誤|未知的錯誤/i.test(reason)) return { label: "ogame error 100001", color: "#ff6b6b" };
-      if (/120023|沒有空間|沒有空間|月球上.*空間|月球上.*空間/i.test(reason)) return { label: "moon space full", color: "#ff6b6b" };
-      if (/cooldown.*remaining/i.test(reason)) return { label: "cooldown", color: "#bdb76b" };
-      if (/jumpgate.*not on moon|missing source_moon|missing target_moon/i.test(reason)) return { label: "JG misconfig", color: "#ff6b6b" };
-      if (/planet-only building.*cannot.*moon|moon-only building.*cannot.*planet/i.test(reason)) return { label: "body type mismatch", color: "#ff6b6b" };
-      if (/awaiting.*event|awaiting empire_poll|awaiting operator_retry/i.test(reason)) return { label: "awaiting event", color: "#80c0ff" };
+      if (/build slot.*in use|shipyard slot.*in use|research slot.*in use|lf build slot.*in use/i.test(reason)) return { label: t("goal.state.queued_slot_busy"), color: "#bdb76b" };
+      if (/moon fields nearly full/i.test(reason)) return { label: t("goal.state.fields_full_lb"), color: "#ff9b6b" };
+      if (/chain prereq.*waiting/i.test(reason)) return { label: t("goal.state.chain_wait"), color: "#bdb76b" };
+      if (/has \d+× .*, need \d+|insufficient.*ship|0× .*, need/i.test(reason)) return { label: t("goal.state.ships_short"), color: "#ff9b6b" };
+      if (/expedition slots full|fleet slots full|early skip, not queued/i.test(reason)) return { label: t("goal.state.slots_full"), color: "#bdb76b" };
+      if (/storage.*insufficient|insufficient.*storage|倉存容量不足|倉存容量不足|140028/i.test(reason)) return { label: t("goal.state.dest_storage_full"), color: "#ff9b6b" };
+      if (/transient race|140043|請稍後再試|請稍後再試|try again later/i.test(reason)) return { label: t("goal.state.ogame_race_retry"), color: "#bdb76b" };
+      if (/100001|未知的錯誤|未知的錯誤/i.test(reason)) return { label: t("goal.state.ogame_error_100001"), color: "#ff6b6b" };
+      if (/120023|沒有空間|沒有空間|月球上.*空間|月球上.*空間/i.test(reason)) return { label: t("goal.state.moon_space_full"), color: "#ff6b6b" };
+      if (/cooldown.*remaining/i.test(reason)) return { label: t("goal.state.cooldown"), color: "#bdb76b" };
+      if (/jumpgate.*not on moon|missing source_moon|missing target_moon/i.test(reason)) return { label: t("goal.state.jg_misconfig"), color: "#ff6b6b" };
+      if (/planet-only building.*cannot.*moon|moon-only building.*cannot.*planet/i.test(reason)) return { label: t("goal.state.body_type_mismatch"), color: "#ff6b6b" };
+      if (/awaiting.*event|awaiting empire_poll|awaiting operator_retry/i.test(reason)) return { label: t("goal.state.awaiting_event"), color: "#80c0ff" };
       return { label: t("goal.state.blocked"), color: "#bdb76b" };
     }
-    if (g.status === "pending") return { label: "pending", color: "#80c0ff" };
-    if (g.status === "completed") return { label: "completed", color: "#888" };
-    if (g.status === "cancelled") return { label: "cancelled", color: "#888" };
+    if (g.status === "pending") return { label: t("goal.state.pending"), color: "#80c0ff" };
+    if (g.status === "completed") return { label: t("goal.state.completed"), color: "#888" };
+    if (g.status === "cancelled") return { label: t("goal.state.cancelled"), color: "#888" };
     return { label: g.status, color: "#ccc" };
   }
 
