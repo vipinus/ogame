@@ -29,7 +29,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   crystalFarm: {
     id: "crystalFarm",
-    display_name_zh: "水晶农场",
+    display_name_zh: "水晶農場",
     display_name_en: "Crystal Farm",
     requires: {},
     cost_at: pow(6, 1.23),
@@ -45,7 +45,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   runeForge: {
     id: "runeForge",
-    display_name_zh: "符文锻造厂",
+    display_name_zh: "符文鍛造廠",
     display_name_en: "Rune Forge",
     requires: { runeTechnologium: 2 },
     cost_at: pow(40_000, 1.4),
@@ -53,7 +53,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   oriktorium: {
     id: "oriktorium",
-    display_name_zh: "矿物精炼塔",
+    display_name_zh: "礦物精煉塔",
     display_name_en: "Oriktorium",
     requires: { crystalFarm: 1 },
     cost_at: pow(15_000, 1.3),
@@ -61,7 +61,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   magmaForge: {
     id: "magmaForge",
-    display_name_zh: "岩浆熔炉",
+    display_name_zh: "巖漿熔爐",
     display_name_en: "Magma Forge",
     requires: { runeForge: 3 },
     cost_at: pow(60_000, 1.5),
@@ -69,7 +69,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   disruptionChamber: {
     id: "disruptionChamber",
-    display_name_zh: "扰动腔室",
+    display_name_zh: "擾動腔室",
     display_name_en: "Disruption Chamber",
     requires: { runeTechnologium: 3 },
     cost_at: pow(75_000, 1.5),
@@ -77,7 +77,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   megalith: {
     id: "megalith",
-    display_name_zh: "巨石阵",
+    display_name_zh: "巨石陣",
     display_name_en: "Megalith",
     requires: { meditationEnclave: 5 },
     cost_at: pow(50_000, 1.4),
@@ -85,7 +85,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   crystalRefinery: {
     id: "crystalRefinery",
-    display_name_zh: "水晶精炼",
+    display_name_zh: "水晶精煉",
     display_name_en: "Crystal Refinery",
     requires: { crystalFarm: 5 },
     cost_at: pow(80_000, 1.5),
@@ -93,7 +93,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   deuteriumSynthesiser: {
     id: "deuteriumSynthesiser",
-    display_name_zh: "重氢合成器",
+    display_name_zh: "重氫合成器",
     display_name_en: "Deuterium Synthesiser",
     requires: { magmaForge: 3 },
     cost_at: powD(120_000, 1.5),
@@ -101,7 +101,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   mineralResearchCentre: {
     id: "mineralResearchCentre",
-    display_name_zh: "矿物研究中心",
+    display_name_zh: "礦物研究中心",
     display_name_en: "Mineral Research Centre",
     requires: { oriktorium: 5 },
     cost_at: pow(180_000, 1.5),
@@ -109,7 +109,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   advancedRecyclingPlant: {
     id: "advancedRecyclingPlant",
-    display_name_zh: "高级回收厂",
+    display_name_zh: "高級回收廠",
     display_name_en: "Advanced Recycling Plant",
     requires: { mineralResearchCentre: 3 },
     cost_at: pow(250_000, 1.5),
@@ -120,7 +120,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
 const research: Record<string, LifeformResearchEntry> = {
   volcanicBatteries: {
     id: "volcanicBatteries",
-    display_name_zh: "火山电池",
+    display_name_zh: "火山電池",
     display_name_en: "Volcanic Batteries",
     requires: { runeTechnologium: 1 },
     cost_at: pow(6_000, 2),
@@ -128,7 +128,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   acousticScanning: {
     id: "acousticScanning",
-    display_name_zh: "声学扫描",
+    display_name_zh: "聲學掃描",
     display_name_en: "Acoustic Scanning",
     requires: { runeTechnologium: 1 },
     cost_at: pow(8_000, 2),
@@ -136,7 +136,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   highEnergyPyrolysis: {
     id: "highEnergyPyrolysis",
-    display_name_zh: "高能热解",
+    display_name_zh: "高能熱解",
     display_name_en: "High-Energy Pyrolysis",
     requires: { runeTechnologium: 1 },
     cost_at: pow(11_000, 2),
@@ -144,7 +144,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   nanoRepairBots: {
     id: "nanoRepairBots",
-    display_name_zh: "纳米修复机器人",
+    display_name_zh: "納米修復機器人",
     display_name_en: "Nano Repair Bots",
     requires: { runeTechnologium: 2 },
     cost_at: pow(20_000, 2),
@@ -152,7 +152,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   magmaPoweredProduction: {
     id: "magmaPoweredProduction",
-    display_name_zh: "岩浆能源生产",
+    display_name_zh: "巖漿能源生產",
     display_name_en: "Magma Powered Production",
     requires: { runeTechnologium: 2 },
     cost_at: pow(15_000, 2),
@@ -160,7 +160,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   geothermalPowerPlants: {
     id: "geothermalPowerPlants",
-    display_name_zh: "地热发电站",
+    display_name_zh: "地熱發電站",
     display_name_en: "Geothermal Power Plants",
     requires: { runeTechnologium: 2 },
     cost_at: pow(25_000, 2),
@@ -168,7 +168,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   depthSounding: {
     id: "depthSounding",
-    display_name_zh: "深度探测",
+    display_name_zh: "深度探測",
     display_name_en: "Depth Sounding",
     requires: { runeTechnologium: 3 },
     cost_at: pow(50_000, 2),
@@ -176,7 +176,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   ionCrystalEnhancement: {
     id: "ionCrystalEnhancement",
-    display_name_zh: "离子水晶增强",
+    display_name_zh: "離子水晶增強",
     display_name_en: "Ion Crystal Enhancement",
     requires: { runeTechnologium: 3 },
     cost_at: pow(40_000, 2),
@@ -192,7 +192,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   hardenedDiamondDrillHeads: {
     id: "hardenedDiamondDrillHeads",
-    display_name_zh: "强化钻石钻头",
+    display_name_zh: "強化鑽石鑽頭",
     display_name_en: "Hardened Diamond Drill Heads",
     requires: { runeTechnologium: 4 },
     cost_at: powD(100_000, 2),
@@ -200,7 +200,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   seismicMiningTechnology: {
     id: "seismicMiningTechnology",
-    display_name_zh: "地震采矿技术",
+    display_name_zh: "地震採礦技術",
     display_name_en: "Seismic Mining Technology",
     requires: { runeTechnologium: 5 },
     cost_at: powD(150_000, 2),
@@ -208,7 +208,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   magmaPropulsion: {
     id: "magmaPropulsion",
-    display_name_zh: "岩浆推进器",
+    display_name_zh: "巖漿推進器",
     display_name_en: "Magma Propulsion",
     requires: { runeTechnologium: 5 },
     cost_at: powD(200_000, 2),

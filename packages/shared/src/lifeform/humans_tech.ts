@@ -25,7 +25,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   // -- core human buildings (community-named lf_humans_*) --
   residentialSector: {
     id: "residentialSector",
-    display_name_zh: "居住区",
+    display_name_zh: "居住區",
     display_name_en: "Residential Sector",
     requires: {},
     cost_at: pow(7, 1.2),
@@ -33,7 +33,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   biosphereFarm: {
     id: "biosphereFarm",
-    display_name_zh: "生物圈农场",
+    display_name_zh: "生物圈農場",
     display_name_en: "Biosphere Farm",
     requires: {},
     cost_at: pow(5, 1.23),
@@ -52,7 +52,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   academyOfSciences: {
     id: "academyOfSciences",
-    display_name_zh: "科学院",
+    display_name_zh: "科學院",
     display_name_en: "Academy of Sciences",
     requires: { researchCentre: 5 },
     cost_at: pow(50_000, 1.5),
@@ -60,7 +60,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   neuroCalibrationCentre: {
     id: "neuroCalibrationCentre",
-    display_name_zh: "神经校准中心",
+    display_name_zh: "神經校準中心",
     display_name_en: "Neuro-Calibration Centre",
     requires: { academyOfSciences: 3 },
     cost_at: pow(75_000, 1.5),
@@ -68,7 +68,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   highEnergySmelting: {
     id: "highEnergySmelting",
-    display_name_zh: "高能熔炼厂",
+    display_name_zh: "高能熔煉廠",
     display_name_en: "High Energy Smelting",
     requires: { residentialSector: 5 },
     cost_at: pow(9_000, 1.3),
@@ -76,7 +76,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   foodSilo: {
     id: "foodSilo",
-    display_name_zh: "食物仓库",
+    display_name_zh: "食物倉庫",
     display_name_en: "Food Silo",
     requires: { biosphereFarm: 1 },
     cost_at: pow(4_000, 1.3),
@@ -84,7 +84,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   fusionPoweredProduction: {
     id: "fusionPoweredProduction",
-    display_name_zh: "聚变能源生产",
+    display_name_zh: "聚變能源生產",
     display_name_en: "Fusion-Powered Production",
     requires: { highEnergySmelting: 5 },
     cost_at: pow(50_000, 1.4),
@@ -92,7 +92,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   skyscraper: {
     id: "skyscraper",
-    display_name_zh: "摩天大楼",
+    display_name_zh: "摩天大樓",
     display_name_en: "Skyscraper",
     requires: { residentialSector: 5 },
     cost_at: pow(75_000, 1.4),
@@ -100,7 +100,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   biotechLab: {
     id: "biotechLab",
-    display_name_zh: "生物科技实验室",
+    display_name_zh: "生物科技實驗室",
     display_name_en: "Biotech Lab",
     requires: { researchCentre: 3 },
     cost_at: pow(150_000, 1.5),
@@ -108,7 +108,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   metropolis: {
     id: "metropolis",
-    display_name_zh: "大都会",
+    display_name_zh: "大都會",
     display_name_en: "Metropolis",
     requires: { skyscraper: 5 },
     cost_at: pow(80_000, 1.5),
@@ -116,7 +116,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   plantationOfMostBenevolentBeing: {
     id: "plantationOfMostBenevolentBeing",
-    display_name_zh: "至善种植园",
+    display_name_zh: "至善種植園",
     display_name_en: "Plantation of the Most Benevolent Being",
     requires: { foodSilo: 5 },
     cost_at: pow(250_000, 1.5),
@@ -127,7 +127,7 @@ const buildings: Record<string, LifeformBuildingEntry> = {
 const research: Record<string, LifeformResearchEntry> = {
   intergalacticEnvoys: {
     id: "intergalacticEnvoys",
-    display_name_zh: "星际特使",
+    display_name_zh: "星際特使",
     display_name_en: "Intergalactic Envoys",
     requires: { academyOfSciences: 1 },
     cost_at: pow(5_000, 2),
@@ -135,7 +135,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   highPerformanceExtractors: {
     id: "highPerformanceExtractors",
-    display_name_zh: "高性能采掘机",
+    display_name_zh: "高性能採掘機",
     display_name_en: "High-Performance Extractors",
     requires: { academyOfSciences: 1 },
     cost_at: pow(7_000, 2),
@@ -143,7 +143,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   fuelHaulers: {
     id: "fuelHaulers",
-    display_name_zh: "燃料运输机",
+    display_name_zh: "燃料運輸機",
     display_name_en: "Fuel Haulers",
     requires: { academyOfSciences: 1 },
     cost_at: pow(10_000, 2),
@@ -151,7 +151,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   rareMetalRefiners: {
     id: "rareMetalRefiners",
-    display_name_zh: "稀有金属精炼",
+    display_name_zh: "稀有金屬精煉",
     display_name_en: "Rare-Metal Refiners",
     requires: { academyOfSciences: 1 },
     cost_at: pow(8_500, 2),
@@ -167,7 +167,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   enhancedProductionTechnologies: {
     id: "enhancedProductionTechnologies",
-    display_name_zh: "增强生产技术",
+    display_name_zh: "增強生產技術",
     display_name_en: "Enhanced Production Technologies",
     requires: { academyOfSciences: 2 },
     cost_at: pow(15_000, 2),
@@ -175,7 +175,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   networkOfTheLargeScaleBrain: {
     id: "networkOfTheLargeScaleBrain",
-    display_name_zh: "大规模思维网络",
+    display_name_zh: "大規模思維網絡",
     display_name_en: "Network of the Large-Scale Brain",
     requires: { academyOfSciences: 3 },
     cost_at: pow(25_000, 2),
@@ -183,7 +183,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   projectColonisation: {
     id: "projectColonisation",
-    display_name_zh: "殖民计划",
+    display_name_zh: "殖民計劃",
     display_name_en: "Project Colonisation",
     requires: { academyOfSciences: 3 },
     cost_at: pow(50_000, 2),
@@ -207,7 +207,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   enhancedProductiveTechnologiesUpgrade: {
     id: "enhancedProductiveTechnologiesUpgrade",
-    display_name_zh: "增强生产技术升级",
+    display_name_zh: "增強生產技術升級",
     display_name_en: "Enhanced Productive Technologies Upgrade",
     requires: { academyOfSciences: 5 },
     cost_at: powD(150_000, 2),
@@ -215,7 +215,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   experimentalRecyclingTech: {
     id: "experimentalRecyclingTech",
-    display_name_zh: "实验性回收技术",
+    display_name_zh: "實驗性回收技術",
     display_name_en: "Experimental Recycling Technology",
     requires: { academyOfSciences: 5 },
     cost_at: powD(200_000, 2),
