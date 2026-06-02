@@ -11,15 +11,33 @@ declare const GM_getValue: ((key: string, def?: string) => string) | undefined;
 // real WS access (e.g. LAN dev, openclaw gateway).
 const DEFAULT_BRIDGE_URL = "https://ogame.anyfq.com";
 
+// Build-time placeholder constants. The generic dist/ogame-runtime.user.js
+// ships with the bare placeholder literals below. When ogame-next's
+// /api/userscript route serves the file PER USER, it string-replaces the
+// placeholders with the requester's bridge_token + bridge URL.
+// Injection detection at runtime uses the prefix check via wasInjected().
+// Note: this comment intentionally does NOT echo the placeholder string,
+// otherwise the comment text itself would get rewritten with the user's
+// credential at serve-time (harmless but ugly).
+const INJECTED_BRIDGE_TOKEN = "__INJECT_BRIDGE_TOKEN__";
+const INJECTED_BRIDGE_URL = "__INJECT_BRIDGE_URL__";
+const wasInjected = (v: string): boolean => v.length > 0 && v.indexOf("__INJECT_") !== 0;
+
 /**
  * Resolve a config value via the following precedence:
- *   1. Tampermonkey GM_getValue (preferred; survives across reloads)
- *   2. window.localStorage (page-level; useful when GM grants aren't configured)
- *   3. provided default
- * Page-level localStorage is also handy for smoke testing without a userscript
- * manager: just `localStorage.setItem("OGAMEX_BRIDGE_TOKEN", "...")` and reload.
+ *   1. Build-time injection (from ogame-next per-user serving) — AUTHORITATIVE
+ *      when present. Cannot be overridden by stale localStorage, which is the
+ *      bug that bit operator 2026-06-02 (daigang's token in operator's
+ *      localStorage caused every push to route as daigang).
+ *   2. Tampermonkey GM_getValue (manual dev override)
+ *   3. window.localStorage (manual dev override)
+ *   4. provided default
+ *
+ * Per-user installed userscripts hit branch (1) and skip the others entirely.
+ * Generic dev builds (smoke-test, /dl/ legacy path) fall through to (2-4).
  */
-function readConfig(key: string, def: string): string {
+function readConfig(key: string, def: string, injected?: string): string {
+  if (injected && wasInjected(injected)) return injected;
   if (typeof GM_getValue === "function") {
     try {
       const v = GM_getValue(key, "");
@@ -74,8 +92,13 @@ if (_inIframe) {
     (window as unknown as { __OGAMEX__: unknown }).__OGAMEX__ = handle;
 
     // Wire bridge if a token is configured (GM_getValue OR window.localStorage)
-    const bridgeUrl = readConfig("OGAMEX_BRIDGE_URL", DEFAULT_BRIDGE_URL);
-    const bridgeToken = readConfig("OGAMEX_BRIDGE_TOKEN", "smoke-test-token");
+    const bridgeUrl = readConfig("OGAMEX_BRIDGE_URL", DEFAULT_BRIDGE_URL, INJECTED_BRIDGE_URL);
+    const bridgeToken = readConfig("OGAMEX_BRIDGE_TOKEN", "smoke-test-token", INJECTED_BRIDGE_TOKEN);
+    // Visible-in-console diagnostic: confirm which token wins. Show first 12
+    // chars only — full token in console would be a credential leak if user
+    // shares a screenshot. "(injected)" tag means per-user install is active.
+    const tokenSource = wasInjected(INJECTED_BRIDGE_TOKEN) ? "(injected)" : "(localStorage/dev)";
+    console.info(`[OgameX] bridge token ${bridgeToken.slice(0, 12)}… ${tokenSource}`);
     let wired: Awaited<ReturnType<typeof wireBridge>> | null = null;
     if (bridgeToken) {
       try {
