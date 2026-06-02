@@ -2515,8 +2515,8 @@ function openTransportSettings(
         <div data-tr-stopover-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
       ${sectionCard(t("auto.148"),
         `<div style="display:flex; gap:12px; padding-bottom:6px;">
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> ${techName('largeCargo')} (cap ${fmt(ltCap)})</label>
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> ${escapeHtml(techName('smallCargo'))} (cap ${fmt(stCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="checkbox" name="tr-ship" value="largeCargo" checked data-tr-ship/> ${escapeHtml(techName('largeCargo'))} (cap ${fmt(ltCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="checkbox" name="tr-ship" value="smallCargo" data-tr-ship/> ${escapeHtml(techName('smallCargo'))} (cap ${fmt(stCap)})</label>
         </div>
         <div style="display:flex; gap:10px; padding:4px 0; align-items:center; font-size:11px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
@@ -2856,8 +2856,19 @@ function openTransportSettings(
     for (const rr of m.querySelectorAll<HTMLInputElement>('input[name="tr-resource-radio"]')) {
       rr.addEventListener("change", refreshCargoOverflowColors);
     }
+    // v0.0.669 — operator 2026-06-02 "radio 改 checkbox 默認大運, 小運不選".
+    // checkbox 之間互斥（点一个 → uncheck 另一个）保留"一次一种船"语义；
+    // 顶层逻辑（updateShipCount / submit）仍读 first :checked，跟 radio 行为
+    // 一致。允许两个都 uncheck — fallback "largeCargo" 在 query 那侧。
     for (const sr of m.querySelectorAll<HTMLInputElement>('input[name="tr-ship"]')) {
-      sr.addEventListener("change", updateShipCount);
+      sr.addEventListener("change", () => {
+        if (sr.checked) {
+          for (const other of m.querySelectorAll<HTMLInputElement>('input[name="tr-ship"]')) {
+            if (other !== sr) other.checked = false;
+          }
+        }
+        updateShipCount();
+      });
     }
     // v0.0.504 — also recompute on target radio change (moon target adds
     // 500K d buffer → ship count needs to include it).
