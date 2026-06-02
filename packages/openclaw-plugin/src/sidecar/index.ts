@@ -1277,6 +1277,17 @@ export async function startSidecar(
       debug.recordEvent(m);
       if (m.type === "event.directive_completed") {
         debug.recordComplete(m.directive_id, m.result);
+        // v0.0.636 — audit ack into events table. Truncate error string to
+        // keep payloads bounded (matches debug-buffer convention).
+        try {
+          const r = m.result as { success?: boolean; error?: string } | undefined;
+          const errStr = typeof r?.error === "string" ? r.error.slice(0, 400) : undefined;
+          worldStateStore.appendEvent("directive.completed", {
+            directive_id: m.directive_id,
+            success: r?.success === true,
+            error: errStr,
+          });
+        } catch (e) { console.error("[ogamex/sidecar] appendEvent completed threw", e); }
         const goalId = directiveToGoal.get(m.directive_id);
         if (goalId) {
           directiveToGoal.delete(m.directive_id);
@@ -1499,6 +1510,21 @@ export async function startSidecar(
       // debug page is directive-centric, not bridge-traffic-centric.
       if (msg.type === "directive.dispatch") {
         debug.recordDispatch(msg.directive);
+        // v0.0.636 — operator audit: persist directive dispatch into events
+        // table so /v1/events shows the full sidecar action history across
+        // restarts. Payload kept lean (id/goal/action/priority/expires);
+        // full directive lives in directiveToGoal map + ack handler.
+        try {
+          const d = msg.directive as { id?: string; goal_id?: string; action?: string; priority?: number; expires_at?: number; params?: Record<string, unknown> };
+          worldStateStore.appendEvent("directive.dispatch", {
+            directive_id: d.id,
+            goal_id: d.goal_id,
+            action: d.action,
+            priority: d.priority,
+            expires_at: d.expires_at,
+            params: d.params,
+          });
+        } catch (e) { console.error("[ogamex/sidecar] appendEvent dispatch threw", e); }
         // Remember directive_id → goal_id so we can mark the goal blocked
         // when the ack returns with success:false. Without this, ApiExec
         // failures (e.g., expedition 140054) leave the goal "active"

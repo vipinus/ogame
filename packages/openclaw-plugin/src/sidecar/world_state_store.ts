@@ -61,6 +61,12 @@ export interface EventRow {
 export class WorldStateStore {
   private readonly db: Database.Database;
   private readonly now: () => number;
+  /** Append counter — drives self-trim every TRIM_EVERY_N appends so a busy
+   *  directive stream (1+/s) doesn't grow the events table without bound
+   *  between sidecar restarts. */
+  private appendCounter = 0;
+  private static readonly TRIM_EVERY_N = 1000;
+  private static readonly TRIM_KEEP_LAST = 10_000;
   private readonly stmtGet: Database.Statement<[]>;
   private readonly stmtUpsert: Database.Statement<[string, number]>;
   private readonly stmtAppendEvent: Database.Statement<[string, string, number]>;
@@ -131,6 +137,11 @@ export class WorldStateStore {
   appendEvent(type: string, payload: unknown): number {
     const json = JSON.stringify(payload ?? null);
     const info = this.stmtAppendEvent.run(type, json, this.now());
+    this.appendCounter += 1;
+    if (this.appendCounter % WorldStateStore.TRIM_EVERY_N === 0) {
+      try { this.stmtTrimEvents.run(WorldStateStore.TRIM_KEEP_LAST); }
+      catch { /* trim is best-effort; never block append */ }
+    }
     return info.lastInsertRowid as number;
   }
 
