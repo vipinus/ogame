@@ -362,8 +362,12 @@ export async function wireBridge(
             body: JSON.stringify({ tag: "debris-raw", text: diag }),
           }).catch(() => { /* */ });
         } catch { /* */ }
-        if (totalDebris <= 0) {
-          const skipMsg = `G:S:${targetPosition}=${g}:${s}:${targetPosition} — no debris field, skip (isDebrisField=${isDebrisField})`;
+        // v0.0.641 — flip "skip + return" to "skip but continue" so the
+        // v0.0.641 home-planet scan further down still runs even when the
+        // primary targetPosition (typically :16) has no debris.
+        const primaryHasDebris = totalDebris > 0;
+        if (!primaryHasDebris) {
+          const skipMsg = `G:S:${targetPosition}=${g}:${s}:${targetPosition} — no debris field at primary slot, will still scan home planet (isDebrisField=${isDebrisField})`;
           console.info(`[debris] ${skipMsg}`);
           try {
             void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
@@ -372,9 +376,10 @@ export async function wireBridge(
               body: JSON.stringify({ tag: "debris-skip", text: skipMsg }),
             }).catch(() => { /* */ });
           } catch { /* */ }
-          return;
+        } else {
+          console.info(`[debris] G:S:${targetPosition}=${g}:${s}:${targetPosition} has m=${dm} c=${dc} d=${dd} (total ${totalDebris}) ogameRequiredShips=${ogameRequiredShips} ship=${harvestShipKey}`);
         }
-        console.info(`[debris] G:S:${targetPosition}=${g}:${s}:${targetPosition} has m=${dm} c=${dc} d=${dd} (total ${totalDebris}) ogameRequiredShips=${ogameRequiredShips} ship=${harvestShipKey}`);
+        if (primaryHasDebris) {
         // v0.0.570 — operator 2026-06-01: ship type depends on position
         // (pos 16 → pathfinder/explorer, pos 1-15 → recycler). Inventory
         // check + dispatch both keyed by harvestShipKey.
@@ -410,9 +415,8 @@ export async function wireBridge(
           }).catch(() => { /* */ });
         } catch { /* */ }
         if (shipsAvailable <= 0) {
-          console.warn(`[debris] SKIP — origin=${origin} has 0 ${harvestShipKey} ships; harvest unfeasible`);
-          return;
-        }
+          console.warn(`[debris] SKIP primary — origin=${origin} has 0 ${harvestShipKey} ships; v0.0.641 still continues to home scan`);
+        } else {
         const shipsToSend = Math.min(shipsNeeded, shipsAvailable);
         if (shipsToSend < shipsNeeded) {
           console.warn(`[debris] ${harvestShipKey} short — need=${shipsNeeded} have=${shipsAvailable} → send=${shipsToSend} (partial harvest)`);
@@ -452,6 +456,88 @@ export async function wireBridge(
               body: JSON.stringify({ tag: "debris-fail", text: `sendFleet error: ${errMsg.slice(0, 300)}` }),
             }).catch(() => { /* */ });
           } catch { /* */ }
+        }
+        } // end ships-available else (v0.0.641)
+        } // end if (primaryHasDebris) (v0.0.641)
+        // v0.0.641 — operator 2026-06-01 "本星有废墟" 实证: 1:486:7 战斗
+        // 残骸 c=14000 需 1 recycler, 但 sidecar 自动 debris-check 只查 :16
+        // (远征槽), 漏家星位 7 的战斗残骸。Galaxy fetch 已拿到全 system,
+        // 同一份 rows 顺便扫 origin planet 自己的位置, 有 debris 也派
+        // recycler (mission=8)。避免漏底。
+        try {
+          const winStore2 = (window as Window & {
+            __ogamexStore?: { state?: { planets?: Record<string, { coords?: readonly number[]; ships?: Record<string, number> }> } };
+          }).__ogamexStore;
+          const planet = winStore2?.state?.planets?.[origin];
+          const planetPos = Array.isArray(planet?.coords) && planet!.coords.length >= 3
+            ? Number(planet!.coords[2]) : 0;
+          if (planetPos > 0 && planetPos !== targetPosition) {
+            // Reuse rows from earlier fetch (same G:S galaxy).
+            const homePosRow = rows.find((row) => Number(row["position"]) === planetPos);
+            const homePlanetsField: unknown = homePosRow?.["planets"] ?? null;
+            const homePlanetsArr: DebrisEntry[] = Array.isArray(homePlanetsField)
+              ? (homePlanetsField as DebrisEntry[])
+              : (homePlanetsField && typeof homePlanetsField === "object" ? [homePlanetsField as DebrisEntry] : []);
+            const homeDebris = homePlanetsArr.find((e) => e?.planetType === 2 || e?.recyclePossible === true) ?? null;
+            if (homeDebris) {
+              const hm = Number(homeDebris.resources?.metal?.amount ?? 0);
+              const hc = Number(homeDebris.resources?.crystal?.amount ?? 0);
+              const hd = Number(homeDebris.resources?.deuterium?.amount ?? 0);
+              const homeTotal = hm + hc + hd;
+              const homeReq = Number(homeDebris.requiredShips ?? 0);
+              const homeDedupKey = `${origin}→${g}:${s}:${planetPos}`;
+              const homeLast = recentHarvestDispatch.get(homeDedupKey) ?? 0;
+              const homeAge = (Date.now() - homeLast) / 1000;
+              if (homeTotal > 0 && (homeLast === 0 || homeAge >= HARVEST_DEDUP_TTL_MS / 1000)) {
+                // Home planet = always battle debris → recycler (id=209).
+                const homeShipKey = "recycler";
+                const homeShipsAvail = Number(planet?.ships?.[homeShipKey] ?? 0);
+                const homeShipsNeeded = homeReq > 0 ? homeReq : Math.max(1, Math.ceil(homeTotal / 20000));
+                const homeInfo = `home G:S:${planetPos}=${g}:${s}:${planetPos} m=${hm} c=${hc} d=${hd} total=${homeTotal} need=${homeShipsNeeded} have=${homeShipsAvail} origin=${origin}`;
+                console.info(`[debris/home] ${homeInfo}`);
+                void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+                  method: "POST", credentials: "omit",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ tag: "debris-home", text: homeInfo }),
+                }).catch(() => { /* */ });
+                if (homeShipsAvail > 0) {
+                  const homeSend = Math.min(homeShipsNeeded, homeShipsAvail);
+                  try {
+                    const { sendFleet: sendFleet2 } = await import("../api/fleet_api.js");
+                    const homeRes = await sendFleet2({
+                      ships: { [homeShipKey]: homeSend } as unknown as import("@ogamex/shared").ShipCount,
+                      cargo: { m: 0, c: 0, d: 0 },
+                      coords: [g, s, planetPos],
+                      destType: 2, // debris field type
+                      mission: 8 as import("@ogamex/shared").MissionCode,
+                      speed: 10,
+                      sourcePlanetId: origin,
+                    }, { fetch: window.fetch.bind(window), token: wTokMgr as Parameters<typeof sendFleet2>[1]["token"] });
+                    const homeOk = `home recycler dispatched fleetId=${homeRes.fleetId} count=${homeSend} target=${g}:${s}:${planetPos}`;
+                    console.info(`[debris/home] ${homeOk}`);
+                    recentHarvestDispatch.set(homeDedupKey, Date.now());
+                    void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+                      method: "POST", credentials: "omit",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ tag: "debris-home-ok", text: homeOk }),
+                    }).catch(() => { /* */ });
+                  } catch (e) {
+                    const errMsg = e instanceof Error ? e.message : String(e);
+                    console.error("[debris/home] sendFleet failed:", e);
+                    void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+                      method: "POST", credentials: "omit",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ tag: "debris-home-fail", text: `home sendFleet error: ${errMsg.slice(0, 300)}` }),
+                    }).catch(() => { /* */ });
+                  }
+                } else {
+                  console.warn(`[debris/home] SKIP — origin ${origin} has 0 ${homeShipKey} ships`);
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.error("[debris/home] threw:", e);
         }
       } catch (e) {
         console.error("[debris] handler threw:", e);
