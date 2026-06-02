@@ -21,10 +21,22 @@ externally 由 cloudflared + nginx + `/tmp/ogamex_cf_router.mjs` 反代到 `http
 | bridge bundle | `/home/ddxs/.openclaw/extensions/ogamex/runtime/ogamex_discord_bridge.mjs` |
 | systemd unit files | `/home/ddxs/.config/systemd/user/ogamex-*.service` |
 | credentials (env vars) | `/home/ddxs/.openclaw/openclaw.json` (sidecar launcher 读取) |
-| goals DB | `/tmp/ogamex-smoke/goals.db` |
-| strategy repo | `/tmp/ogamex-smoke/strategy/` |
+| goals DB | `~/.openclaw/workspace/ogamex/goals.db` |
+| world-state DB (v0.0.635+) | `~/.openclaw/workspace/ogamex/world.db` |
+| event audit log (v0.0.635+) | `~/.openclaw/workspace/ogamex/world.db` 内 `events` 表 |
+| strategy repo | `~/.openclaw/workspace/ogamex/strategy/` |
+| memory dir | `~/.openclaw/workspace/ogamex/memory/` |
 
-⚠️ `/tmp/` 在主机重启清空 — goals.db 跨重启**会丢**, 这是已知风险, 等后续把存储路径搬到 `~/.openclaw/state/`。
+✅ v0.0.635 (2026-06-01) 把所有 sidecar 持久化目录从 `/tmp/ogamex-smoke/` 迁到 `~/.openclaw/workspace/ogamex/`，跨主机 reboot 不丢。run_sidecar.mjs 里 4 个 `*DbPath / *Dir` config 同步改了。老 `/tmp` 目录保留 24h 作 safety net，之后可手动 `rm -rf`。
+
+### world.db schema (v0.0.635+)
+
+| 表 | 用途 |
+|---|---|
+| `world_state` | 单行 JSON blob (`id=1`)，每次 `state.snapshot` 抵达后 1s debounce upsert |
+| `events` | append-only audit log (type / payload JSON / created_at)，记录 `event.emergency` / `event.daily_failure`；boot 时 trimEvents(10_000) 守门 ≈2MB 上限 |
+
+sidecar 启动时 `worldStateStore.hydrate()` 从 `world_state` 行读回，喂给 `stateRef.current` — `priorityMerger` 不再需要等 userscript 首次 snapshot 才能干活。
 
 ## 操作命令
 
