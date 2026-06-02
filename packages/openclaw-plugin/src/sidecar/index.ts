@@ -1381,10 +1381,12 @@ export async function startSidecar(
       ]);
       if (!SUPPORTED.has(body.type)) return { ok: false, reason: `unsupported goal type: ${body.type}` };
       const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      // Phase 9c.7 — tag with ALS uid (or legacyOperatorUid env fallback)
+      // Phase 9c.7 — tag with ALS uid (or legacy operator env fallback)
       // so panel reads filter correctly. Legacy operator's uid lives in
-      // OGAMEX_LEGACY_USER_ID env; isLegacyUid maps undefined → legacy.
-      const createUid = getCurrentUserId() ?? (legacyOperatorUid || undefined);
+      // OGAMEX_LEGACY_USER_ID env. Lazy read (getLegacyOperatorUid) —
+      // see comment on isLegacyUid above for the ESM-hoisting trap that
+      // made this NULL out 5 expedition goals in production 2026-06-02.
+      const createUid = getCurrentUserId() ?? (getLegacyOperatorUid() || undefined);
       goalsStore.addForUser({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         id, type: body.type as any,
@@ -1842,9 +1844,20 @@ export async function startSidecar(
   // hydrated into the global instance via rehydrate(persisted) above. A
   // hot swap would lose that. Coexistence preserves operator bit-for-bit
   // and gates the new code path purely on a non-legacy uid showing up.
-  const legacyOperatorUid = (process.env.OGAMEX_LEGACY_USER_ID ?? "").trim();
-  const isLegacyUid = (uid: string | undefined): boolean =>
-    !uid || (legacyOperatorUid !== "" && uid === legacyOperatorUid);
+  // Phase 9c.8 hotfix — lazy-read env, NOT module/startSidecar-init read.
+  // run_sidecar.mjs sets process.env.OGAMEX_LEGACY_USER_ID AFTER its
+  // `import { startSidecar }`. ESM hoists imports, so any read at
+  // startSidecar callsite that runs synchronously during evaluation
+  // sees an empty env var. createGoal lambda fires LATER (HTTP request
+  // time) so by then the env IS set — but only if we read it lazily.
+  // 2026-06-02 incident: createGoal tagged 5 expedition goals with
+  // user_id=NULL because this const captured "" at boot, and merger's
+  // listActiveByUser("4baba0e2…") skipped them → 远征又卡住.
+  const getLegacyOperatorUid = (): string => (process.env.OGAMEX_LEGACY_USER_ID ?? "").trim();
+  const isLegacyUid = (uid: string | undefined): boolean => {
+    const op = getLegacyOperatorUid();
+    return !uid || (op !== "" && uid === op);
+  };
   // Per-user state mirror — userStates is populated by state.snapshot
   // handler; the manager's stateRef factory reads from it.
   const saveCoordManager = new SaveCoordinatorManager({
