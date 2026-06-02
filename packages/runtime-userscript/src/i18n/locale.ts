@@ -60,6 +60,32 @@ function hostnameToOgame(hostname: string | null | undefined): string | null {
 }
 
 /**
+ * Module-level page-world doc/win source. Set ONCE at boot by
+ * `setLocaleDocSource(env.doc, env.win)` so that `t()` calls (which
+ * can't thread `env` through every render path) still see the REAL
+ * page DOM rather than the Tampermonkey sandbox's wrapped/fake one.
+ *
+ * Without this, `getOgameLocale()` falls back to `globalThis.document`
+ * which in TM context is an isolated sandbox document — no `#menuTable`,
+ * no real `<html lang>` — so detection always lands on "en" and the
+ * panel mixes EN (curated keys) with TW (auto-extracted keys).
+ *
+ * Operator evidence 2026-06-02: page HTML dump showed `<html lang="en">`
+ * + `<meta name="ogame-language" content="en">` + JS `language: "en"`
+ * but ALL rendered text Traditional. Even WITH a correct sandbox doc,
+ * the meta-based detection would still pick "en". So:
+ *  - We MUST read the real page-world doc (this setter), AND
+ *  - We MUST scan toolbar TEXT (already in `detectFromToolbarText`).
+ */
+let pageDoc: Document | null = null;
+let pageWin: Window | null = null;
+
+export function setLocaleDocSource(doc: Document | null, win: Window | null): void {
+  pageDoc = doc;
+  pageWin = win;
+}
+
+/**
  * Detect UI locale from actually-rendered toolbar text.
  *
  * Operator evidence 2026-06-02: ogame's gameforge servers set
@@ -104,8 +130,9 @@ export function getOgameLocale(
   documentForTest?: Document | null,
   windowForTest?: Window | null,
 ): string {
-  const doc = documentForTest ?? (typeof document !== "undefined" ? document : null);
-  const win = windowForTest ?? (typeof window !== "undefined" ? window : null);
+  // Priority: explicit test arg > boot-injected page-world > sandbox global
+  const doc = documentForTest ?? pageDoc ?? (typeof document !== "undefined" ? document : null);
+  const win = windowForTest ?? pageWin ?? (typeof window !== "undefined" ? window : null);
   const fromToolbar = detectFromToolbarText(doc);
   if (fromToolbar) return fromToolbar;
   const fromHtml = htmlLangToOgame(doc?.documentElement?.lang);
@@ -120,7 +147,7 @@ export function getOgameLocaleWithOverride(
   documentForTest?: Document | null,
   windowForTest?: Window | null,
 ): string {
-  const win = windowForTest ?? (typeof window !== "undefined" ? window : null);
+  const win = windowForTest ?? pageWin ?? (typeof window !== "undefined" ? window : null);
   try {
     const override = win?.localStorage?.getItem("OGAMEX_LOCALE");
     if (override && OGAME_LOCALES.has(override)) return override;

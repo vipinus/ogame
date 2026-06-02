@@ -3,6 +3,7 @@ import { EventBus } from "./event_bus.js";
 import { StateStore } from "./state_store.js";
 import type { IndexedKv } from "./store/indexed_db.js";
 import { initSafeFetch, fetchWithCp, BusyDeferredError } from "./api/safe_fetch.js";
+import { setLocaleDocSource } from "./i18n/locale.js";
 import { startMutationObserver } from "./probes/mutation_observer.js";
 import { installXhrHook } from "./probes/xhr_hook.js";
 import {
@@ -263,6 +264,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Init safe_fetch — every cp= fetch site beyond this line must use it
   // (architecture enforcement, see scripts/check-no-raw-cp.sh).
   initSafeFetch({ store, win: env.win, doc: env.doc });
+
+  // i18n: pin t()'s locale detection to the REAL page-world doc/win.
+  // Without this it falls back to the TM sandbox `document` which has
+  // no `#menuTable` → locale always lands on "en" → curated keys show
+  // English while auto-extracted keys show Traditional ("中英混版").
+  setLocaleDocSource(env.doc, env.win);
 
   // 1. Hydrate prior state from IndexedDB if available
   try {
@@ -1245,7 +1252,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.650";
+  const USERSCRIPT_VERSION = "0.0.651";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
