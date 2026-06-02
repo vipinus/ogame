@@ -323,7 +323,34 @@ export async function wireBridge(
           }
           return [];
         })();
-        const posRow = rows.find((row) => Number(row["position"]) === targetPosition);
+        // v0.0.643 — operator 2026-06-01 实证: 远征槽 :16 战利品永远 skip。
+        // 根因: ogame v12 fetchGalaxyContent 的 system.galaxyContent[] 只装
+        // pos 1-15, 远征槽数据在 root 的 reservedPositions 字段里 (rootKeys
+        // 一直显示它存在)。Fallback: pos 16 找不到时, 扫 reservedPositions
+        // (兜底数组+对象两种 shape) 找 position=16 的 debris record。
+        // Shape variants 同 pos 1-15 (planetType=2 或 recyclePossible=true)。
+        let posRow = rows.find((row) => Number(row["position"]) === targetPosition);
+        if (!posRow && targetPosition === 16) {
+          const rp = json["reservedPositions"];
+          let rpRow: Record<string, unknown> | undefined;
+          if (Array.isArray(rp)) {
+            rpRow = (rp as Array<Record<string, unknown>>).find((row) => Number(row["position"]) === 16);
+          } else if (rp && typeof rp === "object") {
+            const rec = rp as Record<string, unknown>;
+            const candidate = rec["16"] ?? rec[16 as unknown as string];
+            if (candidate && typeof candidate === "object") {
+              const cAsRow = candidate as Record<string, unknown>;
+              // Normalize: if candidate doesn't have `planets`, wrap it as the entry directly.
+              rpRow = "planets" in cAsRow
+                ? cAsRow
+                : { position: 16, planets: candidate };
+            }
+          }
+          if (rpRow) {
+            posRow = rpRow;
+            console.info(`[debris] FALLBACK :16 found in reservedPositions (shape=${Array.isArray(rp) ? "array" : "object"})`);
+          }
+        }
         // v0.0.571 — operator 2026-06-01 forensic 2nd round: ogame v12
         // position 1-15 returns `planets` as an ARRAY (may contain planet +
         // moon + debris entries at the same coord), position 16 returns it
