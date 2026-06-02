@@ -263,6 +263,23 @@ export class WorldStateStore {
     }));
   }
 
+  /**
+   * Force a WAL checkpoint, merging the -wal file back into the main .db.
+   * better-sqlite3 in WAL mode only auto-checkpoints on close / commit
+   * boundaries / 1000-page threshold; a long-running sidecar with bursty
+   * writes (state.snapshot every 2s, directives ~1/s) can accumulate
+   * hundreds of MB of WAL between natural checkpoints. Call this on a
+   * 5-min cadence from startSidecar so disk stays bounded.
+   *
+   * TRUNCATE mode = checkpoint + zero out the WAL file. PASSIVE wouldn't
+   * shrink the file. Safe to call while readers are active — WAL mode
+   * never blocks reads.
+   */
+  checkpoint(): void {
+    try { this.db.pragma("wal_checkpoint(TRUNCATE)"); }
+    catch (e) { console.warn("[WorldStateStore] wal_checkpoint failed (continuing)", e); }
+  }
+
   close(): void {
     this.db.close();
   }

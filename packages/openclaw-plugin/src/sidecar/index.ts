@@ -335,6 +335,19 @@ export async function startSidecar(
   // bytes/row ≈ 2MB ceiling.
   try { worldStateStore.trimEvents(10_000); }
   catch (e) { console.warn("[ogamex/sidecar] events trim failed (continuing):", e); }
+  // v0.0.637 — periodic WAL checkpoint so long-running sidecar keeps disk
+  // bounded. better-sqlite3 auto-checkpoints only at 1000 dirty pages / on
+  // close; with state.snapshot (every ~2s) + directive lifecycle events,
+  // WAL can balloon to 100s of MB between natural checkpoints. 5-min
+  // cadence matches typical sidecar idle window.
+  const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000;
+  const walCheckpointTimer: NodeJS.Timeout = setInterval(() => {
+    try { worldStateStore.checkpoint(); }
+    catch (e) { console.error("[ogamex/sidecar] WAL checkpoint threw", e); }
+  }, WAL_CHECKPOINT_INTERVAL_MS);
+  // unref so the timer doesn't keep the event loop alive — stop() still
+  // calls clearInterval explicitly for clean shutdown.
+  walCheckpointTimer.unref();
 
   const apiKey = config.geminiApiKey ?? process.env["GEMINI_API_KEY"] ?? "";
   // We construct the Gemini client unconditionally — even an empty key — so
@@ -1905,10 +1918,14 @@ export async function startSidecar(
   const stop = async (): Promise<void> => {
     digestScheduler.stop();
     memoryWriter.stop();
+    clearInterval(walCheckpointTimer);
     // Flush any pending debounced WorldState write BEFORE closing the SQLite
     // handle — otherwise the most recent snapshot may not land on disk.
     try { flushWorldStatePersist(); }
     catch (err) { console.error("[ogamex/sidecar] WorldState flush threw", err); }
+    // Final checkpoint so the WAL on disk is fully merged before close.
+    try { worldStateStore.checkpoint(); }
+    catch (err) { console.error("[ogamex/sidecar] final WAL checkpoint threw", err); }
     await Promise.all([ws.stop(), http.stop()]);
     try {
       goalsStore.close();
