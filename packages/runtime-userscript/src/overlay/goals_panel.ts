@@ -658,13 +658,13 @@ function openDiscoverySettings(
       statusHTML = `<div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:10px;">
         <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">${escapeHtml(t('auto.204'))}</div>
         <div style="color:#d0d8e0; font-size:11px;">
-          <div>★ 來源星球: <span style="color:#c080ff;">${escapeHtml(srcDisplay)}</span></div>
-          <div>★ 中心系統: <span style="color:#c080ff;">${escapeHtml(String(tgt.galaxy ?? "?"))}:${escapeHtml(String(tgt.base_system ?? "?"))}</span> · 半徑 ${escapeHtml(String(tgt.range ?? 10))}</div>
-          <div>★ 進度: ${completedCount} / ${total} (${pct}%)</div>
-          <div>★ 當前步驟: ${escapeHtml(String(activeGoal.current_step ?? "—"))}</div>
+          <div>★ ${escapeHtml(t('auto.231'))}: <span style="color:#c080ff;">${escapeHtml(srcDisplay)}</span></div>
+          <div>★ ${escapeHtml(t('auto.232'))}: <span style="color:#c080ff;">${escapeHtml(String(tgt.galaxy ?? "?"))}:${escapeHtml(String(tgt.base_system ?? "?"))}</span> · 半徑 ${escapeHtml(String(tgt.range ?? 10))}</div>
+          <div>★ ${escapeHtml(t('auto.233'))}: ${completedCount} / ${total} (${pct}%)</div>
+          <div>★ ${escapeHtml(t('auto.234'))}: ${escapeHtml(String(activeGoal.current_step ?? "—"))}</div>
         </div>
         <div style="display:flex; justify-content:flex-end; padding-top:8px;">
-          <button data-disc-stop="1" data-disc-goal-id="${escapeHtml(activeGoal.id)}" style="background:#5a2020; color:#fff; border:1px solid #8a4040; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">停止當前任務</button>
+          <button data-disc-stop="1" data-disc-goal-id="${escapeHtml(activeGoal.id)}" style="background:#5a2020; color:#fff; border:1px solid #8a4040; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.235'))}</button>
         </div>
       </div>`;
     }
@@ -679,7 +679,7 @@ function openDiscoverySettings(
         <div style="color:#7080a0; font-size:10px; padding-bottom:6px;">${activeGoal ? t("auto.125") : t("auto.126")}</div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.202'))}</span>
-          <select data-disc-planet style="${inputStyle} flex:1;">${planetOpts || `<option value="">(無 planet)</option>`}</select>
+          <select data-disc-planet style="${inputStyle} flex:1;">${planetOpts || `<option value="">${escapeHtml(t('auto.236'))}</option>`}</select>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.203'))}</span>
@@ -962,7 +962,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-pb-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-pb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
+          <button data-pb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.237'))}</button>
         </div>
       </div>
       <!-- v0.0.589 — 月球建築獨立 pane (類似 planet-build, 僅月球 + 月球建築) -->
@@ -1029,7 +1029,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-mb-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-mb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
+          <button data-mb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.237'))}</button>
         </div>
       </div>
       <!-- v0.0.593 — 生命建築獨立 pane -->
@@ -1037,10 +1037,10 @@ function openGoalsSettings(
         <div style="padding:6px 0;">
           <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.198'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="humans" style="vertical-align:middle;"/><span>人類</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="rocktal" style="vertical-align:middle;"/><span>巖族</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="mechas" style="vertical-align:middle;"/><span>機械族</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>凱萊什</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="humans" style="vertical-align:middle;"/><span>${escapeHtml(t('auto.056'))}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="rocktal" style="vertical-align:middle;"/><span>${escapeHtml(t('auto.057'))}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="mechas" style="vertical-align:middle;"/><span>${escapeHtml(t('auto.058'))}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>${escapeHtml(t('auto.059'))}</span></label>
           </div>
         </div>
         <div style="padding:6px 0;">
@@ -1101,7 +1101,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-lf-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-lf-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
+          <button data-lf-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.237'))}</button>
         </div>
       </div>
       <!-- v0.0.599 — 普通研究獨立 pane. Research is GLOBAL (single queue
@@ -1112,22 +1112,22 @@ function openGoalsSettings(
         <div style="padding:6px 0;">
           <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.201'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="energyTech" style="vertical-align:middle;"/><span>能量技術</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="laserTech" style="vertical-align:middle;"/><span>激光技術</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="ionTech" style="vertical-align:middle;"/><span>離子技術</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceTech" style="vertical-align:middle;"/><span>超空間技術</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="plasmaTech" style="vertical-align:middle;"/><span>等離子技術</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="combustion" style="vertical-align:middle;"/><span>內燃機引擎</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="impulseDrive" style="vertical-align:middle;"/><span>脈衝引擎</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceDrive" style="vertical-align:middle;"/><span>超空間引擎</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="espionageTech" style="vertical-align:middle;"/><span>間諜技術</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="computerTech" style="vertical-align:middle;"/><span>電腦技術</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="astrophysics" style="vertical-align:middle;"/><span>天體物理</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="intergalactic" style="vertical-align:middle;"/><span>星際研究</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="gravitonTech" style="vertical-align:middle;"/><span>引力技術</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="weapons" style="vertical-align:middle;"/><span>武器技術</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="shielding" style="vertical-align:middle;"/><span>防御護盾</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="armor" style="vertical-align:middle;"/><span>裝甲技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="energyTech" style="vertical-align:middle;"/><span>${techName('energyTech')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="laserTech" style="vertical-align:middle;"/><span>${techName('laserTech')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="ionTech" style="vertical-align:middle;"/><span>${techName('ionTech')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceTech" style="vertical-align:middle;"/><span>${techName('hyperspaceTech')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="plasmaTech" style="vertical-align:middle;"/><span>${techName('plasmaTech')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="combustion" style="vertical-align:middle;"/><span>${techName('combustion')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="impulseDrive" style="vertical-align:middle;"/><span>${techName('impulseDrive')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceDrive" style="vertical-align:middle;"/><span>${techName('hyperspaceDrive')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="espionageTech" style="vertical-align:middle;"/><span>${techName('espionageTech')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="computerTech" style="vertical-align:middle;"/><span>${techName('computerTech')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="astrophysics" style="vertical-align:middle;"/><span>${techName('astrophysics')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="intergalactic" style="vertical-align:middle;"/><span>${techName('intergalactic')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="gravitonTech" style="vertical-align:middle;"/><span>${techName('gravitonTech')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="weapons" style="vertical-align:middle;"/><span>${techName('weapons')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="shielding" style="vertical-align:middle;"/><span>${techName('shielding')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="armor" style="vertical-align:middle;"/><span>${techName('armor')}</span></label>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
@@ -1145,7 +1145,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-rs-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-rs-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
+          <button data-rs-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.237'))}</button>
         </div>
       </div>
       <!-- v0.0.602 — 生命研究獨立 pane (per-species catalog.research) -->
@@ -1153,10 +1153,10 @@ function openGoalsSettings(
         <div style="padding:6px 0;">
           <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.224'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="humans" style="vertical-align:middle;"/><span>人類</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="rocktal" style="vertical-align:middle;"/><span>巖族</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="mechas" style="vertical-align:middle;"/><span>機械族</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>凱萊什</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="humans" style="vertical-align:middle;"/><span>${escapeHtml(t('auto.056'))}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="rocktal" style="vertical-align:middle;"/><span>${escapeHtml(t('auto.057'))}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="mechas" style="vertical-align:middle;"/><span>${escapeHtml(t('auto.058'))}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>${escapeHtml(t('auto.059'))}</span></label>
           </div>
         </div>
         <div style="padding:6px 0;">
@@ -1201,14 +1201,14 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-lr-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-lr-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
+          <button data-lr-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.237'))}</button>
         </div>
       </div>
       <!-- Shared pane (used by 1 non-dedicated tab) -->
       <div data-pane="shared" style="display:none;">
       <!-- Operator 2026-05-29: 自然語言入口 — Gemini 解析 → 填表單 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
-        <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">自然語言描述 <span style="color:#7080a0; font-size:10px;">(可選 — 讓 AI 解析填表單)</span></div>
+        <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.259'))} <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.260'))}</span></div>
         <textarea data-goal-nl rows="2" placeholder="${escapeHtml(t('auto.136'))}" style="${inputStyle} width:100%; box-sizing:border-box; resize:vertical;"></textarea>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:6px;">
           <span data-goal-nl-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
@@ -1217,14 +1217,14 @@ function openGoalsSettings(
       </div>
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">任務類型</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.240'))}</span>
           <select data-goal-type style="${inputStyle} flex:1;"></select>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (單選)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.241'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:180px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; display:flex; gap:8px; font-size:10px; color:#7080a0; border-bottom:1px solid #2a3a52; background:#0a1018; position:sticky; top:0;">
-              <span style="width:72px;">坐標</span>
+              <span style="width:72px;">${escapeHtml(t('auto.242'))}</span>
               <span style="flex:1;">🌍 行星</span>
               <span style="flex:1;">🌙 月球</span>
             </div>
@@ -1273,7 +1273,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-goal-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-goal-create="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
+          <button data-goal-create="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.237'))}</button>
         </div>
       </div>
       </div><!-- /data-pane="shared" -->
@@ -2409,7 +2409,7 @@ function openTransportSettings(
       const unset = includeUnset
         ? `<div style="padding:4px 8px; border-bottom:1px solid #1a2030;">
             <label style="cursor:pointer; color:#7080a0; font-size:11px;">
-              <input type="radio" name="${radioName}" value="" checked style="margin-right:6px; vertical-align:middle;"/>(不選 — 預設目標)
+              <input type="radio" name="${radioName}" value="" checked style="margin-right:6px; vertical-align:middle;"/>${escapeHtml(t('auto.247'))}
             </label>
           </div>`
         : "";
@@ -2441,7 +2441,7 @@ function openTransportSettings(
       <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">${escapeHtml(t('auto.209'))}</div>
       ${sectionCard(t("auto.144"),
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-source-radio")}</div>
-        <div data-tr-source-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(選擇來源星球後顯示船數)</div>
+        <div data-tr-source-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">${escapeHtml(t('auto.248'))}</div>
         <label style="display:flex; gap:6px; align-items:center; padding-top:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
           <input type="checkbox" data-tr-jg-enable checked/>
           <span>${escapeHtml(t('auto.223'))}</span>
@@ -2451,7 +2451,7 @@ function openTransportSettings(
           <input type="checkbox" data-tr-resource-sameas-ship checked style="margin-right:6px; vertical-align:middle;"/>同 ① 艦船星球
         </label>
         <div data-tr-resource-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-resource-radio")}</div>
-        <div data-tr-resource-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(選擇後顯示當前資源)</div>`)}
+        <div data-tr-resource-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">${escapeHtml(t('auto.249'))}</div>`)}
       ${sectionCard(t("auto.146"),
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-target-radio")}</div>`)}
       ${sectionCard(t("auto.147"),
@@ -2464,7 +2464,7 @@ function openTransportSettings(
         <div data-tr-stopover-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
       ${sectionCard(t("auto.148"),
         `<div style="display:flex; gap:12px; padding-bottom:6px;">
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> 大運 LC (cap ${fmt(ltCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> ${techName('largeCargo')} (cap ${fmt(ltCap)})</label>
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小運 SC (cap ${fmt(stCap)})</label>
         </div>
         <div style="display:flex; gap:10px; padding:4px 0; align-items:center; font-size:11px; flex-wrap:wrap;">
@@ -2487,7 +2487,7 @@ function openTransportSettings(
         <div style="display:flex; gap:8px; align-items:center; padding-top:4px;">
           <span style="color:#d0d8e0; font-size:11px; width:60px;">${escapeHtml(t('auto.218'))}</span>
           <input data-tr-ship-count type="number" min="0" step="1" value="0" onclick="this.select()" style="${inputStyle} width:100px;"/>
-          <span data-tr-ship-need style="color:#7cfc00; font-size:10px;">(改 ②/④ 後自動算)</span>
+          <span data-tr-ship-need style="color:#7cfc00; font-size:10px;">${escapeHtml(t('auto.252'))}</span>
         </div>`)}
       ${sectionCard(t("auto.149"),
         `<label style="cursor:pointer; color:#d0d8e0; font-size:11px; display:block;">
@@ -2596,7 +2596,7 @@ function openTransportSettings(
         const p = planetsMap[r.value];
         const lt = p?.ships?.largeCargo ?? 0;
         const st = p?.ships?.smallCargo ?? 0;
-        sourceInfo.innerHTML = `<span style="color:#d0d8e0;">大運 LC × ${fmt(lt)} · 小運 SC × ${fmt(st)}</span>`;
+        sourceInfo.innerHTML = `<span style="color:#d0d8e0;">${techName('largeCargo')} × ${fmt(lt)} · ${techName('smallCargo')} × ${fmt(st)}</span>`;
       });
     }
     // Operator 2026-05-29: 預設來源 = 當前 ogame 所在 planet. Reads the
@@ -3673,7 +3673,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                 : hasShortage
                   ? `<span style="color:#ffaa55;">awaiting transport (ETA n/a — moon local prod = 0)</span>${shortageChip}`
                   : `<span style="color:#7cfc00;">${escapeHtml(t("panel.prereq.all_met"))}</span>`;
-            // v0.0.461: current-step row — "↳ 當前步驟: lunarBase L4 缺 ..."
+            // v0.0.461: current-step row — "↳ ${escapeHtml(t('auto.234'))}: lunarBase L4 缺 ..."
             // separate line below the chain summary so operator sees what
             // the bot is RIGHT NOW trying to fire, and how short on cash.
             const cs = g.current_step;
@@ -3736,7 +3736,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         : "";
       return `
         <div style="${mainBg}border-top: 1px solid #2a3a52; padding: 6px 0;">
-          <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? "點選折疊" : "點選展開詳情"}">
+          <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? t("auto.257") : t("auto.258")}">
             <span>${chevron}${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${coordChip}${etaAtBadge}${awaitingChip}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
             <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${mainBtn}${pauseOrResume}${cancelBtn}</span>

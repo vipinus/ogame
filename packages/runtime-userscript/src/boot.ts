@@ -4,6 +4,7 @@ import { StateStore } from "./state_store.js";
 import type { IndexedKv } from "./store/indexed_db.js";
 import { initSafeFetch, fetchWithCp, BusyDeferredError } from "./api/safe_fetch.js";
 import { setLocaleDocSource } from "./i18n/locale.js";
+import { t } from "./i18n/t.js";
 import { startMutationObserver } from "./probes/mutation_observer.js";
 import { installXhrHook } from "./probes/xhr_hook.js";
 import {
@@ -108,11 +109,11 @@ function mergeWithExistingPlanets(
 }
 
 function detectVacationMode(doc: Document): boolean {
-  // The advice bar contains an icon with a title that includes "假期模式" / "vacation mode"
+  // The advice bar contains an icon with a title that includes t("auto.261") / "vacation mode"
   const banners = doc.querySelectorAll<HTMLElement>("#advice-bar [title]");
   for (const b of banners) {
-    const t = b.getAttribute("title") ?? "";
-    if (t.includes("假期模式") || /vacation\s*mode/i.test(t)) return true;
+    const txt = b.getAttribute("title") ?? "";
+    if (txt.includes(t("auto.261")) || /vacation\s*mode/i.test(txt)) return true;
   }
   return false;
 }
@@ -396,7 +397,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     try {
       const el = env.doc.createElement("div");
       el.id = "ogamex-sync-toast";
-      el.textContent = "⏳ 同步星球中…";
+      el.textContent = t("auto.262");
       el.style.cssText = "position:fixed;top:20px;left:50%;transform:translateX(-50%);background:rgba(20,20,30,0.95);color:#fff;padding:6px 14px;border-radius:4px;font:13px sans-serif;z-index:2147483647;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,0.4);";
       env.doc.body.appendChild(el);
       clickToastEl = el;
@@ -1252,7 +1253,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.662";
+  const USERSCRIPT_VERSION = "0.0.663";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2542,7 +2543,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           const g = Number(planet["galaxy"] ?? 0);
           const s = Number(planet["system"] ?? 0);
           const pos = Number(planet["position"] ?? 0);
-          const nm = String(planet["name"] ?? (typeLabel === "moon" ? "月球" : "殖民"));
+          const nm = String(planet["name"] ?? (typeLabel === "moon" ? t("auto.118") : "殖民"));
           if (g > 0 && s > 0 && pos > 0) {
             patchPlanets[pid] = {
               id: pid, name: nm, coords: [g, s, pos] as const, type: typeLabel,
