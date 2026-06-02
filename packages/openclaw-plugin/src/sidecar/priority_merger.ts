@@ -167,8 +167,23 @@ export class PriorityMerger {
    * back to the store before this method returns; callers may observe them
    * synchronously after dispatch resolves.
    */
-  dispatch(state: WorldState): DispatchResult {
-    const rows = [...this.store.listActive()].sort(compareRows);
+  /**
+   * Phase 9c.2 — optional userId arg. When supplied, only goals tagged
+   * with that user_id participate in this dispatch tick (multi-tenant
+   * routing). When undefined, legacy single-tenant behaviour: every
+   * non-terminal goal in the store dispatches off the given state.
+   *
+   * SaveCoordinator / FailureAggregator are NOT yet user-scoped (9c.3);
+   * they still operate on the legacy single-tenant stateRef. Cross-user
+   * fleet-save / failure-pattern bleed remains a known limitation until
+   * 9c.3 lands.
+   */
+  dispatch(state: WorldState, userId?: string): DispatchResult {
+    const rows = (
+      typeof userId === "string" && userId
+        ? [...this.store.listActiveByUser(userId)]
+        : [...this.store.listActive()]
+    ).sort(compareRows);
 
     const dispatched: Directive[] = [];
     const blocked: { goal_id: string; reason: string }[] = [];

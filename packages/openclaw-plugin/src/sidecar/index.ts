@@ -331,6 +331,16 @@ export async function startSidecar(
   strategyManager.init();
 
   const goalsStore = new GoalsStore({ dbPath: goalsDbPath });
+  // Phase 9c.2 — one-shot legacy goal backfill. OGAMEX_LEGACY_USER_ID
+  // (operator's user_id from ogame-next) tags every row whose user_id
+  // is NULL. Idempotent — re-runs just touch 0 rows.
+  const legacyUid = process.env.OGAMEX_LEGACY_USER_ID ?? "";
+  if (legacyUid) {
+    try {
+      const n = goalsStore.backfillLegacyUserId(legacyUid);
+      if (n > 0) console.info(`[ogamex/sidecar] goals backfill: ${n} row(s) → user_id=${legacyUid.slice(0,8)}…`);
+    } catch (e) { console.warn("[ogamex/sidecar] goals backfill failed:", e); }
+  }
   const worldStateStore = new WorldStateStore({ dbPath: worldStateDbPath });
 
   // Phase 8a — Postgres shadow writer (multi-tenant). When
@@ -1933,13 +1943,16 @@ export async function startSidecar(
     // freshly-planned next step). Wrap in try/catch so a single goal's
     // planning failure does NOT swallow subsequent state.snapshots.
     try {
-      const result = priorityMerger.dispatch(msg.snapshot);
+      // Phase 9c.2 — route by ALS user_id when present.
+      const dispUid = getCurrentUserId();
+      const result = priorityMerger.dispatch(msg.snapshot, dispUid);
       const actions = result.dispatched.map((d) => {
         const params = d.params as { building?: string; tech?: string; ship?: string };
         const label = params.building ?? params.tech ?? params.ship ?? d.action;
         return `${d.action}/${label}`;
       }).join(",");
-      console.log(`[merger] dispatched=${result.dispatched.length} blocked=${result.blocked.length} done=0 actions=${actions}`);
+      const uidTag = dispUid ? ` user=${dispUid.slice(0, 8)}…` : "";
+      console.log(`[merger] dispatched=${result.dispatched.length} blocked=${result.blocked.length} done=0 actions=${actions}${uidTag}`);
     } catch (e) {
       console.error("[ogamex/sidecar] priorityMerger.dispatch threw", e);
     }

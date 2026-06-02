@@ -50,6 +50,18 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_goals_created ON goals(created_at DESC);
 `;
 
+/** Phase 9c.2 — idempotent migration to add user_id column to existing
+ *  goals.db files. better-sqlite3 supports ALTER TABLE ADD COLUMN for
+ *  nullable cols. NULL means "legacy single-tenant operator goal" until
+ *  a backfill is run via backfillLegacyUserId(). */
+function migrateAddUserIdColumn(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "user_id")) {
+    db.exec("ALTER TABLE goals ADD COLUMN user_id TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_goals_user_status ON goals(user_id, status)");
+  }
+}
+
 /**
  * Synchronous SQLite-backed CRUD store for user-defined goals (M5.1).
  *
@@ -76,6 +88,7 @@ export class GoalsStore {
     this.db = new Database(opts.dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    migrateAddUserIdColumn(this.db);
     this.now = opts.clock ?? Date.now;
 
     this.stmtInsert = this.db.prepare<[string, string, GoalStatus, string | null, number, number]>(
@@ -96,6 +109,51 @@ export class GoalsStore {
     this.stmtListActive = this.db.prepare<[string, string, string]>(
       "SELECT * FROM goals WHERE status IN (?, ?, ?) ORDER BY created_at DESC",
     );
+  }
+
+  /**
+   * Phase 9c.2 — one-shot backfill: set user_id on all rows that still
+   * have NULL. Called from startSidecar at boot when
+   * OGAMEX_LEGACY_USER_ID env is set. Returns number of rows updated.
+   */
+  backfillLegacyUserId(legacyUserId: string): number {
+    const info = this.db.prepare("UPDATE goals SET user_id = ? WHERE user_id IS NULL").run(legacyUserId);
+    return info.changes;
+  }
+
+  /**
+   * Phase 9c.2 — multi-tenant variant of listActive(). When userId is
+   * supplied, returns only rows matching that user_id. When undefined,
+   * returns ALL rows (legacy single-tenant behavior — PriorityMerger
+   * uses this when ALS frame is absent).
+   */
+  listActiveByUser(userId: string | undefined): GoalRow[] {
+    if (!userId) {
+      const rows = this.stmtListActive.all("pending", "active", "blocked") as RawRow[];
+      return rows.map(rowFromRaw);
+    }
+    const rows = this.db.prepare(
+      "SELECT * FROM goals WHERE user_id = ? AND status IN ('pending','active','blocked') ORDER BY created_at DESC",
+    ).all(userId) as RawRow[];
+    return rows.map(rowFromRaw);
+  }
+
+  /**
+   * Assign user_id when creating a new goal. Default falls back to
+   * stmtInsert (NULL user_id, treated as legacy operator).
+   */
+  addForUser(goal: Goal, userId: string | undefined): GoalRow {
+    const ts = this.now();
+    const json = JSON.stringify(goal);
+    if (userId) {
+      this.db.prepare(
+        "INSERT INTO goals (id, goal_json, status, reason, created_at, updated_at, user_id) VALUES (?, ?, 'pending', NULL, ?, ?, ?)",
+      ).run(goal.id, json, ts, ts, userId);
+    } else {
+      this.stmtInsert.run(goal.id, json, "pending", null, ts, ts);
+    }
+    if (goal.is_main_goal === true) this.setMainGoal(goal.id);
+    return { goal, status: "pending", created_at: ts, updated_at: ts };
   }
 
   add(goal: Goal): GoalRow {
