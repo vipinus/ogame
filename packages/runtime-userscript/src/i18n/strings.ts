@@ -40,9 +40,26 @@ export const STRINGS: StringRegistry = {
     // Section toggle / generic
     "panel.section.no_active": "(no active goals)",
     "panel.action.set_main": "★ Set",
+    "panel.action.set_main_tooltip": "Mark as main objective",
     "panel.action.pause": "Pause",
     "panel.action.resume": "Resume",
     "panel.action.cancel": "Cancel",
+    "panel.action.retry": "Retry",
+
+    // Section headers — bypassed t() before v0.0.653 (operator screenshot 2026-06-02)
+    "section.emergency": "🚨 Emergency",
+    "section.goals": "🪐 Goals",
+    "section.discovery": "🧬 Discovery",
+    "section.moons": "🌙 Moons / Jumpgate",
+    "section.cargo": "🚚 Transport tasks",
+    "section.expedition.loading": "🛸 Expeditions —/— (state loading…)",
+    "section.expedition.active": "🛸 Expeditions {used}/{max} (astro {astro})",
+    "section.expedition.idle": "🛸 Expeditions",
+    "section.expedition.no_active": "(no expeditions in flight)",
+
+    // Goal state labels (status chip)
+    "goal.state.expedition_flying": "expedition flying",
+    "goal.state.blocked": "blocked",
 
     // Modal — audit log
     "modal.audit.title": "📋 Audit Log (sidecar events table)",
@@ -203,9 +220,24 @@ export const STRINGS: StringRegistry = {
 
     "panel.section.no_active": "（沒有進行中的任務）",
     "panel.action.set_main": "★ 設為主要",
+    "panel.action.set_main_tooltip": "標記為主要任務",
     "panel.action.pause": "暫停",
     "panel.action.resume": "繼續",
     "panel.action.cancel": "取消",
+    "panel.action.retry": "重試",
+
+    "section.emergency": "🚨 緊急任務",
+    "section.goals": "🪐 一般任務",
+    "section.discovery": "🧬 探索",
+    "section.moons": "🌙 月球 / 跳躍門",
+    "section.cargo": "🚚 運輸任務",
+    "section.expedition.loading": "🛸 遠征 —/— （狀態載入中…）",
+    "section.expedition.active": "🛸 遠征 {used}/{max}（天體 {astro}）",
+    "section.expedition.idle": "🛸 遠征",
+    "section.expedition.no_active": "（無進行中的遠征）",
+
+    "goal.state.expedition_flying": "遠征中",
+    "goal.state.blocked": "受阻",
 
     "modal.audit.title": "📋 稽核日誌（sidecar events 表）",
 

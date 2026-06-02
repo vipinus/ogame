@@ -3306,7 +3306,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       if (goalType === "build" || goalType === "build_universal") return { label: cs ? `building ${stepLabel}` : "building", color: "#7cfc00" };
       if (goalType === "build_ships" || goalType === "build_defense") return { label: "constructing ships", color: "#7cfc00" };
       if (goalType === "lifeform_building") return { label: cs ? `building (lifeform) ${stepLabel}` : "building (lifeform)", color: "#7cfc00" };
-      if (goalType === "expedition") return { label: "expedition flying", color: "#80c0ff" };
+      if (goalType === "expedition") return { label: t("goal.state.expedition_flying"), color: "#80c0ff" };
       if (goalType === "colonize") return { label: "colonizing", color: "#80c0ff" };
       if (goalType === "deploy") return { label: "deploying", color: "#80c0ff" };
       if (goalType === "transport") return { label: "transporting", color: "#80c0ff" };
@@ -3369,7 +3369,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       if (/jumpgate.*not on moon|missing source_moon|missing target_moon/i.test(reason)) return { label: "JG misconfig", color: "#ff6b6b" };
       if (/planet-only building.*cannot.*moon|moon-only building.*cannot.*planet/i.test(reason)) return { label: "body type mismatch", color: "#ff6b6b" };
       if (/awaiting.*event|awaiting empire_poll|awaiting operator_retry/i.test(reason)) return { label: "awaiting event", color: "#80c0ff" };
-      return { label: "blocked", color: "#bdb76b" };
+      return { label: t("goal.state.blocked"), color: "#bdb76b" };
     }
     if (g.status === "pending") return { label: "pending", color: "#80c0ff" };
     if (g.status === "completed") return { label: "completed", color: "#888" };
@@ -3600,16 +3600,16 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // Active / pending → Pause + Cancel. Paused → Resume + Cancel.
       const pauseOrResume = !canAct ? ""
         : paused
-          ? `<button data-action-resume="${escapeHtml(g.id)}" style="${btnStyle("#205a20", "#408a40")}">Resume</button>`
-          : `<button data-action-pause="${escapeHtml(g.id)}" style="${btnStyle("#5a4a20", "#8a7a40")}">Pause</button>`;
+          ? `<button data-action-resume="${escapeHtml(g.id)}" style="${btnStyle("#205a20", "#408a40")}">${escapeHtml(t("panel.action.resume"))}</button>`
+          : `<button data-action-pause="${escapeHtml(g.id)}" style="${btnStyle("#5a4a20", "#8a7a40")}">${escapeHtml(t("panel.action.pause"))}</button>`;
       const cancelBtn = canAct
-        ? `<button data-action-cancel="${escapeHtml(g.id)}" style="${btnStyle("#5a2020", "#8a4040")}">Cancel</button>`
+        ? `<button data-action-cancel="${escapeHtml(g.id)}" style="${btnStyle("#5a2020", "#8a4040")}">${escapeHtml(t("panel.action.cancel"))}</button>`
         : "";
       // Set/unset Main button — only on non-terminal goals.
       const mainBtn = canAct
         ? (isMain
             ? `<button data-action-unset-main="${escapeHtml(g.id)}" style="${btnStyle("#3a3a5a", "#6a6a8a")}" title="Clear main flag">★ Unset</button>`
-            : `<button data-action-set-main="${escapeHtml(g.id)}" style="${btnStyle("#5a5a20", "#8a8a40")}" title="Mark as main objective">★ Set</button>`)
+            : `<button data-action-set-main="${escapeHtml(g.id)}" style="${btnStyle("#5a5a20", "#8a8a40")}" title="${escapeHtml(t("panel.action.set_main_tooltip"))}">${escapeHtml(t("panel.action.set_main"))}</button>`)
         : "";
       // Row background tint for the main goal so it pops visually.
       const mainBg = isMain ? "background:rgba(218,165,32,0.08); " : "";
@@ -3736,7 +3736,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const leg = formatChainLeg(g);
       const canAct = g.status === "pending" || g.status === "active" || g.status === "blocked";
       const cancelBtn = canAct
-        ? `<button data-action-cancel="${escapeHtml(g.id)}" style="${btnStyle("#5a2020", "#8a4040")}">Cancel</button>`
+        ? `<button data-action-cancel="${escapeHtml(g.id)}" style="${btnStyle("#5a2020", "#8a4040")}">${escapeHtml(t("panel.action.cancel"))}</button>`
         : "";
       const derivedLeg = deriveDisplayStatus(g);
       const color = derivedLeg.color;
@@ -3922,19 +3922,19 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // Per "每個功能用自己的設定頁面" — section header gets a per-feature
     // settings button instead of a global "AI 設定" tab.
     const emSettingsBtn = t("auto.098");
-    const emergencySection = `${sectionHeader("emergency", "🚨 Emergency", emCount, emColor, emSettingsBtn)}<div style="display:${emCollapsed ? "none" : "block"};">${emRows}</div>`;
+    const emergencySection = `${sectionHeader("emergency", t("section.emergency"), emCount, emColor, emSettingsBtn)}<div style="display:${emCollapsed ? "none" : "block"};">${emRows}</div>`;
 
     // Expedition section
     const exCollapsed = sectionCollapsed.expedition;
     const ex = lastExpedition;
     const exLabel = ex
       ? (ex.state_ready === false
-          ? `🛸 Expeditions —/— (state loading…)`
-          : `🛸 Expeditions ${ex.used}/${ex.max} (astro ${ex.astrophysics_level})`)
-      : "🛸 Expeditions";
+          ? t("section.expedition.loading")
+          : t("section.expedition.active", { used: ex.used, max: ex.max, astro: ex.astrophysics_level }))
+      : t("section.expedition.idle");
     const exRows = !exCollapsed && ex
       ? (ex.active.length === 0
-          ? `<div style="color:#666; font-size:10px; padding:2px 0;">(no expeditions in flight)</div>`
+          ? `<div style="color:#666; font-size:10px; padding:2px 0;">${escapeHtml(t("section.expedition.no_active"))}</div>`
           : ex.active.map((f) => `
               <div style="font-size:11px; padding:3px 0; border-top:1px solid #2a2a3a;">
                 <div style="display:flex; gap:6px; justify-content:space-between;">
@@ -3961,7 +3961,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       : "";
     // v0.0.529 — goalsSection 只裝非運輸 goals (運輸移到 cargoSection)
     const goalsBody_v529 = !goalsCollapsed ? `${empty}${restRowsHtml_v529}` : "";
-    const goalsSection = `${sectionHeader("goals", "🪐 Goals", restGoalCount_v529, "#e0e8f0", awaitingBadge + goalsSettingsBtn)}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody_v529}</div>`;
+    const goalsSection = `${sectionHeader("goals", t("section.goals"), restGoalCount_v529, "#e0e8f0", awaitingBadge + goalsSettingsBtn)}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody_v529}</div>`;
 
     // Species Discovery section — operator's new task type (Galaxy view DNA).
     const discCollapsed = sectionCollapsed.discovery ?? false;
@@ -4015,7 +4015,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // Stop/inline UI intact for backward compat; modal adds rich status +
     // structured Start form.
     const discSettingsBtn = t("auto.101");
-    const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff", `${discHeaderBtn}${discSettingsBtn}`)}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
+    const discSection = `${sectionHeader("discovery", t("section.discovery"), activeDisc ? 1 : 0, "#c080ff", `${discHeaderBtn}${discSettingsBtn}`)}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
 
     // Jumpgate cooldown per moon — operator 2026-05-26:
     //   "在月球上顯示，跳躍門冷卻時間" + "ready 的不用顯示，只顯示倒計時的，
@@ -4096,7 +4096,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         // 之前 body 寫死 display:block (源於 v0.0.??? "force expand" hack),
         // 現在尊重 sectionCollapsed.moons 狀態, 跟其他 section 一致。
         const moonsBodyDisp = sectionCollapsed.moons ? "none" : "block";
-        moonsSection = `${sectionHeader("moons", "🌙 Moons / Jumpgate", cells.length, "#80c0ff", "")}<div style="display:${moonsBodyDisp};">${pairRows.join("")}</div>`;
+        moonsSection = `${sectionHeader("moons", t("section.moons"), cells.length, "#80c0ff", "")}<div style="display:${moonsBodyDisp};">${pairRows.join("")}</div>`;
       }
       console.info(`[panel/moons] render allJgMoons=${allJgMoons.length} cells=${cells.length}`);
     } catch (e) { console.warn("[panel/moons] render failed:", e); }
@@ -4143,7 +4143,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // ⚙ 按鈕保留 (跳到 transport modal 創建新運輸任務).
       // 靜默引用以保留 lbl 等閉包變量, 不致 TS 誤報 unused.
       void planetOptsCargo; void m; void c; void d; void total; void cap; void shipsNeeded; void lbl; void selected;
-      cargoSection = `${sectionHeader("cargo", "🚚 運輸任務", transportGoalCount_v529, "#80ffd0", cargoSettingsBtn)}<div style="display:${cargoCollapsed ? "none" : "block"};">${transportRowsHtml_v529}</div>`;
+      cargoSection = `${sectionHeader("cargo", t("section.cargo"), transportGoalCount_v529, "#80ffd0", cargoSettingsBtn)}<div style="display:${cargoCollapsed ? "none" : "block"};">${transportRowsHtml_v529}</div>`;
     } catch { /* no store yet */ }
 
     const body = `<div data-ogamex-body="1" style="display:${bodyDisplay};">${emergencySection}${expeditionSection}${discSection}${moonsSection}${cargoSection}${goalsSection}</div>`;
