@@ -14,6 +14,7 @@
 import { LIFEFORM_TECH } from "@ogamex/shared";
 import { TECH_ID_BY_NAME } from "@ogamex/shared";
 import { t } from "../i18n/t.js";
+import { techName } from "../i18n/tech_name.js";
 
 /** Prereq tree node — recursive structure mirroring TECH_TREE's `requires`
  *  graph for the player's main goal. Attached by sidecar listGoals only on
@@ -3273,7 +3274,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const reason = g.reason ?? "";
     const goalType = g.type;
     const cs = g.current_step;
-    const stepLabel = cs ? `${cs.tech} L${cs.level}` : "";
+    const stepLabel = cs ? `${techName(cs.tech)} L${cs.level}` : "";
     const now = Date.now();
 
     // L1
@@ -3292,7 +3293,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const tplKey = bq.queue === "lf_build" ? "goal.state.body_q.lifeform_template"
         : bq.queue === "shipyard" ? "goal.state.body_q.constructing_template"
         : "goal.state.body_q.building_template";
-      return { label: t(tplKey, { tech: bq.tech, lvl: lvLabel, eta: etaMin }), color: "#7cfc00" };
+      return { label: t(tplKey, { tech: techName(bq.tech), lvl: lvLabel, eta: etaMin }), color: "#7cfc00" };
     }
     // L3 — planner's eta_at for this goal's tech is in the future
     if (typeof g.eta_at === "number" && g.eta_at > now) {
@@ -3351,7 +3352,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       );
       if (sibling) {
         const sib = sibling.current_step;
-        const sibLabel = sib ? `${sib.tech} L${sib.level}` : sibling.type;
+        const sibLabel = sib ? `${techName(sib.tech)} L${sib.level}` : sibling.type;
         const etaMin = Math.max(0, Math.round(((sibling.eta_at ?? 0) - now) / 60_000));
         return { label: t("goal.state.queued_waiting", { step: sibLabel, eta: etaMin }), color: "#bdb76b" };
       }
@@ -3425,7 +3426,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const me = `
       <div style="padding:2px 0 2px ${indent}px; font-size:11px; color:${techColor}; display:flex; align-items:center; gap:4px;">
         ${chev}<span>${kindIcon}</span>
-        <span style="flex:1;">${escapeHtml(n.tech)} <span style="color:#8090a8;">(${levelStr})</span>${etaBadge}</span>
+        <span style="flex:1;">${escapeHtml(techName(n.tech))} <span style="color:#8090a8;">(${levelStr})</span>${etaBadge}</span>
         ${statusBadge}
       </div>`;
     const kids = hasChildren && !collapsed
@@ -3474,17 +3475,17 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const planetTag = coords ? `[${coords}] P` : (target["planet_id"] ? `[${String(target["planet_id"]).slice(-4)}] P` : "");
       switch (type) {
         case "build": {
-          const b = String(target["building"] ?? "?");
+          const b = techName(String(target["building"] ?? "?"));
           const lvl = target["target_level"] ?? target["level"] ?? "";
           return [planetTag, b, lvl].filter(Boolean).join(" ");
         }
         case "research": {
-          const tVal = String(target["tech"] ?? "?");
+          const tVal = techName(String(target["tech"] ?? "?"));
           const lvl = target["target_level"] ?? target["level"] ?? "";
           return [tVal, lvl].filter(Boolean).join(" ");
         }
         case "build_ships": {
-          const s = String(target["ship"] ?? "?");
+          const s = techName(String(target["ship"] ?? "?"));
           const amt = target["amount"] ?? 1;
           return [planetTag, `${s}×${amt}`].filter(Boolean).join(" ");
         }
