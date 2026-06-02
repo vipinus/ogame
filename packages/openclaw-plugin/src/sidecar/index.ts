@@ -572,6 +572,7 @@ export async function startSidecar(
           last_seen_max_age_seconds: maxAge,
           save_coord_instances: saveCoordManager.size(),
           failure_agg_instances: failureAggManager.size(),
+          poll_buckets: http.pollBucketSizes(),
         };
       },
       // v0.0.638 — surface persistence-tier stats so operators can confirm
@@ -1812,13 +1813,12 @@ export async function startSidecar(
         set current(_v) { /* writes flow through state.snapshot handler */ },
       },
       send: (msg) => {
-        // NOTE: downstream queue is still single-tenant; until 9c.5 wires
-        // per-user poll endpoints, this user's save.recall_now would reach
-        // every poller. Acceptable because: (a) legacy operator stays on
-        // legacy instance and won't see foreign messages, (b) new users
-        // who haven't booted userscript yet have no poll connection.
+        // Phase 9c.5 — explicit uid routes the message into THIS user's
+        // poll bucket. Their userscript polling under their Bearer reads
+        // only this bucket; operator's poll under global token reads only
+        // LEGACY_BUCKET. The leak between users is sealed.
         ws.send(msg);
-        http.queueDownstream(msg);
+        http.queueDownstream(msg, uid);
       },
       persistence: {
         upsert: (rec) => {
@@ -1849,8 +1849,11 @@ export async function startSidecar(
       gemini: geminiClient,
       getState: () => userStates.get(uid) ?? emptyWorldState(),
       send: (msg: DownstreamMsg) => {
+        // Phase 9c.5 — uid bound in closure; explicit so any setTimeout-
+        // delivered analyzer message lands in the user's bucket even
+        // after the originating ALS frame is gone.
         ws.send(msg);
-        http.queueDownstream(msg);
+        http.queueDownstream(msg, uid);
       },
       ...(config.analyzer !== undefined ? { analyzer: config.analyzer } : {}),
       persistence: {

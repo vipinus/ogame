@@ -5,7 +5,12 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { UpstreamMsg, DownstreamMsg } from "@ogamex/shared";
-import { runWithUser } from "./user_context.js";
+import { runWithUser, getCurrentUserId } from "./user_context.js";
+
+// Phase 9c.5 — symbolic bucket id for operator + any unauthenticated /
+// global-token-authed downstream sink. Real user buckets are keyed by
+// the PG user_id uuid; this sentinel can't collide with one.
+const LEGACY_BUCKET = "_legacy_";
 import {
   renderDebugHtml,
 } from "./debug_render.js";
@@ -150,8 +155,22 @@ interface ResolvedHttpServerOptions {
 export class HttpServer {
   private readonly opts: ResolvedHttpServerOptions;
   private readonly handlers = new Map<string, Set<(msg: UpstreamMsg) => void>>();
-  private readonly queue: QueueEntry[] = [];
-  private readonly waiters: Array<(entries: QueueEntry[]) => void> = [];
+  // Phase 9c.5 — per-user downstream queues. Each bucket has its own
+  // queue + waiters so a poll from user A never sees user B's messages.
+  // LEGACY_BUCKET holds operator's traffic (global-token poll + send
+  // sites without explicit uid + no-ALS internal triggers).
+  private readonly buckets = new Map<string, QueueEntry[]>();
+  private readonly bucketWaiters = new Map<string, Array<(entries: QueueEntry[]) => void>>();
+  private bucketQueue(uid: string): QueueEntry[] {
+    let q = this.buckets.get(uid);
+    if (!q) { q = []; this.buckets.set(uid, q); }
+    return q;
+  }
+  private bucketWaiterList(uid: string): Array<(entries: QueueEntry[]) => void> {
+    let w = this.bucketWaiters.get(uid);
+    if (!w) { w = []; this.bucketWaiters.set(uid, w); }
+    return w;
+  }
   private server: http.Server | null = null;
   /** Event-driven expedition trigger timestamp. Bumped on POST trigger; read
    *  via GET poll by the discord-bridge daemon to know when to fire tick. */
@@ -203,10 +222,12 @@ export class HttpServer {
 
   stop(): Promise<void> {
     return new Promise((resolve) => {
-      // Resolve any in-flight long-poll waiters immediately.
-      while (this.waiters.length > 0) {
-        const w = this.waiters.shift();
-        if (w) w([]);
+      // Resolve any in-flight long-poll waiters across ALL buckets immediately.
+      for (const waiters of this.bucketWaiters.values()) {
+        while (waiters.length > 0) {
+          const w = waiters.shift();
+          if (w) w([]);
+        }
       }
       const s = this.server;
       if (!s) { resolve(); return; }
@@ -230,12 +251,29 @@ export class HttpServer {
     return addr.port;
   }
 
-  queueDownstream(msg: DownstreamMsg): void {
+  /** Phase 9c.5 diagnostic — bucket sizes (uid prefix → entry count).
+   *  Used by /v1/health.multi_tenant to surface per-user queue depth. */
+  pollBucketSizes(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [uid, q] of this.buckets.entries()) {
+      if (q.length === 0) continue;
+      out[uid === LEGACY_BUCKET ? "_legacy_" : uid.slice(0, 8)] = q.length;
+    }
+    return out;
+  }
+
+  queueDownstream(msg: DownstreamMsg, explicitUid?: string): void {
+    // Phase 9c.5 — uid resolution priority: explicit (manager closure has
+    // bound uid) → AsyncLocalStorage (dispatch chain inherits the push
+    // request's user) → LEGACY_BUCKET (operator / global-token paths).
+    const uid = explicitUid ?? getCurrentUserId() ?? LEGACY_BUCKET;
+    const q = this.bucketQueue(uid);
     // Dedup directive.dispatch — if a directive with the same content
     // (action+building+target_level+planet_id) is already pending undelivered,
     // drop this one. Without dedup, sidecar's tight merger tick keeps emitting
     // new dir-<uuid> for the SAME logical work when client is offline, and on
     // reconnect dumps hundreds at once → ogame anti-bot trip.
+    // Dedup is per-bucket — user2's directive can't collide with operator's.
     if (msg.type === "directive.dispatch") {
       const d = (msg as { directive?: { action?: string; params?: Record<string, unknown> } }).directive;
       // Expedition is BATCH-launchable — each directive = 1 fleet, even
@@ -246,12 +284,12 @@ export class HttpServer {
         || d?.action === "research" || d?.action === "build_ships" || d?.action === "build_defense";
       const sig = (d && isDedupableAction) ? `${d.action}|${JSON.stringify(d.params ?? {})}` : "";
       if (sig) {
-        for (const e of this.queue) {
+        for (const e of q) {
           if (e.msg.type === "directive.dispatch") {
             const ed = (e.msg as { directive?: { action?: string; params?: Record<string, unknown> } }).directive;
             const esig = ed ? `${ed.action}|${JSON.stringify(ed.params ?? {})}` : "";
             if (esig === sig) {
-              console.log(`[http_server] dedup directive ${sig.slice(0, 80)} — already queued`);
+              console.log(`[http_server] dedup directive ${sig.slice(0, 80)} — already queued (bucket=${uid.slice(0,8)})`);
               return;
             }
           }
@@ -265,27 +303,31 @@ export class HttpServer {
     };
     // Hard cap to prevent unbounded growth during long client disconnect.
     const MAX_QUEUE = 50;
-    if (this.queue.length >= MAX_QUEUE) {
-      // Drop oldest directive.dispatch first; keep state.snapshot (caller
-      // needs latest) — actually state goes the OTHER direction (upstream),
-      // so just drop oldest entry overall.
-      const dropped = this.queue.shift();
-      console.warn(`[http_server] queue cap ${MAX_QUEUE} hit, dropped ${dropped?.id ?? "?"}`);
+    if (q.length >= MAX_QUEUE) {
+      const dropped = q.shift();
+      console.warn(`[http_server] queue cap ${MAX_QUEUE} hit, dropped ${dropped?.id ?? "?"} (bucket=${uid.slice(0,8)})`);
     }
-    this.queue.push(entry);
-    // Wake any waiting long-pollers.
-    while (this.waiters.length > 0) {
-      const w = this.waiters.shift();
-      if (w) w([entry]);
+    q.push(entry);
+    // Wake any waiting long-pollers ON THIS BUCKET only.
+    const waiters = this.bucketWaiters.get(uid);
+    if (waiters && waiters.length > 0) {
+      while (waiters.length > 0) {
+        const w = waiters.shift();
+        if (w) w([entry]);
+      }
     }
   }
 
-  // Drop ALL queued downstream messages — invoked on `hello` (client reconnect)
-  // to prevent dumping stale directives that piled up during the disconnect.
-  flushQueue(): void {
-    const n = this.queue.length;
-    this.queue.length = 0;
-    if (n > 0) console.warn(`[http_server] flushed ${n} stale queued messages on reconnect`);
+  // Drop ALL queued downstream messages for a bucket — invoked on `hello`
+  // (client reconnect). Without explicit uid, defaults to operator's
+  // LEGACY_BUCKET so existing reconnect paths preserve semantics.
+  flushQueue(explicitUid?: string): void {
+    const uid = explicitUid ?? getCurrentUserId() ?? LEGACY_BUCKET;
+    const q = this.buckets.get(uid);
+    if (!q) return;
+    const n = q.length;
+    q.length = 0;
+    if (n > 0) console.warn(`[http_server] flushed ${n} stale queued messages on reconnect (bucket=${uid.slice(0,8)})`);
   }
 
   on<T extends UpstreamMsg["type"]>(type: T, handler: UpstreamHandler<T>): void {
@@ -600,14 +642,17 @@ export class HttpServer {
       void this.dispatchPush(req, res, globalAuthOk);
       return;
     }
+    // Phase 9c.5 — POLL gets the same split auth as PUSH: global token →
+    // operator LEGACY_BUCKET; per-user Bearer → resolve to that user's
+    // bucket; neither → 401.
+    if (url === POLL_PATH) {
+      void this.dispatchPoll(req, res, globalAuthOk);
+      return;
+    }
     if (!globalAuthOk) {
       this.writeCorsHeaders(res);
       res.statusCode = 401;
       res.end();
-      return;
-    }
-    if (url === POLL_PATH) {
-      void this.handlePoll(req, res);
       return;
     }
     // (EXPEDITION_PAUSE_PATH / RESUME / TRIGGER_PATH handled above — public, no-auth)
@@ -1072,7 +1117,34 @@ export class HttpServer {
     res.end(JSON.stringify({ ok: true }));
   }
 
-  private async handlePoll(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  /** Phase 9c.5 — resolve poll auth and route to the right bucket.
+   *  Bearer matches global token → LEGACY_BUCKET (operator).
+   *  Bearer resolves via PG → that user's bucket.
+   *  Neither → 401. */
+  private async dispatchPoll(req: http.IncomingMessage, res: http.ServerResponse, globalAuthOk: boolean): Promise<void> {
+    let bucketUid: string | null = null;
+    const auth = req.headers["authorization"];
+    const bearer = typeof auth === "string" && auth.startsWith("Bearer ")
+      ? auth.slice("Bearer ".length).trim()
+      : "";
+    if (globalAuthOk) {
+      bucketUid = LEGACY_BUCKET;
+    } else if (this.opts.resolveUserToken && bearer) {
+      try {
+        const uid = await this.opts.resolveUserToken(bearer);
+        if (uid) bucketUid = uid;
+      } catch (e) { console.warn("[http] poll resolveUserToken threw", e); }
+    }
+    if (!bucketUid) {
+      this.writeCorsHeaders(res);
+      res.statusCode = 401;
+      res.end();
+      return;
+    }
+    void this.handlePoll(req, res, bucketUid);
+  }
+
+  private async handlePoll(req: http.IncomingMessage, res: http.ServerResponse, bucketUid: string): Promise<void> {
     let body: { since_ts?: number; ack_ids?: string[] };
     try {
       const parsed = await readJson(req);
@@ -1097,15 +1169,16 @@ export class HttpServer {
     // Fix: prune any queue entry with ts <= since_ts. Client's cursor having
     // moved past those ts means it already consumed them; they cannot
     // re-deliver. Now dedup at queueDownstream sees a CLEAN queue and lets
-    // legitimate new dispatches through.
+    // legitimate new dispatches through. Phase 9c.5: prune per-bucket only.
+    const q = this.bucketQueue(bucketUid);
     if (sinceTs > 0) {
-      for (let i = this.queue.length - 1; i >= 0; i--) {
-        if (this.queue[i]!.ts <= sinceTs) this.queue.splice(i, 1);
+      for (let i = q.length - 1; i >= 0; i--) {
+        if (q[i]!.ts <= sinceTs) q.splice(i, 1);
       }
     }
 
     const filterReady = (): QueueEntry[] =>
-      this.queue.filter((e) => e.ts > sinceTs && !ackIds.has(e.id));
+      q.filter((e) => e.ts > sinceTs && !ackIds.has(e.id));
 
     let ready = filterReady();
     if (ready.length > 0) {
@@ -1113,7 +1186,8 @@ export class HttpServer {
       return;
     }
 
-    // Long-poll: wait until something arrives or timeout fires.
+    // Long-poll: wait until something arrives on THIS bucket or timeout fires.
+    const waiters = this.bucketWaiterList(bucketUid);
     let settled = false;
     const waiter = (_entries: QueueEntry[]): void => {
       if (settled) return;
@@ -1125,29 +1199,29 @@ export class HttpServer {
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      const idx = this.waiters.indexOf(waiter);
-      if (idx >= 0) this.waiters.splice(idx, 1);
+      const idx = waiters.indexOf(waiter);
+      if (idx >= 0) waiters.splice(idx, 1);
       this.respondPoll(res, []);
     }, this.opts.pollTimeoutMs);
     if (typeof (timer as { unref?: () => void }).unref === "function") {
       (timer as { unref: () => void }).unref();
     }
-    this.waiters.push(waiter);
+    waiters.push(waiter);
 
     // If the client disconnects mid-poll, abandon the waiter quietly.
     req.once("close", () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      const idx = this.waiters.indexOf(waiter);
-      if (idx >= 0) this.waiters.splice(idx, 1);
+      const idx = waiters.indexOf(waiter);
+      if (idx >= 0) waiters.splice(idx, 1);
     });
     ready = filterReady();
     if (ready.length > 0 && !settled) {
       settled = true;
       clearTimeout(timer);
-      const idx = this.waiters.indexOf(waiter);
-      if (idx >= 0) this.waiters.splice(idx, 1);
+      const idx = waiters.indexOf(waiter);
+      if (idx >= 0) waiters.splice(idx, 1);
       this.respondPoll(res, ready);
     }
   }

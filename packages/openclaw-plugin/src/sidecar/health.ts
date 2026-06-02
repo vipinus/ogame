@@ -43,6 +43,7 @@ export interface HealthDeps {
      *  user pushes state.snapshot. */
     save_coord_instances?: number;
     failure_agg_instances?: number;
+    poll_buckets?: Record<string, number>;
   };
   /** Optional persistence-tier stats. When absent, the `persistence` field
    *  is omitted from the report (older sidecars / unit tests that don't
@@ -100,6 +101,10 @@ export interface HealthReport {
     last_seen_max_age_seconds: number | null;
     save_coord_instances?: number;
     failure_agg_instances?: number;
+    /** Phase 9c.5 — non-empty queue buckets and their entry counts.
+     *  Key is "_legacy_" for operator/global-token bucket, otherwise the
+     *  user_id uuid prefix (first 8 chars). Empty buckets are omitted. */
+    poll_buckets?: Record<string, number>;
   };
   persistence?: {
     db_path: string;
