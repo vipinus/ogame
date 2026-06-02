@@ -535,7 +535,19 @@ export async function startSidecar(
   const expLastSeen = new Map<string, { origin: readonly number[]; dest: readonly number[]; arrival_at: number | null; return_at: number | null }>();
   const triggerDispatch = (): void => {
     if (!priorityMergerRef) return;
-    try { priorityMergerRef.dispatch(stateRef.current ?? emptyWorldState()); }
+    // Phase 9c.7 hotfix — read ALS uid. When this runs inside a Bearer-
+    // wrapped request frame (createGoal, cancelGoal etc.) the merger MUST
+    // restrict dispatch to that caller's goals. Without this, operator's
+    // expedition goals would dispatch under the foreign caller's ALS, and
+    // queueDownstream would route operator's directives into the foreign
+    // user's poll bucket → operator's userscript never receives them.
+    // Real incident 2026-06-02: daigang's createGoal trigger ran the
+    // merger → operator's 5 active expeditions queued into daigang's
+    // bucket → operator's "没自动发远征".
+    const uid = getCurrentUserId();
+    const userState = uid ? userStates.get(uid) : undefined;
+    const state = userState ?? stateRef.current ?? emptyWorldState();
+    try { priorityMergerRef.dispatch(state, uid); }
     catch (e) { console.error("[merger] triggerDispatch threw", e); }
   };
   // The HttpServer's /v1/health route delegates to buildHealthReport via a
