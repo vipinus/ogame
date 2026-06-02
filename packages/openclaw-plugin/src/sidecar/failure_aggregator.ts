@@ -45,6 +45,17 @@ export interface FailureAggregatorOptions {
   now?: () => number;
 }
 
+/**
+ * Optional persistence sink for the LLM-analysis cooldown table.
+ * Without this, a sidecar restart mid-cooldown immediately re-fires the
+ * analyzer on the next matching failure burst (operator pays token cost
+ * + risks patch flap).
+ */
+export interface FailureAggregatorPersistence {
+  upsertCooldown(task: string, last_analysis_at: number): void;
+  listCooldowns(): Array<{ task: string; last_analysis_at: number }>;
+}
+
 export interface FailureAggregatorDeps {
   strategyManager: StrategyManager;
   gemini: GeminiClient;
@@ -54,6 +65,8 @@ export interface FailureAggregatorDeps {
   send: (msg: DownstreamMsg) => void;
   /** Override for tests. Default uses the real `analyzeFailure` from ../llm/strategy_analyzer.js */
   analyzer?: (input: AnalyzeInput, llm: GeminiClient) => Promise<AnalyzeResult>;
+  /** Optional persistence sink for cooldowns. Absent ⇒ pure in-memory mode. */
+  persistence?: FailureAggregatorPersistence;
 }
 
 export interface AggregatorStats {
@@ -90,6 +103,27 @@ export function createFailureAggregator(
 
   const failureBuckets = new Map<string, FailureRecord[]>();
   const lastAnalysisAt = new Map<string, number>();
+
+  // v0.0.638 — hydrate cooldowns from disk before any record() runs.
+  // Without this, a sidecar restart mid-cooldown re-fires the LLM
+  // analyzer the instant a fresh daily_failure burst lands.
+  if (deps.persistence) {
+    try {
+      for (const r of deps.persistence.listCooldowns()) {
+        lastAnalysisAt.set(r.task, r.last_analysis_at);
+      }
+    } catch (e) {
+      console.warn("[FailureAggregator] cooldown hydrate failed (continuing empty)", e);
+    }
+  }
+  const stampCooldown = (task: string): void => {
+    const t = now();
+    lastAnalysisAt.set(task, t);
+    if (deps.persistence) {
+      try { deps.persistence.upsertCooldown(task, t); }
+      catch (e) { console.error("[FailureAggregator] persist cooldown threw", e); }
+    }
+  };
 
   const counters: AggregatorStats = {
     totalFailures: 0,
@@ -151,7 +185,7 @@ export function createFailureAggregator(
 
       if ("abstain" in result) {
         counters.abstains += 1;
-        lastAnalysisAt.set(task, now());
+        stampCooldown(task);
         return;
       }
 
@@ -159,7 +193,7 @@ export function createFailureAggregator(
       if (!v.ok) {
         counters.patchesRejected += 1;
         console.warn("[FailureAggregator] patch rejected", v.errors);
-        lastAnalysisAt.set(task, now());
+        stampCooldown(task);
         return;
       }
 
@@ -177,12 +211,12 @@ export function createFailureAggregator(
       });
 
       counters.patchesApplied += 1;
-      lastAnalysisAt.set(task, now());
+      stampCooldown(task);
       // Start fresh after a successful patch — require a new failure streak.
       failureBuckets.set(task, []);
     } catch (e) {
       console.error("[FailureAggregator] analysis failed", e);
-      lastAnalysisAt.set(task, now());
+      stampCooldown(task);
     }
   }
 

@@ -58,6 +58,10 @@ const SCHEMA = `
     launched_at        INTEGER NOT NULL,
     last_error         TEXT
   );
+  CREATE TABLE IF NOT EXISTS failure_cooldowns (
+    task               TEXT PRIMARY KEY,
+    last_analysis_at   INTEGER NOT NULL
+  );
 `;
 
 export interface EventRow {
@@ -100,6 +104,9 @@ export class WorldStateStore {
   private readonly stmtUpsertSaveRecord: Database.Statement<[string, number, string, string, number | null, number, string | null]>;
   private readonly stmtDeleteSaveRecord: Database.Statement<[string]>;
   private readonly stmtListSaveRecords: Database.Statement<[]>;
+  private readonly stmtUpsertFailureCooldown: Database.Statement<[string, number]>;
+  private readonly stmtListFailureCooldowns: Database.Statement<[]>;
+  private readonly stmtCountRows: Database.Statement<[]>;
 
   constructor(opts: WorldStateStoreOptions) {
     this.db = new Database(opts.dbPath);
@@ -137,6 +144,20 @@ export class WorldStateStore {
     this.stmtDeleteSaveRecord = this.db.prepare<[string]>("DELETE FROM save_records WHERE planet_id = ?");
     this.stmtListSaveRecords = this.db.prepare<[]>(
       "SELECT planet_id, fleet_id, state, pending_event_ids, cleared_at, launched_at, last_error FROM save_records",
+    );
+    this.stmtUpsertFailureCooldown = this.db.prepare<[string, number]>(
+      "INSERT INTO failure_cooldowns (task, last_analysis_at) VALUES (?, ?) "
+      + "ON CONFLICT(task) DO UPDATE SET last_analysis_at = excluded.last_analysis_at",
+    );
+    this.stmtListFailureCooldowns = this.db.prepare<[]>(
+      "SELECT task, last_analysis_at FROM failure_cooldowns",
+    );
+    this.stmtCountRows = this.db.prepare<[]>(
+      "SELECT "
+      + " (SELECT COUNT(*) FROM events) AS events, "
+      + " (SELECT COUNT(*) FROM save_records) AS save_records, "
+      + " (SELECT COUNT(*) FROM failure_cooldowns) AS failure_cooldowns, "
+      + " (SELECT 1 FROM world_state WHERE id=1) AS world_state_present",
     );
   }
 
@@ -275,6 +296,36 @@ export class WorldStateStore {
    * shrink the file. Safe to call while readers are active — WAL mode
    * never blocks reads.
    */
+  /**
+   * Persist (or refresh) the per-task LLM analysis cooldown stamp.
+   * Operator 2026-06-01 "持久化所有数据" — without this, a sidecar restart
+   * during an active cooldown re-fires the LLM analyzer on the next
+   * matching daily_failure burst, wasting tokens + risking patch flap.
+   */
+  upsertFailureCooldown(task: string, last_analysis_at: number): void {
+    this.stmtUpsertFailureCooldown.run(task, last_analysis_at);
+  }
+
+  /** Return every cooldown row — used to rehydrate failure_aggregator at boot. */
+  listFailureCooldowns(): Array<{ task: string; last_analysis_at: number }> {
+    return this.stmtListFailureCooldowns.all() as Array<{ task: string; last_analysis_at: number }>;
+  }
+
+  /**
+   * Cheap row counts across persistence tables. Surfaced via /v1/health
+   * so an operator can confirm the data tier is non-empty / not silently
+   * truncated.
+   */
+  rowCounts(): { events: number; save_records: number; failure_cooldowns: number; world_state_present: boolean } {
+    const r = this.stmtCountRows.get() as { events: number; save_records: number; failure_cooldowns: number; world_state_present: number | null };
+    return {
+      events: r.events,
+      save_records: r.save_records,
+      failure_cooldowns: r.failure_cooldowns,
+      world_state_present: r.world_state_present === 1,
+    };
+  }
+
   checkpoint(): void {
     try { this.db.pragma("wal_checkpoint(TRUNCATE)"); }
     catch (e) { console.warn("[WorldStateStore] wal_checkpoint failed (continuing)", e); }

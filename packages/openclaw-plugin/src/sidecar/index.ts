@@ -482,6 +482,21 @@ export async function startSidecar(
       llmPing: () => pingGemini(geminiClient),
       stateRef,
       strategyVersion: () => strategyManager.load().version,
+      // v0.0.638 — surface persistence-tier stats so operators can confirm
+      // the SQLite store is non-empty / not silently truncated. Wrapped in
+      // try/catch inside buildHealthReport already.
+      persistenceStats: () => {
+        let dbSize = 0;
+        let walSize = 0;
+        try { dbSize = fs.statSync(worldStateDbPath).size; } catch { /* fresh install */ }
+        try { walSize = fs.statSync(`${worldStateDbPath}-wal`).size; } catch { /* WAL may be 0 */ }
+        return {
+          db_path: worldStateDbPath,
+          db_size_bytes: dbSize,
+          wal_size_bytes: walSize,
+          row_counts: worldStateStore.rowCounts(),
+        };
+      },
     }),
     debugSnapshot: () => debug.snapshot(),
     // Operator API providers — surface state/goals/expedition over HTTP.
@@ -1630,6 +1645,13 @@ export async function startSidecar(
       http.queueDownstream(msg);
     },
     ...(config.analyzer !== undefined ? { analyzer: config.analyzer } : {}),
+    // v0.0.638 — mirror per-task LLM cooldown to disk so a restart mid-
+    // cooldown doesn't immediately re-fire the analyzer on the next
+    // matching failure burst.
+    persistence: {
+      upsertCooldown: (task, last_analysis_at) => worldStateStore.upsertFailureCooldown(task, last_analysis_at),
+      listCooldowns: () => worldStateStore.listFailureCooldowns(),
+    },
   });
 
   // --- DigestScheduler (M8.2) ----------------------------------------------

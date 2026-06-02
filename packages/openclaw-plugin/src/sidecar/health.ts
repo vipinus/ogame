@@ -31,6 +31,20 @@ export interface HealthDeps {
   stateRef: { current: WorldState | null };
   /** Current strategy version (from StrategyManager.load().version). */
   strategyVersion: () => number;
+  /** Optional persistence-tier stats. When absent, the `persistence` field
+   *  is omitted from the report (older sidecars / unit tests that don't
+   *  wire SQLite). */
+  persistenceStats?: () => {
+    db_path: string;
+    db_size_bytes: number;
+    wal_size_bytes: number;
+    row_counts: {
+      events: number;
+      save_records: number;
+      failure_cooldowns: number;
+      world_state_present: boolean;
+    };
+  };
 }
 
 export interface HealthReport {
@@ -67,6 +81,17 @@ export interface HealthReport {
   };
   strategy: {
     version: number;
+  };
+  persistence?: {
+    db_path: string;
+    db_size_bytes: number;
+    wal_size_bytes: number;
+    row_counts: {
+      events: number;
+      save_records: number;
+      failure_cooldowns: number;
+      world_state_present: boolean;
+    };
   };
 }
 
@@ -113,6 +138,14 @@ export async function buildHealthReport(deps: HealthDeps): Promise<HealthReport>
     ? { ok: llmOk, rtt_ms: llmRtt }
     : { ok: llmOk, rtt_ms: llmRtt, error: llmError };
 
+  // Persistence-tier slice — wired only when caller supplied a stats fn.
+  // Wrapped in try/catch so a SQLite hiccup never crashes the report.
+  let persistenceSlice: HealthReport["persistence"] | undefined;
+  if (deps.persistenceStats) {
+    try { persistenceSlice = deps.persistenceStats(); }
+    catch (e) { console.warn("[health] persistenceStats threw", e); }
+  }
+
   return {
     ok: bridgeOpen && llmOk && hasSnapshot,
     ts: now,
@@ -140,6 +173,7 @@ export async function buildHealthReport(deps: HealthDeps): Promise<HealthReport>
       hostile_events_count: hostileEventsCount,
     },
     strategy: { version: strategyVersion },
+    ...(persistenceSlice !== undefined ? { persistence: persistenceSlice } : {}),
   };
 }
 

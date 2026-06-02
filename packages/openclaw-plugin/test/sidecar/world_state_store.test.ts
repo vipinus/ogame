@@ -158,6 +158,45 @@ describe("WorldStateStore", () => {
     expect(after[0]?.planet_id).toBe("33653036");
   });
 
+  it("failure_cooldowns upsert + list survives close + reopen on disk", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ogamex-wss-fc-"));
+    const dbPath = path.join(tmpDir, "world.db");
+    try {
+      const writer = new WorldStateStore({ dbPath });
+      writer.upsertFailureCooldown("expedition", 1_700_111_000_000);
+      writer.upsertFailureCooldown("metal_balance", 1_700_111_010_000);
+      writer.upsertFailureCooldown("expedition", 1_700_111_020_000); // overwrite
+      writer.close();
+
+      const reader = new WorldStateStore({ dbPath });
+      const rows = reader.listFailureCooldowns().sort((a, b) => a.task.localeCompare(b.task));
+      expect(rows).toEqual([
+        { task: "expedition", last_analysis_at: 1_700_111_020_000 },
+        { task: "metal_balance", last_analysis_at: 1_700_111_010_000 },
+      ]);
+      reader.close();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rowCounts reports per-table sizes", () => {
+    expect(store.rowCounts()).toEqual({
+      events: 0, save_records: 0, failure_cooldowns: 0, world_state_present: false,
+    });
+    store.upsert(makeState());
+    store.appendEvent("event.emergency", {});
+    store.appendEvent("event.daily_failure", {});
+    store.upsertSaveRecord({
+      planet_id: "p1", fleet_id: 1, state: "IN_FLIGHT",
+      pending_event_ids: ["e1"], cleared_at: null, launched_at: 1, last_error: null,
+    });
+    store.upsertFailureCooldown("expedition", 1);
+    expect(store.rowCounts()).toEqual({
+      events: 2, save_records: 1, failure_cooldowns: 1, world_state_present: true,
+    });
+  });
+
   it("save_records survives close + reopen on disk", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ogamex-wss-save-"));
     const dbPath = path.join(tmpDir, "world.db");
