@@ -15,6 +15,17 @@ import { LIFEFORM_TECH } from "@ogamex/shared";
 import { TECH_ID_BY_NAME } from "@ogamex/shared";
 import { t } from "../i18n/t.js";
 import { techName } from "../i18n/tech_name.js";
+import { getOgameLocaleWithOverride } from "../i18n/locale.js";
+
+// v0.0.662 — operator "用 ogame 专有名词": lifeform names come from
+// shared/lifeform/*_tech.ts (display_name_zh Trad since v0.0.652 STC
+// + display_name_en). Route through locale instead of always-TW.
+function pickLfName(v: { display_name_zh?: string; display_name_en?: string }, k: string): string {
+  const locale = getOgameLocaleWithOverride();
+  if (locale === "tw") return v.display_name_zh ?? v.display_name_en ?? k;
+  return v.display_name_en ?? v.display_name_zh ?? k;
+}
+
 
 /** Prereq tree node — recursive structure mirroring TECH_TREE's `requires`
  *  graph for the player's main goal. Attached by sidecar listGoals only on
@@ -455,8 +466,8 @@ function openExpeditionSettings(
         <div style="display:flex; justify-content:space-between; padding:4px 0; font-size:10px;">
           <span style="color:#7080a0;">${escapeHtml(t('auto.208'))}</span>
           <span>
-            <button data-exp-planet-all="1" style="background:transparent; color:#7cfc00; border:none; cursor:pointer; font-size:10px; padding:0 4px;">全選</button>
-            <button data-exp-planet-none="1" style="background:transparent; color:#ff9b9b; border:none; cursor:pointer; font-size:10px; padding:0 4px;">全清</button>
+            <button data-exp-planet-all="1" style="background:transparent; color:#7cfc00; border:none; cursor:pointer; font-size:10px; padding:0 4px;">${escapeHtml(t('auto.228'))}</button>
+            <button data-exp-planet-none="1" style="background:transparent; color:#ff9b9b; border:none; cursor:pointer; font-size:10px; padding:0 4px;">${escapeHtml(t('auto.229'))}</button>
           </span>
         </div>
         ${planetRows}
@@ -476,7 +487,7 @@ function openExpeditionSettings(
       </div>
       <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:12px;">
         <span data-exp-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-        <button data-exp-save="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">保存</button>
+        <button data-exp-save="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.230'))}</button>
       </div>
     `;
     // Operator 2026-05-29: live "current fleet composition" summary chips at
@@ -521,7 +532,7 @@ function openExpeditionSettings(
     m.querySelectorAll<HTMLElement>("[data-exp-tab]").forEach((b) => {
       b.addEventListener("click", () => { switchTab(b.getAttribute("data-exp-tab") ?? "planets"); });
     });
-    // 全選 / 全清 helpers.
+    // ${escapeHtml(t('auto.228'))} / ${escapeHtml(t('auto.229'))} helpers.
     m.querySelector<HTMLElement>("[data-exp-planet-all]")?.addEventListener("click", () => {
       m.querySelectorAll<HTMLInputElement>("[data-exp-planet]").forEach((cb) => { cb.checked = true; });
     });
@@ -938,7 +949,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
-          <input data-pb-level type="number" min="1" max="50" value="" placeholder=t("auto.130") onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-pb-level type="number" min="1" max="50" value="" placeholder="${escapeHtml(t('auto.130'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1005,7 +1016,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
-          <input data-mb-level type="number" min="1" max="50" value="" placeholder=t("auto.132") onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-mb-level type="number" min="1" max="50" value="" placeholder="${escapeHtml(t('auto.132'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1077,7 +1088,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
-          <input data-lf-level type="number" min="1" max="50" value="" placeholder=t("auto.133") onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-lf-level type="number" min="1" max="50" value="" placeholder="${escapeHtml(t('auto.133'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1121,7 +1132,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
-          <input data-rs-level type="number" min="1" max="30" value="" placeholder=t("auto.134") onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-rs-level type="number" min="1" max="30" value="" placeholder="${escapeHtml(t('auto.134'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.192'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1140,7 +1151,7 @@ function openGoalsSettings(
       <!-- v0.0.602 — 生命研究獨立 pane (per-species catalog.research) -->
       <div data-pane="lf-research" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命形態 (單選, 決定可研究列表)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.224'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="humans" style="vertical-align:middle;"/><span>人類</span></label>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="rocktal" style="vertical-align:middle;"/><span>巖族</span></label>
@@ -1149,7 +1160,7 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (單選, lifeform research per-planet)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.225'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f; display:grid; grid-template-columns:1fr 1fr; gap:0;">
             ${sortedCoordKeys
               .filter((k) => groupedByCoord.get(k)!.planet)
@@ -1168,8 +1179,8 @@ function openGoalsSettings(
         </div>
         <div style="padding:6px 0;">
           <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:4px;">
-            <span style="color:#d0d8e0; font-size:11px;">生命研究專案 (單選, 切換 species 重新加載)</span>
-            <button data-lr-force-sync type="button" style="background:#1a2438; color:#7cfc00; border:1px solid #2a3a52; border-radius:3px; cursor:pointer; font-size:10px; padding:2px 8px;" title=t("auto.135")>🔄 同步該星球</button>
+            <span style="color:#d0d8e0; font-size:11px;">${escapeHtml(t('auto.226'))}</span>
+            <button data-lr-force-sync type="button" style="background:#1a2438; color:#7cfc00; border:1px solid #2a3a52; border-radius:3px; cursor:pointer; font-size:10px; padding:2px 8px;" title=t("auto.135")>${escapeHtml(t('auto.227'))}</button>
           </div>
           <div data-lr-research-list style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
             <span style="color:#5a7090; font-size:11px;">loading…</span>
@@ -1177,7 +1188,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
-          <input data-lr-level type="number" min="1" max="50" value="" placeholder=t("auto.133") onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-lr-level type="number" min="1" max="50" value="" placeholder="${escapeHtml(t('auto.133'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1198,7 +1209,7 @@ function openGoalsSettings(
       <!-- Operator 2026-05-29: 自然語言入口 — Gemini 解析 → 填表單 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
         <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">自然語言描述 <span style="color:#7080a0; font-size:10px;">(可選 — 讓 AI 解析填表單)</span></div>
-        <textarea data-goal-nl rows="2" placeholder=t("auto.136") style="${inputStyle} width:100%; box-sizing:border-box; resize:vertical;"></textarea>
+        <textarea data-goal-nl rows="2" placeholder="${escapeHtml(t('auto.136'))}" style="${inputStyle} width:100%; box-sizing:border-box; resize:vertical;"></textarea>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:6px;">
           <span data-goal-nl-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
           <button data-goal-nl-parse="1" style="background:#3a3a5a; color:#fff; border:1px solid #6a6a8a; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">🤖 解析填表單</button>
@@ -1462,7 +1473,7 @@ function openGoalsSettings(
         pbStatusEl.textContent = t("auto.161", { n: okCount });
         pbStatusEl.style.color = "#7cfc00";
       } else {
-        pbStatusEl.textContent = t("auto.162", { ok: okCount, err: errs.length, first: errs[0] });
+        pbStatusEl.textContent = t("auto.162", { ok: okCount, err: errs.length, first: errs[0] ?? "" });
         pbStatusEl.style.color = "#a06060";
       }
     });
@@ -1569,7 +1580,7 @@ function openGoalsSettings(
         mbStatusEl.textContent = t("auto.161", { n: okCount });
         mbStatusEl.style.color = "#7cfc00";
       } else {
-        mbStatusEl.textContent = t("auto.162", { ok: okCount, err: errs.length, first: errs[0] });
+        mbStatusEl.textContent = t("auto.162", { ok: okCount, err: errs.length, first: errs[0] ?? "" });
         mbStatusEl.style.color = "#a06060";
       }
     });
@@ -1600,9 +1611,9 @@ function openGoalsSettings(
         const buildings = cat?.buildings ?? {};
         const entries = Object.entries(buildings);
         currentBuildings.clear();
-        for (const [k, v] of entries) currentBuildings.set(k, v.display_name_zh ?? v.display_name_en ?? k);
+        for (const [k, v] of entries) currentBuildings.set(k, pickLfName(v, k));
         lfBuildingList.innerHTML = entries.map(([k, v]) => {
-          const name = v.display_name_zh ?? v.display_name_en ?? k;
+          const name = pickLfName(v, k);
           return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="lf-building-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)}</span></label>`;
         }).join("");
         for (const r of lfBuildingRadios()) r.addEventListener("change", refreshLfDesc);
@@ -1780,7 +1791,7 @@ function openGoalsSettings(
           lfStatusEl.textContent = t("auto.161", { n: okCount });
           lfStatusEl.style.color = "#7cfc00";
         } else {
-          lfStatusEl.textContent = t("auto.162", { ok: okCount, err: errs.length, first: errs[0] });
+          lfStatusEl.textContent = t("auto.162", { ok: okCount, err: errs.length, first: errs[0] ?? "" });
           lfStatusEl.style.color = "#a06060";
         }
       });
@@ -1818,7 +1829,7 @@ function openGoalsSettings(
           if (lbl) {
             lbl.style.opacity = "0.4";
             lbl.style.cursor = "not-allowed";
-            lbl.title = t("auto.171", { n: rsLevelsInit["gravitonTech"] });
+            lbl.title = t("auto.171", { n: rsLevelsInit["gravitonTech"] ?? 0 });
           }
         }
       }
@@ -2427,13 +2438,13 @@ function openTransportSettings(
         ${inner}
       </div>`;
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">三步選擇: 艦船 → 資源 → 目標 (→ 停泊). JG 多跳鏈需選停泊星球.</div>
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">${escapeHtml(t('auto.209'))}</div>
       ${sectionCard(t("auto.144"),
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-source-radio")}</div>
         <div data-tr-source-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(選擇來源星球後顯示船數)</div>
         <label style="display:flex; gap:6px; align-items:center; padding-top:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
           <input type="checkbox" data-tr-jg-enable checked/>
-          <span>空船跳躍門可用時 → 使用跳躍門 (Phase 2 生效)</span>
+          <span>${escapeHtml(t('auto.223'))}</span>
         </label>`)}
       ${sectionCard(t("auto.145"),
         `<label style="display:block; cursor:pointer; color:#d0d8e0; font-size:11px; padding-bottom:6px;">
@@ -2459,34 +2470,34 @@ function openTransportSettings(
         <div style="display:flex; gap:10px; padding:4px 0; align-items:center; font-size:11px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="m" checked style="margin:0;"/>
-            <span>金屬 M</span>
+            <span>${escapeHtml(t('auto.215'))}</span>
             <input data-tr-cargo="m" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
           </label>
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="c" checked style="margin:0;"/>
-            <span>晶體 C</span>
+            <span>${escapeHtml(t('auto.216'))}</span>
             <input data-tr-cargo="c" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
           </label>
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="d" checked style="margin:0;"/>
-            <span>重氫 D</span>
+            <span>${escapeHtml(t('auto.217'))}</span>
             <input data-tr-cargo="d" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
           </label>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding-top:4px;">
-          <span style="color:#d0d8e0; font-size:11px; width:60px;">數量</span>
+          <span style="color:#d0d8e0; font-size:11px; width:60px;">${escapeHtml(t('auto.218'))}</span>
           <input data-tr-ship-count type="number" min="0" step="1" value="0" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span data-tr-ship-need style="color:#7cfc00; font-size:10px;">(改 ②/④ 後自動算)</span>
         </div>`)}
       ${sectionCard(t("auto.149"),
         `<label style="cursor:pointer; color:#d0d8e0; font-size:11px; display:block;">
           <input type="checkbox" data-tr-jg-take-all checked/>
-          <span style="margin-left:4px;">用跳躍門往回走的時候帶回月球上所有的船</span>
-          <span style="color:#7080a0; font-size:10px; display:block; margin-left:20px; margin-top:2px;">勾選 = JG 那一段動態帶走源月球當時所有 ships (LC/SC/其他)<br/>不勾選 = JG 只帶配置的 ships, 其他留在月球</span>
+          <span style="margin-left:4px;">${escapeHtml(t('auto.220'))}</span>
+          <span style="color:#7080a0; font-size:10px; display:block; margin-left:20px; margin-top:2px;">${escapeHtml(t('auto.221'))}<br/>${escapeHtml(t('auto.222'))}</span>
         </label>`)}
       <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
         <span data-tr-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-        <button data-tr-submit style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建運輸任務</button>
+        <button data-tr-submit style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.219'))}</button>
       </div>
     `;
     // v0.0.518 — section ②/④ shortcut wiring (operator 2026-05-31).
