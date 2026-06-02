@@ -149,22 +149,18 @@ async function boot(opts: BootOpts = {}): Promise<BootResult> {
   return { handle, memoryDir, strategyRepoDir };
 }
 
-function connectWs(port: number): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
-      headers: { Authorization: `Bearer ${TOKEN}` },
-    });
-    const t = setTimeout(() => {
-      reject(new Error("connect timeout"));
-      try { ws.terminate(); } catch { /* ignore */ }
-    }, 1000);
-    ws.once("open", () => { clearTimeout(t); resolve(ws); });
-    ws.once("unexpected-response", (_req, res) => {
-      clearTimeout(t);
-      reject(new Error(`unexpected-response ${res.statusCode}`));
-    });
-    ws.once("error", (e) => { clearTimeout(t); reject(e); });
+// v0.0.549 — WsServer is stubbed (operator removed ws path). Wire tests
+// previously connected as a WS client; now they POST to /ogamex/v1/push,
+// which fans into the SAME wrapped on() registry that ws.on/http.on share.
+async function pushHttp(handle: SidecarHandle, msg: UpstreamMsg): Promise<void> {
+  const res = await fetch(`http://127.0.0.1:${handle.http.port()}/ogamex/v1/push`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify(msg),
   });
+  if (res.status !== 200) {
+    throw new Error(`pushHttp got HTTP ${res.status}`);
+  }
 }
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
@@ -191,17 +187,14 @@ describe("startSidecar wiring", () => {
 
   it("state.snapshot → updates stateRef and writes memory file", async () => {
     const { handle, memoryDir } = await boot();
-    const client = await connectWs(handle.ws.port());
-
     const snapshot = makeWorldState();
     snapshot.player.name = "alice";
-    const msg: UpstreamMsg = {
+    await pushHttp(handle, {
       type: "state.snapshot",
       ts: Date.now(),
       snapshot,
       strategy_version: 0,
-    };
-    client.send(JSON.stringify(msg));
+    });
 
     await waitFor(() => handle.stateRef.current !== null);
     expect(handle.stateRef.current?.player.name).toBe("alice");
@@ -219,34 +212,31 @@ describe("startSidecar wiring", () => {
         return false;
       }
     });
-
-    client.close();
   });
 
-  it("hello → server broadcasts strategy.full", async () => {
+  it("hello → strategy.full queued onto HTTP downstream poll", async () => {
     const { handle } = await boot();
-    const client = await connectWs(handle.ws.port());
-
-    const received: DownstreamMsg[] = [];
-    client.on("message", (data) => {
-      try { received.push(JSON.parse(data.toString("utf8")) as DownstreamMsg); } catch { /* ignore */ }
-    });
-
-    client.send(JSON.stringify({
+    await pushHttp(handle, {
       type: "hello",
       strategy_version: 0,
       userscript_version: "0.0.1",
-    } satisfies UpstreamMsg));
-
-    await waitFor(() => received.some((m) => m.type === "strategy.full"));
-    const full = received.find((m) => m.type === "strategy.full");
+    });
+    // The hello handler queues strategy.full via http.queueDownstream — long
+    // polling on /poll returns it. We use a 5s timeout, well within vitest's
+    // default test timeout. /poll is POST-only with since_ts cursor body.
+    const pollRes = await fetch(`http://127.0.0.1:${handle.http.port()}/ogamex/v1/poll`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ since_ts: 0 }),
+    });
+    expect(pollRes.status).toBe(200);
+    const body = await pollRes.json() as { messages?: DownstreamMsg[] };
+    const messages = body.messages ?? [];
+    expect(messages.length).toBeGreaterThan(0);
+    const full = messages.find((m): m is Extract<DownstreamMsg, { type: "strategy.full" }> => m?.type === "strategy.full");
     expect(full).toBeTruthy();
-    if (full?.type === "strategy.full") {
-      expect(full.strategy.version).toBe(0);
-      expect(full.strategy.updated_by).toBe("userscript-bootstrap");
-    }
-
-    client.close();
+    expect(full!.strategy.version).toBe(0);
+    expect(full!.strategy.updated_by).toBe("userscript-bootstrap");
   });
 
   it("event.emergency with reporter → forwards markdown_report to send", async () => {
@@ -257,21 +247,18 @@ describe("startSidecar wiring", () => {
     // baseline calls so we can assert the emergency push specifically.
     const baselineCalls = sendDiscord.mock.calls.length;
 
-    const client = await connectWs(handle.ws.port());
     const markdown = "**ATTACK** — fleet incoming at coords 1:2:3";
-    client.send(JSON.stringify({
+    await pushHttp(handle, {
       type: "event.emergency",
       subtype: "attack",
       data: {},
       markdown_report: markdown,
-    } satisfies UpstreamMsg));
+    });
 
     await waitFor(() => sendDiscord.mock.calls.length > baselineCalls);
     const last = sendDiscord.mock.calls[sendDiscord.mock.calls.length - 1]!;
     expect(last[0]).toBe("chan-xyz");
     expect(last[1]).toBe(markdown);
-
-    client.close();
   });
 
   it("event.daily_failure × threshold → failureAggregator triggers analyzer once", async () => {
@@ -279,38 +266,34 @@ describe("startSidecar wiring", () => {
       async () => ({ abstain: "no info" }),
     );
     const { handle } = await boot({ analyzer });
-    const client = await connectWs(handle.ws.port());
 
     // Default threshold is 3 — push exactly 3 failures of the same task.
     for (let i = 0; i < 3; i++) {
-      client.send(JSON.stringify({
+      await pushHttp(handle, {
         type: "event.daily_failure",
         task: "expedition",
         attempts: i + 1,
         last_error: "boom",
         context: { i },
-      } satisfies UpstreamMsg));
+      });
     }
 
     await waitFor(() => handle.failureAggregator.stats().analysesTriggered === 1);
     expect(handle.failureAggregator.stats().analysesTriggered).toBe(1);
     expect(analyzer).toHaveBeenCalledTimes(1);
-
-    client.close();
   });
 
-  it("stop() shuts down ws + http + memory writer (no new connections, no memory churn)", async () => {
+  it("stop() shuts down http + memory writer (no new requests, no memory churn)", async () => {
     const { handle, memoryDir } = await boot();
-    const wsPort = handle.ws.port();
-    expect(wsPort).toBeGreaterThan(0);
+    const httpPort = handle.http.port();
+    expect(httpPort).toBeGreaterThan(0);
     // Push one snapshot + flush to seed the memory file.
-    const client = await connectWs(wsPort);
-    client.send(JSON.stringify({
+    await pushHttp(handle, {
       type: "state.snapshot",
       ts: Date.now(),
       snapshot: makeWorldState(),
       strategy_version: 0,
-    } satisfies UpstreamMsg));
+    });
     await waitFor(() => handle.stateRef.current !== null);
     await handle.memoryWriter.flush();
 
@@ -318,11 +301,15 @@ describe("startSidecar wiring", () => {
     await waitFor(() => fs.existsSync(memFile));
     const mtimeBefore = fs.statSync(memFile).mtimeMs;
 
-    client.close();
-
     await handle.stop();
-    // After stop, attempting to connect should fail.
-    await expect(connectWs(wsPort)).rejects.toThrow();
+    // After stop, attempting to push should fail (ECONNREFUSED).
+    await expect(
+      fetch(`http://127.0.0.1:${httpPort}/ogamex/v1/push`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    ).rejects.toThrow();
     // We MUST set this to undefined so afterEach does not re-stop.
     active.handle = undefined;
 

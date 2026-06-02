@@ -1888,10 +1888,12 @@ export async function startSidecar(
     }
     // The userscript has just connected and announced its strategy_version.
     // Reply with the canonical Strategy so it can reconcile any drift.
-    // We use ws.send (broadcast to all connected clients) — the userscript
-    // is the only expected consumer; if multiple clients are connected they
-    // all benefit from the same snapshot.
-    ws.send({ type: "strategy.full", strategy: strategyManager.load() });
+    // v0.0.638 — operator's userscript runs HTTP long-poll only (ws is
+    // stubbed since v0.0.549). ws.send is a no-op; we MUST also enqueue
+    // on the HTTP downstream queue so the next /poll delivers strategy.full.
+    const full = { type: "strategy.full" as const, strategy: strategyManager.load() };
+    ws.send(full);
+    http.queueDownstream(full);
   });
 
   // --- Online banner -------------------------------------------------------

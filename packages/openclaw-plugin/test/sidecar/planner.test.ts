@@ -24,14 +24,24 @@ function makePlanet(
   buildings: Record<string, number> = {},
   resources?: { m?: number; c?: number; d?: number; e?: number },
 ): Planet {
+  // v0.0.638 — default resources bumped from 0 → 10M (with energy=100). The
+  // post-v0.0.4xx planner blocks goal recursion when resources can't cover
+  // the leaf cost; tests focused on prereq-tree behavior shouldn't get
+  // sidetracked by resource scarcity. Energy-gating tests override e
+  // explicitly to -1 / 0 to exercise that branch.
   return {
     id,
     name: id,
     coords: [1, 1, 1],
     type: "planet",
-    resources: { m: resources?.m ?? 0, c: resources?.c ?? 0, d: resources?.d ?? 0, e: resources?.e ?? 100 },
-    storage: { m_max: 0, c_max: 0, d_max: 0 },
-    production: { m_h: 0, c_h: 0, d_h: 0 },
+    resources: {
+      m: resources?.m ?? 10_000_000,
+      c: resources?.c ?? 10_000_000,
+      d: resources?.d ?? 10_000_000,
+      e: resources?.e ?? 100,
+    },
+    storage: { m_max: 99_999_999, c_max: 99_999_999, d_max: 99_999_999 },
+    production: { m_h: 100, c_h: 100, d_h: 100 },
     buildings,
     build_q: null,
     shipyard_q: null,

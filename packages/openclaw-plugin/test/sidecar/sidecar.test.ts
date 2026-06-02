@@ -35,15 +35,21 @@ function connectWs(port: number, token: string): Promise<WebSocket> {
 }
 
 describe("startSidecar", () => {
-  it("starts both WS + HTTP servers and exposes live ports via the handle", async () => {
+  // v0.0.549 — operator removed the live WsServer ("没用过 ws 就删了吧").
+  // ws.port() is a stub returning 0; ws.on/ws.send are no-ops. All
+  // upstream traffic now arrives via HttpServer long-poll. These tests
+  // assert the HTTP path lifecycle; WS-port-dependent assertions have
+  // been adapted accordingly.
+
+  it("starts HTTP server and exposes a live port via the handle", async () => {
     const handle = track(await startSidecar({
       wsPort: 0,
       httpPort: 0,
       bridgeToken: TOKEN,
     }));
-    expect(handle.ws.port()).toBeGreaterThan(0);
     expect(handle.http.port()).toBeGreaterThan(0);
-    expect(handle.ws.port()).not.toBe(handle.http.port());
+    // WS is stubbed to 0; document the contract so a future re-enable is obvious.
+    expect(handle.ws.port()).toBe(0);
   });
 
   it("without discordChannelId → reporter is null and no send is invoked", async () => {
@@ -68,10 +74,15 @@ describe("startSidecar", () => {
     expect(sendDiscord).toHaveBeenCalledTimes(1);
     const [channelId, content] = sendDiscord.mock.calls[0]!;
     expect(channelId).toBe("chan-xyz");
-    expect(content).toMatch(/OgameX online.*ws:\/\/127\.0\.0\.1:\d+.*http:\/\/127\.0\.0\.1:\d+/);
+    // v0.0.549 — banner content dropped the ws:// segment when WsServer
+    // was stubbed; only the HTTP listener remains in the message.
+    expect(content).toMatch(/OgameX online.*http:\/\/127\.0\.0\.1:\d+/);
   });
 
-  it("cross-server relay: WS hello also fires HTTP-side hello handler", async () => {
+  it("cross-server relay: HTTP push fans into BOTH transport registries", async () => {
+    // v0.0.549 — WS is stubbed but the wrapped registry still mirrors any
+    // arrival into both http.on AND ws.on. POST /push, expect both
+    // handlers to fire (no-op ws stub still resolves its on() registration).
     const handle = track(await startSidecar({
       wsPort: 0,
       httpPort: 0,
@@ -85,36 +96,35 @@ describe("startSidecar", () => {
       handle.ws.on("hello", (m) => resolve(m));
     });
 
-    const client = await connectWs(handle.ws.port(), TOKEN);
     const payload: Extract<UpstreamMsg, { type: "hello" }> = {
       type: "hello",
       strategy_version: 1,
       userscript_version: "0.0.1",
     };
-    client.send(JSON.stringify(payload));
+    const res = await fetch(`http://127.0.0.1:${handle.http.port()}/ogamex/v1/push`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    expect(res.status).toBe(200);
 
     const [hOnHttp, hOnWs] = await Promise.all([httpGot, wsGot]);
     expect(hOnHttp).toEqual(payload);
     expect(hOnWs).toEqual(payload);
-    client.close();
   });
 
-  it("stop() shuts down both servers: new WS connect fails afterwards", async () => {
+  it("stop() shuts down the HTTP server — new connect fails afterwards", async () => {
     const handle = await startSidecar({
       wsPort: 0,
       httpPort: 0,
       bridgeToken: TOKEN,
     });
-    const wsPort = handle.ws.port();
     const httpPort = handle.http.port();
-    expect(wsPort).toBeGreaterThan(0);
     expect(httpPort).toBeGreaterThan(0);
 
     await handle.stop();
 
-    // After stop, attempting to connect should fail (ECONNREFUSED) or time out.
-    await expect(connectWs(wsPort, TOKEN)).rejects.toThrow();
-    // HTTP port should also be closed.
+    // After stop, HTTP port should be closed → fetch rejects with ECONNREFUSED.
     await expect(
       fetch(`http://127.0.0.1:${httpPort}/ogamex/v1/push`, {
         method: "POST",
@@ -122,5 +132,6 @@ describe("startSidecar", () => {
         body: "{}",
       }),
     ).rejects.toThrow();
+    // WS is stubbed in v0.0.549 — no port to test post-stop.
   });
 });
