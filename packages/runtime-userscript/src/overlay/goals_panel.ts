@@ -209,8 +209,8 @@ function openEmergencySettings(doc: Document): void {
   const spyOn = lsGet("OGAMEX_SPY_TRIGGERS_SAVE") !== "off";  // default ON
   const bodyHTML = `
     <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">緊急任務 (Fleet Save) — attack/spy 觸發自動起飛 + 召回</div>
-    ${renderToggleRow("整體啟用", !paused, "em-paused", "OFF = 全局暫停 FS 自動起飛 (手動操作不受影響)")}
-    ${renderToggleRow("偵察觸發 FS", spyOn, "em-spy", "ON = spy event 也走 FS 鏈路 (預設開); OFF = 僅 attack 觸發")}
+    ${renderToggleRow(t("auto.103"), !paused, "em-paused", t("auto.104"))}
+    ${renderToggleRow(t("auto.105"), spyOn, "em-spy", t("auto.106"))}
     <div style="color:#5a7090; font-size:10px; padding-top:10px;">變更立即生效, 無需保存.</div>
   `;
   openSettingsModal(doc, "emergency", t("modal.emergency.title"), bodyHTML, (m) => {
@@ -334,8 +334,8 @@ function openAuditModal(
   });
 }
 
-// tabs (operator 2026-05-29: "改成兩個 tab"): "發船星球" (per-planet
-// checkboxes for opt-in source pool) and "艦隊模板" (per-ship-type number
+// tabs (operator 2026-05-29: "改成兩個 tab"): t("auto.121") (per-planet
+// checkboxes for opt-in source pool) and t("auto.122") (per-ship-type number
 // inputs). Target-position removed (always G:S:16). Paused toggle is
 // global, lives above the tabs.
 function openExpeditionSettings(
@@ -347,21 +347,21 @@ function openExpeditionSettings(
   // (212) + crawler (217) are stationary — excluded. pathfinder/explorer
   // share tid 219; only `explorer` (canonical v12 name) is exposed.
   const SHIP_FIELDS: Array<{ key: string; label: string }> = [
-    { key: "smallCargo",     label: "小型運輸艦 (SC)" },
-    { key: "largeCargo",     label: "大型運輸艦 (LC)" },
-    { key: "lightFighter",   label: "輕型戰鬥機 (LF)" },
-    { key: "heavyFighter",   label: "重型戰鬥機 (HF)" },
-    { key: "cruiser",        label: "巡洋艦 (Cr)" },
+    { key: "smallCargo",     label: t("auto.107") },
+    { key: "largeCargo",     label: t("auto.108") },
+    { key: "lightFighter",   label: t("auto.109") },
+    { key: "heavyFighter",   label: t("auto.110") },
+    { key: "cruiser",        label: t("auto.111") },
     { key: "battleship",     label: t("auto.001") },
-    { key: "colonyShip",     label: "殖民船 (CS)" },
-    { key: "recycler",       label: "回收船 (RC)" },
-    { key: "espionageProbe", label: "間諜衛星 (EP)" },
+    { key: "colonyShip",     label: t("auto.112") },
+    { key: "recycler",       label: t("auto.113") },
+    { key: "espionageProbe", label: t("auto.114") },
     { key: "bomber",         label: t("auto.002") },
     { key: "destroyer",      label: t("auto.003") },
-    { key: "deathstar",      label: "死星 (DS)" },
+    { key: "deathstar",      label: t("auto.115") },
     { key: "battlecruiser",  label: t("auto.004") },
-    { key: "reaper",         label: "惡魔飛船 (RIP)" },
-    { key: "explorer",       label: "探路者 (PF)" },
+    { key: "reaper",         label: t("auto.116") },
+    { key: "explorer",       label: t("auto.117") },
   ];
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading expedition config…</div>`;
   openSettingsModal(doc, "expedition", t("modal.expedition.title"), placeholder, async (m) => {
@@ -421,7 +421,7 @@ function openExpeditionSettings(
       const checked = isPlanetEnabled(p.id);
       return `<label style="${cellStyle} cursor:pointer;">
         <input data-exp-planet="${escapeHtml(p.id)}" type="checkbox" ${checked ? "checked" : ""} style="vertical-align:middle;"/>
-        <span>${icon} ${escapeHtml(p.name ?? (p.type === "moon" ? "月球" : "殖民"))}</span>
+        <span>${icon} ${escapeHtml(p.name ?? (p.type === "moon" ? t("auto.118") : t("auto.119")))}</span>
       </label>`;
     };
     const planetRows = sortedCoordKeys.length === 0
@@ -446,10 +446,10 @@ function openExpeditionSettings(
     }).join("");
     body.innerHTML = `
       <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">遠征探險 — 勾選發船星球 + 設定艦隊模板</div>
-      ${renderToggleRow("整體啟用", !paused, "exp-paused", "OFF = daemon 跳過本輪 tick (現有 fleet 不受影響)")}
+      ${renderToggleRow(t("auto.103"), !paused, "exp-paused", t("auto.120"))}
       <div style="padding-top:10px; display:flex; gap:0; border-bottom:1px solid #2a3a52;">
-        ${tabBtn("planets", "發船星球", true)}
-        ${tabBtn("template", "艦隊模板", false)}
+        ${tabBtn("planets", t("auto.121"), true)}
+        ${tabBtn("template", t("auto.122"), false)}
       </div>
       <div data-exp-pane="planets" style="display:block; padding-top:8px;">
         <div style="display:flex; justify-content:space-between; padding:4px 0; font-size:10px;">
@@ -469,7 +469,7 @@ function openExpeditionSettings(
           <div data-exp-fleet-summary style="display:flex; flex-wrap:wrap; gap:6px; min-height:18px;"></div>
           <div data-exp-fleet-total style="color:#7080a0; font-size:10px; padding-top:6px; text-align:right;"></div>
         </div>
-        ${renderToggleRow("船不夠自動造船", initial.auto_build_ships === true, "exp-autobuild", "ON = 船數不足的星球自動創建 build_ships 任務 (會按 priority 8 佔用 shipyard 資源)")}
+        ${renderToggleRow(t("auto.123"), initial.auto_build_ships === true, "exp-autobuild", t("auto.124"))}
         <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">每次派遣的船數 (0 = 不派此類船 · 點選輸入框=全選)</div>
         <!-- Operator 2026-05-29: 改成兩列 — grid 自動按行填充, 高度對半 -->
         <div style="display:grid; grid-template-columns:1fr 1fr; column-gap:14px;">${shipRows}</div>
@@ -642,7 +642,7 @@ function openDiscoverySettings(
       const srcId = String(tgt.source_planet ?? activeGoal.planet ?? "");
       const srcPlanet = srcId ? (storeRef?.state?.planets?.[srcId] ?? null) : null;
       const srcDisplay = srcPlanet?.coords
-        ? `${srcPlanet.name ?? "殖民"} [${srcPlanet.coords.join(":")}]`
+        ? `${srcPlanet.name ?? t("auto.119")} [${srcPlanet.coords.join(":")}]`
         : (srcId || "?");
       statusHTML = `<div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:10px;">
         <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">當前活躍發現任務</div>
@@ -659,13 +659,13 @@ function openDiscoverySettings(
     }
     const planetOpts = planets.map((p) => {
       const cs = (p.coords ?? []).join(":");
-      return `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name ?? "殖民")} [${escapeHtml(cs)}]</option>`;
+      return `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name ?? t("auto.119"))} [${escapeHtml(cs)}]</option>`;
     }).join("");
     body.innerHTML = `
       <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">物種發現 — 探路者掃描系統物種, 1 個 active goal at a time</div>
       ${statusHTML}
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px;">
-        <div style="color:#7080a0; font-size:10px; padding-bottom:6px;">${activeGoal ? "替換當前任務 (先 Stop 再 Start, 或直接 Start — 舊 goal 會被替換)" : "創建新發現任務"}</div>
+        <div style="color:#7080a0; font-size:10px; padding-bottom:6px;">${activeGoal ? t("auto.125") : t("auto.126")}</div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">來源星球</span>
           <select data-disc-planet style="${inputStyle} flex:1;">${planetOpts || `<option value="">(無 planet)</option>`}</select>
@@ -857,7 +857,7 @@ function openGoalsSettings(
       "terraformer",
     ] as const;
     const PLANET_BUILDING_LABEL: Record<string, string> = {
-      metalMine: "金屬礦", crystalMine: "晶體礦", deuteriumSynth: "重氫合成器",
+      metalMine: t("auto.127"), crystalMine: t("auto.128"), deuteriumSynth: t("auto.129"),
       solarPlant: t("auto.030"), fusionReactor: t("auto.031"),
       metalStorage: t("auto.032"), crystalStorage: t("auto.033"), deuteriumTank: t("auto.034"),
       roboticsFactory: t("auto.035"), shipyard: t("auto.036"), researchLab: t("auto.037"), naniteFactory: t("auto.038"),
@@ -918,7 +918,7 @@ function openGoalsSettings(
                   <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
                   <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; ${dim}" ${tip}>
                     <input data-pb-planet type="radio" name="pb-planet-radio" value="${escapeHtml(p.id)}" ${occ ? "disabled" : ""} style="vertical-align:middle;"/>
-                    <span>🌍 ${escapeHtml(p.name ?? "殖民")}${occSuffix}</span>
+                    <span>🌍 ${escapeHtml(p.name ?? t("auto.119"))}${occSuffix}</span>
                   </label>
                 </div>`;
               }).join("")}
@@ -938,7 +938,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
-          <input data-pb-level type="number" min="1" max="50" value="" placeholder="例: 7" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-pb-level type="number" min="1" max="50" value="" placeholder=t("auto.130") onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -985,7 +985,7 @@ function openGoalsSettings(
                   <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
                   <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; ${dim}" ${tip}>
                     <input data-mb-moon type="radio" name="mb-moon-radio" value="${escapeHtml(mb.id)}" ${occ ? "disabled" : ""} style="vertical-align:middle;"/>
-                    <span>🌙 ${escapeHtml(mb.name ?? "月球")}${occSuffix}</span>
+                    <span>🌙 ${escapeHtml(mb.name ?? t("auto.118"))}${occSuffix}</span>
                   </label>
                 </div>`;
               }).join("")}
@@ -998,14 +998,14 @@ function openGoalsSettings(
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="lunarBase" style="vertical-align:middle;"/><span>月球基地</span></label>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="sensorPhalanx" style="vertical-align:middle;"/><span>傳感器</span></label>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="jumpgate" style="vertical-align:middle;"/><span>跳躍門</span></label>
-            <!-- v0.0.592 — operator 2026-06-01 "月球缺機器人工廠和造船廠, 和星球分開": ogame moon has its own independent roboticsFactory / shipyard counters from the planet sibling. Adding to moon-build options. -->
+            <!-- v0.0.592 — operator 2026-06-01 t("auto.131"): ogame moon has its own independent roboticsFactory / shipyard counters from the planet sibling. Adding to moon-build options. -->
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="roboticsFactory" style="vertical-align:middle;"/><span>機械工廠</span></label>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="shipyard" style="vertical-align:middle;"/><span>船塢</span></label>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
-          <input data-mb-level type="number" min="1" max="50" value="" placeholder="例: 2" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-mb-level type="number" min="1" max="50" value="" placeholder=t("auto.132") onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1062,7 +1062,7 @@ function openGoalsSettings(
                   <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
                   <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; ${dim}" ${tip}>
                     <input data-lf-planet type="radio" name="lf-planet-radio" value="${escapeHtml(p.id)}" ${occ ? "disabled" : ""} style="vertical-align:middle;"/>
-                    <span>🌍 ${escapeHtml(p.name ?? "殖民")}${occSuffix}</span>
+                    <span>🌍 ${escapeHtml(p.name ?? t("auto.119"))}${occSuffix}</span>
                   </label>
                 </div>`;
               }).join("")}
@@ -1077,7 +1077,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
-          <input data-lf-level type="number" min="1" max="50" value="" placeholder="例: 3" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-lf-level type="number" min="1" max="50" value="" placeholder=t("auto.133") onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1121,7 +1121,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
-          <input data-rs-level type="number" min="1" max="30" value="" placeholder="例: 9" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-rs-level type="number" min="1" max="30" value="" placeholder=t("auto.134") onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-30</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1160,7 +1160,7 @@ function openGoalsSettings(
                   <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
                   <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; cursor:pointer;">
                     <input data-lr-planet type="radio" name="lr-planet-radio" value="${escapeHtml(p.id)}" style="vertical-align:middle;"/>
-                    <span>🌍 ${escapeHtml(p.name ?? "殖民")}</span>
+                    <span>🌍 ${escapeHtml(p.name ?? t("auto.119"))}</span>
                   </label>
                 </div>`;
               }).join("")}
@@ -1169,7 +1169,7 @@ function openGoalsSettings(
         <div style="padding:6px 0;">
           <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:4px;">
             <span style="color:#d0d8e0; font-size:11px;">生命研究專案 (單選, 切換 species 重新加載)</span>
-            <button data-lr-force-sync type="button" style="background:#1a2438; color:#7cfc00; border:1px solid #2a3a52; border-radius:3px; cursor:pointer; font-size:10px; padding:2px 8px;" title="強制 fetch 當前選中星球的 lfresearch 頁, 替換 store 資料">🔄 同步該星球</button>
+            <button data-lr-force-sync type="button" style="background:#1a2438; color:#7cfc00; border:1px solid #2a3a52; border-radius:3px; cursor:pointer; font-size:10px; padding:2px 8px;" title=t("auto.135")>🔄 同步該星球</button>
           </div>
           <div data-lr-research-list style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
             <span style="color:#5a7090; font-size:11px;">loading…</span>
@@ -1177,7 +1177,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
-          <input data-lr-level type="number" min="1" max="50" value="" placeholder="例: 3" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-lr-level type="number" min="1" max="50" value="" placeholder=t("auto.133") onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1198,7 +1198,7 @@ function openGoalsSettings(
       <!-- Operator 2026-05-29: 自然語言入口 — Gemini 解析 → 填表單 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
         <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">自然語言描述 <span style="color:#7080a0; font-size:10px;">(可選 — 讓 AI 解析填表單)</span></div>
-        <textarea data-goal-nl rows="2" placeholder="例: 在 3:279:7 建金屬礦到 42 級 / 母星出引力 6 / 在 4:241:8 造 500 大型運輸艦" style="${inputStyle} width:100%; box-sizing:border-box; resize:vertical;"></textarea>
+        <textarea data-goal-nl rows="2" placeholder=t("auto.136") style="${inputStyle} width:100%; box-sizing:border-box; resize:vertical;"></textarea>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:6px;">
           <span data-goal-nl-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
           <button data-goal-nl-parse="1" style="background:#3a3a5a; color:#fff; border:1px solid #6a6a8a; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">🤖 解析填表單</button>
@@ -1233,13 +1233,13 @@ function openGoalsSettings(
               const cellPlanet = planet
                 ? `<label class="tab-cell-planet" style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                     <input data-goal-planet type="radio" name="goal-planet-radio" value="${escapeHtml(planet.id)}" style="vertical-align:middle;"/>
-                    <span>🌍 ${escapeHtml(planet.name ?? "殖民")}</span>
+                    <span>🌍 ${escapeHtml(planet.name ?? t("auto.119"))}</span>
                   </label>`
                 : `<span class="tab-cell-planet" style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
               const cellMoon = moon
                 ? `<label class="tab-cell-moon" style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                     <input data-goal-planet type="radio" name="goal-planet-radio" value="${escapeHtml(moon.id)}" style="vertical-align:middle;"/>
-                    <span>🌙 ${escapeHtml(moon.name ?? "月球")}</span>
+                    <span>🌙 ${escapeHtml(moon.name ?? t("auto.118"))}</span>
                   </label>`
                 : `<span class="tab-cell-moon" style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
               return `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
@@ -1469,7 +1469,7 @@ function openGoalsSettings(
 
     // v0.0.589 — moon-build pane wiring (mirrors planet-build).
     const MOON_BUILDING_LABEL: Record<string, string> = {
-      lunarBase: "月球基地", sensorPhalanx: t("auto.049"), jumpgate: t("auto.050"),
+      lunarBase: t("auto.137"), sensorPhalanx: t("auto.049"), jumpgate: t("auto.050"),
       roboticsFactory: t("auto.035"), shipyard: t("auto.036"),
     };
     const moonCoordById = new Map<string, string>();
@@ -1789,12 +1789,12 @@ function openGoalsSettings(
     // v0.0.599 — research pane wiring (global queue, no planet selector).
     {
       const RESEARCH_LABEL: Record<string, string> = {
-        energyTech: t("auto.064"), laserTech: t("auto.065"), ionTech: "離子技術",
+        energyTech: t("auto.064"), laserTech: t("auto.065"), ionTech: t("auto.138"),
         hyperspaceTech: t("auto.066"), plasmaTech: t("auto.067"),
-        combustion: t("auto.068"), impulseDrive: "脈衝引擎", hyperspaceDrive: "超空間引擎",
-        espionageTech: t("auto.069"), computerTech: "電腦技術",
+        combustion: t("auto.068"), impulseDrive: t("auto.139"), hyperspaceDrive: t("auto.140"),
+        espionageTech: t("auto.069"), computerTech: t("auto.141"),
         astrophysics: t("auto.070"), intergalactic: t("auto.071"), gravitonTech: t("auto.072"),
-        weapons: "武器技術", shielding: t("auto.073"), armor: "裝甲技術",
+        weapons: t("auto.142"), shielding: t("auto.073"), armor: t("auto.143"),
       };
       const rsTechRadios = (): HTMLInputElement[] => Array.from(
         m.querySelectorAll<HTMLInputElement>('input[name="rs-tech-radio"]'),
@@ -2428,22 +2428,22 @@ function openTransportSettings(
       </div>`;
     body.innerHTML = `
       <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">三步選擇: 艦船 → 資源 → 目標 (→ 停泊). JG 多跳鏈需選停泊星球.</div>
-      ${sectionCard("① 艦船星球",
+      ${sectionCard(t("auto.144"),
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-source-radio")}</div>
         <div data-tr-source-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(選擇來源星球後顯示船數)</div>
         <label style="display:flex; gap:6px; align-items:center; padding-top:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
           <input type="checkbox" data-tr-jg-enable checked/>
           <span>空船跳躍門可用時 → 使用跳躍門 (Phase 2 生效)</span>
         </label>`)}
-      ${sectionCard("② 資源星球",
+      ${sectionCard(t("auto.145"),
         `<label style="display:block; cursor:pointer; color:#d0d8e0; font-size:11px; padding-bottom:6px;">
           <input type="checkbox" data-tr-resource-sameas-ship checked style="margin-right:6px; vertical-align:middle;"/>同 ① 艦船星球
         </label>
         <div data-tr-resource-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-resource-radio")}</div>
         <div data-tr-resource-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(選擇後顯示當前資源)</div>`)}
-      ${sectionCard("③ 目標星球",
+      ${sectionCard(t("auto.146"),
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-target-radio")}</div>`)}
-      ${sectionCard("④ 停泊星球 <span style='color:#7080a0; font-weight:normal;'>(不選 = 停在目標 / 選另一處 = 卸完資源用 deploy 飛過去)</span>",
+      ${sectionCard(t("auto.147"),
         `<div style="display:flex; gap:14px; flex-wrap:wrap; padding-bottom:6px; font-size:11px; color:#d0d8e0;">
           <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="ship" data-tr-stopover-shortcut checked style="margin-right:4px; vertical-align:middle;"/>艦船星球</label>
           <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="resource" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>資源星球</label>
@@ -2451,7 +2451,7 @@ function openTransportSettings(
           <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="other" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>其他星球</label>
         </div>
         <div data-tr-stopover-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
-      ${sectionCard("⑤ 選船類型 + 資源裝載 + 數量",
+      ${sectionCard(t("auto.148"),
         `<div style="display:flex; gap:12px; padding-bottom:6px;">
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> 大運 LC (cap ${fmt(ltCap)})</label>
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小運 SC (cap ${fmt(stCap)})</label>
@@ -2478,7 +2478,7 @@ function openTransportSettings(
           <input data-tr-ship-count type="number" min="0" step="1" value="0" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span data-tr-ship-need style="color:#7cfc00; font-size:10px;">(改 ②/④ 後自動算)</span>
         </div>`)}
-      ${sectionCard("⑥ 跳躍門返程選項",
+      ${sectionCard(t("auto.149"),
         `<label style="cursor:pointer; color:#d0d8e0; font-size:11px; display:block;">
           <input type="checkbox" data-tr-jg-take-all checked/>
           <span style="margin-left:4px;">用跳躍門往回走的時候帶回月球上所有的船</span>
@@ -3526,9 +3526,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       return p?.coords ? p.coords.join(":") : idOrCoord;
     };
     const actionCN = (type: string): string =>
-      type === "deploy" ? "部署"
+      type === "deploy" ? t("auto.150")
       : type === "jumpgate" ? t("auto.096")
-      : type === "transport" ? "運輸"
+      : type === "transport" ? t("auto.151")
       : type;
     const formatChainLeg = (g: GoalRowFromHttp): string => {
       const tgt = (g.target ?? {}) as Record<string, unknown>;
@@ -3637,7 +3637,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             };
             const sh = g.resource_shortage;
             const shortageChip = sh && (sh.m + sh.c + sh.d) > 0
-              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title="假設當前產能不變, 這是還需要從其他星球 transport 進來的資源總量">缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="打開運輸 modal 自動填寫目的+資源 (源=當前星球)">→ 運輸</button>`
+              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title=t("auto.152")>缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title=t("auto.153")>→ 運輸</button>`
               : "";
             // v0.0.456: decouple shortageChip from totalEta — moons return
             // ETA=∞ (no local production for deuterium etc.), JSON serializes
@@ -3690,7 +3690,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                 csh.c > 0 ? `${fmtRes(csh.c)} c` : "",
                 csh.d > 0 ? `${fmtRes(csh.d)} d` : "",
               ].filter(Boolean).join(" · ");
-              const stepFillBtn = `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="按當前步驟缺口裝運">→ 運輸</button>`;
+              const stepFillBtn = `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title=t("auto.154")>→ 運輸</button>`;
               return `<div style="font-size:10px; color:#ffaa55; margin-bottom:2px;">↳ 當前: ${escapeHtml(stepLabel)} 缺 ${shortageBits}${stepFillBtn}</div>`;
             })() : "";
             // v0.0.527 — operator 2026-05-31 "前置鏈都要歸入主鏈 tree".
