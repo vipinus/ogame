@@ -37,6 +37,12 @@ export interface HealthDeps {
   multiTenantSnapshot?: () => {
     users_tracked: number;
     last_seen_max_age_seconds: number | null;
+    /** Phase 9c.3 — number of non-legacy users whose SaveCoordinator /
+     *  FailureAggregator instances have been minted by the manager. 0
+     *  while only operator (legacy uid) is active; ≥1 once a foreign
+     *  user pushes state.snapshot. */
+    save_coord_instances?: number;
+    failure_agg_instances?: number;
   };
   /** Optional persistence-tier stats. When absent, the `persistence` field
    *  is omitted from the report (older sidecars / unit tests that don't
@@ -92,6 +98,8 @@ export interface HealthReport {
   multi_tenant?: {
     users_tracked: number;
     last_seen_max_age_seconds: number | null;
+    save_coord_instances?: number;
+    failure_agg_instances?: number;
   };
   persistence?: {
     db_path: string;

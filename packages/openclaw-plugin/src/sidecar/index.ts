@@ -29,6 +29,7 @@ import { spawn } from "node:child_process";
 import { WsServer } from "./ws_server.js";
 import { HttpServer } from "./http_server.js";
 import { SaveCoordinator } from "./save_coordinator.js";
+import { SaveCoordinatorManager, FailureAggregatorManager } from "./multitenant_managers.js";
 import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
 import { GoalsStore } from "./goals_store.js";
@@ -566,7 +567,12 @@ export async function startSidecar(
           const oldest = Math.min(...Array.from(userLastSeen.values()));
           maxAge = Math.round((Date.now() - oldest) / 1000);
         }
-        return { users_tracked: tracked, last_seen_max_age_seconds: maxAge };
+        return {
+          users_tracked: tracked,
+          last_seen_max_age_seconds: maxAge,
+          save_coord_instances: saveCoordManager.size(),
+          failure_agg_instances: failureAggManager.size(),
+        };
       },
       // v0.0.638 — surface persistence-tier stats so operators can confirm
       // the SQLite store is non-empty / not silently truncated. Wrapped in
@@ -1379,14 +1385,26 @@ export async function startSidecar(
       return { ok: true, goal_id: id };
     },
     recordSaveLaunched: (body) => {
-      saveCoordinator.recordLaunch(body);
+      // Phase 9c.3: route by ALS uid (set by dispatchPush from Bearer).
+      const u = getCurrentUserId();
+      const c = isLegacyUid(u) ? saveCoordinator : saveCoordManager.get(u!);
+      c.recordLaunch(body);
       return { ok: true };
     },
     recordSaveRecallConfirmed: (fleet_id) => {
-      saveCoordinator.recordRecallConfirmed(fleet_id);
+      const u = getCurrentUserId();
+      const c = isLegacyUid(u) ? saveCoordinator : saveCoordManager.get(u!);
+      c.recordRecallConfirmed(fleet_id);
       return { ok: true };
     },
-    listActiveSaves: () => saveCoordinator.list(),
+    listActiveSaves: () => {
+      // listActiveSaves is read-only for the operator's own debug UI; it
+      // returns the legacy instance's FSM rows. Multi-tenant listing would
+      // need a PG query keyed by ALS uid — punted to 9c.5.
+      const u = getCurrentUserId();
+      const c = isLegacyUid(u) ? saveCoordinator : saveCoordManager.get(u!);
+      return c.list();
+    },
   });
   const http = httpServerCtor();
   await Promise.all([ws.start(), http.start()]);
@@ -1773,6 +1791,85 @@ export async function startSidecar(
     },
   });
 
+  // --- Phase 9c.3 — per-user managers (coexistence with legacy globals) ---
+  // The legacy `saveCoordinator` + `failureAggregator` above remain the
+  // operator's instances (uid = OGAMEX_LEGACY_USER_ID). For any OTHER user
+  // resolved via Bearer→ALS, the managers below lazily mint a fresh
+  // per-user instance whose state machine + LLM cooldowns are isolated.
+  // Why coexist instead of swap: operator has 1+ year of FSM state already
+  // hydrated into the global instance via rehydrate(persisted) above. A
+  // hot swap would lose that. Coexistence preserves operator bit-for-bit
+  // and gates the new code path purely on a non-legacy uid showing up.
+  const legacyOperatorUid = (process.env.OGAMEX_LEGACY_USER_ID ?? "").trim();
+  const isLegacyUid = (uid: string | undefined): boolean =>
+    !uid || (legacyOperatorUid !== "" && uid === legacyOperatorUid);
+  // Per-user state mirror — userStates is populated by state.snapshot
+  // handler; the manager's stateRef factory reads from it.
+  const saveCoordManager = new SaveCoordinatorManager({
+    buildOptionsFor: (uid) => ({
+      stateRef: {
+        get current() { return userStates.get(uid) ?? null; },
+        set current(_v) { /* writes flow through state.snapshot handler */ },
+      },
+      send: (msg) => {
+        // NOTE: downstream queue is still single-tenant; until 9c.5 wires
+        // per-user poll endpoints, this user's save.recall_now would reach
+        // every poller. Acceptable because: (a) legacy operator stays on
+        // legacy instance and won't see foreign messages, (b) new users
+        // who haven't booted userscript yet have no poll connection.
+        ws.send(msg);
+        http.queueDownstream(msg);
+      },
+      persistence: {
+        upsert: (rec) => {
+          // SQLite primary write skipped for non-legacy users — SQLite
+          // save_records table is keyed by planet_id only and would
+          // collide between users on same planet id. PG mirror IS
+          // user-partitioned by composite PK (user_id, planet_id), so
+          // direct PG write here, no shadowFire ALS dance needed.
+          if (pgStore) {
+            void pgStore.upsertSaveRecord(uid, rec).catch((e) => {
+              console.warn(`[multi/save] upsertSaveRecord user=${uid.slice(0,8)} failed:`, e);
+            });
+          }
+        },
+        delete: (planet_id) => {
+          if (pgStore) {
+            void pgStore.deleteSaveRecord(uid, planet_id).catch((e) => {
+              console.warn(`[multi/save] deleteSaveRecord user=${uid.slice(0,8)} failed:`, e);
+            });
+          }
+        },
+      },
+    }),
+  });
+  const failureAggManager = new FailureAggregatorManager({
+    buildDepsFor: (uid) => ({
+      strategyManager,
+      gemini: geminiClient,
+      getState: () => userStates.get(uid) ?? emptyWorldState(),
+      send: (msg: DownstreamMsg) => {
+        ws.send(msg);
+        http.queueDownstream(msg);
+      },
+      ...(config.analyzer !== undefined ? { analyzer: config.analyzer } : {}),
+      persistence: {
+        upsertCooldown: (task, last_analysis_at) => {
+          if (pgStore) {
+            void pgStore.upsertFailureCooldown(uid, task, last_analysis_at).catch((e) => {
+              console.warn(`[multi/fail] upsertCooldown user=${uid.slice(0,8)} failed:`, e);
+            });
+          }
+        },
+        // Per-user cooldown hydrate would need an async listFailureCooldowns(uid)
+        // PG call before first record() — punted to 9c.5 when paid user2 lands;
+        // empty start is safe (first failure triggers analyzer immediately,
+        // which is the conservative default after a restart anyway).
+        listCooldowns: () => [],
+      },
+    }),
+  });
+
   // --- DigestScheduler (M8.2) ----------------------------------------------
   // Publishes a markdown summary of Strategy/Goals/Snapshot to Discord once
   // per local day at 06:00 UTC by default. Skips silently if no reporter is
@@ -1812,8 +1909,12 @@ export async function startSidecar(
     // SaveCoordinator: diff hostile events between snapshots so per-planet
     // FSM can advance IN_FLIGHT → RECALL_READY when all that planet's
     // pending hostiles drop from events_incoming.
-    try { saveCoordinator.onSnapshot(msg.snapshot); }
-    catch (e) { console.error("[save-coord] onSnapshot threw", e); }
+    // Phase 9c.3: route by ALS uid — legacy operator (or no uid) uses
+    // global instance, foreign users use manager-minted per-user instance.
+    try {
+      const coord = isLegacyUid(ctxUid) ? saveCoordinator : saveCoordManager.get(ctxUid!);
+      coord.onSnapshot(msg.snapshot);
+    } catch (e) { console.error("[save-coord] onSnapshot threw", e); }
 
     // Event-driven expedition trigger: when fleet count drops between two
     // snapshots (fleet returned), bump trigger ts so discord-bridge daemon
@@ -1980,7 +2081,10 @@ export async function startSidecar(
     // record() is async; fire-and-forget. We attach a catch so a stuck
     // analyzer never produces an unhandled rejection (which would crash
     // Node in --unhandled-rejections=strict mode).
-    void failureAggregator.record({
+    // Phase 9c.3: route by ALS uid — same legacy/manager split as snapshot.
+    const failUid = getCurrentUserId();
+    const agg = isLegacyUid(failUid) ? failureAggregator : failureAggManager.get(failUid!);
+    void agg.record({
       task: msg.task,
       attempts: msg.attempts,
       last_error: msg.last_error,
