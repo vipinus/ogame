@@ -108,6 +108,90 @@ describe("WorldStateStore", () => {
     expect((rows[4]?.payload as { i: number }).i).toBe(15);
   });
 
+  it("save_records upsert + list + delete roundtrips", () => {
+    store.upsertSaveRecord({
+      planet_id: "33642996",
+      fleet_id: 2353595,
+      state: "IN_FLIGHT",
+      pending_event_ids: ["evt-aaa", "evt-bbb"],
+      cleared_at: null,
+      launched_at: 1_700_000_000_000,
+      last_error: null,
+    });
+    store.upsertSaveRecord({
+      planet_id: "33653036",
+      fleet_id: 2353600,
+      state: "RECALLING",
+      pending_event_ids: [],
+      cleared_at: 1_700_000_010_000,
+      launched_at: 1_700_000_000_000,
+      last_error: null,
+    });
+
+    const rows = store.listSaveRecords();
+    expect(rows).toHaveLength(2);
+    const r1 = rows.find((r) => r.planet_id === "33642996");
+    expect(r1?.state).toBe("IN_FLIGHT");
+    expect(r1?.pending_event_ids).toEqual(["evt-aaa", "evt-bbb"]);
+    expect(r1?.cleared_at).toBeNull();
+
+    // Upsert same planet — should overwrite, not duplicate.
+    store.upsertSaveRecord({
+      planet_id: "33642996",
+      fleet_id: 2353595,
+      state: "RECALLING",
+      pending_event_ids: [],
+      cleared_at: 1_700_000_020_000,
+      launched_at: 1_700_000_000_000,
+      last_error: "transient 140019",
+    });
+    const updated = store.listSaveRecords();
+    expect(updated).toHaveLength(2);
+    const r1b = updated.find((r) => r.planet_id === "33642996");
+    expect(r1b?.state).toBe("RECALLING");
+    expect(r1b?.last_error).toBe("transient 140019");
+    expect(r1b?.pending_event_ids).toEqual([]);
+
+    store.deleteSaveRecord("33642996");
+    const after = store.listSaveRecords();
+    expect(after).toHaveLength(1);
+    expect(after[0]?.planet_id).toBe("33653036");
+  });
+
+  it("save_records survives close + reopen on disk", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ogamex-wss-save-"));
+    const dbPath = path.join(tmpDir, "world.db");
+    try {
+      const writer = new WorldStateStore({ dbPath });
+      writer.upsertSaveRecord({
+        planet_id: "P1",
+        fleet_id: 12345,
+        state: "IN_FLIGHT",
+        pending_event_ids: ["e1", "e2"],
+        cleared_at: null,
+        launched_at: 1_700_111_000_000,
+        last_error: null,
+      });
+      writer.close();
+
+      const reader = new WorldStateStore({ dbPath });
+      const rows = reader.listSaveRecords();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual({
+        planet_id: "P1",
+        fleet_id: 12345,
+        state: "IN_FLIGHT",
+        pending_event_ids: ["e1", "e2"],
+        cleared_at: null,
+        launched_at: 1_700_111_000_000,
+        last_error: null,
+      });
+      reader.close();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("survives store close + reopen on disk (cross-process simulation)", () => {
     // The canonical sidecar-restart contract: write → close → fresh
     // instance on the SAME file → hydrate returns the data verbatim.

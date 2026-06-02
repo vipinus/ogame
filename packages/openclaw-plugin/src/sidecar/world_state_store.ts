@@ -49,6 +49,15 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
   CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
+  CREATE TABLE IF NOT EXISTS save_records (
+    planet_id          TEXT PRIMARY KEY,
+    fleet_id           INTEGER NOT NULL,
+    state              TEXT NOT NULL,
+    pending_event_ids  TEXT NOT NULL,
+    cleared_at         INTEGER,
+    launched_at        INTEGER NOT NULL,
+    last_error         TEXT
+  );
 `;
 
 export interface EventRow {
@@ -56,6 +65,21 @@ export interface EventRow {
   type: string;
   payload: unknown;
   created_at: number;
+}
+
+/**
+ * Persistence shape for SaveCoordinator records. Mirrors SaveRecord in
+ * save_coordinator.ts but represents `pendingEventIds` as an array — Sets
+ * don't serialize, and the table column is a JSON array column anyway.
+ */
+export interface PersistedSaveRecord {
+  planet_id: string;
+  fleet_id: number;
+  state: string; // "IN_FLIGHT" | "RECALLING" | "RETURNED" | "FALLBACK"
+  pending_event_ids: string[];
+  cleared_at: number | null;
+  launched_at: number;
+  last_error: string | null;
 }
 
 export class WorldStateStore {
@@ -73,6 +97,9 @@ export class WorldStateStore {
   private readonly stmtListEvents: Database.Statement<[number]>;
   private readonly stmtListEventsByType: Database.Statement<[string, number]>;
   private readonly stmtTrimEvents: Database.Statement<[number]>;
+  private readonly stmtUpsertSaveRecord: Database.Statement<[string, number, string, string, number | null, number, string | null]>;
+  private readonly stmtDeleteSaveRecord: Database.Statement<[string]>;
+  private readonly stmtListSaveRecords: Database.Statement<[]>;
 
   constructor(opts: WorldStateStoreOptions) {
     this.db = new Database(opts.dbPath);
@@ -95,6 +122,21 @@ export class WorldStateStore {
     );
     this.stmtTrimEvents = this.db.prepare<[number]>(
       "DELETE FROM events WHERE id <= (SELECT MAX(id) - ? FROM events)",
+    );
+    this.stmtUpsertSaveRecord = this.db.prepare<[string, number, string, string, number | null, number, string | null]>(
+      "INSERT INTO save_records (planet_id, fleet_id, state, pending_event_ids, cleared_at, launched_at, last_error) "
+      + "VALUES (?, ?, ?, ?, ?, ?, ?) "
+      + "ON CONFLICT(planet_id) DO UPDATE SET "
+      + "  fleet_id = excluded.fleet_id, "
+      + "  state = excluded.state, "
+      + "  pending_event_ids = excluded.pending_event_ids, "
+      + "  cleared_at = excluded.cleared_at, "
+      + "  launched_at = excluded.launched_at, "
+      + "  last_error = excluded.last_error",
+    );
+    this.stmtDeleteSaveRecord = this.db.prepare<[string]>("DELETE FROM save_records WHERE planet_id = ?");
+    this.stmtListSaveRecords = this.db.prepare<[]>(
+      "SELECT planet_id, fleet_id, state, pending_event_ids, cleared_at, launched_at, last_error FROM save_records",
     );
   }
 
@@ -174,6 +216,51 @@ export class WorldStateStore {
    */
   trimEvents(keepLast: number): void {
     this.stmtTrimEvents.run(keepLast);
+  }
+
+  /**
+   * Persist (insert or update) a save-coordinator record keyed by planet_id.
+   * Operator 2026-06-01 "要持久化所有数据" — without this, a sidecar restart
+   * during an active hostile window forgets the launched-fleet → recall map
+   * and the FSM cannot fire save.recall_now when hostiles clear.
+   */
+  upsertSaveRecord(rec: PersistedSaveRecord): void {
+    this.stmtUpsertSaveRecord.run(
+      rec.planet_id,
+      rec.fleet_id,
+      rec.state,
+      JSON.stringify(rec.pending_event_ids),
+      rec.cleared_at,
+      rec.launched_at,
+      rec.last_error,
+    );
+  }
+
+  /** Drop the record for a planet (called when state → RETURNED / FALLBACK). */
+  deleteSaveRecord(planet_id: string): void {
+    this.stmtDeleteSaveRecord.run(planet_id);
+  }
+
+  /** Load all persisted records. Called at boot to rehydrate SaveCoordinator. */
+  listSaveRecords(): PersistedSaveRecord[] {
+    const rows = this.stmtListSaveRecords.all() as Array<{
+      planet_id: string;
+      fleet_id: number;
+      state: string;
+      pending_event_ids: string;
+      cleared_at: number | null;
+      launched_at: number;
+      last_error: string | null;
+    }>;
+    return rows.map((r) => ({
+      planet_id: r.planet_id,
+      fleet_id: r.fleet_id,
+      state: r.state,
+      pending_event_ids: JSON.parse(r.pending_event_ids) as string[],
+      cleared_at: r.cleared_at,
+      launched_at: r.launched_at,
+      last_error: r.last_error,
+    }));
   }
 
   close(): void {

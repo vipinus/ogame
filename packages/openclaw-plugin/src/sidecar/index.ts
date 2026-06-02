@@ -1584,7 +1584,27 @@ export async function startSidecar(
       ws.send(msg);
       http.queueDownstream(msg);
     },
+    // v0.0.637 — mirror FSM mutations to disk so a sidecar restart during an
+    // active hostile window resumes the IN_FLIGHT → RECALLING transition
+    // instead of forgetting the pending event set.
+    persistence: {
+      upsert: (rec) => worldStateStore.upsertSaveRecord(rec),
+      delete: (planet_id) => worldStateStore.deleteSaveRecord(planet_id),
+    },
   });
+  // Rehydrate persisted FSM rows before any state.snapshot or HTTP call
+  // touches the coordinator. Without this, the disk rows would still be
+  // there but the in-memory map would say "no active save" and a new
+  // launch on the same planet would silently overwrite the prior record.
+  try {
+    const persisted = worldStateStore.listSaveRecords();
+    if (persisted.length > 0) {
+      saveCoordinator.rehydrate(persisted);
+      console.info(`[ogamex/sidecar] rehydrated ${persisted.length} save_record(s) — planets=${persisted.map((r) => r.planet_id).join(",")}`);
+    }
+  } catch (e) {
+    console.warn("[ogamex/sidecar] save_records hydrate failed (continuing empty):", e);
+  }
   saveCoordinator.start();
 
   // --- FailureAggregator ---------------------------------------------------

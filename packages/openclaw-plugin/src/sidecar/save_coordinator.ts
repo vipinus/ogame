@@ -48,6 +48,24 @@ export interface SaveLaunchedInput {
   hostile_event_ids: readonly string[];
 }
 
+/**
+ * Optional persistence sink. When supplied, every mutation to the in-memory
+ * map is mirrored to the sink so a sidecar restart can re-hydrate the FSM
+ * state. v0.0.637 owner directive: 重启不能丢 FS 编排状态。
+ */
+export interface SaveCoordinatorPersistence {
+  upsert(rec: {
+    planet_id: string;
+    fleet_id: number;
+    state: string;
+    pending_event_ids: string[];
+    cleared_at: number | null;
+    launched_at: number;
+    last_error: string | null;
+  }): void;
+  delete(planet_id: string): void;
+}
+
 export interface SaveCoordinatorOptions {
   /** State reference — coordinator reads events_incoming on every tick. */
   stateRef: { current: WorldState | null };
@@ -57,12 +75,16 @@ export interface SaveCoordinatorOptions {
   now?: () => number;
   /** @deprecated 2026-05-26 — kept for backward-compat test calls, ignored. */
   safetyMarginSeconds?: number;
+  /** Optional persistence. When absent (e.g. unit tests), coordinator is
+   *  pure in-memory. */
+  persistence?: SaveCoordinatorPersistence;
 }
 
 export class SaveCoordinator {
   private readonly recordsByPlanet = new Map<string, SaveRecord>();
   private readonly recordsByFleet = new Map<number, SaveRecord>();
   private readonly opts: { stateRef: SaveCoordinatorOptions["stateRef"]; send: SaveCoordinatorOptions["send"]; now: () => number };
+  private readonly persistence: SaveCoordinatorPersistence | null;
 
   constructor(opts: SaveCoordinatorOptions) {
     this.opts = {
@@ -70,6 +92,58 @@ export class SaveCoordinator {
       send: opts.send,
       now: opts.now ?? Date.now,
     };
+    this.persistence = opts.persistence ?? null;
+  }
+
+  /** Caller (sidecar boot) injects rehydrated rows back into the maps. */
+  rehydrate(rows: Array<{
+    planet_id: string;
+    fleet_id: number;
+    state: string;
+    pending_event_ids: string[];
+    cleared_at: number | null;
+    launched_at: number;
+    last_error: string | null;
+  }>): void {
+    for (const r of rows) {
+      // Only IN_FLIGHT / RECALLING are interesting — RETURNED/FALLBACK rows
+      // shouldn't exist on disk (delete-on-terminal), but guard anyway.
+      if (r.state !== "IN_FLIGHT" && r.state !== "RECALLING") continue;
+      const rec: SaveRecord = {
+        planet_id: r.planet_id,
+        fleet_id: r.fleet_id,
+        state: r.state as SaveState,
+        pendingEventIds: new Set(r.pending_event_ids),
+        clearedAt: r.cleared_at,
+        launchedAt: r.launched_at,
+        lastError: r.last_error,
+      };
+      this.recordsByPlanet.set(r.planet_id, rec);
+      this.recordsByFleet.set(r.fleet_id, rec);
+    }
+  }
+
+  private syncToDisk(rec: SaveRecord): void {
+    if (!this.persistence) return;
+    try {
+      this.persistence.upsert({
+        planet_id: rec.planet_id,
+        fleet_id: rec.fleet_id,
+        state: rec.state,
+        pending_event_ids: [...rec.pendingEventIds],
+        cleared_at: rec.clearedAt,
+        launched_at: rec.launchedAt,
+        last_error: rec.lastError,
+      });
+    } catch (e) {
+      console.error("[save-coord] persistence.upsert threw (continuing in-memory)", e);
+    }
+  }
+
+  private dropFromDisk(planet_id: string): void {
+    if (!this.persistence) return;
+    try { this.persistence.delete(planet_id); }
+    catch (e) { console.error("[save-coord] persistence.delete threw (continuing in-memory)", e); }
   }
 
   /** Called by HTTP handler when userscript reports a successful launch. */
@@ -85,6 +159,7 @@ export class SaveCoordinator {
     };
     this.recordsByPlanet.set(input.planet_id, rec);
     this.recordsByFleet.set(input.fleet_id, rec);
+    this.syncToDisk(rec);
     console.log(`[save-coord] LAUNCH planet=${input.planet_id} fleet=${input.fleet_id} pending=[${[...rec.pendingEventIds].join(",")}]`);
     return rec;
   }
@@ -101,6 +176,7 @@ export class SaveCoordinator {
     // Clean up so the planet can launch a new save later.
     this.recordsByPlanet.delete(rec.planet_id);
     this.recordsByFleet.delete(fleetId);
+    this.dropFromDisk(rec.planet_id);
   }
 
   /** Called every state.snapshot — diff pendingEventIds vs new incoming. */
@@ -117,6 +193,11 @@ export class SaveCoordinator {
           cleared = true;
         }
       }
+      // Partial-clear: hostiles dropped but more still pending. Persist the
+      // shrunk set so a restart picks up the right remaining pending events.
+      if (cleared && rec.pendingEventIds.size > 0) {
+        this.syncToDisk(rec);
+      }
       if (cleared && rec.pendingEventIds.size === 0) {
         // Operator 2026-05-29 evidence: sidecar received LAUNCH with
         // fleet=0 placeholder and never got the second LAUNCH with the
@@ -132,6 +213,7 @@ export class SaveCoordinator {
           console.warn(`[save-coord] DROP unsalvageable record planet=${rec.planet_id} fleet=${rec.fleet_id} — never patched real fleet id (frontend silent-skip likely)`);
           this.recordsByPlanet.delete(rec.planet_id);
           this.recordsByFleet.delete(rec.fleet_id);
+          this.dropFromDisk(rec.planet_id);
           continue;
         }
         // Operator 2026-05-26: "威胁解除立即召回". Skip RECALL_READY +
@@ -139,6 +221,7 @@ export class SaveCoordinator {
         // userscript fires recall POST without waiting.
         rec.clearedAt = this.opts.now();
         rec.state = "RECALLING";
+        this.syncToDisk(rec);
         console.log(`[save-coord] IN_FLIGHT → RECALLING (instant) planet=${rec.planet_id} fleet=${rec.fleet_id}`);
         this.opts.send({
           type: "save.recall_now",
