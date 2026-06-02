@@ -60,7 +60,7 @@ export interface HttpServerOptions {
   debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
   stateProvider?: () => unknown;
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
-  listGoals?: () => Array<unknown>;
+  listGoals?: (userId?: string) => Array<unknown>;
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
   /** v0.0.636 — backed by worldStateStore. GET /v1/events?limit=N&type=foo.
@@ -126,7 +126,7 @@ interface ResolvedHttpServerOptions {
   debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
   stateProvider?: () => unknown;
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
-  listGoals?: () => Array<unknown>;
+  listGoals?: (userId?: string) => Array<unknown>;
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
   listEvents?: (limit: number, type?: string) => Array<unknown>;
@@ -386,15 +386,29 @@ export class HttpServer {
       // 95%+ 是 completed/cancelled 历史, 响应 3.66 MB, panel 3s 拉一次
       // 每分钟 73 MB 下载 → JS heap OOM。 默认只返回 non-terminal,
       // ?all=true 显式要全量 (panel 历史视图 / 调试用).
-      this.writeCorsHeaders(res);
-      const allGoals = this.opts.listGoals ? this.opts.listGoals() as Array<{ status?: string }> : [];
-      const includeAll = (url ?? "").includes("all=true");
-      const goals = includeAll
-        ? allGoals
-        : allGoals.filter((g) => g?.status !== "completed" && g?.status !== "cancelled");
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ goals }));
+      // Phase 9c.7 — Bearer-aware filter: per-user Bearer → only that
+      // user's goals via listGoals(uid); legacy → all goals; unknown → 401.
+      void (async () => {
+        const r = await this.resolveBearer(req);
+        if (r.kind === "forbidden") {
+          this.writeCorsHeaders(res);
+          res.statusCode = 401;
+          res.end();
+          return;
+        }
+        this.writeCorsHeaders(res);
+        const uid = r.kind === "user" ? r.uid : undefined;
+        const allGoals = this.opts.listGoals
+          ? this.opts.listGoals(uid) as Array<{ status?: string }>
+          : [];
+        const includeAll = (url ?? "").includes("all=true");
+        const goals = includeAll
+          ? allGoals
+          : allGoals.filter((g) => g?.status !== "completed" && g?.status !== "cancelled");
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ goals }));
+      })();
       return;
     }
     if (method === "GET" && url === "/ogamex/v1/expedition") {
@@ -477,13 +491,31 @@ export class HttpServer {
       this.handleUserscriptDownload(res);
       return;
     }
-    // Goal mutation endpoints (no auth). POST /v1/goals/{id}/{action}
+    // Goal mutation endpoints. Phase 9c.7 — Bearer-aware:
+    //   no Bearer / global token → legacy single-tenant mutation
+    //   per-user Bearer        → runWithUser-wrapped + ownership check
+    //   unknown Bearer         → 401
     if (method === "POST") {
       const m = url?.match(/^\/ogamex\/v1\/goals\/([^/]+)\/(cancel|pause|resume|set-main|unset-main)$/);
       if (m) {
         const [, idEnc, action] = m;
         const id = decodeURIComponent(idEnc!);
-        this.handleGoalAction(res, id, action! as "cancel" | "pause" | "resume" | "set-main" | "unset-main");
+        void (async () => {
+          const r = await this.resolveBearer(req);
+          if (r.kind === "forbidden") {
+            this.writeCorsHeaders(res);
+            res.statusCode = 401;
+            res.end();
+            return;
+          }
+          if (r.kind === "user") {
+            runWithUser(r.uid, () => {
+              this.handleGoalAction(res, id, action! as "cancel" | "pause" | "resume" | "set-main" | "unset-main");
+            });
+          } else {
+            this.handleGoalAction(res, id, action! as "cancel" | "pause" | "resume" | "set-main" | "unset-main");
+          }
+        })();
         return;
       }
       // Event-driven expedition trigger — public (no-auth). The trigger ts
@@ -580,8 +612,23 @@ export class HttpServer {
         return;
       }
       // M4 — generic goal creation. Body: { type, target, planet?, priority? }.
+      // Phase 9c.7 — Bearer-aware: per-user Bearer wraps handleGoalCreate in
+      // runWithUser so goalsStore.addForUser tags row with that uid.
       if (url === "/ogamex/v1/goals/create") {
-        void this.handleGoalCreate(req, res);
+        void (async () => {
+          const r = await this.resolveBearer(req);
+          if (r.kind === "forbidden") {
+            this.writeCorsHeaders(res);
+            res.statusCode = 401;
+            res.end();
+            return;
+          }
+          if (r.kind === "user") {
+            runWithUser(r.uid, () => { void this.handleGoalCreate(req, res); });
+          } else {
+            void this.handleGoalCreate(req, res);
+          }
+        })();
         return;
       }
       // M4 — NL parse. Body: { description }. Returns parsed goal shape
@@ -1113,6 +1160,33 @@ export class HttpServer {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ ok: true }));
+  }
+
+  /** Phase 9c.7 — Bearer resolution for any endpoint that needs to
+   *  identify the caller (read or mutate). Returns one of:
+   *    { kind: "legacy" } — no Bearer OR global token; caller runs in
+   *      legacy single-tenant mode (operator semantics preserved).
+   *    { kind: "user", uid } — Bearer resolved to a PG user; caller
+   *      should wrap downstream work in runWithUser(uid, ...).
+   *    { kind: "forbidden" } — Bearer present, didn't match global,
+   *      didn't resolve; caller responds 401. */
+  private async resolveBearer(req: http.IncomingMessage): Promise<
+    { kind: "legacy" } | { kind: "user"; uid: string } | { kind: "forbidden" }
+  > {
+    const globalAuthOk = this.checkAuth(req);
+    const auth = req.headers["authorization"];
+    const bearer = typeof auth === "string" && auth.startsWith("Bearer ")
+      ? auth.slice("Bearer ".length).trim()
+      : "";
+    if (globalAuthOk) return { kind: "legacy" };
+    if (!bearer) return { kind: "legacy" };
+    if (this.opts.resolveUserToken) {
+      try {
+        const uid = await this.opts.resolveUserToken(bearer);
+        if (uid) return { kind: "user", uid };
+      } catch (e) { console.warn("[http] resolveBearer threw", e); }
+    }
+    return { kind: "forbidden" };
   }
 
   /** Phase 9c.6 — resolve Bearer for GET /v1/save/active. Global token →

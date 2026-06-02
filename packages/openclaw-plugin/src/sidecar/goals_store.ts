@@ -212,6 +212,35 @@ export class GoalsStore {
   }
 
   /**
+   * Phase 9c.7 — full goal list filtered by user_id. When userId is
+   * undefined, returns ALL rows (legacy / operator panel behavior).
+   * Mirrors listActiveByUser() but includes terminal goals so the panel
+   * can show history.
+   */
+  listByUser(userId: string | undefined): GoalRow[] {
+    if (!userId) return this.list();
+    const rows = this.db.prepare(
+      "SELECT * FROM goals WHERE user_id = ? ORDER BY created_at DESC",
+    ).all(userId) as RawRow[];
+    return rows.map(rowFromRaw);
+  }
+
+  /**
+   * Phase 9c.7 — read the user_id column for a given goal id (or undefined
+   * if the row was created before user_id was tracked / legacy operator).
+   * Used by mutation handlers to verify Bearer-resolved uid owns the goal
+   * before pause/resume/delete.
+   */
+  ownerOf(goalId: string): string | undefined {
+    const row = this.db.prepare(
+      "SELECT user_id FROM goals WHERE id = ?",
+    ).get(goalId) as { user_id?: string | null } | undefined;
+    if (!row) return undefined;
+    const u = row.user_id;
+    return typeof u === "string" && u.length > 0 ? u : undefined;
+  }
+
+  /**
    * Return rows whose Goal.parent_goal_id == parentId. Implemented as a
    * full scan + filter on goal_json — Goal is stored as JSON blob and
    * parent_goal_id is a recent addition that isn't a SQL column. For

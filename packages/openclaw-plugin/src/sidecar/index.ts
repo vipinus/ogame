@@ -614,7 +614,11 @@ export async function startSidecar(
       : {}),
     // Operator API providers — surface state/goals/expedition over HTTP.
     stateProvider: () => stateRef.current ?? { ok: false, reason: "no snapshot yet" },
-    listGoals: () => {
+    listGoals: (explicitUid?: string) => {
+      // Phase 9c.7 — when explicitUid is supplied (foreign Bearer
+      // resolved at the http layer), filter rows by user_id. Operator's
+      // legacy panel passes nothing → goalsStore.list() returns ALL rows
+      // including the historic NULL-user_id rows that pre-date 9c.4.
       const planets = stateRef.current?.planets ?? {};
       const idToCoords = (ref: string | undefined): string | undefined => {
         if (!ref) return undefined;
@@ -991,7 +995,7 @@ export async function startSidecar(
         if (!node.met) out.add(node.tech);
         for (const c of node.children) collectPrereqNames(c, out);
       };
-      return goalsStore.list().map((r) => {
+      return goalsStore.listByUser(explicitUid).map((r) => {
         const target = r.goal.target as { tech?: string; building?: string; level?: number; target_level?: number };
         const lvl = target.target_level ?? target.level ?? 1;
         let prereq_tree: PrereqTreeNode | null = null;
@@ -1261,6 +1265,15 @@ export async function startSidecar(
       }
     },
     cancelGoal: (id) => {
+      // Phase 9c.7 — ownership guard. ALS-resolved foreign user can only
+      // mutate goals they own; mismatch returns "goal not found" to avoid
+      // confirming the goal exists in another tenant. Legacy (no ALS,
+      // operator) path skips this — operator is admin and can manage all.
+      const callerUid = getCurrentUserId();
+      if (callerUid) {
+        const owner = goalsStore.ownerOf(id);
+        if (owner !== callerUid) return { ok: false, reason: "goal not found" };
+      }
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       // v0.0.481: cascade cancel — cancel all live descendants whose
       // parent_goal_id traces back to this id (BFS through parent_goal_id
@@ -1290,6 +1303,8 @@ export async function startSidecar(
       return { ok: true, cascaded: cascadeIds.length };
     },
     pauseGoal: (id) => {
+      const callerUid = getCurrentUserId();
+      if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.updateStatus(id, "blocked", "paused by operator");
       priorityMergerRef?.clearDispatched(id);
@@ -1297,6 +1312,8 @@ export async function startSidecar(
       return { ok: true };
     },
     resumeGoal: (id) => {
+      const callerUid = getCurrentUserId();
+      if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.updateStatus(id, "pending", "resumed by operator");
       // v0.0.459: operator-triggered retry — clear awaiting so this goal
@@ -1307,12 +1324,20 @@ export async function startSidecar(
       return { ok: true };
     },
     setMainGoal: (id) => {
+      const callerUid = getCurrentUserId();
+      if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
+      // NOTE: setMainGoal currently clears is_main_goal across ALL rows
+      // (cross-tenant bleed). Foreign user setting main on their own goal
+      // will also clear operator's. Tracked as a follow-up — needs a
+      // user-scoped clear in goalsStore. Operator unaffected today.
       goalsStore.setMainGoal(id);
       triggerDispatch();
       return { ok: true };
     },
     unsetMainGoal: (id) => {
+      const callerUid = getCurrentUserId();
+      if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.setMainGoal(null);
       triggerDispatch();
@@ -1344,7 +1369,11 @@ export async function startSidecar(
       ]);
       if (!SUPPORTED.has(body.type)) return { ok: false, reason: `unsupported goal type: ${body.type}` };
       const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      goalsStore.add({
+      // Phase 9c.7 — tag with ALS uid (or legacyOperatorUid env fallback)
+      // so panel reads filter correctly. Legacy operator's uid lives in
+      // OGAMEX_LEGACY_USER_ID env; isLegacyUid maps undefined → legacy.
+      const createUid = getCurrentUserId() ?? (legacyOperatorUid || undefined);
+      goalsStore.addForUser({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         id, type: body.type as any,
         target: body.target,
@@ -1353,8 +1382,8 @@ export async function startSidecar(
         is_main_goal: false,
         status: "pending", created_at: Date.now(),
         progress_pct: 0, current_step: "queued", eta_at: null,
-      });
-      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5}`);
+      }, createUid);
+      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid ? createUid.slice(0,8) : "legacy"}`);
       triggerDispatch();
       return { ok: true, goal_id: id };
     },
