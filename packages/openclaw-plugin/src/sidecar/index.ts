@@ -29,7 +29,7 @@ import { spawn } from "node:child_process";
 import { WsServer } from "./ws_server.js";
 import { HttpServer } from "./http_server.js";
 import { SaveCoordinator } from "./save_coordinator.js";
-import { SaveCoordinatorManager, FailureAggregatorManager } from "./multitenant_managers.js";
+import { SaveCoordinatorManager, FailureAggregatorManager, ReporterManager } from "./multitenant_managers.js";
 import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
 import { GoalsStore } from "./goals_store.js";
@@ -584,6 +584,7 @@ export async function startSidecar(
           last_seen_max_age_seconds: maxAge,
           save_coord_instances: saveCoordManager.size(),
           failure_agg_instances: failureAggManager.size(),
+          reporter_instances: reporterManager?.size() ?? 0,
           poll_buckets: http.pollBucketSizes(),
         };
       },
@@ -1689,6 +1690,16 @@ export async function startSidecar(
     const send = effectiveOpts.sendDiscord ?? defaultDiscordSend;
     reporter = new Reporter({ channelId: config.discordChannelId, send });
   }
+  // Phase 9c.8 — per-user Discord webhook routing. New users push their own
+  // webhook URL via /settings → PG user_settings.discord_webhook_url. The
+  // manager mints a Reporter per uid backed by that URL (direct POST, no
+  // OpenClaw SDK). Legacy operator's notifications stay on `reporter` above
+  // (OpenClaw channel); only foreign users hit this manager.
+  const reporterManager = pgStore !== null
+    ? new ReporterManager({
+        loadWebhookUrl: (uid: string) => pgStore!.getDiscordWebhookUrl(uid),
+      })
+    : null;
 
   // --- MemoryWriter --------------------------------------------------------
   const memoryWriter = startMemoryWriter({
@@ -2179,13 +2190,25 @@ export async function startSidecar(
     console.info(
       `[sidecar/emergency] subtype=${msg.subtype} event_id=${data.event_id ?? "?"} from=${fromStr} to=${toStr} arrives_at=${arr}`,
     );
-    if (reporter === null) return;
-    // Emergency push throws on failure (reporter contract). Swallow here so
-    // a temporarily flaky Discord doesn't crash the relay — operator sees
-    // the failure in plugin logs.
-    void reporter.pushEmergency(msg.markdown_report).catch((err: unknown) => {
-      console.error("[ogamex/sidecar] reporter.pushEmergency failed", err);
-    });
+    // Phase 9c.8 — route emergency by ALS uid:
+    //   legacy uid (no Bearer / operator's bridge_token) → global Reporter
+    //     (OpenClaw SDK → operator's Discord channel) — unchanged.
+    //   foreign uid → reporterManager.get(uid) → user's webhook URL.
+    //     If user has no webhook configured, manager returns null and the
+    //     emergency is silently skipped (they opted out of Discord).
+    const emergencyUid = getCurrentUserId();
+    if (isLegacyUid(emergencyUid)) {
+      if (reporter === null) return;
+      void reporter.pushEmergency(msg.markdown_report).catch((err: unknown) => {
+        console.error("[ogamex/sidecar] reporter.pushEmergency (legacy) failed", err);
+      });
+    } else if (reporterManager !== null && emergencyUid) {
+      void reporterManager.get(emergencyUid)
+        .then((r) => r?.pushEmergency(msg.markdown_report))
+        .catch((err: unknown) => {
+          console.error(`[ogamex/sidecar] reporter.pushEmergency user=${emergencyUid.slice(0,8)} failed`, err);
+        });
+    }
   });
 
   ws.on("hello", () => {

@@ -234,6 +234,28 @@ export class WorldStateStorePg {
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // user_settings.discord_webhook_url — Phase 9c.8 per-user notification routing
+  // ---------------------------------------------------------------------------
+
+  /** Read the user's configured Discord webhook URL, or null if absent.
+   *  ReporterManager uses this to decide whether to mint a webhook-based
+   *  Reporter for the user (else skip silently — user opted out of Discord). */
+  async getDiscordWebhookUrl(userId: string): Promise<string | null> {
+    const rows = await this.sql`
+      SELECT discord_webhook_url
+      FROM user_settings
+      WHERE user_id = ${userId}
+        AND discord_webhook_url IS NOT NULL
+        AND LENGTH(discord_webhook_url) > 0
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    const url = row.discord_webhook_url;
+    return typeof url === "string" && url.length > 0 ? url : null;
+  }
+
   async close(): Promise<void> {
     if (this.ownsPool) {
       await this.sql.end({ timeout: 5 });

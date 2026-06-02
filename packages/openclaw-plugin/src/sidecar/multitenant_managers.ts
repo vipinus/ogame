@@ -28,6 +28,8 @@ import {
   type FailureAggregatorDeps,
   type FailureAggregatorOptions,
 } from "./failure_aggregator.js";
+import { Reporter } from "./reporter.js";
+import { buildWebhookSend } from "./webhook_sender.js";
 
 export interface SaveCoordinatorManagerDeps {
   /** Per-user constructor opts. The caller supplies a factory because
@@ -106,4 +108,86 @@ export class FailureAggregatorManager {
   }
 
   size(): number { return this.map.size; }
+}
+
+// ============================================================================
+// Phase 9c.8 — Per-user Discord Reporter manager
+// ============================================================================
+
+export interface ReporterManagerDeps {
+  /** Async webhook URL fetch — typically pgStore.getDiscordWebhookUrl. */
+  loadWebhookUrl(userId: string): Promise<string | null>;
+  /** Default reporter throttle ms; defaults to 5000 (matches single-tenant). */
+  throttleMs?: number;
+}
+
+/**
+ * ReporterManager — lazy mint a per-user Reporter backed by their
+ * user_settings.discord_webhook_url. Returns null when:
+ *   - User has no webhook URL configured (they opted out of Discord)
+ *   - Webhook lookup failed
+ *
+ * The legacy operator reporter (constructed in index.ts with OpenClaw SDK
+ * send) remains the fallback for null cases — operator's own Discord
+ * channel never goes through this manager.
+ */
+export class ReporterManager {
+  private readonly cache = new Map<string, Reporter | null>();
+  private readonly loading = new Map<string, Promise<Reporter | null>>();
+  constructor(private readonly deps: ReporterManagerDeps) {}
+
+  /** Get a per-user Reporter or null. Async because PG lookup is async.
+   *  Subsequent calls for the same uid resolve from cache (no PG re-hit). */
+  async get(userId: string): Promise<Reporter | null> {
+    if (this.cache.has(userId)) return this.cache.get(userId) ?? null;
+    let pending = this.loading.get(userId);
+    if (!pending) {
+      pending = this.deps.loadWebhookUrl(userId)
+        .then((url) => {
+          if (!url) {
+            this.cache.set(userId, null);
+            return null;
+          }
+          try {
+            const send = buildWebhookSend(url);
+            const reporter = new Reporter({
+              // channelId unused by webhook send (URL specifies channel)
+              // but Reporter API needs a non-empty string. Use the uid as
+              // a stable placeholder for log lines.
+              channelId: `user:${userId.slice(0, 8)}`,
+              send,
+              throttleMs: this.deps.throttleMs ?? 5000,
+            });
+            this.cache.set(userId, reporter);
+            return reporter;
+          } catch (e) {
+            console.warn(`[ReporterMgr] build user=${userId.slice(0,8)} send failed:`, e);
+            this.cache.set(userId, null);
+            return null;
+          }
+        })
+        .catch((e) => {
+          console.warn(`[ReporterMgr] webhook lookup user=${userId.slice(0,8)} failed:`, e);
+          this.cache.set(userId, null);
+          return null;
+        })
+        .finally(() => { this.loading.delete(userId); });
+      this.loading.set(userId, pending);
+    }
+    return pending;
+  }
+
+  /** Invalidate cache for a uid — call when user updates webhook URL via
+   *  settings UI so the next push re-reads PG. (Today no settings-changed
+   *  event flows back to sidecar; exposed for future wiring.) */
+  invalidate(userId: string): void {
+    this.cache.delete(userId);
+  }
+
+  /** Count of LIVE (non-null) reporters minted — for health observability. */
+  size(): number {
+    let live = 0;
+    for (const v of this.cache.values()) if (v !== null) live += 1;
+    return live;
+  }
 }

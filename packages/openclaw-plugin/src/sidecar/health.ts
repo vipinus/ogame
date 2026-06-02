@@ -43,6 +43,7 @@ export interface HealthDeps {
      *  user pushes state.snapshot. */
     save_coord_instances?: number;
     failure_agg_instances?: number;
+    reporter_instances?: number;
     poll_buckets?: Record<string, number>;
   };
   /** Optional persistence-tier stats. When absent, the `persistence` field
