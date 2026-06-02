@@ -172,18 +172,37 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     // background discover/expedition dispatch. Token race → ogame UI gets
     // a stale-token rejection (resp=244B), then crashes:
     //   "Cannot read properties of null (reading 'baseFuelCapacity')"
-    // While operator is on the fleetdispatch page, defer ALL directives.
-    // Same deferredQueue + schedulePollIdle path as userBusy — the poll
-    // wakes once the operator navigates away (location.search changes).
+    // While operator is on the fleetdispatch page, defer directives whose
+    // source planet MATCHES the current cp — token race is per-cp, so
+    // cross-planet dispatches are safe to run concurrently with the operator's
+    // fleet UI. v0.0.640 — operator 2026-06-01 实证: chain-bound deploy chain
+    // (txc-mpw0r15u-lhxz) parked at unack=75% because operator kept fleet UI
+    // open on planet A while the chain's legs targeted planets B/C/D.
+    // Pre-v0.0.640 defer-all variant blocked the operator's own automation.
     if (typeof window !== "undefined" && window.location?.search?.includes("component=fleetdispatch")) {
-      const now = Date.now();
-      if (now - lastDeferLogAt > 60_000) {
-        console.info(`[GoalRunner] on fleetdispatch page — deferring ${directive.action} & all queued (waiting for operator to navigate away, log throttled 60s)`);
-        lastDeferLogAt = now;
+      // Parse current cp from URL (?cp=<planetId>&...). Falls back to "" if
+      // missing — in that case we can't prove it's a different cp, so the
+      // safe default is to defer (legacy behaviour).
+      const urlCp = (() => {
+        try {
+          const sp = new URLSearchParams(window.location.search);
+          return sp.get("cp") ?? "";
+        } catch { return ""; }
+      })();
+      const params = directive.params as { source_planet?: string; planet_id?: string } | undefined;
+      const dirCp = (params?.source_planet ?? params?.planet_id ?? "").toString();
+      const samePlanet = !urlCp || !dirCp || urlCp === dirCp;
+      if (samePlanet) {
+        const now = Date.now();
+        if (now - lastDeferLogAt > 60_000) {
+          console.info(`[GoalRunner] on fleetdispatch page (cp=${urlCp}) — deferring same-cp ${directive.action} & all queued (log throttled 60s)`);
+          lastDeferLogAt = now;
+        }
+        deferredQueue.push(directive);
+        schedulePollIdle();
+        return;
       }
-      deferredQueue.push(directive);
-      schedulePollIdle();
-      return;
+      console.info(`[GoalRunner] on fleetdispatch page (cp=${urlCp}) but ${directive.action} targets src=${dirCp} (different planet) — running through, no token race`);
     }
     // eslint-disable-next-line no-console
     console.log(`[GoalRunner] executing ${directive.action} via ${chosen.constructor.name}`);
