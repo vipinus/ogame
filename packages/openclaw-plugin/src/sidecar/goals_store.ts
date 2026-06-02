@@ -159,8 +159,22 @@ export class GoalsStore {
   add(goal: Goal): GoalRow {
     const ts = this.now();
     const json = JSON.stringify(goal);
-    // Throws SqliteError UNIQUE constraint on duplicate id — propagate.
-    this.stmtInsert.run(goal.id, json, "pending", null, ts, ts);
+    // Phase 9c.9 — auto-tag with operator uid if env-configured. Legacy
+    // callers (daemon, sidecar discovery handler, opt-builder) call
+    // `add()` without user_id, which previously wrote NULL → merger's
+    // listActiveByUser("4baba0e2…") skipped them → operator's panel
+    // showed "pending" forever. Lazy-read env (ESM hoisting trap, see
+    // [[feedback_esm_hoisting_env]]).
+    const operatorUid = (process.env.OGAMEX_LEGACY_USER_ID ?? "").trim();
+    if (operatorUid) {
+      this.db.prepare(
+        "INSERT INTO goals (id, goal_json, status, reason, created_at, updated_at, user_id) VALUES (?, ?, 'pending', NULL, ?, ?, ?)",
+      ).run(goal.id, json, ts, ts, operatorUid);
+    } else {
+      // No operator configured (test/CI) — fall back to legacy INSERT
+      // without user_id column (NULL).
+      this.stmtInsert.run(goal.id, json, "pending", null, ts, ts);
+    }
     // If this goal is being added with is_main_goal=true, enforce the
     // single-main invariant by clearing any sibling row's flag.
     if (goal.is_main_goal === true) {
