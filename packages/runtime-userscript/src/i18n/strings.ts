@@ -60,6 +60,37 @@ export const STRINGS: StringRegistry = {
     // Goal state labels (status chip)
     "goal.state.expedition_flying": "expedition flying",
     "goal.state.blocked": "blocked",
+    "goal.state.in_queue": "in queue",
+    "goal.state.building": "building",
+    "goal.state.building_with_step": "building {step}",
+    "goal.state.building_lifeform": "building (lifeform)",
+    "goal.state.building_lifeform_with_step": "building (lifeform) {step}",
+    "goal.state.researching": "researching",
+    "goal.state.researching_with_step": "researching {step}",
+
+    // Goal type prefix shown bold on row body
+    "goal.type.build": "build",
+    "goal.type.build_universal": "build",
+    "goal.type.build_ships": "build ships",
+    "goal.type.build_defense": "build defense",
+    "goal.type.research": "research",
+    "goal.type.lifeform_building": "build (lifeform)",
+    "goal.type.lifeform_research": "research (lifeform)",
+    "goal.type.expedition": "expedition",
+    "goal.type.colonize": "colonize",
+    "goal.type.deploy": "deploy",
+    "goal.type.transport": "transport",
+    "goal.type.species_discovery": "discover species",
+    "goal.type.jumpgate": "jumpgate",
+
+    // Prereq tree
+    "panel.prereq.all_met": "all prereqs met — can execute now",
+
+    // Misc action tooltips
+    "panel.action.retry": "↻ Retry",
+    "panel.action.retry_tooltip": "clear awaiting + immediate re-dispatch",
+    "panel.action.unset_main": "★ Unset",
+    "panel.action.unset_main_tooltip": "Clear main flag",
 
     // Modal — audit log
     "modal.audit.title": "📋 Audit Log (sidecar events table)",
@@ -238,6 +269,34 @@ export const STRINGS: StringRegistry = {
 
     "goal.state.expedition_flying": "遠征中",
     "goal.state.blocked": "受阻",
+    "goal.state.in_queue": "佇列中",
+    "goal.state.building": "建造中",
+    "goal.state.building_with_step": "建造 {step}",
+    "goal.state.building_lifeform": "建造（生命形式）",
+    "goal.state.building_lifeform_with_step": "建造（生命形式）{step}",
+    "goal.state.researching": "研究中",
+    "goal.state.researching_with_step": "研究 {step}",
+
+    "goal.type.build": "建造",
+    "goal.type.build_universal": "建造",
+    "goal.type.build_ships": "造艦",
+    "goal.type.build_defense": "建防禦",
+    "goal.type.research": "研究",
+    "goal.type.lifeform_building": "建造（生命形式）",
+    "goal.type.lifeform_research": "研究（生命形式）",
+    "goal.type.expedition": "遠征",
+    "goal.type.colonize": "殖民",
+    "goal.type.deploy": "部署",
+    "goal.type.transport": "運輸",
+    "goal.type.species_discovery": "種族探索",
+    "goal.type.jumpgate": "跳躍門",
+
+    "panel.prereq.all_met": "所有前置條件已達成 — 可立即執行",
+
+    "panel.action.retry": "↻ 重試",
+    "panel.action.retry_tooltip": "清除等待狀態並立即重新派發",
+    "panel.action.unset_main": "★ 取消主要",
+    "panel.action.unset_main_tooltip": "清除主要任務標記",
 
     "modal.audit.title": "📋 稽核日誌（sidecar events 表）",
 

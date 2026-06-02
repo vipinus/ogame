@@ -3294,7 +3294,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     }
     // L3 — planner's eta_at for this goal's tech is in the future
     if (typeof g.eta_at === "number" && g.eta_at > now) {
-      const slot = cs ? stepLabel : "in queue";
+      const slot = cs ? stepLabel : t("goal.state.in_queue");
       if (cs?.kind === "research") return { label: `researching ${slot}`, color: "#7cc0ff" };
       if (goalType === "build_ships" || goalType === "build_defense") return { label: `building ships`, color: "#7cfc00" };
       if (goalType === "lifeform_building") return { label: `building (lifeform) ${slot}`, color: "#7cfc00" };
@@ -3302,10 +3302,10 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     }
     // L4 — active status without eta_at (fleet ops or initial dispatch)
     if (g.status === "active") {
-      if (goalType === "research") return { label: cs ? `researching ${stepLabel}` : "researching", color: "#7cc0ff" };
-      if (goalType === "build" || goalType === "build_universal") return { label: cs ? `building ${stepLabel}` : "building", color: "#7cfc00" };
+      if (goalType === "research") return { label: cs ? t("goal.state.researching_with_step", { step: stepLabel }) : t("goal.state.researching"), color: "#7cc0ff" };
+      if (goalType === "build" || goalType === "build_universal") return { label: cs ? t("goal.state.building_with_step", { step: stepLabel }) : t("goal.state.building"), color: "#7cfc00" };
       if (goalType === "build_ships" || goalType === "build_defense") return { label: "constructing ships", color: "#7cfc00" };
-      if (goalType === "lifeform_building") return { label: cs ? `building (lifeform) ${stepLabel}` : "building (lifeform)", color: "#7cfc00" };
+      if (goalType === "lifeform_building") return { label: cs ? t("goal.state.building_lifeform_with_step", { step: stepLabel }) : t("goal.state.building_lifeform"), color: "#7cfc00" };
       if (goalType === "expedition") return { label: t("goal.state.expedition_flying"), color: "#80c0ff" };
       if (goalType === "colonize") return { label: "colonizing", color: "#80c0ff" };
       if (goalType === "deploy") return { label: "deploying", color: "#80c0ff" };
@@ -3595,7 +3595,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         ? `<span style="color:#80c0ff; font-size:10px; margin-left:6px; background:#1a3a5a; padding:1px 5px; border-radius:8px;" title="goal blocked until one of these events fires">⏸ awaiting ${awaitingArr.join("/")}</span>`
         : "";
       const retryBtn = isAwaiting
-        ? `<button data-action-resume="${escapeHtml(g.id)}" style="${btnStyle("#205a40", "#408a60")}" title="clear awaiting + immediate re-dispatch">↻ Retry</button>`
+        ? `<button data-action-resume="${escapeHtml(g.id)}" style="${btnStyle("#205a40", "#408a60")}" title="${escapeHtml(t("panel.action.retry_tooltip"))}">${escapeHtml(t("panel.action.retry"))}</button>`
         : "";
       // Active / pending → Pause + Cancel. Paused → Resume + Cancel.
       const pauseOrResume = !canAct ? ""
@@ -3608,7 +3608,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // Set/unset Main button — only on non-terminal goals.
       const mainBtn = canAct
         ? (isMain
-            ? `<button data-action-unset-main="${escapeHtml(g.id)}" style="${btnStyle("#3a3a5a", "#6a6a8a")}" title="Clear main flag">★ Unset</button>`
+            ? `<button data-action-unset-main="${escapeHtml(g.id)}" style="${btnStyle("#3a3a5a", "#6a6a8a")}" title="${escapeHtml(t("panel.action.unset_main_tooltip"))}">${escapeHtml(t("panel.action.unset_main"))}</button>`
             : `<button data-action-set-main="${escapeHtml(g.id)}" style="${btnStyle("#5a5a20", "#8a8a40")}" title="${escapeHtml(t("panel.action.set_main_tooltip"))}">${escapeHtml(t("panel.action.set_main"))}</button>`)
         : "";
       // Row background tint for the main goal so it pops visually.
@@ -3658,7 +3658,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                 ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${shortageChip}`
                 : hasShortage
                   ? `<span style="color:#ffaa55;">awaiting transport (ETA n/a — moon local prod = 0)</span>${shortageChip}`
-                  : `<span style="color:#7cfc00;">all prereqs met — can execute now</span>`;
+                  : `<span style="color:#7cfc00;">${escapeHtml(t("panel.prereq.all_met"))}</span>`;
             // v0.0.461: current-step row — "↳ 當前步驟: lunarBase L4 缺 ..."
             // separate line below the chain summary so operator sees what
             // the bot is RIGHT NOW trying to fire, and how short on cash.
@@ -3727,7 +3727,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
             <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${mainBtn}${pauseOrResume}${cancelBtn}</span>
           </div>
-          <div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer;"><strong style="color:#e0e8f0;">${escapeHtml(g.type)}</strong> ${escapeHtml(targetStr)}</div>
+          <div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</div>
           ${detailBlock}
         </div>`;
     };
