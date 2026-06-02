@@ -34,6 +34,7 @@ import { StrategyManager } from "./strategy_manager.js";
 import { GoalsStore } from "./goals_store.js";
 import { WorldStateStore } from "./world_state_store.js";
 import { WorldStateStorePg } from "./world_state_store_pg.js";
+import { getCurrentUserId } from "./user_context.js";
 import { GeminiClient } from "./gemini_client.js";
 import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
@@ -351,11 +352,18 @@ export async function startSidecar(
   } else {
     console.info("[ogamex/sidecar] Postgres shadow writer DISABLED (set OGAMEX_OPERATOR_USER_ID + DATABASE_URL to enable)");
   }
-  /** Best-effort shadow fire — never throws, never blocks. */
-  const shadowFire = (label: string, fn: () => Promise<unknown>): void => {
-    if (!pgStore || !pgUserId) return;
-    fn().catch((e) => {
-      console.warn(`[ogamex/sidecar/pg] ${label} failed:`, e instanceof Error ? e.message : e);
+  /** Best-effort shadow fire — never throws, never blocks. v0.0.645:
+   *  the per-request AsyncLocalStorage user_id (set by HttpServer when
+   *  resolving a Bearer token to a PG user) takes precedence over the
+   *  env default; this is how multi-tenant routing actually lands in
+   *  Postgres. */
+  const shadowFire = (label: string, fn: (uid: string) => Promise<unknown>): void => {
+    if (!pgStore) return;
+    const ctxUid = getCurrentUserId();
+    const uid = ctxUid || pgUserId;
+    if (!uid) return;
+    fn(uid).catch((e) => {
+      console.warn(`[ogamex/sidecar/pg] ${label} failed (uid=${uid.slice(0,8)}…):`, e instanceof Error ? e.message : e);
     });
   };
   // Bound events table at boot — rolling 10K window. Trims older rows so
@@ -424,7 +432,7 @@ export async function startSidecar(
       if (snap === null) return;
       try { worldStateStore.upsert(snap); }
       catch (e) { console.error("[ogamex/sidecar] WorldState upsert failed:", e); }
-      shadowFire("upsertWorldState", () => pgStore!.upsertWorldState(pgUserId, snap));
+      shadowFire("upsertWorldState", (uid) => pgStore!.upsertWorldState(uid, snap));
     }, WORLD_STATE_DEBOUNCE_MS);
   };
   const flushWorldStatePersist = (): void => {
@@ -436,7 +444,7 @@ export async function startSidecar(
     if (snap === null) return;
     try { worldStateStore.upsert(snap); }
     catch (e) { console.error("[ogamex/sidecar] WorldState flush failed:", e); }
-    shadowFire("flushWorldState", () => pgStore!.upsertWorldState(pgUserId, snap));
+    shadowFire("flushWorldState", (uid) => pgStore!.upsertWorldState(uid, snap));
   };
 
   // --- DebugBuffer (M8.5) --------------------------------------------------
@@ -529,6 +537,26 @@ export async function startSidecar(
       },
     }),
     debugSnapshot: () => debug.snapshot(),
+    // Phase 9a — per-user Bearer → user_id resolver via Postgres
+    // (user_settings.bridge_token UNIQUE index → O(1) lookup per push).
+    // Wraps handlePush in AsyncLocalStorage so shadow writes pick up
+    // the right multi-tenant user_id.
+    ...(pgStore
+      ? {
+          resolveUserToken: async (bearer: string): Promise<string | null> => {
+            if (!bearer) return null;
+            try {
+              const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+              const rows = await sql`SELECT user_id FROM user_settings WHERE bridge_token = ${bearer} LIMIT 1`;
+              const row = rows[0] as { user_id?: string } | undefined;
+              return row?.user_id ?? null;
+            } catch (e) {
+              console.warn("[ogamex/sidecar] resolveUserToken threw", e);
+              return null;
+            }
+          },
+        }
+      : {}),
     // Operator API providers — surface state/goals/expedition over HTTP.
     stateProvider: () => stateRef.current ?? { ok: false, reason: "no snapshot yet" },
     listGoals: () => {
@@ -1346,7 +1374,7 @@ export async function startSidecar(
             error: errStr,
           };
           worldStateStore.appendEvent("directive.completed", payload);
-          shadowFire("appendEvent.completed", () => pgStore!.appendEvent(pgUserId, "directive.completed", payload));
+          shadowFire("appendEvent.completed", (uid) => pgStore!.appendEvent(uid, "directive.completed", payload));
         } catch (e) { console.error("[ogamex/sidecar] appendEvent completed threw", e); }
         const goalId = directiveToGoal.get(m.directive_id);
         if (goalId) {
@@ -1585,7 +1613,7 @@ export async function startSidecar(
             params: d.params,
           };
           worldStateStore.appendEvent("directive.dispatch", payload);
-          shadowFire("appendEvent.dispatch", () => pgStore!.appendEvent(pgUserId, "directive.dispatch", payload));
+          shadowFire("appendEvent.dispatch", (uid) => pgStore!.appendEvent(uid, "directive.dispatch", payload));
         } catch (e) { console.error("[ogamex/sidecar] appendEvent dispatch threw", e); }
         // Remember directive_id → goal_id so we can mark the goal blocked
         // when the ack returns with success:false. Without this, ApiExec
@@ -1652,11 +1680,11 @@ export async function startSidecar(
     persistence: {
       upsert: (rec) => {
         worldStateStore.upsertSaveRecord(rec);
-        shadowFire("upsertSaveRecord", () => pgStore!.upsertSaveRecord(pgUserId, rec));
+        shadowFire("upsertSaveRecord", (uid) => pgStore!.upsertSaveRecord(uid, rec));
       },
       delete: (planet_id) => {
         worldStateStore.deleteSaveRecord(planet_id);
-        shadowFire("deleteSaveRecord", () => pgStore!.deleteSaveRecord(pgUserId, planet_id));
+        shadowFire("deleteSaveRecord", (uid) => pgStore!.deleteSaveRecord(uid, planet_id));
       },
     },
   });
@@ -1691,7 +1719,7 @@ export async function startSidecar(
     persistence: {
       upsertCooldown: (task, last_analysis_at) => {
         worldStateStore.upsertFailureCooldown(task, last_analysis_at);
-        shadowFire("upsertCooldown", () => pgStore!.upsertFailureCooldown(pgUserId, task, last_analysis_at));
+        shadowFire("upsertCooldown", (uid) => pgStore!.upsertFailureCooldown(uid, task, last_analysis_at));
       },
       listCooldowns: () => worldStateStore.listFailureCooldowns(),
     },
@@ -1887,7 +1915,7 @@ export async function startSidecar(
         task: msg.task, attempts: msg.attempts, last_error: msg.last_error,
       };
       worldStateStore.appendEvent("event.daily_failure", payload);
-      shadowFire("appendEvent.daily_failure", () => pgStore!.appendEvent(pgUserId, "event.daily_failure", payload));
+      shadowFire("appendEvent.daily_failure", (uid) => pgStore!.appendEvent(uid, "event.daily_failure", payload));
     } catch (e) { console.error("[ogamex/sidecar] appendEvent daily_failure threw", e); }
     // record() is async; fire-and-forget. We attach a catch so a stuck
     // analyzer never produces an unhandled rejection (which would crash
@@ -1908,7 +1936,7 @@ export async function startSidecar(
     try {
       const payload = { subtype: msg.subtype, data: msg.data };
       worldStateStore.appendEvent("event.emergency", payload);
-      shadowFire("appendEvent.emergency", () => pgStore!.appendEvent(pgUserId, "event.emergency", payload));
+      shadowFire("appendEvent.emergency", (uid) => pgStore!.appendEvent(uid, "event.emergency", payload));
     } catch (e) { console.error("[ogamex/sidecar] appendEvent emergency threw", e); }
     // Always log on receipt — journalctl is the audit trail for natural
     // attack/spy events (success path was previously silent, making it

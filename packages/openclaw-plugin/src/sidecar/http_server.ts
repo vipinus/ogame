@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { UpstreamMsg, DownstreamMsg } from "@ogamex/shared";
+import { runWithUser } from "./user_context.js";
 import {
   renderDebugHtml,
 } from "./debug_render.js";
@@ -61,6 +62,7 @@ export interface HttpServerOptions {
    *  Returns most-recent-first audit log rows from the persisted events table.
    *  When `type` is supplied, filters server-side; absent ⇒ all types. */
   listEvents?: (limit: number, type?: string) => Array<unknown>;
+  resolveUserToken?: (bearer: string) => Promise<string | null>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -123,6 +125,7 @@ interface ResolvedHttpServerOptions {
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
   listEvents?: (limit: number, type?: string) => Array<unknown>;
+  resolveUserToken?: (bearer: string) => Promise<string | null>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -171,6 +174,7 @@ export class HttpServer {
       ...(opts.expeditionProvider !== undefined ? { expeditionProvider: opts.expeditionProvider } : {}),
       ...(opts.emergencyProvider !== undefined ? { emergencyProvider: opts.emergencyProvider } : {}),
       ...(opts.listEvents !== undefined ? { listEvents: opts.listEvents } : {}),
+      ...(opts.resolveUserToken !== undefined ? { resolveUserToken: opts.resolveUserToken } : {}),
       ...(opts.cancelGoal !== undefined ? { cancelGoal: opts.cancelGoal } : {}),
       ...(opts.pauseGoal !== undefined ? { pauseGoal: opts.pauseGoal } : {}),
       ...(opts.resumeGoal !== undefined ? { resumeGoal: opts.resumeGoal } : {}),
@@ -588,15 +592,18 @@ export class HttpServer {
       return;
     }
 
-    if (!this.checkAuth(req)) {
+    // Phase 9a — split auth path. Global token (operator's primary channel)
+    // always accepted. Per-user Bearer tokens (from user_settings.bridge_token)
+    // are deferred to dispatchPush which does the async PG lookup.
+    const globalAuthOk = this.checkAuth(req);
+    if (url === PUSH_PATH) {
+      void this.dispatchPush(req, res, globalAuthOk);
+      return;
+    }
+    if (!globalAuthOk) {
       this.writeCorsHeaders(res);
       res.statusCode = 401;
       res.end();
-      return;
-    }
-
-    if (url === PUSH_PATH) {
-      void this.handlePush(req, res);
       return;
     }
     if (url === POLL_PATH) {
@@ -998,6 +1005,40 @@ export class HttpServer {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(report));
+  }
+
+  /**
+   * v0.0.645 — Phase 9a entry. If resolveUserToken is wired, look up the
+   * Bearer in PG to get the user_id, then wrap handlePush() in
+   * AsyncLocalStorage so every downstream shadow write (priorityMerger,
+   * saveCoordinator, failureAggregator) sees that user_id. When the
+   * resolver returns null (token belongs to no user, e.g. operator's
+   * global token), the request runs without any per-request user_id and
+   * env defaults take over.
+   */
+  private async dispatchPush(req: http.IncomingMessage, res: http.ServerResponse, globalAuthOk: boolean): Promise<void> {
+    let userId: string | null = null;
+    const auth = req.headers["authorization"];
+    const bearer = typeof auth === "string" && auth.startsWith("Bearer ")
+      ? auth.slice("Bearer ".length).trim()
+      : "";
+    if (this.opts.resolveUserToken && bearer && bearer !== this.opts.token) {
+      try { userId = await this.opts.resolveUserToken(bearer); }
+      catch (e) { console.warn("[http] resolveUserToken threw", e); }
+    }
+    // Auth: global token OK ⇒ run (no userId); per-user token resolved ⇒
+    // run wrapped in ALS; neither ⇒ 401.
+    if (!globalAuthOk && !userId) {
+      this.writeCorsHeaders(res);
+      res.statusCode = 401;
+      res.end();
+      return;
+    }
+    if (userId) {
+      runWithUser(userId, () => { void this.handlePush(req, res); });
+      return;
+    }
+    void this.handlePush(req, res);
   }
 
   private async handlePush(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
