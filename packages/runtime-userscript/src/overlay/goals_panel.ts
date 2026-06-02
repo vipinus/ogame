@@ -3839,7 +3839,20 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // Operator 2026-05-29 "panel 名称改成 oGame+版本号 添加按钮更新版本":
     // title shows current runtime version, update button hidden by default,
     // shown when latestRuntimeVersion (polled from sidecar) > currentVersion.
+    // Operator 2026-06-02 — title prefix shows the actual ogame server slug
+    // (e.g. "s274-en") instead of generic "oGame", so when operator runs the
+    // panel on multiple ogame tabs (lobby + game + alt account) each panel
+    // identifies which one it's wired to.
     const currentVersion = ((typeof window !== "undefined" ? window : globalThis) as { __ogamexVersion?: string }).__ogamexVersion ?? "?";
+    const serverSlug = ((): string => {
+      try {
+        const host = (typeof window !== "undefined" ? window.location.hostname : "") ?? "";
+        const slug = host.split(".")[0] ?? "";
+        // Only use as title if it looks like a real ogame server slug (sNNN-xx).
+        // Lobby (lobby.ogame...) / dashboard / non-ogame pages fall back.
+        return slug && /^s\d+-/i.test(slug) ? slug : "ogame";
+      } catch { return "ogame"; }
+    })();
     const latestVersion = ((typeof window !== "undefined" ? window : globalThis) as { __ogamexLatestVersion?: string }).__ogamexLatestVersion ?? "";
     const hasUpdate = latestVersion !== "" && latestVersion !== currentVersion && cmpSemver(latestVersion, currentVersion) > 0;
     const updateBtn = hasUpdate
@@ -3847,7 +3860,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       : "";
     const header = `
       <div data-ogamex-drag="1" style="display:flex; align-items:center; justify-content:space-between; padding-bottom:4px; cursor:move; user-select:none;">
-        <strong style="color:#e0e8f0;">🪐 oGame v${escapeHtml(currentVersion)}</strong>
+        <strong style="color:#e0e8f0;">🪐 ${escapeHtml(serverSlug)} v${escapeHtml(currentVersion)}</strong>
         <span style="display:flex; gap:4px; align-items:center;">
           ${updateBtn}
           <button data-action="open-audit" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="审计日志 — sidecar 持久化 events 表">📋</button>
