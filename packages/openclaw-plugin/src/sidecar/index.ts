@@ -33,6 +33,7 @@ import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
 import { GoalsStore } from "./goals_store.js";
 import { WorldStateStore } from "./world_state_store.js";
+import { WorldStateStorePg } from "./world_state_store_pg.js";
 import { GeminiClient } from "./gemini_client.js";
 import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
@@ -330,6 +331,33 @@ export async function startSidecar(
 
   const goalsStore = new GoalsStore({ dbPath: goalsDbPath });
   const worldStateStore = new WorldStateStore({ dbPath: worldStateDbPath });
+
+  // Phase 8a — Postgres shadow writer (multi-tenant). When
+  // OGAMEX_OPERATOR_USER_ID is set + DATABASE_URL is reachable, every
+  // SQLite mutation also fires async into ogame_* tables under that user
+  // id. Lets ogame-next /dashboard read live state via Drizzle without
+  // coupling to this process. Failure paths are best-effort: a Postgres
+  // outage never blocks the SQLite primary write.
+  const pgUserId = process.env.OGAMEX_OPERATOR_USER_ID ?? "";
+  const pgUrl = process.env.DATABASE_URL ?? "";
+  let pgStore: WorldStateStorePg | null = null;
+  if (pgUserId && pgUrl) {
+    try {
+      pgStore = new WorldStateStorePg({ databaseUrl: pgUrl });
+      console.info(`[ogamex/sidecar] Postgres shadow writer enabled (user_id=${pgUserId.slice(0, 8)}…)`);
+    } catch (e) {
+      console.warn("[ogamex/sidecar] Postgres shadow init failed (sqlite primary continues):", e);
+    }
+  } else {
+    console.info("[ogamex/sidecar] Postgres shadow writer DISABLED (set OGAMEX_OPERATOR_USER_ID + DATABASE_URL to enable)");
+  }
+  /** Best-effort shadow fire — never throws, never blocks. */
+  const shadowFire = (label: string, fn: () => Promise<unknown>): void => {
+    if (!pgStore || !pgUserId) return;
+    fn().catch((e) => {
+      console.warn(`[ogamex/sidecar/pg] ${label} failed:`, e instanceof Error ? e.message : e);
+    });
+  };
   // Bound events table at boot — rolling 10K window. Trims older rows so
   // disk doesn't grow unbounded across a long-lived deployment. 10K @ ~200
   // bytes/row ≈ 2MB ceiling.
@@ -396,6 +424,7 @@ export async function startSidecar(
       if (snap === null) return;
       try { worldStateStore.upsert(snap); }
       catch (e) { console.error("[ogamex/sidecar] WorldState upsert failed:", e); }
+      shadowFire("upsertWorldState", () => pgStore!.upsertWorldState(pgUserId, snap));
     }, WORLD_STATE_DEBOUNCE_MS);
   };
   const flushWorldStatePersist = (): void => {
@@ -407,6 +436,7 @@ export async function startSidecar(
     if (snap === null) return;
     try { worldStateStore.upsert(snap); }
     catch (e) { console.error("[ogamex/sidecar] WorldState flush failed:", e); }
+    shadowFire("flushWorldState", () => pgStore!.upsertWorldState(pgUserId, snap));
   };
 
   // --- DebugBuffer (M8.5) --------------------------------------------------
@@ -1310,11 +1340,13 @@ export async function startSidecar(
         try {
           const r = m.result as { success?: boolean; error?: string } | undefined;
           const errStr = typeof r?.error === "string" ? r.error.slice(0, 400) : undefined;
-          worldStateStore.appendEvent("directive.completed", {
+          const payload = {
             directive_id: m.directive_id,
             success: r?.success === true,
             error: errStr,
-          });
+          };
+          worldStateStore.appendEvent("directive.completed", payload);
+          shadowFire("appendEvent.completed", () => pgStore!.appendEvent(pgUserId, "directive.completed", payload));
         } catch (e) { console.error("[ogamex/sidecar] appendEvent completed threw", e); }
         const goalId = directiveToGoal.get(m.directive_id);
         if (goalId) {
@@ -1544,14 +1576,16 @@ export async function startSidecar(
         // full directive lives in directiveToGoal map + ack handler.
         try {
           const d = msg.directive as { id?: string; goal_id?: string; action?: string; priority?: number; expires_at?: number; params?: Record<string, unknown> };
-          worldStateStore.appendEvent("directive.dispatch", {
+          const payload = {
             directive_id: d.id,
             goal_id: d.goal_id,
             action: d.action,
             priority: d.priority,
             expires_at: d.expires_at,
             params: d.params,
-          });
+          };
+          worldStateStore.appendEvent("directive.dispatch", payload);
+          shadowFire("appendEvent.dispatch", () => pgStore!.appendEvent(pgUserId, "directive.dispatch", payload));
         } catch (e) { console.error("[ogamex/sidecar] appendEvent dispatch threw", e); }
         // Remember directive_id → goal_id so we can mark the goal blocked
         // when the ack returns with success:false. Without this, ApiExec
@@ -1616,8 +1650,14 @@ export async function startSidecar(
     // active hostile window resumes the IN_FLIGHT → RECALLING transition
     // instead of forgetting the pending event set.
     persistence: {
-      upsert: (rec) => worldStateStore.upsertSaveRecord(rec),
-      delete: (planet_id) => worldStateStore.deleteSaveRecord(planet_id),
+      upsert: (rec) => {
+        worldStateStore.upsertSaveRecord(rec);
+        shadowFire("upsertSaveRecord", () => pgStore!.upsertSaveRecord(pgUserId, rec));
+      },
+      delete: (planet_id) => {
+        worldStateStore.deleteSaveRecord(planet_id);
+        shadowFire("deleteSaveRecord", () => pgStore!.deleteSaveRecord(pgUserId, planet_id));
+      },
     },
   });
   // Rehydrate persisted FSM rows before any state.snapshot or HTTP call
@@ -1649,7 +1689,10 @@ export async function startSidecar(
     // cooldown doesn't immediately re-fire the analyzer on the next
     // matching failure burst.
     persistence: {
-      upsertCooldown: (task, last_analysis_at) => worldStateStore.upsertFailureCooldown(task, last_analysis_at),
+      upsertCooldown: (task, last_analysis_at) => {
+        worldStateStore.upsertFailureCooldown(task, last_analysis_at);
+        shadowFire("upsertCooldown", () => pgStore!.upsertFailureCooldown(pgUserId, task, last_analysis_at));
+      },
       listCooldowns: () => worldStateStore.listFailureCooldowns(),
     },
   });
@@ -1840,9 +1883,11 @@ export async function startSidecar(
     // Operator 2026-06-01 "事件驱动也要更新后台数据" — persist event row
     // BEFORE async record() so it survives even if analyzer crashes.
     try {
-      worldStateStore.appendEvent("event.daily_failure", {
+      const payload = {
         task: msg.task, attempts: msg.attempts, last_error: msg.last_error,
-      });
+      };
+      worldStateStore.appendEvent("event.daily_failure", payload);
+      shadowFire("appendEvent.daily_failure", () => pgStore!.appendEvent(pgUserId, "event.daily_failure", payload));
     } catch (e) { console.error("[ogamex/sidecar] appendEvent daily_failure threw", e); }
     // record() is async; fire-and-forget. We attach a catch so a stuck
     // analyzer never produces an unhandled rejection (which would crash
@@ -1861,9 +1906,9 @@ export async function startSidecar(
     // Operator 2026-06-01 "事件驱动也要更新后台数据" — persist event row
     // BEFORE downstream side-effects so audit log is durable even on crash.
     try {
-      worldStateStore.appendEvent("event.emergency", {
-        subtype: msg.subtype, data: msg.data,
-      });
+      const payload = { subtype: msg.subtype, data: msg.data };
+      worldStateStore.appendEvent("event.emergency", payload);
+      shadowFire("appendEvent.emergency", () => pgStore!.appendEvent(pgUserId, "event.emergency", payload));
     } catch (e) { console.error("[ogamex/sidecar] appendEvent emergency threw", e); }
     // Always log on receipt — journalctl is the audit trail for natural
     // attack/spy events (success path was previously silent, making it
@@ -1958,6 +2003,10 @@ export async function startSidecar(
     }
     try {
       worldStateStore.close();
+      if (pgStore) {
+        try { await pgStore.close(); }
+        catch (err) { console.error("[ogamex/sidecar] pgStore.close failed", err); }
+      }
     } catch (err) {
       console.error("[ogamex/sidecar] worldStateStore.close failed", err);
     }
