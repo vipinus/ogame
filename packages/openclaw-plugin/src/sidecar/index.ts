@@ -342,26 +342,40 @@ export async function startSidecar(
   const pgUserId = process.env.OGAMEX_OPERATOR_USER_ID ?? "";
   const pgUrl = process.env.DATABASE_URL ?? "";
   let pgStore: WorldStateStorePg | null = null;
-  if (pgUserId && pgUrl) {
+  // Phase 9b — DATABASE_URL alone is sufficient to enable Postgres routing.
+  // OGAMEX_OPERATOR_USER_ID is now opt-in fallback for env-driven legacy
+  // setups; multi-tenant push (per-user Bearer) routes via ALS regardless.
+  if (pgUrl) {
     try {
       pgStore = new WorldStateStorePg({ databaseUrl: pgUrl });
-      console.info(`[ogamex/sidecar] Postgres shadow writer enabled (user_id=${pgUserId.slice(0, 8)}…)`);
+      const mode = pgUserId
+        ? `legacy single-tenant fallback uid=${pgUserId.slice(0, 8)}…`
+        : "pure multi-tenant (per-Bearer ALS routing)";
+      console.info(`[ogamex/sidecar] Postgres writer enabled — ${mode}`);
     } catch (e) {
-      console.warn("[ogamex/sidecar] Postgres shadow init failed (sqlite primary continues):", e);
+      console.warn("[ogamex/sidecar] Postgres init failed (sqlite primary continues):", e);
     }
   } else {
-    console.info("[ogamex/sidecar] Postgres shadow writer DISABLED (set OGAMEX_OPERATOR_USER_ID + DATABASE_URL to enable)");
+    console.info("[ogamex/sidecar] Postgres writer DISABLED (set DATABASE_URL to enable)");
   }
-  /** Best-effort shadow fire — never throws, never blocks. v0.0.645:
-   *  the per-request AsyncLocalStorage user_id (set by HttpServer when
-   *  resolving a Bearer token to a PG user) takes precedence over the
-   *  env default; this is how multi-tenant routing actually lands in
-   *  Postgres. */
+  /** Best-effort shadow fire — never throws, never blocks. Phase 9b:
+   *  per-request AsyncLocalStorage user_id (from HttpServer resolving
+   *  Bearer token to PG user) is the PRIMARY routing key. env default
+   *  is fallback ONLY for non-HTTP-triggered paths (boot hydrate,
+   *  background timers) — every authenticated push hits the ALS path.
+   *  Silently skip when no user_id resolvable: that's the right behavior
+   *  for "global token" / "unauthenticated" paths which shouldn't write
+   *  to any user partition. */
   const shadowFire = (label: string, fn: (uid: string) => Promise<unknown>): void => {
     if (!pgStore) return;
     const ctxUid = getCurrentUserId();
     const uid = ctxUid || pgUserId;
-    if (!uid) return;
+    if (!uid) {
+      // No per-request user context AND no env default → write goes to
+      // SQLite only. Phase 9b makes this an EXPECTED case (operator using
+      // global token = legacy debug channel), not a warn-worthy gap.
+      return;
+    }
     fn(uid).catch((e) => {
       console.warn(`[ogamex/sidecar/pg] ${label} failed (uid=${uid.slice(0,8)}…):`, e instanceof Error ? e.message : e);
     });
