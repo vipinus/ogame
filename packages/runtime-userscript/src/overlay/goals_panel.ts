@@ -208,10 +208,10 @@ function openEmergencySettings(doc: Document): void {
   const paused = lsGet("ogamex.emergency.paused") === "true";
   const spyOn = lsGet("OGAMEX_SPY_TRIGGERS_SAVE") !== "off";  // default ON
   const bodyHTML = `
-    <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">緊急任務 (Fleet Save) — attack/spy 觸發自動起飛 + 召回</div>
+    <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">${escapeHtml(t('auto.181'))}</div>
     ${renderToggleRow(t("auto.103"), !paused, "em-paused", t("auto.104"))}
     ${renderToggleRow(t("auto.105"), spyOn, "em-spy", t("auto.106"))}
-    <div style="color:#5a7090; font-size:10px; padding-top:10px;">變更立即生效, 無需保存.</div>
+    <div style="color:#5a7090; font-size:10px; padding-top:10px;">${escapeHtml(t('auto.182'))}</div>
   `;
   openSettingsModal(doc, "emergency", t("modal.emergency.title"), bodyHTML, (m) => {
     const reflect = (sel: string, isOn: boolean): void => {
@@ -445,7 +445,7 @@ function openExpeditionSettings(
       </div>`;
     }).join("");
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">遠征探險 — 勾選發船星球 + 設定艦隊模板</div>
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">${escapeHtml(t('auto.183'))}</div>
       ${renderToggleRow(t("auto.103"), !paused, "exp-paused", t("auto.120"))}
       <div style="padding-top:10px; display:flex; gap:0; border-bottom:1px solid #2a3a52;">
         ${tabBtn("planets", t("auto.121"), true)}
@@ -453,7 +453,7 @@ function openExpeditionSettings(
       </div>
       <div data-exp-pane="planets" style="display:block; padding-top:8px;">
         <div style="display:flex; justify-content:space-between; padding:4px 0; font-size:10px;">
-          <span style="color:#7080a0;">勾選 = 加入 round-robin 發船池</span>
+          <span style="color:#7080a0;">${escapeHtml(t('auto.208'))}</span>
           <span>
             <button data-exp-planet-all="1" style="background:transparent; color:#7cfc00; border:none; cursor:pointer; font-size:10px; padding:0 4px;">全選</button>
             <button data-exp-planet-none="1" style="background:transparent; color:#ff9b9b; border:none; cursor:pointer; font-size:10px; padding:0 4px;">全清</button>
@@ -465,12 +465,12 @@ function openExpeditionSettings(
         <!-- Operator 2026-05-29: 頂部 chips summary 顯示當前艦隊組成,
              跟着 input 變化實時更新. 無船時顯 placeholder. -->
         <div style="padding:6px 8px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
-          <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">當前艦隊組成</div>
+          <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">${escapeHtml(t('auto.205'))}</div>
           <div data-exp-fleet-summary style="display:flex; flex-wrap:wrap; gap:6px; min-height:18px;"></div>
           <div data-exp-fleet-total style="color:#7080a0; font-size:10px; padding-top:6px; text-align:right;"></div>
         </div>
         ${renderToggleRow(t("auto.123"), initial.auto_build_ships === true, "exp-autobuild", t("auto.124"))}
-        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">每次派遣的船數 (0 = 不派此類船 · 點選輸入框=全選)</div>
+        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">${escapeHtml(t('auto.206'))}</div>
         <!-- Operator 2026-05-29: 改成兩列 — grid 自動按行填充, 高度對半 -->
         <div style="display:grid; grid-template-columns:1fr 1fr; column-gap:14px;">${shipRows}</div>
       </div>
@@ -499,7 +499,7 @@ function openExpeditionSettings(
       summary.innerHTML = chips.length === 0
         ? t("auto.007")
         : chips.join("");
-      total.textContent = totalShips > 0 ? `共 ${fmtNum(totalShips)} 艘` : "";
+      total.textContent = totalShips > 0 ? t("auto.155", { n: fmtNum(totalShips) }) : "";
     };
     for (const inp of m.querySelectorAll<HTMLInputElement>("[data-tmpl-key]")) {
       inp.addEventListener("input", updateFleetSummary);
@@ -645,7 +645,7 @@ function openDiscoverySettings(
         ? `${srcPlanet.name ?? t("auto.119")} [${srcPlanet.coords.join(":")}]`
         : (srcId || "?");
       statusHTML = `<div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:10px;">
-        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">當前活躍發現任務</div>
+        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">${escapeHtml(t('auto.204'))}</div>
         <div style="color:#d0d8e0; font-size:11px;">
           <div>★ 來源星球: <span style="color:#c080ff;">${escapeHtml(srcDisplay)}</span></div>
           <div>★ 中心系統: <span style="color:#c080ff;">${escapeHtml(String(tgt.galaxy ?? "?"))}:${escapeHtml(String(tgt.base_system ?? "?"))}</span> · 半徑 ${escapeHtml(String(tgt.range ?? 10))}</div>
@@ -662,18 +662,18 @@ function openDiscoverySettings(
       return `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name ?? t("auto.119"))} [${escapeHtml(cs)}]</option>`;
     }).join("");
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">物種發現 — 探路者掃描系統物種, 1 個 active goal at a time</div>
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">${escapeHtml(t('auto.184'))}</div>
       ${statusHTML}
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px;">
         <div style="color:#7080a0; font-size:10px; padding-bottom:6px;">${activeGoal ? t("auto.125") : t("auto.126")}</div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">來源星球</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.202'))}</span>
           <select data-disc-planet style="${inputStyle} flex:1;">${planetOpts || `<option value="">(無 planet)</option>`}</select>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">掃描半徑</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.203'))}</span>
           <input data-disc-range type="number" min="1" max="20" value="${escapeHtml(String(activeGoal?.target?.range ?? 10))}" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">中心 ± N 系統 (1-20), 每個系統掃 15 位置</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.207'))}</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-disc-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
@@ -885,21 +885,21 @@ function openGoalsSettings(
       return !!bq && (bq.ends_at ?? 0) > nowMs;
     };
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">普通任務 — 選 tab 創建任務. 已有 active goals 在主面板 Goals section 顯示</div>
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">${escapeHtml(t('auto.185'))}</div>
       <div data-tab-bar style="display:flex; gap:2px; margin-bottom:0;">${renderTabBar()}</div>
       <!-- v0.0.583 — 星球建築獨立 pane / v0.0.584 — 2-col + ogame-real-occupancy -->
       <div data-pane="planet-build" style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (單選, 正在建造的星球灰顯不可選)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.186'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; display:flex; gap:16px; border-bottom:1px solid #1a2030;">
               <label data-pb-all-wrap style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-pb-planet type="radio" name="pb-planet-radio" value="all-planets" style="vertical-align:middle;"/>
-                <span>🌍 所有星球</span>
+                <span>🌍 ${escapeHtml(t('auto.194'))}</span>
               </label>
               <label data-pb-idle-wrap style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-pb-planet type="radio" name="pb-planet-radio" value="idle-planets" style="vertical-align:middle;"/>
-                <span>🌍 空閒星球</span>
+                <span>🌍 ${escapeHtml(t('auto.195'))}</span>
               </label>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
@@ -911,7 +911,7 @@ function openGoalsSettings(
                 const occ = planetOccupied(p.id);
                 const bq = planetBuildQ(p.id);
                 const eta = occ && bq?.ends_at ? Math.max(0, Math.round((bq.ends_at - nowMs) / 60000)) : 0;
-                const tip = occ ? `title="ogame 在建中, ${eta}min 後完成"` : "";
+                const tip = occ ? t("auto.156", { eta }) : "";
                 const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
                 const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[${eta}m]</span>` : "";
                 return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
@@ -926,7 +926,7 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">建築 (單選)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.188'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
             ${PLANET_BUILDING_KEYS.map((bk) => `
               <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
@@ -937,17 +937,17 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-pb-level type="number" min="1" max="50" value="" placeholder=t("auto.130") onclick="this.select()" style="${inputStyle} width:100px;"/>
-          <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
           <span data-pb-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.190'))}</span>
           <input data-pb-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.193'))}</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-pb-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
@@ -957,16 +957,16 @@ function openGoalsSettings(
       <!-- v0.0.589 — 月球建築獨立 pane (類似 planet-build, 僅月球 + 月球建築) -->
       <div data-pane="moon-build" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">月球 (單選, 正在建造的月球灰顯不可選)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.187'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; display:flex; gap:16px; border-bottom:1px solid #1a2030;">
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-mb-moon type="radio" name="mb-moon-radio" value="all-moons" style="vertical-align:middle;"/>
-                <span>🌙 所有月球</span>
+                <span>🌙 ${escapeHtml(t('auto.196'))}</span>
               </label>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-mb-moon type="radio" name="mb-moon-radio" value="idle-moons" style="vertical-align:middle;"/>
-                <span>🌙 空閒月球</span>
+                <span>🌙 ${escapeHtml(t('auto.197'))}</span>
               </label>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
@@ -978,7 +978,7 @@ function openGoalsSettings(
                 const occ = planetOccupied(mb.id);
                 const bq = planetBuildQ(mb.id);
                 const eta = occ && bq?.ends_at ? Math.max(0, Math.round((bq.ends_at - nowMs) / 60000)) : 0;
-                const tip = occ ? `title="ogame 在建中, ${eta}min 後完成"` : "";
+                const tip = occ ? t("auto.156", { eta }) : "";
                 const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
                 const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[${eta}m]</span>` : "";
                 return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
@@ -993,28 +993,28 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">建築 (單選)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.188'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="lunarBase" style="vertical-align:middle;"/><span>月球基地</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="sensorPhalanx" style="vertical-align:middle;"/><span>傳感器</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="jumpgate" style="vertical-align:middle;"/><span>跳躍門</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="lunarBase" style="vertical-align:middle;"/><span>${techName('lunarBase')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="sensorPhalanx" style="vertical-align:middle;"/><span>${techName('sensorPhalanx')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="jumpgate" style="vertical-align:middle;"/><span>${techName('jumpgate')}</span></label>
             <!-- v0.0.592 — operator 2026-06-01 t("auto.131"): ogame moon has its own independent roboticsFactory / shipyard counters from the planet sibling. Adding to moon-build options. -->
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="roboticsFactory" style="vertical-align:middle;"/><span>機械工廠</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="shipyard" style="vertical-align:middle;"/><span>船塢</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="roboticsFactory" style="vertical-align:middle;"/><span>${techName('roboticsFactory')}</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="shipyard" style="vertical-align:middle;"/><span>${techName('shipyard')}</span></label>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-mb-level type="number" min="1" max="50" value="" placeholder=t("auto.132") onclick="this.select()" style="${inputStyle} width:100px;"/>
-          <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
           <span data-mb-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.190'))}</span>
           <input data-mb-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.193'))}</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-mb-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
@@ -1024,7 +1024,7 @@ function openGoalsSettings(
       <!-- v0.0.593 — 生命建築獨立 pane -->
       <div data-pane="lf-build" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命形態 (單選, 決定可建建築列表)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.198'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="humans" style="vertical-align:middle;"/><span>人類</span></label>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="rocktal" style="vertical-align:middle;"/><span>巖族</span></label>
@@ -1033,16 +1033,16 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (單選, lifeform 僅星球可建)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.199'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; display:flex; gap:16px; border-bottom:1px solid #1a2030;">
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-lf-planet type="radio" name="lf-planet-radio" value="all-planets" style="vertical-align:middle;"/>
-                <span>🌍 所有星球</span>
+                <span>🌍 ${escapeHtml(t('auto.194'))}</span>
               </label>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-lf-planet type="radio" name="lf-planet-radio" value="idle-planets" style="vertical-align:middle;"/>
-                <span>🌍 空閒星球</span>
+                <span>🌍 ${escapeHtml(t('auto.195'))}</span>
               </label>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
@@ -1055,7 +1055,7 @@ function openGoalsSettings(
                 const lfBq = (storeRef?.state?.planets?.[p.id] as { lf_build_q?: { ends_at?: number } } | undefined)?.lf_build_q;
                 const occ = !!lfBq && (lfBq.ends_at ?? 0) > nowMs;
                 const eta = occ && lfBq?.ends_at ? Math.max(0, Math.round((lfBq.ends_at - nowMs) / 60000)) : 0;
-                const tip = occ ? `title="生命建築隊列在建中, ${eta}min 後完成"` : "";
+                const tip = occ ? t("auto.157", { eta }) : "";
                 const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
                 const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[${eta}m]</span>` : "";
                 return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
@@ -1070,23 +1070,23 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命建築 (單選, 切換 species 時重新加載)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.200'))}</div>
           <div data-lf-building-list style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
             <span style="color:#5a7090; font-size:11px;">loading…</span>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-lf-level type="number" min="1" max="50" value="" placeholder=t("auto.133") onclick="this.select()" style="${inputStyle} width:100px;"/>
-          <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
           <span data-lf-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.190'))}</span>
           <input data-lf-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.193'))}</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-lf-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
@@ -1099,7 +1099,7 @@ function openGoalsSettings(
       <div data-pane="research" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div data-rs-queue style="padding:6px 0; color:#7080a0; font-size:11px;">global queue: <span style="color:#a06060;">loading…</span></div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">研究專案 (單選)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.201'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="energyTech" style="vertical-align:middle;"/><span>能量技術</span></label>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="laserTech" style="vertical-align:middle;"/><span>激光技術</span></label>
@@ -1120,17 +1120,17 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-rs-level type="number" min="1" max="30" value="" placeholder=t("auto.134") onclick="this.select()" style="${inputStyle} width:100px;"/>
-          <span style="color:#7080a0; font-size:10px;">支持 1-30</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.192'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
           <span data-rs-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.190'))}</span>
           <input data-rs-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.193'))}</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-rs-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
@@ -1176,17 +1176,17 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-lr-level type="number" min="1" max="50" value="" placeholder=t("auto.133") onclick="this.select()" style="${inputStyle} width:100px;"/>
-          <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
           <span data-lr-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.190'))}</span>
           <input data-lr-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.193'))}</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-lr-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
@@ -1256,9 +1256,9 @@ function openGoalsSettings(
           <div data-goal-target-hint style="color:#5a7090; font-size:10px; padding-top:2px;"></div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.190'))}</span>
           <input data-goal-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.193'))}</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-goal-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
@@ -1402,12 +1402,12 @@ function openGoalsSettings(
       }
       const bLabel = PLANET_BUILDING_LABEL[buildingRadio.value] ?? buildingRadio.value;
       if (planetRadio.value === "all-planets") {
-        pbDescEl.textContent = `目標在 所有星球 建造 ${bLabel} ${lvl} 級`;
+        pbDescEl.textContent = t("auto.158", { b: bLabel, lvl });
       } else if (planetRadio.value === "idle-planets") {
-        pbDescEl.textContent = `目標在 所有空閒星球 建造 ${bLabel} ${lvl} 級`;
+        pbDescEl.textContent = t("auto.159", { b: bLabel, lvl });
       } else {
         const coord = planetCoordById.get(planetRadio.value) ?? "?";
-        pbDescEl.textContent = `目標在 ${coord} 建造 ${bLabel} ${lvl} 級`;
+        pbDescEl.textContent = t("auto.160", { coord, b: bLabel, lvl });
       }
       pbDescEl.style.color = "#7cfc00";
     };
@@ -1459,10 +1459,10 @@ function openGoalsSettings(
         } catch (e) { errs.push(`${pid}: ${(e as Error).message ?? e}`); }
       }
       if (errs.length === 0) {
-        pbStatusEl.textContent = `✓ 已創建 ${okCount} 個任務`;
+        pbStatusEl.textContent = t("auto.161", { n: okCount });
         pbStatusEl.style.color = "#7cfc00";
       } else {
-        pbStatusEl.textContent = `部分失敗: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
+        pbStatusEl.textContent = t("auto.162", { ok: okCount, err: errs.length, first: errs[0] });
         pbStatusEl.style.color = "#a06060";
       }
     });
@@ -1512,12 +1512,12 @@ function openGoalsSettings(
       }
       const bLabel = MOON_BUILDING_LABEL[buildingRadio.value] ?? buildingRadio.value;
       if (moonRadio.value === "all-moons") {
-        mbDescEl.textContent = `目標在 所有月球 建造 ${bLabel} ${lvl} 級`;
+        mbDescEl.textContent = t("auto.163", { b: bLabel, lvl });
       } else if (moonRadio.value === "idle-moons") {
-        mbDescEl.textContent = `目標在 所有空閒月球 建造 ${bLabel} ${lvl} 級`;
+        mbDescEl.textContent = t("auto.164", { b: bLabel, lvl });
       } else {
         const coord = moonCoordById.get(moonRadio.value) ?? "?";
-        mbDescEl.textContent = `目標在 ${coord}(月球) 建造 ${bLabel} ${lvl} 級`;
+        mbDescEl.textContent = t("auto.165", { coord, b: bLabel, lvl });
       }
       mbDescEl.style.color = "#7cfc00";
     };
@@ -1566,10 +1566,10 @@ function openGoalsSettings(
         } catch (e) { errs.push(`${mid}: ${(e as Error).message ?? e}`); }
       }
       if (errs.length === 0) {
-        mbStatusEl.textContent = `✓ 已創建 ${okCount} 個任務`;
+        mbStatusEl.textContent = t("auto.161", { n: okCount });
         mbStatusEl.style.color = "#7cfc00";
       } else {
-        mbStatusEl.textContent = `部分失敗: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
+        mbStatusEl.textContent = t("auto.162", { ok: okCount, err: errs.length, first: errs[0] });
         mbStatusEl.style.color = "#a06060";
       }
     });
@@ -1622,12 +1622,12 @@ function openGoalsSettings(
         const speciesLabel: Record<string, string> = { humans: t("auto.056"), rocktal: t("auto.057"), mechas: t("auto.058"), kaelesh: t("auto.059") };
         const sn = speciesLabel[speciesRadio.value] ?? speciesRadio.value;
         if (planetRadio.value === "all-planets") {
-          lfDescEl.textContent = `目標在 所有星球 建造 ${bLabel} ${lvl} 級 (${sn})`;
+          lfDescEl.textContent = t("auto.166", { b: bLabel, lvl, sn });
         } else if (planetRadio.value === "idle-planets") {
-          lfDescEl.textContent = `目標在 所有空閒星球 建造 ${bLabel} ${lvl} 級 (${sn})`;
+          lfDescEl.textContent = t("auto.167", { b: bLabel, lvl, sn });
         } else {
           const coord = planetCoordById.get(planetRadio.value) ?? "?";
-          lfDescEl.textContent = `目標在 ${coord} 建造 ${bLabel} ${lvl} 級 (${sn})`;
+          lfDescEl.textContent = t("auto.168", { coord, b: bLabel, lvl, sn });
         }
         lfDescEl.style.color = "#7cfc00";
       };
@@ -1682,7 +1682,7 @@ function openGoalsSettings(
             label.style.opacity = "0.3";
             label.style.cursor = "not-allowed";
             label.title = sp
-              ? `該星球 species=${speciesLabelMap[sp] ?? sp}, 不匹配當前選擇 (${speciesLabelMap[species] ?? species})`
+              ? t("auto.169", { sp1: speciesLabelMap[sp] ?? sp, sp2: speciesLabelMap[species] ?? species })
               : t("auto.062");
           } else if (!wasLfqDim) {
             radio.disabled = false;
@@ -1700,8 +1700,8 @@ function openGoalsSettings(
         const lfIdleRadio2 = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="idle-planets"]');
         if (lfAllRadio2 && lfIdleRadio2) {
           if (matchCount === 0) {
-            dimRadio(lfAllRadio2, `無 ${speciesLabelMap[species] ?? species} species 的星球, 不能扇出`);
-            dimRadio(lfIdleRadio2, `無 ${speciesLabelMap[species] ?? species} species 的星球, 不能扇出`);
+            dimRadio(lfAllRadio2, t("auto.170", { sp: speciesLabelMap[species] ?? species }));
+            dimRadio(lfIdleRadio2, t("auto.170", { sp: speciesLabelMap[species] ?? species }));
           } else {
             // Restore (subject to original anyOccupied / anyIdle rules below).
             lfAllRadio2.disabled = false;
@@ -1777,10 +1777,10 @@ function openGoalsSettings(
           } catch (e) { errs.push(`${pid}: ${(e as Error).message ?? e}`); }
         }
         if (errs.length === 0) {
-          lfStatusEl.textContent = `✓ 已創建 ${okCount} 個任務`;
+          lfStatusEl.textContent = t("auto.161", { n: okCount });
           lfStatusEl.style.color = "#7cfc00";
         } else {
-          lfStatusEl.textContent = `部分失敗: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
+          lfStatusEl.textContent = t("auto.162", { ok: okCount, err: errs.length, first: errs[0] });
           lfStatusEl.style.color = "#a06060";
         }
       });
@@ -1818,7 +1818,7 @@ function openGoalsSettings(
           if (lbl) {
             lbl.style.opacity = "0.4";
             lbl.style.cursor = "not-allowed";
-            lbl.title = `引力技術已研究 (L${rsLevelsInit["gravitonTech"]}) — 一次性研究, 不能重做`;
+            lbl.title = t("auto.171", { n: rsLevelsInit["gravitonTech"] });
           }
         }
       }
@@ -1847,13 +1847,13 @@ function openGoalsSettings(
         const tLabel = RESEARCH_LABEL[techRadio.value] ?? techRadio.value;
         const levels = (storeRef?.state as { research?: { levels?: Record<string, number> } } | undefined)?.research?.levels ?? {};
         const curLvl = levels[techRadio.value] ?? 0;
-        const curPart = `當前 ${tLabel} L${curLvl}`;
+        const curPart = t("auto.172", { t: tLabel, lvl: curLvl });
         if (!lvl) {
-          rsDescEl.textContent = `${curPart}（輸入目標級別即可創建）`;
+          rsDescEl.textContent = t("auto.173", { cur: curPart });
           rsDescEl.style.color = "#7cfc00";
           return;
         }
-        rsDescEl.textContent = `${curPart} → 目標 L${lvl}`;
+        rsDescEl.textContent = t("auto.174", { cur: curPart, lvl });
         rsDescEl.style.color = "#7cfc00";
       };
       for (const r of rsTechRadios()) r.addEventListener("change", refreshRsDesc);
@@ -2008,11 +2008,11 @@ function openGoalsSettings(
         const coord = planetCoordById.get(planetRadio.value) ?? "?";
         const lfResearch = (storeRef?.state?.planets?.[planetRadio.value] as { lifeform_research?: Record<string, number> } | undefined)?.lifeform_research ?? {};
         const curLvl = lfResearch[techRadio.value] ?? 0;
-        const curPart = `當前 ${coord} ${tLabel} L${curLvl}`;
+        const curPart = t("auto.175", { coord, t: tLabel, lvl: curLvl });
         if (!lvl) {
-          lrDescEl.textContent = `${curPart}（輸入目標級別即可創建, ${sn}）`;
+          lrDescEl.textContent = t("auto.176", { cur: curPart, sn });
         } else {
-          lrDescEl.textContent = `${curPart} → 目標 L${lvl} (${sn})`;
+          lrDescEl.textContent = t("auto.177", { cur: curPart, lvl, sn });
         }
         lrDescEl.style.color = "#7cfc00";
       };
@@ -2031,7 +2031,7 @@ function openGoalsSettings(
             label.style.opacity = "0.3";
             label.style.cursor = "not-allowed";
             label.title = sp
-              ? `該星球 species=${speciesLabelLrMap[sp] ?? sp}, 不匹配當前選擇 (${speciesLabelLrMap[species] ?? species})`
+              ? t("auto.169", { sp1: speciesLabelLrMap[sp] ?? sp, sp2: speciesLabelLrMap[species] ?? species })
               : t("auto.082");
           } else {
             radio.disabled = false;
@@ -2198,7 +2198,7 @@ function openGoalsSettings(
         if (!coord) {
           nlTa.value = nlTa.value.replace(PREFIX_RE, "");
         } else {
-          const newPrefix = `在 ${coord} `;
+          const newPrefix = t("auto.178", { coord }) + " ";
           nlTa.value = PREFIX_RE.test(nlTa.value)
             ? nlTa.value.replace(PREFIX_RE, newPrefix)
             : newPrefix + nlTa.value;
@@ -2694,7 +2694,7 @@ function openTransportSettings(
       }
       const needSpan = m.querySelector<HTMLElement>("[data-tr-ship-need]");
       if (needSpan) {
-        const shortNote = isShort ? ` <span style="color:#ff6b6b; font-weight:bold;">船不夠 (有 ${fmt(haveShips)})</span>` : "";
+        const shortNote = isShort ? ` <span style="color:#ff6b6b; font-weight:bold;">${t("auto.179", { n: fmt(haveShips) })}</span>` : "";
         needSpan.innerHTML = `需 ${needed} 艘 · 總載 ${fmt(total)}${moonBufferD ? ` (含 +50K d 月球 buffer)` : ""} (cap ${fmt(cap)})${shortNote}`;
       }
     }
@@ -2743,7 +2743,7 @@ function openTransportSettings(
         if (val > cap) {
           ci.style.color = "#ff6b6b";
           ci.style.borderColor = "#ff6b6b";
-          ci.title = `超出: 源 ${key.toUpperCase()} 只有 ${fmt(cap)}, 你填了 ${fmt(val)}`;
+          ci.title = t("auto.180", { key: key.toUpperCase(), cap: fmt(cap), val: fmt(val) });
         } else {
           // v0.0.504 — operator 2026-05-30: setting style.color="" wiped the
           // inline style attr color (#e0e8f0), letting browser default win
