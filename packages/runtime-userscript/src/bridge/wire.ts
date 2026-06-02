@@ -353,7 +353,14 @@ export async function wireBridge(
           const rootKeys = Object.keys(json).slice(0, 20).join(",");
           const firstRowKeys = rows[0] ? Object.keys(rows[0]).slice(0, 20).join(",") : "<no rows>";
           const posJson = posRow ? JSON.stringify(posRow).slice(0, 800) : `<no pos${targetPosition} row>`;
-          const diag = `G:S=${g}:${s} target=${targetPosition} rowsLen=${rows.length} rootKeys=[${rootKeys}] firstRowKeys=[${firstRowKeys}] pos${targetPosition}=${posJson}`;
+          // v0.0.642 — operator 2026-06-01 实证: ogame v12 galaxyContent
+          // 只装 pos 1-15, :16 不在 rows 里, 怀疑在 reservedPositions 或
+          // system 别的子字段。Dump 一遍真正看 :16 数据在哪。
+          const reservedDump = JSON.stringify(json["reservedPositions"] ?? null).slice(0, 1200);
+          const systemKeys = json["system"] && typeof json["system"] === "object"
+            ? Object.keys(json["system"] as Record<string, unknown>).slice(0, 20).join(",")
+            : "<no system>";
+          const diag = `G:S=${g}:${s} target=${targetPosition} rowsLen=${rows.length} rootKeys=[${rootKeys}] firstRowKeys=[${firstRowKeys}] systemKeys=[${systemKeys}] reservedPositions=${reservedDump} pos${targetPosition}=${posJson}`;
           console.info(`[debris-raw] ${diag}`);
           // mirror to sidecar journal — operator can verify via journalctl.
           void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
