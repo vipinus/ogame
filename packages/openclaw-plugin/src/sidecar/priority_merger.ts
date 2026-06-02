@@ -195,15 +195,17 @@ export class PriorityMerger {
     let researchSlot = !!(state.research?.queue && (state.research.queue.ends_at ?? 0) > now);
     const buildSlot = new Set<string>();
     const lfBuildSlot = new Set<string>(); // separate lifeform queue per planet
+    const lfResearchSlot = new Set<string>(); // v0.0.633 — separate lf research queue per planet
     const shipsSlot = new Set<string>();
     for (const p of Object.values(state.planets ?? {})) {
       const bq = p.build_q as { ends_at?: number } | null;
       if (bq && (bq.ends_at ?? 0) > now) buildSlot.add(p.id);
       const sq = p.shipyard_q as { ends_at?: number } | null;
       if (sq && (sq.ends_at ?? 0) > now) shipsSlot.add(p.id);
-      // ogame's lf queue is tracked separately — we don't currently extract
-      // its in-flight state from page DOM, so this set seeds empty and only
-      // gets entries from same-tick claims.
+      const lfbq = (p as { lf_build_q?: { ends_at?: number } | null }).lf_build_q;
+      if (lfbq && (lfbq.ends_at ?? 0) > now) lfBuildSlot.add(p.id);
+      const lfrq = (p as { lf_research_q?: { ends_at?: number } | null }).lf_research_q;
+      if (lfrq && (lfrq.ends_at ?? 0) > now) lfResearchSlot.add(p.id);
     }
 
     // v0.0.433: per-tick chain-prereq tracking. rows are sorted priority
@@ -303,6 +305,16 @@ export class PriorityMerger {
         } else if (goalType === "lifeform_building") {
           const lfq = (planet as { lf_build_q?: { ends_at?: number } | null } | undefined)?.lf_build_q;
           slotEmpty = !lfq || (lfq.ends_at ?? 0) <= now;
+        } else if (goalType === "lifeform_research") {
+          // v0.0.633 — owner 2026-06-01 "从0级往上升级的, 当然是有前置任
+          // 务在跑, 为什么不等待前置任务完成?". Use real per-planet
+          // lf_research_q (runtime harvests from lfresearch page).
+          //   - Queue active (ends_at > now) → slotEmpty=false → goal
+          //     waits, no spurious re-dispatch, no ogame 120012 retry.
+          //   - Queue absent / ends_at past → slotEmpty=true → allow
+          //     stuck-recovery to re-arm after timeout.
+          const lfrq = (planet as { lf_research_q?: { ends_at?: number } | null } | undefined)?.lf_research_q;
+          slotEmpty = !lfrq || (lfrq.ends_at ?? 0) <= now;
         } else if (goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport") {
           // v0.0.466 + v0.0.467: atomic fleet ops stuck recovery. Operator
           // 2026-05-29 "do" → extend pattern from expedition to colonize/
@@ -423,6 +435,17 @@ export class PriorityMerger {
           continue;
         }
         if (planetId) slotSet.add(planetId);
+      } else if (result.action === "lifeform_research") {
+        // v0.0.633 — owner 2026-06-01 "等待前置任务完成". Gate dispatch
+        // on per-planet lf research slot. Real prereq (e.g. another lf
+        // research in progress) blocks; ogame 120012 retry storm avoided.
+        if (planetId && lfResearchSlot.has(planetId)) {
+          const reason = `lf research slot on ${planetId} busy (waiting for prereq)`;
+          this.store.updateStatus(row.goal.id, "blocked", reason);
+          blocked.push({ goal_id: row.goal.id, reason });
+          continue;
+        }
+        if (planetId) lfResearchSlot.add(planetId);
       } else if (result.action === "build_ships" || result.action === "build_defense") {
         if (planetId && shipsSlot.has(planetId)) {
           const reason = `shipyard slot on ${planetId} in use this tick`;

@@ -154,6 +154,12 @@ export interface WorldState {
   discovery_active: DiscoveryMission[];            // 2026
   last_update: number;
   page_snapshots: Record<string, number>;
+  /** Harvested tech labels from ogame DOM (zh per server locale). Keyed by
+   *  canonical tech name (heatRecovery, psionicNetwork, ...). Operator
+   *  2026-06-01 "不要兜底，网页上有名字" — DOM is the source of truth, no
+   *  hardcoded catalog fallback. Populated lazily as operator visits
+   *  pages (supplies / lfbuildings / lfresearch / research / shipyard). */
+  tech_labels?: Record<string, string>;
 }
 
 // --- Directive ---

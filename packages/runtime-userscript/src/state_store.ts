@@ -1,4 +1,5 @@
 import type { WorldState } from "@ogamex/shared";
+import { OGAME_DATA_TECHNOLOGY_REVERSE } from "@ogamex/shared";
 import type { EventBus } from "./event_bus.js";
 import type { IndexedKv } from "./store/indexed_db.js";
 
@@ -108,8 +109,59 @@ export class StateStore {
         }
         (loaded as unknown as { planets: unknown }).planets = rec;
       }
+      // Migration v0.0.614: purge legacy `id_<num>` raw keys from
+      // lifeform_research / lifeform_buildings / buildings / research. v0.0.607
+      // extractor wrote them as a fallback before LIFEFORM_RESEARCH_IDS landed;
+      // v0.0.609 dropped the fallback but persisted entries lingered, causing
+      // duplicate rows in the goal panel ("id_14203 L3 + 心灵网络 L3").
+      // Resolve each `id_<num>` to its canonical name. If canonical already
+      // exists, drop the raw (take max level); otherwise rename.
+      let purged = 0;
+      const purgeMap = (m: Record<string, number> | undefined): Record<string, number> | undefined => {
+        if (!m) return m;
+        let dirty = false;
+        const next: Record<string, number> = {};
+        for (const [k, v] of Object.entries(m)) {
+          if (k.startsWith("id_")) {
+            const nid = k.slice(3);
+            const canon = OGAME_DATA_TECHNOLOGY_REVERSE[nid];
+            if (canon) {
+              const existing = next[canon] ?? m[canon] ?? -1;
+              next[canon] = Math.max(existing, v);
+              dirty = true;
+              purged++;
+              continue;
+            }
+          }
+          if (!(k in next)) next[k] = v;
+        }
+        return dirty ? next : m;
+      };
+      const planets = (loaded as unknown as { planets?: Record<string, Record<string, unknown>> }).planets ?? {};
+      for (const pid of Object.keys(planets)) {
+        const p = planets[pid] as Record<string, Record<string, number> | undefined>;
+        const lfr = purgeMap(p.lifeform_research);
+        const lfb = purgeMap(p.lifeform_buildings);
+        const blds = purgeMap(p.buildings);
+        if (lfr !== p.lifeform_research && lfr) p.lifeform_research = lfr;
+        if (lfb !== p.lifeform_buildings && lfb) p.lifeform_buildings = lfb;
+        if (blds !== p.buildings && blds) p.buildings = blds;
+      }
+      const research = (loaded as unknown as { research?: { levels?: Record<string, number> } }).research;
+      if (research?.levels) {
+        const next = purgeMap(research.levels);
+        if (next && next !== research.levels) research.levels = next;
+      }
+      if (purged > 0) {
+        console.info(`[OgameX/migrate] purged ${purged} legacy id_<num> keys from persisted state`);
+      }
       this._state = loaded;
       this.bus.emit("state.updated", { ts: this._state.last_update, hydrated: true });
+      // Persist immediately so the migration survives the next reload without
+      // waiting for another setPartial to trigger save.
+      if (purged > 0) {
+        try { await this.persist(); } catch (e) { console.warn("[OgameX/migrate] persist after purge failed", e); }
+      }
     }
   }
 }

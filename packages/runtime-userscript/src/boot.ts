@@ -13,7 +13,7 @@ import {
 } from "./probes/extractors/resources.js";
 import { extractIncomingEvents } from "./probes/extractors/events.js";
 import { extractPlanets } from "./probes/extractors/planets.js";
-import { extractTechLevels } from "./probes/extractors/buildings.js";
+import { extractTechLevels, extractTechLabels } from "./probes/extractors/buildings.js";
 import { TECH_TREE, TECH_NAME_BY_ID, TECH_ID_BY_NAME, idKind, LIFEFORM_TECH } from "@ogamex/shared";
 import { extractFleetMovements } from "./probes/extractors/fleet.js";
 import { installEventBoxHook } from "./probes/eventbox_hook.js";
@@ -128,13 +128,38 @@ function detectVacationMode(doc: Document): boolean {
  */
 function mergeTechLevels(doc: Document, store: StateStore): void {
   const levels = extractTechLevels(doc);
+  // v0.0.615 — harvest localized labels from same DOM. Operator
+  // 2026-06-01 "网页上有名字" — ogame's title/aria-label is ground truth.
+  const newLabels = extractTechLabels(doc);
+  if (Object.keys(newLabels).length > 0) {
+    const existing = (store.state as { tech_labels?: Record<string, string> }).tech_labels ?? {};
+    let changed = false;
+    for (const k of Object.keys(newLabels)) {
+      if (existing[k] !== newLabels[k]) { changed = true; break; }
+    }
+    if (changed) {
+      store.setPartial({ tech_labels: { ...existing, ...newLabels } } as Partial<typeof store.state>);
+    }
+  }
   if (Object.keys(levels).length === 0) return;
   const buildings: Record<string, number> = {};
   const research: Record<string, number> = {};
   const lifeformBuildings: Record<string, number> = {};
+  // v0.0.616 — operator 2026-06-01 "不会后台请求数据吗?". Passive harvest
+  // now buckets lifeform_research too. When operator visits any planet's
+  // lfresearch page, env.doc reflects it; bucket the entries so the goals
+  // panel sees data without re-fetch.
+  const lifeformResearch: Record<string, number> = {};
   // Detect species from lifeform tech ID prefix:
   //   111xx = humans  121xx = rocktal  131xx = mechas  141xx = kaelesh
   let detectedSpecies: string | null = null;
+  // Detect current page from <meta name=ogame-version>/<body> isn't reliable —
+  // use the global `currentPage` var ogame sets (read via doc.defaultView).
+  const docPage = (doc.defaultView as { currentPage?: string } | null)?.currentPage
+    ?? doc.querySelector<HTMLMetaElement>('meta[name="ogame-page"]')?.content
+    ?? "";
+  const isLfResearchPage = docPage === "lfresearch";
+  const isLfBuildingsPage = docPage === "lfbuildings";
   for (const [id, lvl] of Object.entries(levels)) {
     const techId = TECH_ID_BY_NAME[id];
     if (techId !== undefined && idKind(techId) === "lifeform_building") {
@@ -149,6 +174,16 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
       }
       continue;
     }
+    if (techId !== undefined && idKind(techId) === "lifeform_research") {
+      lifeformResearch[id] = lvl;
+      continue;
+    }
+    // When on lfresearch page, ALL entries (even unmapped) are lf research.
+    // Mirrors refreshOnePage's page-aware bucket so passive + active agree.
+    if (isLfResearchPage) {
+      lifeformResearch[id] = lvl;
+      continue;
+    }
     const entry = (TECH_TREE as Record<string, { kind: string }>)[id];
     if (!entry) continue;
     if (entry.kind === "building") buildings[id] = lvl;
@@ -159,18 +194,40 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
   // Merge buildings into the currently-active planet, identified by
   // <meta name="ogame-planet-id">. Without that meta we can't safely target.
   const activeIdRaw = doc.querySelector<HTMLMetaElement>("meta[name=\"ogame-planet-id\"]")?.content;
-  if (Object.keys(buildings).length > 0 && activeIdRaw && Object.keys(cur.planets).length > 0) {
+  const hasAnyTechData = Object.keys(buildings).length > 0
+    || Object.keys(lifeformBuildings).length > 0
+    || Object.keys(lifeformResearch).length > 0;
+  if (hasAnyTechData && activeIdRaw && Object.keys(cur.planets).length > 0) {
     const existing = cur.planets[activeIdRaw];
     if (existing) {
       const mergedB: Record<string, number> = { ...(existing.buildings ?? {}) };
       for (const [k, v] of Object.entries(buildings)) {
         if (v >= (mergedB[k] ?? 0)) mergedB[k] = v;
       }
-      // Lifeform buildings — separate field. Anti-regression too.
+      // v0.0.620 — operator 2026-06-01 "已经切换了种族的星球老科技是无效
+      // 的". On lfbuildings/lfresearch pages, ogame renders ONLY the
+      // current-species set; that's the authoritative truth for THIS
+      // planet at THIS moment. So REPLACE (not merge) — stale entries
+      // from a previous species evict naturally.
       const existingLf = (existing as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {};
-      const mergedLf: Record<string, number> = { ...existingLf };
-      for (const [k, v] of Object.entries(lifeformBuildings)) {
-        if (v >= (mergedLf[k] ?? 0)) mergedLf[k] = v;
+      let mergedLf: Record<string, number>;
+      if (isLfBuildingsPage) {
+        mergedLf = { ...lifeformBuildings };
+      } else {
+        mergedLf = { ...existingLf };
+        for (const [k, v] of Object.entries(lifeformBuildings)) {
+          if (v >= (mergedLf[k] ?? 0)) mergedLf[k] = v;
+        }
+      }
+      const existingLfr = (existing as { lifeform_research?: Record<string, number> }).lifeform_research ?? {};
+      let mergedLfr: Record<string, number>;
+      if (isLfResearchPage) {
+        mergedLfr = { ...lifeformResearch };
+      } else {
+        mergedLfr = { ...existingLfr };
+        for (const [k, v] of Object.entries(lifeformResearch)) {
+          if (v >= (mergedLfr[k] ?? 0)) mergedLfr[k] = v;
+        }
       }
       const existingLfMeta = (existing as { lifeform?: { species?: string } | null }).lifeform ?? null;
       const lifeformPatch = detectedSpecies !== null && (existingLfMeta === null || existingLfMeta.species !== detectedSpecies)
@@ -178,7 +235,7 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
         : {};
       patch.planets = {
         ...cur.planets,
-        [activeIdRaw]: { ...existing, buildings: mergedB, lifeform_buildings: mergedLf, ...lifeformPatch } as typeof existing,
+        [activeIdRaw]: { ...existing, buildings: mergedB, lifeform_buildings: mergedLf, lifeform_research: mergedLfr, ...lifeformPatch } as unknown as typeof existing,
       };
       if (detectedSpecies !== null) {
         console.info(`[OgameX/species] planet ${activeIdRaw}: detected species=${detectedSpecies}`);
@@ -1188,7 +1245,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.611";
+  const USERSCRIPT_VERSION = "0.0.635";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1636,10 +1693,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         // session-cp race even when serial.
         console.info(`[OgameX/jumpgate] hydrating ${candidates.length} cooldown(s) from sync log (SERIAL to avoid session-cp race)`);
         void (async (): Promise<void> => {
-          const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
+          // v0.0.632 — owner 2026-06-01 "有没有其他的没有使用标准接口?".
+          // JG cooldown hydrate is sniffer-driven but NOT directly owner-
+          // requested at this moment — it's a deferred background reconcile
+          // for cooldowns we observed earlier. Per memory cp-shift-visible:
+          // "operator busy 时所有 cp= fetch 必须 defer". Switch to standard
+          // fetchWithCp (bypassBusy:false) so safe_fetch.awaitCpIdle gates
+          // each iteration until owner stops clicking. Restore stays on.
+          const { fetchWithCp } = await import("./api/safe_fetch.js");
           for (const entry of candidates) {
             try {
-              const r = await fetchWithCpBypassBusy(
+              const r = await fetchWithCp(
                 `/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1`,
                 { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
                 entry.src,
@@ -2029,11 +2093,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Only fleetdispatch is SPA-routable as componentOnly chunk; the rest must
   // go through page=ingame full-page to render building/research levels.
   const CHUNK_SUPPORTED = new Set<string>(["fleetdispatch"]);
-  async function refreshOnePage(forcePage?: string): Promise<void> {
+  async function refreshOnePage(forcePage?: string, forcePlanetId?: string): Promise<void> {
     const page = forcePage ?? REFRESH_PAGES[refreshIdx % REFRESH_PAGES.length]!;
     if (!forcePage) refreshIdx += 1;
     try {
-      const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
+      // v0.0.616 — operator 2026-06-01 "不会后台请求数据吗?". Accept
+      // explicit planetId for per-planet background sweeps. When provided,
+      // use it as cp=<pid> (safe_fetch RESTORES afterward so session-cp
+      // returns to whatever it was). Default = current planet meta.
+      const planetId = forcePlanetId
+        ?? env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
       const useChunk = CHUNK_SUPPORTED.has(page);
       const baseUrl = useChunk
         ? `/game/index.php?page=componentOnly&component=${page}&ajax=1`
@@ -2042,10 +2111,18 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         credentials: "same-origin" as const,
         ...(useChunk ? { headers: { "X-Requested-With": "XMLHttpRequest" } } : {}),
       };
-      // cp=current ≈ no shift; bypass busy because refreshOnePage already
-      // self-throttles AND respects opts.force userBusy check at top.
+      // Default (cp=current): no shift, skipRestore safe, bypassBusy ok
+      // (no foreign shift). Explicit foreign planet (forcePlanetId):
+      //   - skipRestore: false → safe_fetch restores session-cp afterward
+      //   - bypassBusy: false → safe_fetch DEFERS until operator idle, so
+      //     boot-sync (which fires per-planet cp= shifts) doesn't fight
+      //     owner clicks. v0.0.631 — owner 2026-06-01 "新代码又没有走
+      //     标准接口?" — boot-sync 用 bypassBusy=true 把 awaitCpIdle 闸
+      //     拆了, 看到切星球. 改成 foreign 时遵循 idle gate.
+      const isForeign = forcePlanetId !== undefined
+        && forcePlanetId !== env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
       const resp = planetId
-        ? await fetchWithCp(baseUrl, init, planetId, { bypassBusy: true, skipRestore: true })
+        ? await fetchWithCp(baseUrl, init, planetId, { bypassBusy: !isForeign, skipRestore: !isForeign })
         : await env.win.fetch(baseUrl, init);
       if (!resp.ok) {
         console.warn(`[OgameX/refreshOnePage] ${page} HTTP ${resp.status} (${useChunk ? "chunk" : "full"}) — abort`);
@@ -2068,7 +2145,25 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
 
       // 1) Tech levels (research/supplies/facilities → regular; lfbuildings → lifeform;
       //    lfresearch → lifeform_research per planet, v0.0.603)
-      const techMap = (await import("./probes/extractors/buildings.js")).extractTechLevels(parsedDoc);
+      const buildingsModule = await import("./probes/extractors/buildings.js");
+      const techMap = buildingsModule.extractTechLevels(parsedDoc);
+      // v0.0.615 — operator 2026-06-01 "不要兜底，网页上有名字". Harvest
+      // localized labels from same DOM pass and merge into global
+      // store.tech_labels (canonical → zh per server locale).
+      const labelMap = buildingsModule.extractTechLabels(parsedDoc);
+      if (Object.keys(labelMap).length > 0) {
+        const existing = (store.state as { tech_labels?: Record<string, string> }).tech_labels ?? {};
+        const merged = { ...existing, ...labelMap };
+        // Only emit a patch when something actually changed (avoids spurious
+        // state.updated events during repeated extractor runs).
+        let changed = false;
+        for (const k of Object.keys(labelMap)) {
+          if (existing[k] !== labelMap[k]) { changed = true; break; }
+        }
+        if (changed) {
+          store.setPartial({ tech_labels: merged } as Partial<typeof store.state>);
+        }
+      }
       if (Object.keys(techMap).length > 0) {
         const buildings: Record<string, number> = {};
         const research: Record<string, number> = {};
@@ -2120,17 +2215,30 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           const lifeformPatch = detectedSpecies !== null && (existingLf === null || existingLf.species !== detectedSpecies)
             ? { lifeform: { ...(existingLf ?? {}), species: detectedSpecies } }
             : {};
+          // v0.0.620 — operator 2026-06-01 "已经切换了种族的星球老科技是
+          // 无效的". When fetching lfresearch/lfbuildings pages, the
+          // extracted set IS the complete current-species state. Old
+          // species' entries from before a switch must be EVICTED, not
+          // merged. So replace the whole field for this planet instead
+          // of spread+merge. For OTHER pages (where lfresearch entries
+          // could appear as accidental cross-listings), keep merge.
+          const lifeformBuildingsField = page === "lfbuildings"
+            ? { lifeform_buildings: lifeform_buildings }
+            : (Object.keys(lifeform_buildings).length > 0 ? {
+                lifeform_buildings: { ...((targetPlanet as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {}), ...lifeform_buildings }
+              } : {});
+          const lifeformResearchField = page === "lfresearch"
+            ? { lifeform_research: lifeform_research }
+            : (Object.keys(lifeform_research).length > 0 ? {
+                lifeform_research: { ...((targetPlanet as { lifeform_research?: Record<string, number> }).lifeform_research ?? {}), ...lifeform_research }
+              } : {});
           patch.planets = {
             ...cur.planets,
             [planetId]: {
               ...targetPlanet,
               buildings: { ...(targetPlanet.buildings ?? {}), ...buildings },
-              ...(Object.keys(lifeform_buildings).length > 0 ? {
-                lifeform_buildings: { ...((targetPlanet as { lifeform_buildings?: Record<string, number> }).lifeform_buildings ?? {}), ...lifeform_buildings }
-              } : {}),
-              ...(Object.keys(lifeform_research).length > 0 ? {
-                lifeform_research: { ...((targetPlanet as { lifeform_research?: Record<string, number> }).lifeform_research ?? {}), ...lifeform_research }
-              } : {}),
+              ...lifeformBuildingsField,
+              ...lifeformResearchField,
               ...lifeformPatch,
             } as typeof targetPlanet,
           };
@@ -2202,6 +2310,22 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             });
             console.log(`[OgameX/bg] lf queue refreshed (planet ${planetId}): ${name} L${target_level}`);
           }
+        } else if (kind2 === "lifeform_research") {
+          // v0.0.633 — owner 2026-06-01 "从0级往上升级的, 当然是有前置任务
+          // 在跑, 为什么不等待前置任务完成, 在不断重试干嘛?". Without
+          // surfacing the lf research queue, priority_merger's slotEmpty
+          // detection defaulted to true → kept re-dispatching directives
+          // ogame had to reject (queue busy). Track lf_research_q per
+          // planet so sidecar can wait for the prereq research to finish.
+          const target = planetId ? store.state.planets[planetId] : undefined;
+          if (target && planetId) {
+            const lfr = (target as { lifeform_research?: Record<string, number> }).lifeform_research ?? {};
+            const target_level = (lfr[name] ?? 0) + 1;
+            store.setPlanetsPatch({
+              [planetId]: { lf_research_q: { tech: name, technology_id, level: target_level, ends_at } } as Partial<typeof target & { lf_research_q: unknown }>,
+            });
+            console.log(`[OgameX/bg] lf research queue refreshed (planet ${planetId}): ${name} L${target_level}`);
+          }
         } else {
           const target = planetId ? store.state.planets[planetId] : undefined;
           if (target && planetId) {
@@ -2216,7 +2340,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // 3) If this page is research/supplies/facilities/lfbuildings and NO
       //    active li, clear stale queue. Stale q blocks dispatch
       //    indefinitely after operator cancels in ogame UI.
-      if (!foundActive && (page === "research" || page === "supplies" || page === "facilities" || page === "lfbuildings")) {
+      if (!foundActive && (page === "research" || page === "supplies" || page === "facilities" || page === "lfbuildings" || page === "lfresearch")) {
         if (page === "research" && store.state.research?.queue) {
           const cur2 = store.state.research;
           store.setPartial({ research: { ...cur2, queue: null } });
@@ -2236,6 +2360,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             console.log(`[OgameX/bg] lf queue CLEARED (planet ${planetId}, page=${page}, no active)`);
           }
         }
+        if (page === "lfresearch" && planetId) {
+          // v0.0.633 — clear stale lf research queue when ogame says idle.
+          const target = store.state.planets[planetId] as (typeof store.state.planets[string] & { lf_research_q?: unknown }) | undefined;
+          if (target && target.lf_research_q) {
+            store.setPlanetsPatch({ [planetId]: { lf_research_q: null } as Partial<typeof target> });
+            console.log(`[OgameX/bg] lf research queue CLEARED (planet ${planetId}, page=${page}, no active)`);
+          }
+        }
       }
     } catch (e) {
       // Network or parse error — quiet.
@@ -2253,6 +2385,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // guard (60s window after any user click/key) so background refresh
   // doesn't compete with operator's own ogame POSTs.
   setTimeout(refreshOnePage, 8000);
+
+  // v0.0.635 — owner 2026-06-01 "要持久化 ogame 里面的所有数据". Sidecar
+  // now owns WorldState persistence (better-sqlite3 ogamex-world.db). The
+  // userscript no longer needs a forced boot-sync sweep: sidecar hydrates
+  // its mirror from disk on restart, and pollEmpire + per-page passive
+  // harvest cover ongoing freshness. v0.0.634 TTL gate (lastFullLfSyncAt
+  // 24h + 30min idle) removed — sidecar IS the truth.
+  void lastUserActivity;
 
   // Empire view poller — direct ogame standalone empire endpoint.
   // Returns ALL planets ships + buildings in a single fetch. No per-planet
@@ -2731,7 +2871,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Expose globally so ApiExec can request a refresh on demand.
   (env.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire = pollEmpire;
   // v0.0.606 — expose forced refreshOnePage for event-driven sniffer signals.
-  (env.win as Window & { __ogamexRefreshOnePage?: (forcePage?: string) => Promise<void> }).__ogamexRefreshOnePage = refreshOnePage;
+  // v0.0.625 — extended to forward forcePlanetId so the goals panel's
+  // "🔄 同步该星球" button can target a specific planet without changing
+  // operator's current session cp.
+  (env.win as Window & { __ogamexRefreshOnePage?: (forcePage?: string, forcePlanetId?: string) => Promise<void> }).__ogamexRefreshOnePage = refreshOnePage;
   // Diagnostic helper — operator calls __ogamexDebugGalaxy(g,s) in DevTools.
   // CRITICAL: Tampermonkey sandboxes env.win. DevTools console sees PAGE
   // window (unsafeWindow). Must dual-expose for console access.

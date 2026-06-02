@@ -82,7 +82,16 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   }
 
   canHandle(d: Directive): boolean {
-    return d.method === "ui" && ["build", "research", "build_ships", "expedition", "colonize", "deploy", "transport", "discover", "jumpgate"].includes(d.action);
+    // v0.0.623 — operator 2026-06-01 console: "[GoalRunner] no executor for
+    // action=lifeform_research". The dispatch table (line ~222) already
+    // routes lifeform_research → execSimpleUpgrade("lfresearch") since
+    // v0.0.602, but canHandle gate dropped those actions, so goal_runner
+    // skipped this executor entirely. Add lf_* and round-trip the wiring.
+    return d.method === "ui" && [
+      "build", "research", "build_ships",
+      "expedition", "colonize", "deploy", "transport", "discover", "jumpgate",
+      "lifeform_research",
+    ].includes(d.action);
   }
 
   /** Read persisted ogame API captures from sniffer (cross-context via

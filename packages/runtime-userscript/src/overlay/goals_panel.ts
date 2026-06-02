@@ -1074,7 +1074,10 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命研究项目 (单选, 切换 species 重新加载)</div>
+          <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:4px;">
+            <span style="color:#d0d8e0; font-size:11px;">生命研究项目 (单选, 切换 species 重新加载)</span>
+            <button data-lr-force-sync type="button" style="background:#1a2438; color:#7cfc00; border:1px solid #2a3a52; border-radius:3px; cursor:pointer; font-size:10px; padding:2px 8px;" title="强制 fetch 当前选中星球的 lfresearch 页, 替换 store 数据">🔄 同步该星球</button>
+          </div>
           <div data-lr-research-list style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
             <span style="color:#5a7090; font-size:11px;">loading…</span>
           </div>
@@ -1817,40 +1820,75 @@ function openGoalsSettings(
       // v0.0.605 — operator 2026-06-01 真相: lifeform_research is per-planet,
       // not per-species globally. ogame may carry research entries from
       // multiple species on the same planet (historical species switches).
-      // Render the radio list from selected planet's lifeform_research keys
-      // (live store), with labels resolved from any catalog match across all
-      // species (catalog is just a label-lookup, not the source of truth).
-      const allLifeformResearchLabels = new Map<string, string>();
-      for (const sp of ["humans", "rocktal", "mechas", "kaelesh"] as const) {
-        const cat = (LIFEFORM_TECH as Record<string, { research?: Record<string, LfResearch> }>)[sp];
-        for (const [k, v] of Object.entries(cat?.research ?? {})) {
-          if (!allLifeformResearchLabels.has(k)) {
-            allLifeformResearchLabels.set(k, v.display_name_zh ?? v.display_name_en ?? k);
-          }
-        }
-      }
+      // v0.0.615 — operator 2026-06-01 "不要兜底，网页上有名字". Labels
+      // come from store.tech_labels (harvested from ogame DOM at
+      // lfresearch page visit). No catalog fallback. If a tech has no
+      // harvested label (planet/page not yet visited), show the canonical
+      // key + a hint to visit the page.
+      // v0.0.620 — operator "已经切换了种族的星球老科技是无效的". Defense
+      // in depth: even if boot-sync hasn't replaced stale entries yet,
+      // filter at render time by planet's CURRENT species. lf research IDs
+      // are species-tagged by prefix (11xxx human, 12xxx rocktal,
+      // 13xxx mecha, 14xxx kaelesh).
+      const techSpeciesOf = (canonical: string): string | null => {
+        const tid = TECH_ID_BY_NAME[canonical];
+        if (typeof tid !== "number") return null;
+        const prefix = Math.floor(tid / 1000);
+        if (prefix === 11) return "humans";
+        if (prefix === 12) return "rocktal";
+        if (prefix === 13) return "mechas";
+        if (prefix === 14) return "kaelesh";
+        return null;
+      };
       const renderLrResearch = (_species: string): void => {
         if (!lrResearchList) return;
         const planetRadio = lrPlanetRadios().find((r) => r.checked);
-        const lfr = planetRadio
-          ? ((storeRef?.state?.planets?.[planetRadio.value] as { lifeform_research?: Record<string, number> } | undefined)?.lifeform_research ?? {})
-          : {};
+        const planetState = planetRadio
+          ? (storeRef?.state?.planets?.[planetRadio.value] as { lifeform_research?: Record<string, number>; lifeform?: { species?: string } | null } | undefined)
+          : undefined;
+        const lfr = planetState?.lifeform_research ?? {};
+        const planetSpecies = planetState?.lifeform?.species ?? null;
+        const techLabels = (storeRef?.state as { tech_labels?: Record<string, string> } | undefined)?.tech_labels ?? {};
+        // v0.0.626 — operator 2026-06-01 "1:486:7 就不同". Dump per-planet
+        // state at render time so we can see in console whether store has
+        // distinct per-planet lifeform_research or all leak to current cp.
+        if (planetRadio) {
+          const coord = planetCoordById.get(planetRadio.value) ?? "?";
+          const lfrSummary = Object.entries(lfr).map(([k, v]) => `${k}=${v}`).join(",");
+          console.info(`[panel/lf-research/render] planet=${planetRadio.value} coord=${coord} species=${planetSpecies} entries=${Object.keys(lfr).length} lfr={${lfrSummary}}`);
+        }
         currentLrLabels.clear();
-        // v0.0.610 — operator 2026-06-01 "显示对应星球上当前的科技, 不是
-        // 全部科技". Only show entries with lvl > 0 (operator unlocked).
-        // ogame lfresearch page lists all 18 per species including lvl=0
-        // (not-yet-unlocked) — those are noise for the panel.
-        const entries = Object.entries(lfr).filter(([, lvl]) => lvl > 0);
+        // v0.0.628 — operator 2026-06-01 "3:260:9 用了一个人类科技".
+        // ogame allows cross-species lf research via artifacts (3,600
+        // artifacts = swap one tech to a non-native species). 3:260:9
+        // has humans 11201 (星際使者 L5) alongside kaelesh 14202-14212.
+        // The lfresearch page IS ground truth, and boot-sync REPLACE
+        // already writes exactly what the page renders. So drop the
+        // render-time species filter — show everything in store.
+        // Old species entries from before a species switch were already
+        // evicted by REPLACE; this filter was only blocking legit
+        // artifact-swapped foreign techs.
+        const entries = Object.entries(lfr);
+        // Suppress unused-var warning while keeping the helper for future
+        // diagnostics (planetSpecies could feed a "filter foreign" toggle).
+        void planetSpecies;
         if (entries.length === 0) {
           lrResearchList.innerHTML = planetRadio
-            ? `<span style="color:#5a7090; font-size:11px;">该星球未 unlock 任何生命研究 — 请先在 ogame UI 进入 lfresearch 页, 系统会自动同步数据</span>`
+            ? `<span style="color:#5a7090; font-size:11px;">该星球未 unlock 任何生命研究 — boot 同步未完成或该星球数据未到, 等几秒</span>`
             : `<span style="color:#5a7090; font-size:11px;">请先选星球</span>`;
           return;
         }
+        // v0.0.627 — operator 2026-06-01 "研究按照 id 排序". Match the
+        // order ogame's lfresearch page renders: ascending numeric ID
+        // (T1 first, then T2, then T3 — natural sequence operator sees).
         const html = entries
-          .sort(([, a], [, b]) => b - a)  // higher levels first
+          .sort(([a], [b]) => {
+            const ia = TECH_ID_BY_NAME[a] ?? Number.POSITIVE_INFINITY;
+            const ib = TECH_ID_BY_NAME[b] ?? Number.POSITIVE_INFINITY;
+            return ia - ib;
+          })
           .map(([k, lvl]) => {
-            const name = allLifeformResearchLabels.get(k) ?? k;
+            const name = techLabels[k] ?? k;
             currentLrLabels.set(k, name);
             return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="当前 L${lvl}"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)} <span style="color:#7080a0;">L${lvl}</span></span></label>`;
           }).join("");
@@ -1912,6 +1950,40 @@ function openGoalsSettings(
         const checked = lrPlanetRadios().find((r) => r.checked);
         if (checked?.disabled) checked.checked = false;
       };
+      // v0.0.625 — operator 2026-06-01 "是没有更新吗?". Two add-ons:
+      // 1. 🔄 button: force-fetch the SELECTED planet's lfresearch (uses
+      //    refreshOnePage with forcePlanetId; REPLACES store data).
+      // 2. Auto-rerender on store updates so post-fetch the new data
+      //    surfaces without operator clicking the radio again.
+      const lrForceSyncBtn = m.querySelector<HTMLButtonElement>("[data-lr-force-sync]");
+      if (lrForceSyncBtn) {
+        lrForceSyncBtn.addEventListener("click", async () => {
+          const planetRadio = lrPlanetRadios().find((r) => r.checked);
+          if (!planetRadio) {
+            if (lrResearchList) lrResearchList.innerHTML = `<span style="color:#ffaa00; font-size:11px;">请先选星球</span>`;
+            return;
+          }
+          const pid = planetRadio.value;
+          const refreshFn = (window as Window & { __ogamexRefreshOnePage?: (forcePage?: string, forcePlanetId?: string) => Promise<void> }).__ogamexRefreshOnePage;
+          if (typeof refreshFn !== "function") return;
+          const origLabel = lrForceSyncBtn.textContent;
+          lrForceSyncBtn.disabled = true;
+          lrForceSyncBtn.textContent = "🔄 同步中…";
+          try {
+            console.info(`[panel/lf-research] force-sync planet=${pid}`);
+            await refreshFn("lfresearch", pid);
+            console.info(`[panel/lf-research] force-sync planet=${pid} done`);
+            // Re-render with the freshly-replaced store data.
+            renderLrResearch(livePlanetSpecies(pid) ?? "kaelesh");
+            refreshLrDesc();
+          } catch (e) {
+            console.warn(`[panel/lf-research] force-sync planet=${pid} failed`, e);
+          } finally {
+            lrForceSyncBtn.disabled = false;
+            lrForceSyncBtn.textContent = origLabel;
+          }
+        });
+      }
       const initLrSpecies = lrSpeciesRadios().find((r) => r.checked)?.value ?? "kaelesh";
       renderLrResearch(initLrSpecies);
       applyLrSpeciesFilter(initLrSpecies);

@@ -32,6 +32,7 @@ import { SaveCoordinator } from "./save_coordinator.js";
 import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
 import { GoalsStore } from "./goals_store.js";
+import { WorldStateStore } from "./world_state_store.js";
 import { GeminiClient } from "./gemini_client.js";
 import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
@@ -82,6 +83,11 @@ export interface SidecarConfig {
   strategyRepoDir?: string;
   /** Path to goals SQLite file. Default ~/.openclaw/workspace/ogamex-goals.db. ":memory:" for tests. */
   goalsDbPath?: string;
+  /** Path to world-state SQLite file. Default ~/.openclaw/workspace/ogamex-world.db.
+   *  ":memory:" for tests. Persists every state.snapshot so sidecar restart
+   *  recovers the WorldState mirror without waiting for the next userscript
+   *  poll. Operator 2026-06-01 "要持久化 ogame 里面的所有数据". */
+  worldStateDbPath?: string;
   /** OpenClaw memory dir. Default ~/.openclaw/workspace/memory. */
   memoryDir?: string;
   /** Gemini API key. Default process.env.GEMINI_API_KEY. */
@@ -96,6 +102,7 @@ export interface SidecarHandle {
   reporter: Reporter | null;
   strategyManager: StrategyManager;
   goalsStore: GoalsStore;
+  worldStateStore: WorldStateStore;
   priorityMerger: PriorityMerger;
   failureAggregator: FailureAggregator;
   memoryWriter: MemoryWriterHandle;
@@ -311,6 +318,7 @@ export async function startSidecar(
 
   const strategyRepoDir = config.strategyRepoDir ?? path.join(workspaceDir, "ogamex-strategy");
   const goalsDbPath = config.goalsDbPath ?? path.join(workspaceDir, "ogamex-goals.db");
+  const worldStateDbPath = config.worldStateDbPath ?? path.join(workspaceDir, "ogamex-world.db");
   const memoryDir = config.memoryDir ?? path.join(workspaceDir, "memory");
 
   const strategyManager = new StrategyManager({
@@ -321,6 +329,12 @@ export async function startSidecar(
   strategyManager.init();
 
   const goalsStore = new GoalsStore({ dbPath: goalsDbPath });
+  const worldStateStore = new WorldStateStore({ dbPath: worldStateDbPath });
+  // Bound events table at boot — rolling 10K window. Trims older rows so
+  // disk doesn't grow unbounded across a long-lived deployment. 10K @ ~200
+  // bytes/row ≈ 2MB ceiling.
+  try { worldStateStore.trimEvents(10_000); }
+  catch (e) { console.warn("[ogamex/sidecar] events trim failed (continuing):", e); }
 
   const apiKey = config.geminiApiKey ?? process.env["GEMINI_API_KEY"] ?? "";
   // We construct the Gemini client unconditionally — even an empty key — so
@@ -335,6 +349,52 @@ export async function startSidecar(
   const stateRef: { current: WorldState | null } = { current: null };
   const lastSeen: { at: number | null } = { at: null };
   const sidecarStartedAt = Date.now();
+
+  // Hydrate stateRef from persisted blob BEFORE transports start. Lets
+  // priorityMerger / health / debug endpoints have a real WorldState even
+  // before the userscript's first state.snapshot. Corrupt blob → null +
+  // warn so boot still completes (next snapshot will overwrite).
+  try {
+    const persisted = worldStateStore.hydrate();
+    if (persisted !== null) {
+      stateRef.current = persisted.state;
+      const ageMin = Math.round((Date.now() - persisted.updated_at) / 60_000);
+      console.info(`[ogamex/sidecar] hydrated WorldState from db (age ${ageMin}min, last_update=${persisted.state.last_update})`);
+    } else {
+      console.info("[ogamex/sidecar] no persisted WorldState — waiting for first state.snapshot");
+    }
+  } catch (e) {
+    console.warn("[ogamex/sidecar] WorldState hydrate failed (corrupt blob?), continuing with null:", e);
+  }
+
+  // Debounced upsert to ride atop the high-frequency state.snapshot stream.
+  // 1s window matches MemoryWriter's debounce — every snapshot triggers one
+  // pending write, repeated snapshots inside the window collapse to one.
+  // Operator 2026-06-01 "事件驱动也要更新后台数据" — the snapshot handler
+  // already covers full-state replacement; event-driven deltas land via
+  // state_store.setPartial → next snapshot includes them.
+  const WORLD_STATE_DEBOUNCE_MS = 1000;
+  let worldStateWriteTimer: NodeJS.Timeout | null = null;
+  const scheduleWorldStatePersist = (): void => {
+    if (worldStateWriteTimer !== null) return;
+    worldStateWriteTimer = setTimeout(() => {
+      worldStateWriteTimer = null;
+      const snap = stateRef.current;
+      if (snap === null) return;
+      try { worldStateStore.upsert(snap); }
+      catch (e) { console.error("[ogamex/sidecar] WorldState upsert failed:", e); }
+    }, WORLD_STATE_DEBOUNCE_MS);
+  };
+  const flushWorldStatePersist = (): void => {
+    if (worldStateWriteTimer !== null) {
+      clearTimeout(worldStateWriteTimer);
+      worldStateWriteTimer = null;
+    }
+    const snap = stateRef.current;
+    if (snap === null) return;
+    try { worldStateStore.upsert(snap); }
+    catch (e) { console.error("[ogamex/sidecar] WorldState flush failed:", e); }
+  };
 
   // --- DebugBuffer (M8.5) --------------------------------------------------
   // Rings the last 100 dispatched directives + 100 upstream events. Wired
@@ -1522,6 +1582,11 @@ export async function startSidecar(
     stateRef.current = msg.snapshot;
     lastSeen.at = Date.now();
 
+    // Persist (debounced) — every snapshot schedules at most one write inside
+    // the 1s window. Coalesces bursts when the userscript pushes 3-5
+    // snapshots per page change.
+    scheduleWorldStatePersist();
+
     // SaveCoordinator: diff hostile events between snapshots so per-planet
     // FSM can advance IN_FLIGHT → RECALL_READY when all that planet's
     // pending hostiles drop from events_incoming.
@@ -1678,6 +1743,13 @@ export async function startSidecar(
   // {empire_poll, operator_retry} clears their awaiting set.
 
   ws.on("event.daily_failure", (msg) => {
+    // Operator 2026-06-01 "事件驱动也要更新后台数据" — persist event row
+    // BEFORE async record() so it survives even if analyzer crashes.
+    try {
+      worldStateStore.appendEvent("event.daily_failure", {
+        task: msg.task, attempts: msg.attempts, last_error: msg.last_error,
+      });
+    } catch (e) { console.error("[ogamex/sidecar] appendEvent daily_failure threw", e); }
     // record() is async; fire-and-forget. We attach a catch so a stuck
     // analyzer never produces an unhandled rejection (which would crash
     // Node in --unhandled-rejections=strict mode).
@@ -1692,6 +1764,13 @@ export async function startSidecar(
   });
 
   ws.on("event.emergency", (msg) => {
+    // Operator 2026-06-01 "事件驱动也要更新后台数据" — persist event row
+    // BEFORE downstream side-effects so audit log is durable even on crash.
+    try {
+      worldStateStore.appendEvent("event.emergency", {
+        subtype: msg.subtype, data: msg.data,
+      });
+    } catch (e) { console.error("[ogamex/sidecar] appendEvent emergency threw", e); }
     // Always log on receipt — journalctl is the audit trail for natural
     // attack/spy events (success path was previously silent, making it
     // impossible to grep history). Failure log already exists below.
@@ -1767,11 +1846,20 @@ export async function startSidecar(
   const stop = async (): Promise<void> => {
     digestScheduler.stop();
     memoryWriter.stop();
+    // Flush any pending debounced WorldState write BEFORE closing the SQLite
+    // handle — otherwise the most recent snapshot may not land on disk.
+    try { flushWorldStatePersist(); }
+    catch (err) { console.error("[ogamex/sidecar] WorldState flush threw", err); }
     await Promise.all([ws.stop(), http.stop()]);
     try {
       goalsStore.close();
     } catch (err) {
       console.error("[ogamex/sidecar] goalsStore.close failed", err);
+    }
+    try {
+      worldStateStore.close();
+    } catch (err) {
+      console.error("[ogamex/sidecar] worldStateStore.close failed", err);
     }
   };
 
@@ -1796,6 +1884,7 @@ export async function startSidecar(
     reporter,
     strategyManager,
     goalsStore,
+    worldStateStore,
     priorityMerger,
     failureAggregator,
     memoryWriter,

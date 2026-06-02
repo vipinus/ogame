@@ -307,6 +307,13 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
   const unsubDispatch = client.on("directive.dispatch", (msg) => {
     if (stopped) return;
     const d: unknown = msg.directive;
+    // v0.0.629 — operator 2026-06-01 "lifeform_research ... 不动".
+    // Entry log BEFORE validation so we can verify WS delivery regardless
+    // of directive shape. Diagnose: console-empty = sidecar didn't dispatch
+    // or WS dropped; entry log present but no "received" = validator
+    // rejected; both present but no [ApiExec] = canHandle / executor gap.
+    const dRec = d as { id?: unknown; action?: unknown; goal_id?: unknown } | null;
+    console.log(`[GoalRunner/dispatch-in] action=${String(dRec?.action ?? "?")} id=${String(dRec?.id ?? "?").slice(0,8)} goal=${String(dRec?.goal_id ?? "?").slice(0,8)}`);
     if (!isValidDirective(d)) {
       console.warn("[GoalRunner] dropped invalid directive", d);
       return;

@@ -436,6 +436,56 @@ export class HttpServer {
         });
         return;
       }
+      // v0.0.568 — trigger debris-check for the operator's CURRENT viewed
+      // planet (no params; userscript reads meta[name=ogame-planet-id]).
+      // Sentinel origin_planet_id="_CURRENT_" tells wire.ts to self-resolve.
+      if (url === "/ogamex/v1/debug/trigger-debris-check-current") {
+        const msg = { type: "expedition.debris_check" as const, galaxy: 0, system: 0, origin_planet_id: "_CURRENT_", reason: "manual trigger current planet" };
+        this.queueDownstream(msg);
+        console.log(`[debug] trigger-debris-check-current enqueued (sentinel _CURRENT_)`);
+        this.writeCorsHeaders(res);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ ok: true, enqueued: msg }));
+        return;
+      }
+      // v0.0.562 — manual debris-check trigger. Operator 2026-06-01: 触发
+      // 一下这个任务. Bypasses the snapshot-based fleet detection so the
+      // full debris-check → galaxy fetch → mission=8 explorer dispatch chain
+      // can be exercised without waiting for an expedition fleet to return.
+      // Public no-auth, LAN-only. Body: { galaxy, system, origin_planet_id }.
+      if (url === "/ogamex/v1/debug/trigger-debris-check") {
+        let body = "";
+        req.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
+        req.on("end", () => {
+          try {
+            const parsed = JSON.parse(body) as { galaxy?: unknown; system?: unknown; origin_planet_id?: unknown };
+            const g = typeof parsed.galaxy === "number" ? parsed.galaxy : 0;
+            const s = typeof parsed.system === "number" ? parsed.system : 0;
+            const pid = typeof parsed.origin_planet_id === "string" ? parsed.origin_planet_id : "";
+            if (!g || !s || !pid) {
+              this.writeCorsHeaders(res);
+              res.statusCode = 400;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ ok: false, error: "need {galaxy:number, system:number, origin_planet_id:string}" }));
+              return;
+            }
+            const msg = { type: "expedition.debris_check" as const, galaxy: g, system: s, origin_planet_id: pid, reason: "manual debug trigger" };
+            this.queueDownstream(msg);
+            console.log(`[debug] manual trigger-debris-check enqueued: G:S=${g}:${s} origin=${pid}`);
+            this.writeCorsHeaders(res);
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ok: true, enqueued: msg }));
+          } catch (e) {
+            this.writeCorsHeaders(res);
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ok: false, error: String(e) }));
+          }
+        });
+        return;
+      }
       // Species discovery — create goal. Public no-auth (panel button click,
       // operator-only LAN). Body: JSON {source_planet, galaxy, base_system,
       // range}. Returns {ok, goal_id}.

@@ -19,8 +19,12 @@ import { OGAME_DATA_TECHNOLOGY_REVERSE } from "@ogamex/shared";
  */
 export function extractTechLevels(doc: Document): Record<string, number> {
   const out: Record<string, number> = {};
-  const items = doc.querySelectorAll<HTMLElement>("li.technology[data-technology], [data-technology]");
+  // v0.0.621 — restrict to LI (was matching the inner upgrade button too;
+  // the button has no .level child so it was silently skipped, but the
+  // broad selector is brittle to ogame UI changes).
+  const items = doc.querySelectorAll<HTMLElement>("li.technology[data-technology], li[data-technology]");
   for (const li of items) {
+    if (li.tagName !== "LI") continue;
     const numericId = li.getAttribute("data-technology");
     if (!numericId) continue;
     const levelEl = li.querySelector<HTMLElement>(".level");
@@ -39,6 +43,47 @@ export function extractTechLevels(doc: Document): Record<string, number> {
     // imported from alaingilbert/ogame protocol library, so reverse-map
     // hits on all 72 entries. Drop the raw `id_<num>` fallback — unknown
     // IDs at this point are genuine unknowns (skip).
+  }
+  return out;
+}
+
+/**
+ * Extract localized tech labels from the current ogame page DOM.
+ *
+ * Operator 2026-06-01 directive: "不要兜底，网页上有名字" — server-rendered
+ * `title` / `aria-label` attributes carry the player's locale (zh / en /
+ * etc.). Use those as the SOLE source of truth for display names. No
+ * hardcoded catalog translations.
+ *
+ * Real DOM (s274-en kaelesh lfresearch page):
+ *   `<li class="technology lifeformTech14201"
+ *      data-technology="14201"
+ *      aria-label="熱量回收"
+ *      title="熱量回收">`
+ *
+ * Returns `{canonical: label}` map. Numeric IDs that don't resolve to a
+ * canonical name are skipped (caller's store keys are all canonical).
+ */
+export function extractTechLabels(doc: Document): Record<string, string> {
+  const out: Record<string, string> = {};
+  // v0.0.621 — operator 2026-06-01 "研究 1 級 熱量回收 L5 不应该出现".
+  // The lfresearch DOM has BOTH <li data-technology="14201"
+  // aria-label="熱量回收"> AND <button data-technology="14201"
+  // aria-label="研究 1 級 熱量回收"> (= upgrade button's tooltip, not tech
+  // name). Previous selector `[data-technology]` matched the button too
+  // and overwrote the LI's clean label. Tighten to LI-only.
+  const items = doc.querySelectorAll<HTMLElement>("li.technology[data-technology], li[data-technology]");
+  for (const li of items) {
+    if (li.tagName !== "LI") continue;
+    const numericId = li.getAttribute("data-technology");
+    if (!numericId) continue;
+    const canonical = OGAME_DATA_TECHNOLOGY_REVERSE[numericId];
+    if (!canonical) continue;
+    // Prefer aria-label (a11y-stable), fall back to title. Strip ogame's
+    // trailing whitespace/newlines. Skip if empty.
+    const raw = (li.getAttribute("aria-label") ?? li.getAttribute("title") ?? "").trim();
+    if (!raw) continue;
+    out[canonical] = raw;
   }
   return out;
 }

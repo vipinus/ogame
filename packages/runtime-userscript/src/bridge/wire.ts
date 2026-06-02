@@ -169,26 +169,152 @@ export async function wireBridge(
   // pos 16 for debris field, dispatches explorer fleet (mission=8, destType=2)
   // to collect. Operator 2026-05-30 spec: explorer = "探路者", any positive
   // debris triggers; explorer count = ceil((m+c+d) / explorer_cargo_cap).
+  // v0.0.567 — defense-in-depth dedup. Operator 2026-06-01 observed 3 mission=8
+  // dispatched for same return: sidecar's firedDebrisCheckFor was being
+  // GC'd prematurely (fixed sidecar-side), but wire should ALSO guard against
+  // duplicate dispatches in case any future code path re-fires the message.
+  // Key by origin_planet_id + dest G:S, 10-min TTL (debris harvest round trip
+  // is minutes; dedup window covers same-fleet re-fire without blocking new
+  // legitimate harvests for a fresh expedition return to the same coord).
+  const recentHarvestDispatch = new Map<string, number>();
+  const HARVEST_DEDUP_TTL_MS = 10 * 60 * 1000;
   const offDebrisCheck = client.on("expedition.debris_check", (msg) => {
-    const m = msg as { galaxy?: number; system?: number; origin_planet_id?: string; reason?: string };
-    const g = m.galaxy ?? 0, s = m.system ?? 0, origin = m.origin_planet_id ?? "";
+    const m = msg as { galaxy?: number; system?: number; position?: number; origin_planet_id?: string; reason?: string };
+    let g = m.galaxy ?? 0, s = m.system ?? 0, origin = m.origin_planet_id ?? "";
+    // v0.0.570 — operator 2026-06-01 "普通回收是用回收船不是探路者, 只有
+    // 16号位置是探路者". `target_position` selects which debris field to
+    // harvest within the system. Default 16 (expedition slot) for
+    // backwards compat — sidecar's auto-fire from expedition return uses
+    // dest_position=16. Ship type follows: pos===16 → pathfinder/explorer,
+    // pos∈[1,15] → recycler.
+    let targetPosition = typeof m.position === "number" && m.position >= 1 && m.position <= 16 ? m.position : 16;
+    // v0.0.568 — sentinel _CURRENT_ resolves to the operator's currently
+    // viewed planet (meta[name=ogame-planet-id]) + its coords via the
+    // sidecar-pushed empire snapshot in __ogamexStore.
+    if (origin === "_CURRENT_") {
+      try {
+        const metaEl = document.querySelector('meta[name="ogame-planet-id"]') as HTMLMetaElement | null;
+        const realCp = metaEl?.content ?? "";
+        const winStore = (window as Window & {
+          __ogamexStore?: { state?: { planets?: Record<string, { coords?: readonly number[]; type?: string }> } };
+        }).__ogamexStore;
+        const planet = realCp ? winStore?.state?.planets?.[realCp] : undefined;
+        if (!realCp || !planet || !Array.isArray(planet.coords) || planet.coords.length < 3) {
+          const failMsg = `_CURRENT_ resolve failed: meta=${realCp || "<empty>"} planet=${JSON.stringify(planet ?? null)}`;
+          console.warn(`[debris] ${failMsg}`);
+          void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+            method: "POST", credentials: "omit",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tag: "debris-current-fail", text: failMsg }),
+          }).catch(() => { /* */ });
+          return;
+        }
+        g = planet.coords[0]!;
+        s = planet.coords[1]!;
+        targetPosition = planet.coords[2]!;
+        origin = realCp;
+        // operator 2026-06-01: 回收永远从星球出发. If operator is viewing a
+        // moon, swap origin to the sibling planet at the same coords.
+        if (planet.type === "moon" && winStore?.state?.planets) {
+          const coordKey = planet.coords.slice(0, 3).join(":");
+          const sibling = Object.entries(winStore.state.planets)
+            .find(([, p]) => Array.isArray(p?.coords) && (p.coords as number[]).join(":") === coordKey && p.type === "planet");
+          if (sibling) {
+            console.info(`[debris] _CURRENT_ moon→planet swap: ${realCp}→${sibling[0]} at ${coordKey}`);
+            origin = sibling[0];
+          } else {
+            console.warn(`[debris] _CURRENT_ moon ${realCp} has no planet sibling at ${coordKey}; aborting`);
+            return;
+          }
+        }
+        const okMsg = `_CURRENT_ resolved → origin=${origin} coords=${g}:${s}:${planet.coords[2]} type=${planet.type ?? "?"}`;
+        console.info(`[debris] ${okMsg}`);
+        void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tag: "debris-current-ok", text: okMsg }),
+        }).catch(() => { /* */ });
+      } catch (e) {
+        console.error("[debris] _CURRENT_ resolve threw:", e);
+        return;
+      }
+    }
     if (!g || !s || !origin) return;
-    console.info(`[debris] check G:S=${g}:${s} origin=${origin} reason=${m.reason ?? ""}`);
+    // v0.0.567 — defense-in-depth dedup. Skip if we dispatched for the same
+    // (origin → G:S) tuple within HARVEST_DEDUP_TTL_MS.
+    const dedupKey = `${origin}→${g}:${s}`;
+    const lastTs = recentHarvestDispatch.get(dedupKey) ?? 0;
+    const nowMs = Date.now();
+    if (lastTs > 0 && (nowMs - lastTs) < HARVEST_DEDUP_TTL_MS) {
+      const ageS = Math.floor((nowMs - lastTs) / 1000);
+      const dupMsg = `dedup SKIP ${dedupKey} (last dispatch ${ageS}s ago, TTL ${HARVEST_DEDUP_TTL_MS / 1000}s)`;
+      console.info(`[debris] ${dupMsg}`);
+      try {
+        void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tag: "debris-dedup", text: dupMsg }),
+        }).catch(() => { /* */ });
+      } catch { /* */ }
+      return;
+    }
+    // GC stale entries (>TTL old) opportunistically.
+    for (const [k, ts] of Array.from(recentHarvestDispatch.entries())) {
+      if (nowMs - ts > HARVEST_DEDUP_TTL_MS) recentHarvestDispatch.delete(k);
+    }
+    // v0.0.570 — ship type selection per position. expedition slot (16)
+    // requires pathfinder/explorer (id=219); regular battle debris at any
+    // position 1-15 uses recycler (id=209, ogame's standard collector).
+    const harvestShipKey = targetPosition === 16 ? "explorer" : "recycler";
+    console.info(`[debris] check G:S=${g}:${s}:${targetPosition} origin=${origin} ship=${harvestShipKey} reason=${m.reason ?? ""}`);
     void (async (): Promise<void> => {
       try {
-        // Fetch galaxy content directly (ogame ajax).
-        const r = await fetch(`/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1`, {
+        // v0.0.570 — operator 2026-06-01 "切 cp 要走标准接口". Galaxy fetch
+        // now goes through cpPostWithRetry (the unified entry) instead of
+        // raw fetch — aligns with discover/galaxy chain (api_executor.ts:994
+        // Phase 3 migration). Provides the same mutex + restore + click-lock
+        // protection as every other cp= fetch.
+        const wTokMgr = (window as Window & { __ogamexTokenManager?: unknown }).__ogamexTokenManager;
+        if (!wTokMgr) { console.warn("[debris] no tokenManager available for galaxy fetch"); return; }
+        const { cpPostWithRetry } = await import("../api/fleet_api.js");
+        // v0.0.572 — operator 2026-06-01 "切 cp 跳星球的问题". v0.0.570 set
+        // skipRestore:true here (copied from api_executor's discover-galaxy
+        // path which lives inside execute()'s own restore chain). wire.ts
+        // has NO outer restore — leaving skipRestore:true meant the cp shift
+        // to `origin` was NEVER reverted, so operator's top-bar stayed on
+        // origin instead of bouncing back to their viewed planet. Fix:
+        // remove skipRestore (default = false → safe_fetch auto-restores).
+        const galRes = await cpPostWithRetry({
+          endpoint: `/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1`,
+          sourcePlanetId: origin,
+          token: wTokMgr as NonNullable<Parameters<typeof cpPostWithRetry>[0]["token"]>,
+          action: "debris:galaxy",
           method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-          body: new URLSearchParams({ galaxy: String(g), system: String(s) }).toString(),
+          tokenProvider: async () => "",
+          buildBody: () => {
+            const b = new URLSearchParams();
+            b.set("galaxy", String(g));
+            b.set("system", String(s));
+            return b;
+          },
+          successCheck: (j) => !!j["system"],
+          maxAttempts: 1,
         });
-        if (!r.ok) { console.warn(`[debris] galaxy fetch HTTP ${r.status}`); return; }
-        const json = await r.json() as Record<string, unknown>;
-        // Find position 16's debris field. ogame v12 galaxy response shape:
-        //   { galaxy: [{position:16, debris:{metal:N, crystal:N, deuterium?:N}, ...}, ...], ... }
-        // OR { galaxy: { rows: [...] } } — try multiple paths.
+        if (galRes.status !== 200) { console.warn(`[debris] galaxy fetch HTTP ${galRes.status}`); return; }
+        const json = (galRes.json ?? {}) as Record<string, unknown>;
+        // v0.0.564 — operator 2026-06-01 forensic via /v1/debug/log mirror:
+        // ogame v12 fetchGalaxyContent response shape is `{system: {galaxyContent:[...]}, token, ...}`,
+        // NOT `{galaxy: [...]}`. The galaxy[] / galaxy.rows[] paths were
+        // legacy guesses that never matched real responses — every harvest
+        // probe silently skipped. Read from `system.galaxyContent` (the same
+        // path api_executor.ts:1020 discover/galaxy chain already uses).
         const rows: Array<Record<string, unknown>> = (() => {
+          const sysField = json["system"];
+          if (sysField && typeof sysField === "object") {
+            const gc = (sysField as { galaxyContent?: unknown }).galaxyContent;
+            if (Array.isArray(gc)) return gc as Array<Record<string, unknown>>;
+          }
+          // Legacy fallback paths kept just in case ogame skin variant differs.
           const galaxyField = json["galaxy"];
           if (Array.isArray(galaxyField)) return galaxyField as Array<Record<string, unknown>>;
           if (galaxyField && typeof galaxyField === "object") {
@@ -197,38 +323,135 @@ export async function wireBridge(
           }
           return [];
         })();
-        const pos16 = rows.find((row) => Number(row["position"]) === 16);
-        const debris = (pos16?.["debris"] ?? pos16?.["debrisField"]) as { metal?: number; crystal?: number; deuterium?: number } | undefined;
-        const dm = Number(debris?.metal ?? 0);
-        const dc = Number(debris?.crystal ?? 0);
-        const dd = Number(debris?.deuterium ?? 0);
+        const posRow = rows.find((row) => Number(row["position"]) === targetPosition);
+        // v0.0.571 — operator 2026-06-01 forensic 2nd round: ogame v12
+        // position 1-15 returns `planets` as an ARRAY (may contain planet +
+        // moon + debris entries at the same coord), position 16 returns it
+        // as a single object (only debris ever lives at :16). Normalize both
+        // shapes by searching for an entry with planetType===2 or
+        // recyclePossible===true — that's the debris record we care about.
+        type DebrisEntry = {
+          planetType?: number; recyclePossible?: boolean; requiredShips?: number;
+          resources?: { metal?: { amount?: number }; crystal?: { amount?: number }; deuterium?: { amount?: number } };
+        };
+        const planetsField: unknown = posRow?.["planets"] ?? null;
+        const planetsArr: DebrisEntry[] = Array.isArray(planetsField)
+          ? (planetsField as DebrisEntry[])
+          : (planetsField && typeof planetsField === "object" ? [planetsField as DebrisEntry] : []);
+        const debrisPlanet: DebrisEntry | null = planetsArr.find(
+          (e) => e?.planetType === 2 || e?.recyclePossible === true,
+        ) ?? null;
+        const isDebrisField = !!debrisPlanet;
+        const dm = isDebrisField ? Number(debrisPlanet?.resources?.metal?.amount ?? 0) : 0;
+        const dc = isDebrisField ? Number(debrisPlanet?.resources?.crystal?.amount ?? 0) : 0;
+        const dd = isDebrisField ? Number(debrisPlanet?.resources?.deuterium?.amount ?? 0) : 0;
         const totalDebris = dm + dc + dd;
+        const ogameRequiredShips = isDebrisField ? Number(debrisPlanet?.requiredShips ?? 0) : 0;
+        // v0.0.563 — operator 2026-06-01: 飞行列表没看到回收 → 验证 ogame v12
+        // galaxy response 真实 shape。dump rows[0] + pos16 + root keys.
+        try {
+          const rootKeys = Object.keys(json).slice(0, 20).join(",");
+          const firstRowKeys = rows[0] ? Object.keys(rows[0]).slice(0, 20).join(",") : "<no rows>";
+          const posJson = posRow ? JSON.stringify(posRow).slice(0, 800) : `<no pos${targetPosition} row>`;
+          const diag = `G:S=${g}:${s} target=${targetPosition} rowsLen=${rows.length} rootKeys=[${rootKeys}] firstRowKeys=[${firstRowKeys}] pos${targetPosition}=${posJson}`;
+          console.info(`[debris-raw] ${diag}`);
+          // mirror to sidecar journal — operator can verify via journalctl.
+          void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+            method: "POST", credentials: "omit",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tag: "debris-raw", text: diag }),
+          }).catch(() => { /* */ });
+        } catch { /* */ }
         if (totalDebris <= 0) {
-          console.info(`[debris] G:S:16=${g}:${s}:16 — no debris field, skip`);
+          const skipMsg = `G:S:${targetPosition}=${g}:${s}:${targetPosition} — no debris field, skip (isDebrisField=${isDebrisField})`;
+          console.info(`[debris] ${skipMsg}`);
+          try {
+            void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+              method: "POST", credentials: "omit",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tag: "debris-skip", text: skipMsg }),
+            }).catch(() => { /* */ });
+          } catch { /* */ }
           return;
         }
-        console.info(`[debris] G:S:16=${g}:${s}:16 has m=${dm} c=${dc} d=${dd} (total ${totalDebris})`);
-        // Compute explorers needed (cap = 16000 standard for explorer).
-        const win = window as Window & { __ogamexStore?: { state?: { server?: { ship_cargo_capacity?: { explorer?: number } } } } };
-        const explorerCap = win.__ogamexStore?.state?.server?.ship_cargo_capacity?.explorer ?? 16000;
-        const explorersNeeded = Math.max(1, Math.ceil(totalDebris / explorerCap));
-        // Dispatch via fleet_api.sendFleet — mission=8 (collect debris), destType=2 (debris).
+        console.info(`[debris] G:S:${targetPosition}=${g}:${s}:${targetPosition} has m=${dm} c=${dc} d=${dd} (total ${totalDebris}) ogameRequiredShips=${ogameRequiredShips} ship=${harvestShipKey}`);
+        // v0.0.570 — operator 2026-06-01: ship type depends on position
+        // (pos 16 → pathfinder/explorer, pos 1-15 → recycler). Inventory
+        // check + dispatch both keyed by harvestShipKey.
+        const winFull = window as Window & {
+          __ogamexStore?: {
+            state?: {
+              server?: { ship_cargo_capacity?: Record<string, number> };
+              planets?: Record<string, {
+                ships?: Record<string, number>;
+                resources?: { m?: number; c?: number; d?: number };
+              }>;
+            };
+          };
+        };
+        const shipCargoMap = winFull.__ogamexStore?.state?.server?.ship_cargo_capacity ?? {};
+        // Fallback per-ship cargo cap: explorer 16000, recycler 20000 (ogame
+        // standard pre-hyperspace; ship_cargo_capacity store value preferred
+        // when present — accounts for hyperspace tech bonus).
+        const shipCap = Number(shipCargoMap[harvestShipKey] ?? (harvestShipKey === "explorer" ? 16000 : 20000));
+        const shipsNeeded = ogameRequiredShips > 0
+          ? ogameRequiredShips
+          : Math.max(1, Math.ceil(totalDebris / shipCap));
+        const srcPlanet = winFull.__ogamexStore?.state?.planets?.[origin];
+        const shipsAvailable = Number(srcPlanet?.ships?.[harvestShipKey] ?? 0);
+        const planetD = Number(srcPlanet?.resources?.d ?? 0);
+        const inventoryMsg = `origin=${origin} inventory: ${harvestShipKey}=${shipsAvailable} d=${planetD} | needed=${shipsNeeded} cap=${shipCap}/ship totalDebris=${totalDebris}`;
+        console.info(`[debris] ${inventoryMsg}`);
         try {
-          const wTokMgr = (window as Window & { __ogamexTokenManager?: unknown }).__ogamexTokenManager;
-          if (!wTokMgr) { console.warn("[debris] no tokenManager available"); return; }
+          void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+            method: "POST", credentials: "omit",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tag: "debris-inv", text: inventoryMsg }),
+          }).catch(() => { /* */ });
+        } catch { /* */ }
+        if (shipsAvailable <= 0) {
+          console.warn(`[debris] SKIP — origin=${origin} has 0 ${harvestShipKey} ships; harvest unfeasible`);
+          return;
+        }
+        const shipsToSend = Math.min(shipsNeeded, shipsAvailable);
+        if (shipsToSend < shipsNeeded) {
+          console.warn(`[debris] ${harvestShipKey} short — need=${shipsNeeded} have=${shipsAvailable} → send=${shipsToSend} (partial harvest)`);
+        }
+        // Dispatch via fleet_api.sendFleet — mission=8 (collect debris), destType=2.
+        try {
           const { sendFleet } = await import("../api/fleet_api.js");
           const result = await sendFleet({
-            ships: { explorer: explorersNeeded } as unknown as import("@ogamex/shared").ShipCount,
+            ships: { [harvestShipKey]: shipsToSend } as unknown as import("@ogamex/shared").ShipCount,
             cargo: { m: 0, c: 0, d: 0 },
-            coords: [g, s, 16],
+            coords: [g, s, targetPosition],
             destType: 2,
             mission: 8 as import("@ogamex/shared").MissionCode,
             speed: 10,
             sourcePlanetId: origin,
           }, { fetch: window.fetch.bind(window), token: wTokMgr as Parameters<typeof sendFleet>[1]["token"] });
-          console.info(`[debris] explorer dispatched fleetId=${result.fleetId} count=${explorersNeeded}`);
+          const okMsg = `${harvestShipKey} dispatched fleetId=${result.fleetId} count=${shipsToSend} (needed=${shipsNeeded} avail=${shipsAvailable}) target=${g}:${s}:${targetPosition}`;
+          console.info(`[debris] ${okMsg}`);
+          // v0.0.567 — mark dedup AFTER successful dispatch so failed
+          // sendFleet (insufficient ships, ogame race, etc.) doesn't block
+          // legitimate retry.
+          recentHarvestDispatch.set(dedupKey, Date.now());
+          try {
+            void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+              method: "POST", credentials: "omit",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tag: "debris-ok", text: okMsg }),
+            }).catch(() => { /* */ });
+          } catch { /* */ }
         } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e);
           console.error("[debris] sendFleet failed:", e);
+          try {
+            void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+              method: "POST", credentials: "omit",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tag: "debris-fail", text: `sendFleet error: ${errMsg.slice(0, 300)}` }),
+            }).catch(() => { /* */ });
+          } catch { /* */ }
         }
       } catch (e) {
         console.error("[debris] handler threw:", e);
