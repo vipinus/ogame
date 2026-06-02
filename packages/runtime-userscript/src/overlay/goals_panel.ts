@@ -351,14 +351,14 @@ function openExpeditionSettings(
     { key: "lightFighter",   label: "輕型戰鬥機 (LF)" },
     { key: "heavyFighter",   label: "重型戰鬥機 (HF)" },
     { key: "cruiser",        label: "巡洋艦 (Cr)" },
-    { key: "battleship",     label: "戰鬥艦 (BS)" },
+    { key: "battleship",     label: t("auto.001") },
     { key: "colonyShip",     label: "殖民船 (CS)" },
     { key: "recycler",       label: "回收船 (RC)" },
     { key: "espionageProbe", label: "間諜衛星 (EP)" },
-    { key: "bomber",         label: "轟炸機 (Bom)" },
-    { key: "destroyer",      label: "驅逐艦 (Des)" },
+    { key: "bomber",         label: t("auto.002") },
+    { key: "destroyer",      label: t("auto.003") },
     { key: "deathstar",      label: "死星 (DS)" },
-    { key: "battlecruiser",  label: "戰巡艦 (BC)" },
+    { key: "battlecruiser",  label: t("auto.004") },
     { key: "reaper",         label: "惡魔飛船 (RIP)" },
     { key: "explorer",       label: "探路者 (PF)" },
   ];
@@ -424,12 +424,8 @@ function openExpeditionSettings(
       </label>`;
     };
     const planetRows = sortedCoordKeys.length === 0
-      ? `<div style="color:#7080a0; padding:8px 0; font-size:11px;">(無 planet — state 未就緒, 刷新 ogame 頁面)</div>`
-      : `<div style="padding:4px 0 6px; display:flex; gap:8px; font-size:10px; color:#7080a0; border-bottom:1px solid #2a3a52;">
-          <span style="width:78px;">坐標</span>
-          <span style="flex:1;">🌍 行星</span>
-          <span style="flex:1;">🌙 月球</span>
-        </div>` + sortedCoordKeys.map((k) => {
+      ? t("auto.005")
+      : t("auto.006") + sortedCoordKeys.map((k) => {
           const { planet, moon } = groupedByCoord.get(k)!;
           return `<div style="padding:5px 0; border-bottom:1px solid #1a2030; display:flex; gap:8px; align-items:center;">
             <span style="width:78px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
@@ -500,7 +496,7 @@ function openExpeditionSettings(
         chips.push(`<span style="background:#1a2840; color:#d0d8e0; border:1px solid #2a3a52; border-radius:3px; padding:2px 8px; font-size:11px;">${escapeHtml(label)} × ${escapeHtml(fmtNum(n))}</span>`);
       }
       summary.innerHTML = chips.length === 0
-        ? `<span style="color:#5a7090; font-size:11px; font-style:italic;">(空 — 至少需 1 艘船才能派遣)</span>`
+        ? t("auto.007")
         : chips.join("");
       total.textContent = totalShips > 0 ? `共 ${fmtNum(totalShips)} 艘` : "";
     };
@@ -607,7 +603,7 @@ function openDiscoverySettings(
   fetchFn: typeof fetch,
 ): void {
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading discovery state…</div>`;
-  openSettingsModal(doc, "discovery", "🧬 發現任務設定", placeholder, async (m) => {
+  openSettingsModal(doc, "discovery", t("auto.008"), placeholder, async (m) => {
     const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
     if (!body) return;
     // Pull goals list (active species_discovery only) + planet list.
@@ -705,7 +701,7 @@ function openDiscoverySettings(
       const pid = sel?.value ?? "";
       const range = Math.max(1, Math.min(20, parseInt(rng?.value ?? "10", 10) || 10));
       if (!pid) {
-        if (status) { status.textContent = "× 請選擇來源星球"; status.style.color = "#ff6b6b"; }
+        if (status) { status.textContent = t("auto.009"); status.style.color = "#ff6b6b"; }
         return;
       }
       const planet = planets.find((p) => p.id === pid);
@@ -745,20 +741,20 @@ function openGoalsSettings(
   // whatever JSON is in the textarea — sidecar validates type, planner
   // surfaces target-shape issues via "blocked: …".
   const GOAL_PRESETS: Array<{ value: string; label: string; planetReq: boolean; targetPlaceholder: string }> = [
-    { value: "build",             label: "build · 建造",           planetReq: true,  targetPlaceholder: `{"building":"metalMine","level":42}` },
-    { value: "research",          label: "research · 科研",         planetReq: true,  targetPlaceholder: `{"tech":"astrophysics","level":18}` },
-    { value: "build_universal",   label: "build_universal · 全部統一建", planetReq: false, targetPlaceholder: `{"building":"shipyard","level":12}` },
-    { value: "build_ships",       label: "build_ships · 造艦",      planetReq: true,  targetPlaceholder: `{"ship":"largeCargo","amount":500}` },
-    { value: "build_defense",     label: "build_defense · 造防",    planetReq: true,  targetPlaceholder: `{"defense":"rocketLauncher","amount":1000}` },
-    { value: "colonize",          label: "colonize · 殖民",         planetReq: true,  targetPlaceholder: `{"target_coords":"3:280:7"}` },
-    { value: "lifeform_building", label: "lifeform_building · 生命形式建築", planetReq: true,  targetPlaceholder: `{"building":"residentialSector","level":40}` },
-    { value: "lifeform_research", label: "lifeform_research · 生命形式科研", planetReq: true,  targetPlaceholder: `{"tech":"intergalacticEnvoys","level":10}` },
-    { value: "lifeform_level_to", label: "lifeform_level_to · 生命形式等級", planetReq: true,  targetPlaceholder: `{"level":3}` },
-    { value: "pick_lifeform",     label: "pick_lifeform · 選生命形式", planetReq: true,  targetPlaceholder: `{"species":"kaelesh"}` },
-    { value: "terraformer_to",    label: "terraformer_to · 地形改造", planetReq: true,  targetPlaceholder: `{"level":8}` },
-    { value: "expedition",        label: "expedition · 遠征",       planetReq: false, targetPlaceholder: `{"source_planet":"<id>","ships":{"largeCargo":1600,"explorer":1000}}` },
-    { value: "deploy",            label: "deploy · 部署",           planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","target_type":"moon","ships":{"largeCargo":100}}` },
-    { value: "transport",         label: "transport · 運輸",        planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","ships":{"largeCargo":100},"cargo":{"m":1000000,"c":0,"d":0}}` },
+    { value: "build",             label: t("auto.010"),           planetReq: true,  targetPlaceholder: `{"building":"metalMine","level":42}` },
+    { value: "research",          label: t("auto.011"),         planetReq: true,  targetPlaceholder: `{"tech":"astrophysics","level":18}` },
+    { value: "build_universal",   label: t("auto.012"), planetReq: false, targetPlaceholder: `{"building":"shipyard","level":12}` },
+    { value: "build_ships",       label: t("auto.013"),      planetReq: true,  targetPlaceholder: `{"ship":"largeCargo","amount":500}` },
+    { value: "build_defense",     label: t("auto.014"),    planetReq: true,  targetPlaceholder: `{"defense":"rocketLauncher","amount":1000}` },
+    { value: "colonize",          label: t("auto.015"),         planetReq: true,  targetPlaceholder: `{"target_coords":"3:280:7"}` },
+    { value: "lifeform_building", label: t("auto.016"), planetReq: true,  targetPlaceholder: `{"building":"residentialSector","level":40}` },
+    { value: "lifeform_research", label: t("auto.017"), planetReq: true,  targetPlaceholder: `{"tech":"intergalacticEnvoys","level":10}` },
+    { value: "lifeform_level_to", label: t("auto.018"), planetReq: true,  targetPlaceholder: `{"level":3}` },
+    { value: "pick_lifeform",     label: t("auto.019"), planetReq: true,  targetPlaceholder: `{"species":"kaelesh"}` },
+    { value: "terraformer_to",    label: t("auto.020"), planetReq: true,  targetPlaceholder: `{"level":8}` },
+    { value: "expedition",        label: t("auto.021"),       planetReq: false, targetPlaceholder: `{"source_planet":"<id>","ships":{"largeCargo":1600,"explorer":1000}}` },
+    { value: "deploy",            label: t("auto.022"),           planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","target_type":"moon","ships":{"largeCargo":100}}` },
+    { value: "transport",         label: t("auto.023"),        planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","ships":{"largeCargo":100},"cargo":{"m":1000000,"c":0,"d":0}}` },
   ];
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading planet list…</div>`;
   openSettingsModal(doc, "goals", t("modal.goals.title"), placeholder, async (m) => {
@@ -833,12 +829,12 @@ function openGoalsSettings(
     // that don't match the tab's body kind.
     type TabId = "planet-build" | "moon-build" | "lf-build" | "research" | "lf-research" | "fleet";
     const TAB_DEFS: Array<{ id: TabId; label: string; goalTypes: string[]; bodyFilter: "planet" | "moon" | "any" }> = [
-      { id: "planet-build", label: "🌍 星球建築", goalTypes: ["build", "build_universal", "terraformer_to"], bodyFilter: "planet" },
-      { id: "moon-build",   label: "🌙 月球建築", goalTypes: ["build"],                                       bodyFilter: "moon"   },
-      { id: "lf-build",     label: "🧬 生命建築", goalTypes: ["lifeform_building", "pick_lifeform", "lifeform_level_to"], bodyFilter: "planet" },
-      { id: "research",     label: "🔬 普通研究", goalTypes: ["research"],                                    bodyFilter: "planet" },
-      { id: "lf-research",  label: "⚗️ 生命研究", goalTypes: ["lifeform_research"],                            bodyFilter: "planet" },
-      { id: "fleet",        label: "🚀 艦隊任務", goalTypes: ["colonize", "expedition", "deploy", "transport", "build_ships", "build_defense"], bodyFilter: "any" },
+      { id: "planet-build", label: t("auto.024"), goalTypes: ["build", "build_universal", "terraformer_to"], bodyFilter: "planet" },
+      { id: "moon-build",   label: t("auto.025"), goalTypes: ["build"],                                       bodyFilter: "moon"   },
+      { id: "lf-build",     label: t("auto.026"), goalTypes: ["lifeform_building", "pick_lifeform", "lifeform_level_to"], bodyFilter: "planet" },
+      { id: "research",     label: t("auto.027"), goalTypes: ["research"],                                    bodyFilter: "planet" },
+      { id: "lf-research",  label: t("auto.028"), goalTypes: ["lifeform_research"],                            bodyFilter: "planet" },
+      { id: "fleet",        label: t("auto.029"), goalTypes: ["colonize", "expedition", "deploy", "transport", "build_ships", "build_defense"], bodyFilter: "any" },
     ];
     const presetByValue = new Map(GOAL_PRESETS.map((g) => [g.value, g] as const));
     const renderTabBar = (): string => TAB_DEFS.map((t) =>
@@ -861,10 +857,10 @@ function openGoalsSettings(
     ] as const;
     const PLANET_BUILDING_LABEL: Record<string, string> = {
       metalMine: "金屬礦", crystalMine: "晶體礦", deuteriumSynth: "重氫合成器",
-      solarPlant: "太陽能", fusionReactor: "核聚變",
-      metalStorage: "金屬倉庫", crystalStorage: "晶體倉庫", deuteriumTank: "重氫罐",
-      roboticsFactory: "機械工廠", shipyard: "船塢", researchLab: "實驗室", naniteFactory: "納米工廠",
-      terraformer: "地形改造",
+      solarPlant: t("auto.030"), fusionReactor: t("auto.031"),
+      metalStorage: t("auto.032"), crystalStorage: t("auto.033"), deuteriumTank: t("auto.034"),
+      roboticsFactory: t("auto.035"), shipyard: t("auto.036"), researchLab: t("auto.037"), naniteFactory: t("auto.038"),
+      terraformer: t("auto.039"),
     };
     // v0.0.584 — operator 2026-06-01 "都是灰色是不對的, 多數星球上沒有建造任務":
     // occupied judgment was based on sidecar goal queue (always many blocked
@@ -1275,11 +1271,11 @@ function openGoalsSettings(
     const targetTa = m.querySelector<HTMLTextAreaElement>("[data-goal-target]");
     const targetHint = m.querySelector<HTMLElement>("[data-goal-target-hint]");
     const refreshPreset = (): void => {
-      const t = typeSel?.value ?? "";
-      const preset = presetByValue.get(t);
+      const tVal = typeSel?.value ?? "";
+      const preset = presetByValue.get(tVal);
       if (!preset || !targetTa || !targetHint) return;
       targetTa.value = preset.targetPlaceholder;
-      targetHint.textContent = preset.planetReq ? "需要選 planet — 該類型必須指定 source" : "可不選 planet — planner 會預設或讀 target 內字段";
+      targetHint.textContent = preset.planetReq ? t("auto.040") : t("auto.041");
     };
     typeSel?.addEventListener("change", refreshPreset);
 
@@ -1391,15 +1387,15 @@ function openGoalsSettings(
     };
     const pbAllPlanetsRadio = m.querySelector<HTMLInputElement>('input[name="pb-planet-radio"][value="all-planets"]');
     const pbIdlePlanetsRadio = m.querySelector<HTMLInputElement>('input[name="pb-planet-radio"][value="idle-planets"]');
-    if (anyPlanetOccupied) dimRadio(pbAllPlanetsRadio, "有星球被佔用, 不能選 '所有星球' (改選 '空閒星球' 或單個)");
-    if (!anyPlanetIdle) dimRadio(pbIdlePlanetsRadio, "無空閒星球, 不能選 '空閒星球'");
+    if (anyPlanetOccupied) dimRadio(pbAllPlanetsRadio, t("auto.042"));
+    if (!anyPlanetIdle) dimRadio(pbIdlePlanetsRadio, t("auto.043"));
     const refreshPbDesc = (): void => {
       if (!pbDescEl) return;
       const planetRadio = pbPlanetRadios().find((r) => r.checked);
       const buildingRadio = pbBuildingRadios().find((r) => r.checked);
       const lvl = parseInt(pbLevelInput?.value ?? "", 10);
       if (!planetRadio || !buildingRadio || !lvl) {
-        pbDescEl.textContent = "（選星球 + 建築 + 級別後顯示）";
+        pbDescEl.textContent = t("auto.044");
         pbDescEl.style.color = "#5a7090";
         return;
       }
@@ -1424,10 +1420,10 @@ function openGoalsSettings(
       const buildingRadio = pbBuildingRadios().find((r) => r.checked);
       const lvl = parseInt(pbLevelInput?.value ?? "", 10);
       const pri = parseInt(pbPriorityInput?.value ?? "5", 10) || 5;
-      if (!planetRadio) { pbStatusEl.textContent = "請選星球"; pbStatusEl.style.color = "#a06060"; return; }
-      if (!buildingRadio) { pbStatusEl.textContent = "請選建築"; pbStatusEl.style.color = "#a06060"; return; }
-      if (!lvl || lvl < 1 || lvl > 50) { pbStatusEl.textContent = "級別須 1-50"; pbStatusEl.style.color = "#a06060"; return; }
-      pbStatusEl.textContent = "創建中…"; pbStatusEl.style.color = "#7080a0";
+      if (!planetRadio) { pbStatusEl.textContent = t("auto.045"); pbStatusEl.style.color = "#a06060"; return; }
+      if (!buildingRadio) { pbStatusEl.textContent = t("auto.046"); pbStatusEl.style.color = "#a06060"; return; }
+      if (!lvl || lvl < 1 || lvl > 50) { pbStatusEl.textContent = t("auto.047"); pbStatusEl.style.color = "#a06060"; return; }
+      pbStatusEl.textContent = t("auto.048"); pbStatusEl.style.color = "#7080a0";
       let planetsToCreate: string[];
       if (planetRadio.value === "all-planets") {
         // Literal all — include occupied (ogame may reject those, but
@@ -1472,8 +1468,8 @@ function openGoalsSettings(
 
     // v0.0.589 — moon-build pane wiring (mirrors planet-build).
     const MOON_BUILDING_LABEL: Record<string, string> = {
-      lunarBase: "月球基地", sensorPhalanx: "傳感器", jumpgate: "跳躍門",
-      roboticsFactory: "機械工廠", shipyard: "船塢",
+      lunarBase: "月球基地", sensorPhalanx: t("auto.049"), jumpgate: t("auto.050"),
+      roboticsFactory: t("auto.035"), shipyard: t("auto.036"),
     };
     const moonCoordById = new Map<string, string>();
     for (const k of sortedCoordKeys) {
@@ -1501,15 +1497,15 @@ function openGoalsSettings(
     }
     const mbAllMoonsRadio = m.querySelector<HTMLInputElement>('input[name="mb-moon-radio"][value="all-moons"]');
     const mbIdleMoonsRadio = m.querySelector<HTMLInputElement>('input[name="mb-moon-radio"][value="idle-moons"]');
-    if (anyMoonOccupied) dimRadio(mbAllMoonsRadio, "有月球被佔用, 不能選 '所有月球' (改選 '空閒月球' 或單個)");
-    if (!anyMoonIdle) dimRadio(mbIdleMoonsRadio, "無空閒月球, 不能選 '空閒月球'");
+    if (anyMoonOccupied) dimRadio(mbAllMoonsRadio, t("auto.051"));
+    if (!anyMoonIdle) dimRadio(mbIdleMoonsRadio, t("auto.052"));
     const refreshMbDesc = (): void => {
       if (!mbDescEl) return;
       const moonRadio = mbMoonRadios().find((r) => r.checked);
       const buildingRadio = mbBuildingRadios().find((r) => r.checked);
       const lvl = parseInt(mbLevelInput?.value ?? "", 10);
       if (!moonRadio || !buildingRadio || !lvl) {
-        mbDescEl.textContent = "（選月球 + 建築 + 級別後顯示）";
+        mbDescEl.textContent = t("auto.053");
         mbDescEl.style.color = "#5a7090";
         return;
       }
@@ -1534,10 +1530,10 @@ function openGoalsSettings(
       const buildingRadio = mbBuildingRadios().find((r) => r.checked);
       const lvl = parseInt(mbLevelInput?.value ?? "", 10);
       const pri = parseInt(mbPriorityInput?.value ?? "5", 10) || 5;
-      if (!moonRadio) { mbStatusEl.textContent = "請選月球"; mbStatusEl.style.color = "#a06060"; return; }
-      if (!buildingRadio) { mbStatusEl.textContent = "請選建築"; mbStatusEl.style.color = "#a06060"; return; }
-      if (!lvl || lvl < 1 || lvl > 50) { mbStatusEl.textContent = "級別須 1-50"; mbStatusEl.style.color = "#a06060"; return; }
-      mbStatusEl.textContent = "創建中…"; mbStatusEl.style.color = "#7080a0";
+      if (!moonRadio) { mbStatusEl.textContent = t("auto.054"); mbStatusEl.style.color = "#a06060"; return; }
+      if (!buildingRadio) { mbStatusEl.textContent = t("auto.046"); mbStatusEl.style.color = "#a06060"; return; }
+      if (!lvl || lvl < 1 || lvl > 50) { mbStatusEl.textContent = t("auto.047"); mbStatusEl.style.color = "#a06060"; return; }
+      mbStatusEl.textContent = t("auto.048"); mbStatusEl.style.color = "#7080a0";
       let moonsToCreate: string[];
       if (moonRadio.value === "all-moons") {
         moonsToCreate = sortedCoordKeys
@@ -1617,12 +1613,12 @@ function openGoalsSettings(
         const buildingRadio = lfBuildingRadios().find((r) => r.checked);
         const lvl = parseInt(lfLevelInput?.value ?? "", 10);
         if (!speciesRadio || !planetRadio || !buildingRadio || !lvl) {
-          lfDescEl.textContent = "（選物種 + 星球 + 建築 + 級別後顯示）";
+          lfDescEl.textContent = t("auto.055");
           lfDescEl.style.color = "#5a7090";
           return;
         }
         const bLabel = currentBuildings.get(buildingRadio.value) ?? buildingRadio.value;
-        const speciesLabel: Record<string, string> = { humans: "人類", rocktal: "巖族", mechas: "機械族", kaelesh: "凱萊什" };
+        const speciesLabel: Record<string, string> = { humans: t("auto.056"), rocktal: t("auto.057"), mechas: t("auto.058"), kaelesh: t("auto.059") };
         const sn = speciesLabel[speciesRadio.value] ?? speciesRadio.value;
         if (planetRadio.value === "all-planets") {
           lfDescEl.textContent = `目標在 所有星球 建造 ${bLabel} ${lvl} 級 (${sn})`;
@@ -1639,7 +1635,7 @@ function openGoalsSettings(
       // from store; planets with mismatched (or null) species get dimmed
       // and disabled when a species is selected.
       const speciesLabelMap: Record<string, string> = {
-        humans: "人類", rocktal: "巖族", mechas: "機械族", kaelesh: "凱萊什",
+        humans: t("auto.056"), rocktal: t("auto.057"), mechas: t("auto.058"), kaelesh: t("auto.059"),
       };
       // v0.0.595/596 — operator 2026-06-01 "沒有拿種族的 api 嗎 / 怎麼都
       // 是未設定, 全部設定過了". Two-tier species lookup:
@@ -1657,7 +1653,7 @@ function openGoalsSettings(
           const pid = radio.value;
           if (pid === "all-planets" || pid === "idle-planets") continue;
           const sp = livePlanetSpecies(pid);
-          const tag = sp ? speciesLabelMap[sp] ?? sp : "未設定";
+          const tag = sp ? speciesLabelMap[sp] ?? sp : t("auto.060");
           const span = radio.parentElement?.querySelector("span");
           if (!span) continue;
           // Strip existing tag (if any) then re-append fresh.
@@ -1679,14 +1675,14 @@ function openGoalsSettings(
           const label = radio.closest("label") as HTMLElement | null;
           if (!label) continue;
           // Don't override the lf_build_q occupancy disable (that has its own dim).
-          const wasLfqDim = label.title.includes("生命建築隊列在建中");
+          const wasLfqDim = label.title.includes(t("auto.061"));
           if (!matches) {
             radio.disabled = true;
             label.style.opacity = "0.3";
             label.style.cursor = "not-allowed";
             label.title = sp
               ? `該星球 species=${speciesLabelMap[sp] ?? sp}, 不匹配當前選擇 (${speciesLabelMap[species] ?? species})`
-              : `該星球未選擇 species, 無法建生命建築`;
+              : t("auto.062");
           } else if (!wasLfqDim) {
             radio.disabled = false;
             label.style.opacity = "1";
@@ -1738,8 +1734,8 @@ function openGoalsSettings(
       }
       const lfAllRadio = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="all-planets"]');
       const lfIdleRadio = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="idle-planets"]');
-      if (anyLfOccupied) dimRadio(lfAllRadio, "有星球生命建築隊列在建, 不能選 '所有星球'");
-      if (!anyLfIdle) dimRadio(lfIdleRadio, "無空閒星球, 不能選 '空閒星球'");
+      if (anyLfOccupied) dimRadio(lfAllRadio, t("auto.063"));
+      if (!anyLfIdle) dimRadio(lfIdleRadio, t("auto.043"));
       refreshLfDesc();
       lfCreateBtn?.addEventListener("click", async () => {
         if (!lfStatusEl) return;
@@ -1747,10 +1743,10 @@ function openGoalsSettings(
         const buildingRadio = lfBuildingRadios().find((r) => r.checked);
         const lvl = parseInt(lfLevelInput?.value ?? "", 10);
         const pri = parseInt(lfPriorityInput?.value ?? "5", 10) || 5;
-        if (!planetRadio) { lfStatusEl.textContent = "請選星球"; lfStatusEl.style.color = "#a06060"; return; }
-        if (!buildingRadio) { lfStatusEl.textContent = "請選建築"; lfStatusEl.style.color = "#a06060"; return; }
-        if (!lvl || lvl < 1 || lvl > 50) { lfStatusEl.textContent = "級別須 1-50"; lfStatusEl.style.color = "#a06060"; return; }
-        lfStatusEl.textContent = "創建中…"; lfStatusEl.style.color = "#7080a0";
+        if (!planetRadio) { lfStatusEl.textContent = t("auto.045"); lfStatusEl.style.color = "#a06060"; return; }
+        if (!buildingRadio) { lfStatusEl.textContent = t("auto.046"); lfStatusEl.style.color = "#a06060"; return; }
+        if (!lvl || lvl < 1 || lvl > 50) { lfStatusEl.textContent = t("auto.047"); lfStatusEl.style.color = "#a06060"; return; }
+        lfStatusEl.textContent = t("auto.048"); lfStatusEl.style.color = "#7080a0";
         const lfOccCheck = (pid: string): boolean => {
           const lfBq = (storeRef?.state?.planets?.[pid] as { lf_build_q?: { ends_at?: number } } | undefined)?.lf_build_q;
           return !!lfBq && (lfBq.ends_at ?? 0) > nowMs;
@@ -1792,12 +1788,12 @@ function openGoalsSettings(
     // v0.0.599 — research pane wiring (global queue, no planet selector).
     {
       const RESEARCH_LABEL: Record<string, string> = {
-        energyTech: "能量技術", laserTech: "激光技術", ionTech: "離子技術",
-        hyperspaceTech: "超空間技術", plasmaTech: "等離子技術",
-        combustion: "內燃機引擎", impulseDrive: "脈衝引擎", hyperspaceDrive: "超空間引擎",
-        espionageTech: "間諜技術", computerTech: "電腦技術",
-        astrophysics: "天體物理", intergalactic: "星際研究", gravitonTech: "引力技術",
-        weapons: "武器技術", shielding: "防御護盾", armor: "裝甲技術",
+        energyTech: t("auto.064"), laserTech: t("auto.065"), ionTech: "離子技術",
+        hyperspaceTech: t("auto.066"), plasmaTech: t("auto.067"),
+        combustion: t("auto.068"), impulseDrive: "脈衝引擎", hyperspaceDrive: "超空間引擎",
+        espionageTech: t("auto.069"), computerTech: "電腦技術",
+        astrophysics: t("auto.070"), intergalactic: t("auto.071"), gravitonTech: t("auto.072"),
+        weapons: "武器技術", shielding: t("auto.073"), armor: "裝甲技術",
       };
       const rsTechRadios = (): HTMLInputElement[] => Array.from(
         m.querySelectorAll<HTMLInputElement>('input[name="rs-tech-radio"]'),
@@ -1832,7 +1828,7 @@ function openGoalsSettings(
           const techLabel = RESEARCH_LABEL[rq.tech ?? ""] ?? rq.tech ?? "?";
           rsQueueEl.innerHTML = `global queue: <span style="color:#ffaa66;">${escapeHtml(techLabel)} L${rq.level} eta=${etaMin}min</span>`;
         } else {
-          rsQueueEl.innerHTML = `global queue: <span style="color:#7cfc00;">空閒</span>`;
+          rsQueueEl.innerHTML = t("auto.074");
         }
       }
       // v0.0.600 — operator 2026-06-01 "點對應的科技, 下面顯示這個科技的當前
@@ -1843,7 +1839,7 @@ function openGoalsSettings(
         const techRadio = rsTechRadios().find((r) => r.checked);
         const lvl = parseInt(rsLevelInput?.value ?? "", 10);
         if (!techRadio) {
-          rsDescEl.textContent = "（選研究專案 + 級別後顯示）";
+          rsDescEl.textContent = t("auto.075");
           rsDescEl.style.color = "#5a7090";
           return;
         }
@@ -1867,9 +1863,9 @@ function openGoalsSettings(
         const techRadio = rsTechRadios().find((r) => r.checked);
         const lvl = parseInt(rsLevelInput?.value ?? "", 10);
         const pri = parseInt(rsPriorityInput?.value ?? "5", 10) || 5;
-        if (!techRadio) { rsStatusEl.textContent = "請選研究專案"; rsStatusEl.style.color = "#a06060"; return; }
-        if (!lvl || lvl < 1 || lvl > 30) { rsStatusEl.textContent = "級別須 1-30"; rsStatusEl.style.color = "#a06060"; return; }
-        rsStatusEl.textContent = "創建中…"; rsStatusEl.style.color = "#7080a0";
+        if (!techRadio) { rsStatusEl.textContent = t("auto.076"); rsStatusEl.style.color = "#a06060"; return; }
+        if (!lvl || lvl < 1 || lvl > 30) { rsStatusEl.textContent = t("auto.077"); rsStatusEl.style.color = "#a06060"; return; }
+        rsStatusEl.textContent = t("auto.048"); rsStatusEl.style.color = "#7080a0";
         try {
           const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
             method: "POST",
@@ -1881,7 +1877,7 @@ function openGoalsSettings(
             }),
           });
           if (r.ok) {
-            rsStatusEl.textContent = `✓ 已創建研究任務`;
+            rsStatusEl.textContent = t("auto.078");
             rsStatusEl.style.color = "#7cfc00";
           } else {
             rsStatusEl.textContent = `HTTP ${r.status}`;
@@ -1970,8 +1966,8 @@ function openGoalsSettings(
         void planetSpecies;
         if (entries.length === 0) {
           lrResearchList.innerHTML = planetRadio
-            ? `<span style="color:#5a7090; font-size:11px;">該星球未 unlock 任何生命研究 — boot 同步未完成或該星球資料未到, 等幾秒</span>`
-            : `<span style="color:#5a7090; font-size:11px;">請先選星球</span>`;
+            ? t("auto.079")
+            : t("auto.080");
           return;
         }
         // v0.0.627 — operator 2026-06-01 "研究按照 id 排序". Match the
@@ -1991,7 +1987,7 @@ function openGoalsSettings(
         lrResearchList.innerHTML = html;
         for (const r of lrTechRadios()) r.addEventListener("change", refreshLrDesc);
       };
-      const speciesLabelMapLr: Record<string, string> = { humans: "人類", rocktal: "巖族", mechas: "機械族", kaelesh: "凱萊什" };
+      const speciesLabelMapLr: Record<string, string> = { humans: t("auto.056"), rocktal: t("auto.057"), mechas: t("auto.058"), kaelesh: t("auto.059") };
       // v0.0.603 — per-planet current level display. lifeform_research is
       // per-planet (operator 2026-06-01 "生命研究每個星球是不同的"), read
       // from store.planets[pid].lifeform_research[tech].
@@ -2002,7 +1998,7 @@ function openGoalsSettings(
         const techRadio = lrTechRadios().find((r) => r.checked);
         const lvl = parseInt(lrLevelInput?.value ?? "", 10);
         if (!speciesRadio || !planetRadio || !techRadio) {
-          lrDescEl.textContent = "（選物種 + 星球 + 研究 + 級別後顯示）";
+          lrDescEl.textContent = t("auto.081");
           lrDescEl.style.color = "#5a7090";
           return;
         }
@@ -2019,7 +2015,7 @@ function openGoalsSettings(
         }
         lrDescEl.style.color = "#7cfc00";
       };
-      const speciesLabelLrMap: Record<string, string> = { humans: "人類", rocktal: "巖族", mechas: "機械族", kaelesh: "凱萊什" };
+      const speciesLabelLrMap: Record<string, string> = { humans: t("auto.056"), rocktal: t("auto.057"), mechas: t("auto.058"), kaelesh: t("auto.059") };
       // v0.0.607 — operator 2026-06-01 bug ①: species change should dim
       // planet rows whose species ≠ selected (mirror lf-build).
       const applyLrSpeciesFilter = (species: string): void => {
@@ -2035,7 +2031,7 @@ function openGoalsSettings(
             label.style.cursor = "not-allowed";
             label.title = sp
               ? `該星球 species=${speciesLabelLrMap[sp] ?? sp}, 不匹配當前選擇 (${speciesLabelLrMap[species] ?? species})`
-              : `該星球未識別 species`;
+              : t("auto.082");
           } else {
             radio.disabled = false;
             label.style.opacity = "1";
@@ -2056,7 +2052,7 @@ function openGoalsSettings(
         lrForceSyncBtn.addEventListener("click", async () => {
           const planetRadio = lrPlanetRadios().find((r) => r.checked);
           if (!planetRadio) {
-            if (lrResearchList) lrResearchList.innerHTML = `<span style="color:#ffaa00; font-size:11px;">請先選星球</span>`;
+            if (lrResearchList) lrResearchList.innerHTML = t("auto.083");
             return;
           }
           const pid = planetRadio.value;
@@ -2064,7 +2060,7 @@ function openGoalsSettings(
           if (typeof refreshFn !== "function") return;
           const origLabel = lrForceSyncBtn.textContent;
           lrForceSyncBtn.disabled = true;
-          lrForceSyncBtn.textContent = "🔄 同步中…";
+          lrForceSyncBtn.textContent = t("auto.084");
           try {
             console.info(`[panel/lf-research] force-sync planet=${pid}`);
             await refreshFn("lfresearch", pid);
@@ -2095,7 +2091,7 @@ function openGoalsSettings(
       for (const radio of lrPlanetRadios()) {
         const pid = radio.value;
         const sp = livePlanetSpecies(pid);
-        const tag = sp ? speciesLabelMapLr[sp] ?? sp : "未設定";
+        const tag = sp ? speciesLabelMapLr[sp] ?? sp : t("auto.060");
         const span = radio.parentElement?.querySelector("span");
         if (span && !span.textContent?.includes("[")) {
           span.textContent = `${span.textContent} [${tag}]`;
@@ -2110,7 +2106,7 @@ function openGoalsSettings(
         if (!lrResearchList) return;
         const existing = (storeRef?.state?.planets?.[pid] as { lifeform_research?: Record<string, number> } | undefined)?.lifeform_research;
         if (existing && Object.keys(existing).length > 0) return; // already loaded
-        lrResearchList.innerHTML = `<span style="color:#7080a0; font-size:11px;">加載該星球 lfresearch 真實資料…</span>`;
+        lrResearchList.innerHTML = t("auto.085");
         try {
           // Trigger boot.ts page-aware extraction via the exposed force
           // refresh hook. boot.ts will fetch component=lfresearch, parse
@@ -2153,10 +2149,10 @@ function openGoalsSettings(
         const techRadio = lrTechRadios().find((r) => r.checked);
         const lvl = parseInt(lrLevelInput?.value ?? "", 10);
         const pri = parseInt(lrPriorityInput?.value ?? "5", 10) || 5;
-        if (!planetRadio) { lrStatusEl.textContent = "請選星球"; lrStatusEl.style.color = "#a06060"; return; }
-        if (!techRadio) { lrStatusEl.textContent = "請選研究專案"; lrStatusEl.style.color = "#a06060"; return; }
-        if (!lvl || lvl < 1 || lvl > 50) { lrStatusEl.textContent = "級別須 1-50"; lrStatusEl.style.color = "#a06060"; return; }
-        lrStatusEl.textContent = "創建中…"; lrStatusEl.style.color = "#7080a0";
+        if (!planetRadio) { lrStatusEl.textContent = t("auto.045"); lrStatusEl.style.color = "#a06060"; return; }
+        if (!techRadio) { lrStatusEl.textContent = t("auto.076"); lrStatusEl.style.color = "#a06060"; return; }
+        if (!lvl || lvl < 1 || lvl > 50) { lrStatusEl.textContent = t("auto.047"); lrStatusEl.style.color = "#a06060"; return; }
+        lrStatusEl.textContent = t("auto.048"); lrStatusEl.style.color = "#7080a0";
         try {
           const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
             method: "POST",
@@ -2169,7 +2165,7 @@ function openGoalsSettings(
             }),
           });
           if (r.ok) {
-            lrStatusEl.textContent = `✓ 已創建生命研究任務`;
+            lrStatusEl.textContent = t("auto.086");
             lrStatusEl.style.color = "#7cfc00";
           } else {
             lrStatusEl.textContent = `HTTP ${r.status}`;
@@ -2218,7 +2214,7 @@ function openGoalsSettings(
       const status = m.querySelector<HTMLElement>("[data-goal-nl-status]");
       const description = (ta?.value ?? "").trim();
       if (!description) {
-        if (status) { status.textContent = "× 描述不能爲空"; status.style.color = "#ff6b6b"; }
+        if (status) { status.textContent = t("auto.087"); status.style.color = "#ff6b6b"; }
         return;
       }
       if (status) { status.textContent = "parsing…"; status.style.color = "#7080a0"; }
@@ -2243,7 +2239,7 @@ function openGoalsSettings(
           const radio = m.querySelector<HTMLInputElement>(`input[name="goal-planet-radio"][value="${j.parsed.planet}"]`);
           if (radio) radio.checked = true;
         }
-        if (status) { status.textContent = "✓ 已填入表單, 檢查後點選創建任務"; status.style.color = "#7cfc00"; }
+        if (status) { status.textContent = t("auto.088"); status.style.color = "#7cfc00"; }
       } catch (e) {
         if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
       }
@@ -2258,9 +2254,9 @@ function openGoalsSettings(
       let target: Record<string, unknown>;
       try {
         const raw = (targetTa?.value ?? "").trim();
-        if (!raw) throw new Error("target JSON 不能爲空");
+        if (!raw) throw new Error(t("auto.089"));
         const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("target 必須是 object");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(t("auto.090"));
         target = parsed;
       } catch (e) {
         if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
@@ -2277,7 +2273,7 @@ function openGoalsSettings(
           if (p) planetIds.push(p.id);
         }
         if (planetIds.length === 0) {
-          if (status) { status.textContent = "× 沒有 planet 可扇出"; status.style.color = "#ff6b6b"; }
+          if (status) { status.textContent = t("auto.091"); status.style.color = "#ff6b6b"; }
           return;
         }
       } else if (planetSel === "all-moons") {
@@ -2286,7 +2282,7 @@ function openGoalsSettings(
           if (mn) planetIds.push(mn.id);
         }
         if (planetIds.length === 0) {
-          if (status) { status.textContent = "× 沒有 moon 可扇出"; status.style.color = "#ff6b6b"; }
+          if (status) { status.textContent = t("auto.092"); status.style.color = "#ff6b6b"; }
           return;
         }
       } else {
@@ -2804,9 +2800,9 @@ function openTransportSettings(
       const cargoM = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
       const cargoC = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
       const cargoD = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
-      if (!source) { if (status) { status.textContent = "× 選 ① 來源星球"; status.style.color = "#ff6b6b"; } return; }
-      if (!target) { if (status) { status.textContent = "× 選 ③ 目標星球"; status.style.color = "#ff6b6b"; } return; }
-      if (shipCount <= 0) { if (status) { status.textContent = "× 數量必須 > 0"; status.style.color = "#ff6b6b"; } return; }
+      if (!source) { if (status) { status.textContent = t("auto.093"); status.style.color = "#ff6b6b"; } return; }
+      if (!target) { if (status) { status.textContent = t("auto.094"); status.style.color = "#ff6b6b"; } return; }
+      if (shipCount <= 0) { if (status) { status.textContent = t("auto.095"); status.style.color = "#ff6b6b"; } return; }
       const targetPlanet = planetsMap[target];
       const targetCoords = (targetPlanet?.coords ?? []).join(":");
       const jgEnabled = (m.querySelector<HTMLInputElement>("[data-tr-jg-enable]")?.checked) ?? false;
@@ -3335,11 +3331,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     }
     // L7 — same slot-family sibling currently building (queued behind)
     const slotFamily = (gg: GoalRowFromHttp): string | null => {
-      const t = gg.type;
-      if (t === "research") return "research:*";
-      if (t === "build_ships" || t === "build_defense") return gg.planet ? `shipyard:${gg.planet}` : null;
-      if (t === "lifeform_building") return gg.planet ? `lf:${gg.planet}` : null;
-      if (t === "build" || t === "build_universal") return gg.planet ? `build:${gg.planet}` : null;
+      const tVal = gg.type;
+      if (tVal === "research") return "research:*";
+      if (tVal === "build_ships" || tVal === "build_defense") return gg.planet ? `shipyard:${gg.planet}` : null;
+      if (tVal === "lifeform_building") return gg.planet ? `lf:${gg.planet}` : null;
+      if (tVal === "build" || tVal === "build_universal") return gg.planet ? `build:${gg.planet}` : null;
       return null;
     };
     const myFamily = slotFamily(g);
@@ -3481,9 +3477,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           return [planetTag, b, lvl].filter(Boolean).join(" ");
         }
         case "research": {
-          const t = String(target["tech"] ?? "?");
+          const tVal = String(target["tech"] ?? "?");
           const lvl = target["target_level"] ?? target["level"] ?? "";
-          return [t, lvl].filter(Boolean).join(" ");
+          return [tVal, lvl].filter(Boolean).join(" ");
         }
         case "build_ships": {
           const s = String(target["ship"] ?? "?");
@@ -3528,7 +3524,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     };
     const actionCN = (type: string): string =>
       type === "deploy" ? "部署"
-      : type === "jumpgate" ? "跳躍"
+      : type === "jumpgate" ? t("auto.096")
       : type === "transport" ? "運輸"
       : type;
     const formatChainLeg = (g: GoalRowFromHttp): string => {
@@ -3746,7 +3742,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const color = derivedLeg.color;
       const displayStatus = derivedLeg.label;
       const prereq = idx === 0
-        ? `<span style="color:#7cfc00; font-size:10px;">(無前置 · 立即派遣)</span>`
+        ? t("auto.097")
         : `<span style="color:#a0a8b8; font-size:10px;">前置: 等 Leg ${idx} (${escapeHtml(actionCN(prevType ?? ""))}) 完成</span>`;
       const reasonLine = g.reason ? `<div style="color:#a0a0a0; font-size:10px; margin-top:1px; padding-left:18px;">↳ ${escapeHtml(g.reason)}</div>` : "";
       return `
@@ -3925,7 +3921,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // Operator 2026-05-29: ⚙️ button opens emergency-specific settings modal.
     // Per "每個功能用自己的設定頁面" — section header gets a per-feature
     // settings button instead of a global "AI 設定" tab.
-    const emSettingsBtn = `<button data-settings="emergency" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="緊急任務設定">⚙</button>`;
+    const emSettingsBtn = t("auto.098");
     const emergencySection = `${sectionHeader("emergency", "🚨 Emergency", emCount, emColor, emSettingsBtn)}<div style="display:${emCollapsed ? "none" : "block"};">${emRows}</div>`;
 
     // Expedition section
@@ -3949,14 +3945,14 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
               </div>`).join(""))
       : "";
     // M2 — expedition section ⚙ button → openExpeditionSettings modal.
-    const exSettingsBtn = `<button data-settings="expedition" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="遠征探險設定">⚙</button>`;
+    const exSettingsBtn = t("auto.099");
     const expeditionSection = `${sectionHeader("expedition", exLabel, ex?.active.length ?? 0, "#8a8aff", exSettingsBtn)}<div style="display:${exCollapsed ? "none" : "block"};">${exRows}</div>`;
 
     // Goals section — wraps existing goal rows with a collapsible header.
     const goalsCollapsed = sectionCollapsed.goals;
     const goalsBody = !goalsCollapsed ? `${empty}${rows}` : "";
     // M4 — Goals section ⚙ → openGoalsSettings modal (create new goal form).
-    const goalsSettingsBtn = `<button data-settings="goals" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="普通任務設定 — 創建新任務">⚙</button>`;
+    const goalsSettingsBtn = t("auto.100");
     // v0.0.460: awaiting count badge — operator sees at a glance how many
     // goals are quiet because they're waiting for empire_poll / operator_retry.
     const awaitingCount = filtered.filter((g) => g.status === "blocked" && Array.isArray(g.awaiting_events) && g.awaiting_events.length > 0).length;
@@ -4018,7 +4014,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // M3 — section header ⚙ → openDiscoverySettings modal. Keeps existing
     // Stop/inline UI intact for backward compat; modal adds rich status +
     // structured Start form.
-    const discSettingsBtn = `<button data-settings="discovery" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="發現任務設定">⚙</button>`;
+    const discSettingsBtn = t("auto.101");
     const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff", `${discHeaderBtn}${discSettingsBtn}`)}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
 
     // Jumpgate cooldown per moon — operator 2026-05-26:
@@ -4140,7 +4136,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const shipsNeeded = total > 0 && cap > 0 ? Math.ceil(total / cap) : 0;
       const lbl = (v: number): string => v.toLocaleString();
       const cargoCollapsed = sectionCollapsed.cargo;
-      const cargoSettingsBtn = `<button data-settings="transport" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="運輸設定">⚙</button>`;
+      const cargoSettingsBtn = t("auto.102");
       // v0.0.529 — operator 2026-05-31 "這部分不要了, 把運輸任務從 goals 移到這裏".
       // 舊的 Cargo Calc UI (Planet 選擇 / SC|LC / M C D / Need / Deploy→Moon)
       // 全刪, cargo section header 改成 "🚚 運輸任務" + 裝 transportRowsHtml.
@@ -4288,8 +4284,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       el.addEventListener("click", (e) => {
         // Don't toggle collapse if click landed on an action button
         // hosted inside the header (pause-daemon, discovery-stop, etc).
-        const t = e.target as HTMLElement;
-        if (t.closest("[data-pause-daemon]") || t.closest("[data-action]")) return;
+        const tVal = e.target as HTMLElement;
+        if (tVal.closest("[data-pause-daemon]") || tVal.closest("[data-action]")) return;
         const name = el.getAttribute("data-section-toggle");
         if (!name) return;
         setSectionCollapsed(name, !sectionCollapsed[name]);
@@ -4575,20 +4571,20 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     try {
       const tones = severity === "attack" ? [880, 0, 880, 0, 880] : [660];
       const stepMs = severity === "attack" ? 130 : 600;
-      let t = ctx.currentTime;
+      let tVal = ctx.currentTime;
       for (const freq of tones) {
-        if (freq === 0) { t += stepMs / 1000; continue; }
+        if (freq === 0) { tVal += stepMs / 1000; continue; }
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.type = "square";
         osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0.0001, t);
-        gain.gain.exponentialRampToValueAtTime(0.35, t + 0.01);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t + (stepMs - 20) / 1000);
+        gain.gain.setValueAtTime(0.0001, tVal);
+        gain.gain.exponentialRampToValueAtTime(0.35, tVal + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, tVal + (stepMs - 20) / 1000);
         osc.connect(gain).connect(ctx.destination);
-        osc.start(t);
-        osc.stop(t + stepMs / 1000);
-        t += stepMs / 1000;
+        osc.start(tVal);
+        osc.stop(tVal + stepMs / 1000);
+        tVal += stepMs / 1000;
       }
     } catch (e) {
       console.warn("[panel/alarm] playBeep threw:", e);
