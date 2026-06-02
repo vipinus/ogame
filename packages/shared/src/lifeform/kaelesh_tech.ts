@@ -117,10 +117,19 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
 };
 
+// v0.0.666 — operator 2026-06-02 "LF 科技都是中文 / 中文名称不是 ogame
+// 专有名词": catalog rewritten to align canonical keys with tech_ids.ts
+// (14201-14218 series). Previous entries used non-canonical keys like
+// "neuromodal_compressor" (snake) / "neuroIfm" / "signalTransmission"
+// which DOM scraper's canonical-name lookup never produced → all LF
+// research items 14206+ silently fell through to scraped TC label.
+// display_name_zh values lifted from operator's live TC page DOM via
+// techLabels[]; runtime pickLfName still prefers techLabels (ground
+// truth) over these handcrafted values.
 const research: Record<string, LifeformResearchEntry> = {
   heatRecovery: {
     id: "heatRecovery",
-    display_name_zh: "熱能回收",
+    display_name_zh: "熱量回收",
     display_name_en: "Heat Recovery",
     requires: { vortexChamber: 1 },
     cost_at: pow(7_000, 2),
@@ -128,7 +137,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   sulphideProcess: {
     id: "sulphideProcess",
-    display_name_zh: "硫化處理",
+    display_name_zh: "硫化物過程",
     display_name_en: "Sulphide Process",
     requires: { vortexChamber: 1 },
     cost_at: pow(8_500, 2),
@@ -136,7 +145,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   psionicNetwork: {
     id: "psionicNetwork",
-    display_name_zh: "心靈網絡",
+    display_name_zh: "靈能網路",
     display_name_en: "Psionic Network",
     requires: { vortexChamber: 1 },
     cost_at: pow(10_500, 2),
@@ -144,7 +153,7 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   telekineticTractorBeam: {
     id: "telekineticTractorBeam",
-    display_name_zh: "心靈牽引波束",
+    display_name_zh: "心靈致動牽引光束",
     display_name_en: "Telekinetic Tractor Beam",
     requires: { vortexChamber: 2 },
     cost_at: pow(18_000, 2),
@@ -152,66 +161,114 @@ const research: Record<string, LifeformResearchEntry> = {
   },
   enhancedSensorTechnology: {
     id: "enhancedSensorTechnology",
-    display_name_zh: "增強傳感器技術",
+    display_name_zh: "增強感測器技術",
     display_name_en: "Enhanced Sensor Technology",
     requires: { vortexChamber: 2 },
     cost_at: pow(22_000, 2),
     verified_against_live: false,
   },
-  neuromodal_compressor: {
-    id: "neuromodal_compressor",
-    display_name_zh: "神經模態壓縮器",
+  neuromodalCompressor: {
+    id: "neuromodalCompressor",
+    display_name_zh: "神經模態壓縮機",
     display_name_en: "Neuromodal Compressor",
     requires: { vortexChamber: 2 },
     cost_at: pow(26_000, 2),
     verified_against_live: false,
   },
-  neuroIfm: {
-    id: "neuroIfm",
-    display_name_zh: "神經界面調制",
-    display_name_en: "NeuroIFM",
+  neuroInterface: {
+    id: "neuroInterface",
+    display_name_zh: "神經介面",
+    display_name_en: "Neuro-Interface",
     requires: { vortexChamber: 3 },
     cost_at: pow(40_000, 2),
     verified_against_live: false,
   },
+  interplanetaryAnalysisNetwork: {
+    id: "interplanetaryAnalysisNetwork",
+    display_name_zh: "星際分析網路",
+    display_name_en: "Interplanetary Analysis Network",
+    requires: { vortexChamber: 3 },
+    cost_at: pow(50_000, 2),
+    verified_against_live: false,
+  },
+  overclockingHeavyFighter: {
+    id: "overclockingHeavyFighter",
+    display_name_zh: "超頻（重型戰鬥機）",
+    display_name_en: "Overclocking — Heavy Fighter",
+    requires: { vortexChamber: 3 },
+    cost_at: pow(60_000, 2),
+    verified_against_live: false,
+  },
   telekineticDrive: {
     id: "telekineticDrive",
-    display_name_zh: "心靈推進器",
+    display_name_zh: "心靈致動器",
     display_name_en: "Telekinetic Drive",
     requires: { vortexChamber: 3 },
     cost_at: pow(55_000, 2),
     verified_against_live: false,
   },
-  signalTransmission: {
-    id: "signalTransmission",
-    display_name_zh: "信號傳輸",
-    display_name_en: "Sixth Sense / Signal Transmission",
+  sixthSense: {
+    id: "sixthSense",
+    display_name_zh: "第六感",
+    display_name_en: "Sixth Sense",
     requires: { vortexChamber: 4 },
     cost_at: powD(80_000, 2),
     verified_against_live: false,
   },
-  mindClone: {
-    id: "mindClone",
-    display_name_zh: "心靈克隆",
-    display_name_en: "Mind Clone",
+  psychoharmoniser: {
+    id: "psychoharmoniser",
+    display_name_zh: "精神調諧器",
+    display_name_en: "Psychoharmoniser",
+    requires: { vortexChamber: 4 },
+    cost_at: powD(90_000, 2),
+    verified_against_live: false,
+  },
+  efficientSwarmIntelligence: {
+    id: "efficientSwarmIntelligence",
+    display_name_zh: "高效蜂群智能",
+    display_name_en: "Efficient Swarm Intelligence",
     requires: { vortexChamber: 4 },
     cost_at: powD(100_000, 2),
     verified_against_live: false,
   },
-  telekineticDrive2: {
-    id: "telekineticDrive2",
-    display_name_zh: "心靈推進 II",
-    display_name_en: "Telekinetic Drive II",
+  overclockingLargeCargo: {
+    id: "overclockingLargeCargo",
+    display_name_zh: "超頻（大型運輸艦）",
+    display_name_en: "Overclocking — Large Cargo",
+    requires: { vortexChamber: 4 },
+    cost_at: powD(120_000, 2),
+    verified_against_live: false,
+  },
+  gravitationSensors: {
+    id: "gravitationSensors",
+    display_name_zh: "重力感測器",
+    display_name_en: "Gravitation Sensors",
     requires: { vortexChamber: 5 },
     cost_at: powD(150_000, 2),
     verified_against_live: false,
   },
-  enhancedDiscoveryNetwork: {
-    id: "enhancedDiscoveryNetwork",
-    display_name_zh: "增強探索網絡",
-    display_name_en: "Enhanced Discovery Network",
+  overclockingBattleship: {
+    id: "overclockingBattleship",
+    display_name_zh: "超頻（戰列艦）",
+    display_name_en: "Overclocking — Battleship",
+    requires: { vortexChamber: 5 },
+    cost_at: powD(180_000, 2),
+    verified_against_live: false,
+  },
+  psionicShieldMatrix: {
+    id: "psionicShieldMatrix",
+    display_name_zh: "靈能護盾矩陣",
+    display_name_en: "Psionic Shield Matrix",
     requires: { vortexChamber: 5 },
     cost_at: powD(200_000, 2),
+    verified_against_live: false,
+  },
+  kaeleshDiscovererEnhancement: {
+    id: "kaeleshDiscovererEnhancement",
+    display_name_zh: "凱雷斯探索者強化",
+    display_name_en: "Kaelesh Discoverer Enhancement",
+    requires: { vortexChamber: 5 },
+    cost_at: powD(250_000, 2),
     verified_against_live: false,
   },
 };

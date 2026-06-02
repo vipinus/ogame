@@ -69,6 +69,63 @@ const CAMEL_TO_TW: Record<string, string> = {
   "explorer": "探路者"
 };
 
+// v0.0.666 — operator 2026-06-02 "largeCargo" raw camelCase leaked into
+// transport pane in EN mode. Mirror table sourced from ogame
+// /api/localization.xml en.json so EN display uses gameforge-official
+// English names (matches what en-server players see in-game).
+const CAMEL_TO_EN: Record<string, string> = {
+  "metalMine": "Metal Mine",
+  "crystalMine": "Crystal Mine",
+  "deuteriumSynth": "Deuterium Synthesizer",
+  "solarPlant": "Solar Plant",
+  "fusionReactor": "Fusion Reactor",
+  "roboticsFactory": "Robotics Factory",
+  "naniteFactory": "Nanite Factory",
+  "shipyard": "Shipyard",
+  "metalStorage": "Metal Storage",
+  "crystalStorage": "Crystal Storage",
+  "deuteriumTank": "Deuterium Tank",
+  "researchLab": "Research Lab",
+  "allianceDepot": "Alliance Depot",
+  "missileSilo": "Missile Silo",
+  "lunarBase": "Lunar Base",
+  "sensorPhalanx": "Sensor Phalanx",
+  "jumpgate": "Jump Gate",
+  "espionageTech": "Espionage Technology",
+  "computerTech": "Computer Technology",
+  "weapons": "Weapons Technology",
+  "shielding": "Shielding Technology",
+  "armor": "Armour Technology",
+  "energyTech": "Energy Technology",
+  "hyperspaceTech": "Hyperspace Technology",
+  "combustion": "Combustion Drive",
+  "impulseDrive": "Impulse Drive",
+  "hyperspaceDrive": "Hyperspace Drive",
+  "laserTech": "Laser Technology",
+  "ionTech": "Ion Technology",
+  "plasmaTech": "Plasma Technology",
+  "intergalactic": "Intergalactic Research Network",
+  "astrophysics": "Astrophysics",
+  "gravitonTech": "Graviton Technology",
+  "smallCargo": "Small Cargo",
+  "largeCargo": "Large Cargo",
+  "lightFighter": "Light Fighter",
+  "heavyFighter": "Heavy Fighter",
+  "cruiser": "Cruiser",
+  "battleship": "Battleship",
+  "colonyShip": "Colony Ship",
+  "recycler": "Recycler",
+  "espionageProbe": "Espionage Probe",
+  "bomber": "Bomber",
+  "solarSatellite": "Solar Satellite",
+  "destroyer": "Destroyer",
+  "deathstar": "Deathstar",
+  "battlecruiser": "Battlecruiser",
+  "crawler": "Crawler",
+  "reaper": "Reaper",
+  "explorer": "Pathfinder"
+};
+
 /** Translate a camelCase tech identifier to the current locale's display name.
  *  Falls back to the raw camelCase identifier when no mapping is found
  *  (lifeform tech, custom strings, unknown ids).
@@ -78,5 +135,5 @@ export function techName(camelCaseId: string): string {
   if (locale === "tw") {
     return CAMEL_TO_TW[camelCaseId] ?? camelCaseId;
   }
-  return camelCaseId;
+  return CAMEL_TO_EN[camelCaseId] ?? camelCaseId;
 }

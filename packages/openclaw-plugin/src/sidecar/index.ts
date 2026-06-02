@@ -33,6 +33,9 @@ import { SaveCoordinatorManager, FailureAggregatorManager, ReporterManager } fro
 import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
 import { GoalsStore } from "./goals_store.js";
+import { GoalsStorePg } from "./goals_store_pg.js";
+import { DualReadGoalsStore } from "./dual_read_goals_store.js";
+import { resolveDbMode } from "./db_mode.js";
 import { WorldStateStore } from "./world_state_store.js";
 import { WorldStateStorePg } from "./world_state_store_pg.js";
 import { getCurrentUserId } from "./user_context.js";
@@ -243,6 +246,11 @@ function updateBuildShipsProgress(
   prev: WorldState,
   next: WorldState,
   store: GoalsStore,
+  shadow?: (
+    label: string,
+    fn: (uid: string) => Promise<unknown>,
+  ) => void,
+  pgStore?: WorldStateStorePg | null,
 ): void {
   const activeRows = store.listActive();
   // Index active build_ships goals by (planet_id || "", ship) for O(1) lookup.
@@ -285,17 +293,25 @@ function updateBuildShipsProgress(
       }
       if (!match || !matchKey) continue;
       const newRemaining = match.remaining - delta;
+      const matchedId = match.goalId;
       try {
-        store.updateTarget(match.goalId, { amount: Math.max(0, newRemaining) });
+        const newAmountTarget = { amount: Math.max(0, newRemaining) };
+        store.updateTarget(matchedId, newAmountTarget);
+        if (shadow && pgStore) {
+          shadow("goal.updateTarget.shipProgress", (uid) => pgStore.updateGoalTarget(uid, matchedId, newAmountTarget));
+        }
         if (newRemaining <= 0) {
-          store.updateStatus(match.goalId, "completed");
+          store.updateStatus(matchedId, "completed");
+          if (shadow && pgStore) {
+            shadow("goal.updateStatus.shipDone", (uid) => pgStore.updateGoalStatus(uid, matchedId, "completed", null));
+          }
           goalByKey.delete(matchKey);
         } else {
           // Refresh map so subsequent deltas this tick stay accurate.
-          goalByKey.set(matchKey, { goalId: match.goalId, remaining: newRemaining });
+          goalByKey.set(matchKey, { goalId: matchedId, remaining: newRemaining });
         }
       } catch (e) {
-        console.error("[ogamex/sidecar] ship-progress update failed", match.goalId, e);
+        console.error("[ogamex/sidecar] ship-progress update failed", matchedId, e);
       }
     }
   }
@@ -368,6 +384,40 @@ export async function startSidecar(
     }
   } else {
     console.info("[ogamex/sidecar] Postgres writer DISABLED (set DATABASE_URL to enable)");
+  }
+  // Phase 5b — PG read mirror + dual-read drift observer. Mode picked
+  // via OGAMEX_DB_MODE env (sqlite|dual|pg). Default sqlite = pre-Phase-5
+  // behavior, zero risk. In dual mode a background ticker exercises both
+  // backends every 30s and logs drift; in pg mode the read fleet flips
+  // wholesale (Phase 6 work — for now mirrors dual, just declares intent).
+  const dbMode = resolveDbMode(process.env);
+  let goalsStorePg: GoalsStorePg | null = null;
+  let dualGoalsStore: DualReadGoalsStore | null = null;
+  if (pgStore) {
+    try {
+      // Share the WorldStateStorePg pool — avoids double-connecting.
+      const sharedSql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+      goalsStorePg = new GoalsStorePg({ sql: sharedSql });
+      console.info(`[ogamex/sidecar] GoalsStorePg constructed (sharing pgStore pool) — dbMode=${dbMode}`);
+    } catch (e) {
+      console.warn("[ogamex/sidecar] GoalsStorePg init failed:", e);
+    }
+  } else {
+    console.info(`[ogamex/sidecar] GoalsStorePg DISABLED (no pgStore) — dbMode=${dbMode}`);
+  }
+  if (dbMode !== "sqlite" && goalsStorePg) {
+    dualGoalsStore = new DualReadGoalsStore({ sqlite: goalsStore, pg: goalsStorePg });
+    console.info(`[ogamex/sidecar] DualReadGoalsStore active (dbMode=${dbMode}) — drift will be logged`);
+    // Background probe — every 30s exercise the wrapper on the operator's
+    // uid so drift metrics populate even when the panel is closed.
+    if (pgUserId) {
+      const driftProbeTimer = setInterval(() => {
+        dualGoalsStore!.listActiveByUser(pgUserId).catch((e) =>
+          console.warn("[ogamex/sidecar/drift-probe] threw:", e instanceof Error ? e.message : e),
+        );
+      }, 30_000);
+      driftProbeTimer.unref();
+    }
   }
   /** Best-effort shadow fire — never throws, never blocks. Phase 9b:
    *  per-request AsyncLocalStorage user_id (from HttpServer resolving
@@ -547,8 +597,12 @@ export async function startSidecar(
     const uid = getCurrentUserId();
     const userState = uid ? userStates.get(uid) : undefined;
     const state = userState ?? stateRef.current ?? emptyWorldState();
-    try { priorityMergerRef.dispatch(state, uid); }
-    catch (e) { console.error("[merger] triggerDispatch threw", e); }
+    // v0.0.669 — merger.dispatch is async (Phase 5b). Fire-and-forget
+    // with .catch to keep this trigger sync (called from event handlers
+    // that don't await).
+    priorityMergerRef.dispatch(state, uid).catch((e) =>
+      console.error("[merger] triggerDispatch threw", e),
+    );
   };
   // The HttpServer's /v1/health route delegates to buildHealthReport via a
   // thunk closure — needs `stateRef`, `lastSeen`, and the `ws.clients` set,
@@ -1305,10 +1359,13 @@ export async function startSidecar(
         }
       }
       goalsStore.updateStatus(id, "cancelled", "via /v1/goals/{id}/cancel");
+      shadowFire("goal.updateStatus.cancel", (uid) => pgStore!.updateGoalStatus(uid, id, "cancelled", "via /v1/goals/{id}/cancel"));
       priorityMergerRef?.clearAwaiting(id);
       priorityMergerRef?.clearDispatched(id);
       for (const cid of cascadeIds) {
-        goalsStore.updateStatus(cid, "cancelled", `cascade: parent ${id.slice(0, 12)} cancelled`);
+        const cReason = `cascade: parent ${id.slice(0, 12)} cancelled`;
+        goalsStore.updateStatus(cid, "cancelled", cReason);
+        shadowFire("goal.updateStatus.cascade", (uid) => pgStore!.updateGoalStatus(uid, cid, "cancelled", cReason));
         priorityMergerRef?.clearAwaiting(cid);
         priorityMergerRef?.clearDispatched(cid);
       }
@@ -1320,6 +1377,7 @@ export async function startSidecar(
       if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.updateStatus(id, "blocked", "paused by operator");
+      shadowFire("goal.updateStatus.pause", (uid) => pgStore!.updateGoalStatus(uid, id, "blocked", "paused by operator"));
       priorityMergerRef?.clearDispatched(id);
       triggerDispatch();
       return { ok: true };
@@ -1329,6 +1387,7 @@ export async function startSidecar(
       if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.updateStatus(id, "pending", "resumed by operator");
+      shadowFire("goal.updateStatus.resume", (uid) => pgStore!.updateGoalStatus(uid, id, "pending", "resumed by operator"));
       // v0.0.459: operator-triggered retry — clear awaiting so this goal
       // is eligible for dispatch on the immediate triggerDispatch below.
       priorityMergerRef?.clearAwaiting(id);
@@ -1345,6 +1404,7 @@ export async function startSidecar(
       // will also clear operator's. Tracked as a follow-up — needs a
       // user-scoped clear in goalsStore. Operator unaffected today.
       goalsStore.setMainGoal(id);
+      shadowFire("goal.setMain", (uid) => pgStore!.setMainGoal(uid, id));
       triggerDispatch();
       return { ok: true };
     },
@@ -1353,6 +1413,7 @@ export async function startSidecar(
       if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       goalsStore.setMainGoal(null);
+      shadowFire("goal.setMain.clear", (uid) => pgStore!.setMainGoal(uid, null));
       triggerDispatch();
       return { ok: true };
     },
@@ -1388,7 +1449,7 @@ export async function startSidecar(
       // see comment on isLegacyUid above for the ESM-hoisting trap that
       // made this NULL out 5 expedition goals in production 2026-06-02.
       const createUid = getCurrentUserId() ?? (getLegacyOperatorUid() || undefined);
-      goalsStore.addForUser({
+      const addedRow = goalsStore.addForUser({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         id, type: body.type as any,
         target: body.target,
@@ -1398,6 +1459,7 @@ export async function startSidecar(
         status: "pending", created_at: Date.now(),
         progress_pct: 0, current_step: "queued", eta_at: null,
       }, createUid);
+      shadowFire("goal.add.create", (uid) => pgStore!.upsertGoal(uid, addedRow));
       console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid ? createUid.slice(0,8) : "legacy"}`);
       triggerDispatch();
       return { ok: true, goal_id: id };
@@ -1413,7 +1475,7 @@ export async function startSidecar(
       );
       if (existing) return { ok: false, reason: `discovery already active on ${body.source_planet} (goal ${existing.goal.id})` };
       const id = `disc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      goalsStore.add({
+      const discRow = goalsStore.add({
         id, type: "species_discovery",
         target: {
           source_planet: body.source_planet,
@@ -1426,6 +1488,7 @@ export async function startSidecar(
         status: "pending", created_at: Date.now(),
         progress_pct: 0, current_step: "queued", eta_at: null,
       });
+      shadowFire("goal.add.discovery", (uid) => pgStore!.upsertGoal(uid, discRow));
       console.log(`[discovery] created goal ${id} from planet ${body.source_planet} galaxy=${body.galaxy} base=${body.base_system} range=${body.range ?? 10}`);
       return { ok: true, goal_id: id };
     },
@@ -1524,10 +1587,12 @@ export async function startSidecar(
             const type = row?.goal.type;
             if (!isTransient && (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport")) {
               goalsStore.updateStatus(goalId, "cancelled", reason);
+              shadowFire("goal.updateStatus.directiveFail.cancel", (uid) => pgStore!.updateGoalStatus(uid, goalId, "cancelled", reason));
               priorityMergerRef?.clearAwaiting(goalId);
               priorityMergerRef?.clearDispatched(goalId);
             } else {
               goalsStore.updateStatus(goalId, "blocked", reason);
+              shadowFire("goal.updateStatus.directiveFail.blocked", (uid) => pgStore!.updateGoalStatus(uid, goalId, "blocked", reason));
               // v0.0.459: event-triggered gate — goal stays blocked until
               // awaiting events clear.
               // v0.0.542: split policy by goal type (operator 2026-05-31
@@ -1583,6 +1648,7 @@ export async function startSidecar(
               // list missed it. Now mark completed on ack so chain prereq
               // unblocks next leg (LegC deploy moon→planet).
               goalsStore.updateStatus(goalId, "completed");
+              shadowFire("goal.updateStatus.atomicDone", (uid) => pgStore!.updateGoalStatus(uid, goalId, "completed", null));
             }
             // species_discovery: ApiExec success = ONE coord done. Append to
             // target.completed[] so planner picks next coord on next tick.
@@ -1606,7 +1672,9 @@ export async function startSidecar(
                 const idx = completed.indexOf(lastDispatched);
                 if (idx >= 0) {
                   completed.splice(idx, 1);
-                  goalsStore.updateTarget(goalId, { ...tgt, completed } as Record<string, unknown>);
+                  const revertedTarget = { ...tgt, completed } as Record<string, unknown>;
+                  goalsStore.updateTarget(goalId, revertedTarget);
+                  shadowFire("goal.updateTarget.discoverRevert", (uid) => pgStore!.updateGoalTarget(uid, goalId, revertedTarget));
                   const totalCoords = ((tgt.range ?? 10) * 2 + 1) * 15;
                   console.log(`[discovery] goal ${goalId} HOLD ${lastDispatched} (slot_full, reverted optimistic add) progress: ${completed.length}/${totalCoords}`);
                 }
@@ -1630,7 +1698,9 @@ export async function startSidecar(
                   }
                 }
                 if (lastDispatched || batchAdded > 0) {
-                  goalsStore.updateTarget(goalId, { ...tgt, completed } as Record<string, unknown>);
+                  const progressTarget = { ...tgt, completed } as Record<string, unknown>;
+                  goalsStore.updateTarget(goalId, progressTarget);
+                  shadowFire("goal.updateTarget.discoverProgress", (uid) => pgStore!.updateGoalTarget(uid, goalId, progressTarget));
                   const totalCoords = ((tgt.range ?? 10) * 2 + 1) * 15;
                   console.log(`[discovery] goal ${goalId} progress: ${completed.length}/${totalCoords} (added ${lastDispatched ?? "?"}${batchAdded > 0 ? ` + batch ${batchAdded} from system_states` : ""})`);
                 }
@@ -1642,6 +1712,7 @@ export async function startSidecar(
                 // Reset status to "pending" so next tick re-plans IMMEDIATELY,
                 // bypassing the active-block stuck-recovery wait.
                 goalsStore.updateStatus(goalId, "pending");
+                shadowFire("goal.updateStatus.discoverRescan", (uid) => pgStore!.updateGoalStatus(uid, goalId, "pending", null));
               }
             }
             // build / research / build_ships / lifeform_building → no-op,
@@ -1760,7 +1831,10 @@ export async function startSidecar(
             const completed = Array.isArray(tgt.completed) ? [...tgt.completed] : [];
             if (!completed.includes(coord)) {
               completed.push(coord);
-              goalsStore.updateTarget(d.goal_id, { ...row.goal.target, completed } as Record<string, unknown>);
+              const optimisticTarget = { ...row.goal.target, completed } as Record<string, unknown>;
+              const dGoalId = d.goal_id;
+              goalsStore.updateTarget(dGoalId, optimisticTarget);
+              shadowFire("goal.updateTarget.discoverOptimistic", (uid) => pgStore!.updateGoalTarget(uid, dGoalId, optimisticTarget));
             }
           }
         }
@@ -1769,6 +1843,23 @@ export async function startSidecar(
       // HTTP-side consumers (long-poll) also need the directive — queue it
       // so a polling userscript receives the dispatch.
       http.queueDownstream(msg);
+    },
+    // v0.0.670 — Phase 5c: mirror every merger-driven status mutation to
+    // the PG shadow writer. The 11 in-loop updateStatus call sites were
+    // SQLite-only before this hook (Phase 5b drift evidence: sqlite=13
+    // pg=9). Use upsertGoal (INSERT-or-UPDATE) so the mirror converges
+    // even when the goal was created via a pre-Phase-0 path that didn't
+    // shadow-write its INSERT — the first merger status mutation hydrates
+    // the PG row from the merger's now-up-to-date GoalRow snapshot.
+    onStatusChange: (row, mergerUid) => {
+      if (!pgStore) return;
+      shadowFire("goal.merger.upsertGoal", async (resolvedUid) => {
+        // Prefer the merger's per-dispatch uid (already ALS-routed by
+        // the dispatch caller). Fallback to shadowFire's resolution if
+        // the merger ran outside an ALS frame.
+        const uid = mergerUid || resolvedUid;
+        await pgStore!.upsertGoal(uid, row);
+      });
     },
   });
   // v0.0.459 forward-ref assignment — CRUD endpoints + directive_completed
@@ -1960,7 +2051,7 @@ export async function startSidecar(
   // cross-transport relay fans both ws and http arrivals into.
   // -------------------------------------------------------------------------
 
-  ws.on("state.snapshot", (msg) => {
+  ws.on("state.snapshot", async (msg) => {
     // Phase 9c.1 — route by ALS user_id when set. Per-user store always
     // updated; legacy stateRef ALSO updated (so PriorityMerger /
     // SaveCoord / FailureAgg still see the latest snapshot from whichever
@@ -2096,7 +2187,7 @@ export async function startSidecar(
     // delta. When amount drops to <= 0, the goal is completed.
     if (prev !== null) {
       try {
-        updateBuildShipsProgress(prev, msg.snapshot, goalsStore);
+        updateBuildShipsProgress(prev, msg.snapshot, goalsStore, shadowFire, pgStore);
       } catch (e) {
         console.error("[ogamex/sidecar] ship-progress watcher threw", e);
       }
@@ -2118,8 +2209,10 @@ export async function startSidecar(
     // planning failure does NOT swallow subsequent state.snapshots.
     try {
       // Phase 9c.2 — route by ALS user_id when present.
+      // v0.0.669 — dispatch is async (Phase 5b); await within this snapshot
+      // handler so the log line still reflects this tick's result.
       const dispUid = getCurrentUserId();
-      const result = priorityMerger.dispatch(msg.snapshot, dispUid);
+      const result = await priorityMerger.dispatch(msg.snapshot, dispUid);
       const actions = result.dispatched.map((d) => {
         const params = d.params as { building?: string; tech?: string; ship?: string };
         const label = params.building ?? params.tech ?? params.ship ?? d.action;

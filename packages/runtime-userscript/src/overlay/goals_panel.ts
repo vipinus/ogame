@@ -17,13 +17,39 @@ import { t } from "../i18n/t.js";
 import { techName } from "../i18n/tech_name.js";
 import { getOgameLocaleWithOverride } from "../i18n/locale.js";
 
-// v0.0.662 — operator "用 ogame 专有名词": lifeform names come from
-// shared/lifeform/*_tech.ts (display_name_zh Trad since v0.0.652 STC
-// + display_name_en). Route through locale instead of always-TW.
-function pickLfName(v: { display_name_zh?: string; display_name_en?: string }, k: string): string {
+// v0.0.665 — operator 2026-06-02 "LF 建筑中文名不对" + "中文名称不是
+// ogame 专有名词": handcrafted display_name_zh in shared/lifeform/*_tech.ts
+// does NOT match ogame's actual TC labels (e.g. shared said "心靈網絡",
+// ogame page shows "靈能網路"). techLabels[k] is harvested live from
+// ogame's lfresearch/lfbuilding DOM via extractTechLabels — IT is the
+// ogame TC ground truth. Prefer it when locale matches the server.
+// EN mode: catalog display_name_en (handcrafted) since operator's
+// ogame server is TC so DOM labels can't supply EN.
+function pickLfName(
+  v: { display_name_zh?: string; display_name_en?: string },
+  k: string,
+  techLabels?: Record<string, string>,
+): string {
   const locale = getOgameLocaleWithOverride();
-  if (locale === "tw") return v.display_name_zh ?? v.display_name_en ?? k;
-  return v.display_name_en ?? v.display_name_zh ?? k;
+  const ogameLabel = techLabels?.[k];
+  if (locale === "tw") {
+    return ogameLabel ?? v.display_name_zh ?? v.display_name_en ?? k;
+  }
+  return v.display_name_en ?? ogameLabel ?? v.display_name_zh ?? k;
+}
+
+// v0.0.665 — operator 2026-06-02 "月球都不用翻译吗?": ogame moon.name
+// defaults to server-localized "Moon"/"月球"/"Mond"/... and leaks raw
+// into panel when panel toggles to a different locale. Detect known
+// default moon names across ogame locales and substitute t("auto.118").
+// If operator renamed the moon to a custom string, it falls through.
+const KNOWN_DEFAULT_MOON_NAMES = new Set<string>([
+  "Moon", "月球", "Mond", "Lune", "Luna", "Lua",
+  "Księżyc", "Луна", "Ay", "Maan", "Måne", "月", "달", "Måni",
+]);
+function localizeMoonName(raw: string | undefined | null): string {
+  if (!raw || KNOWN_DEFAULT_MOON_NAMES.has(raw)) return t("auto.118");
+  return raw;
 }
 
 
@@ -430,9 +456,16 @@ function openExpeditionSettings(
     const emptyCell = `<span style="${cellStyle} color:#3a4658; font-style:italic;">—</span>`;
     const renderCheckbox = (p: StorePlanet, icon: string): string => {
       const checked = isPlanetEnabled(p.id);
+      // v0.0.666 — operator screenshot showed "🌙 月球" leaked in expedition
+      // pane even after v0.0.665. p.name comes through verbatim when set; ??
+      // only fired when null. Route moons through localizeMoonName so
+      // server-default TC/DE/FR moon names get substituted in EN mode.
+      const name = p.type === "moon"
+        ? localizeMoonName(p.name)
+        : (p.name ?? t("auto.119"));
       return `<label style="${cellStyle} cursor:pointer;">
         <input data-exp-planet="${escapeHtml(p.id)}" type="checkbox" ${checked ? "checked" : ""} style="vertical-align:middle;"/>
-        <span>${icon} ${escapeHtml(p.name ?? (p.type === "moon" ? t("auto.118") : t("auto.119")))}</span>
+        <span>${icon} ${escapeHtml(name)}</span>
       </label>`;
     };
     const planetRows = sortedCoordKeys.length === 0
@@ -996,7 +1029,7 @@ function openGoalsSettings(
                   <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
                   <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; ${dim}" ${tip}>
                     <input data-mb-moon type="radio" name="mb-moon-radio" value="${escapeHtml(mb.id)}" ${occ ? "disabled" : ""} style="vertical-align:middle;"/>
-                    <span>🌙 ${escapeHtml(mb.name ?? t("auto.118"))}${occSuffix}</span>
+                    <span>🌙 ${escapeHtml(localizeMoonName(mb.name))}${occSuffix}</span>
                   </label>
                 </div>`;
               }).join("")}
@@ -1225,18 +1258,18 @@ function openGoalsSettings(
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:180px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; display:flex; gap:8px; font-size:10px; color:#7080a0; border-bottom:1px solid #2a3a52; background:#0a1018; position:sticky; top:0;">
               <span style="width:72px;">${escapeHtml(t('auto.242'))}</span>
-              <span style="flex:1;">🌍 行星</span>
-              <span style="flex:1;">🌙 月球</span>
+              <span style="flex:1;">🌍 ${escapeHtml(t('auto.266'))}</span>
+              <span style="flex:1;">🌙 ${escapeHtml(t('auto.118'))}</span>
             </div>
             <div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
               <span style="width:72px; color:#7080a0; font-size:11px;">—</span>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-goal-planet type="radio" name="goal-planet-radio" value="all-planets" checked style="vertical-align:middle;"/>
-                <span>🌍 所有星球 (扇出每個星球各建一個)</span>
+                <span>🌍 ${escapeHtml(t('auto.263'))}</span>
               </label>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-goal-planet type="radio" name="goal-planet-radio" value="all-moons" style="vertical-align:middle;"/>
-                <span>🌙 所有月球 (扇出每個月球各建一個)</span>
+                <span>🌙 ${escapeHtml(t('auto.264'))}</span>
               </label>
             </div>
             ${sortedCoordKeys.map((k) => {
@@ -1250,7 +1283,7 @@ function openGoalsSettings(
               const cellMoon = moon
                 ? `<label class="tab-cell-moon" style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                     <input data-goal-planet type="radio" name="goal-planet-radio" value="${escapeHtml(moon.id)}" style="vertical-align:middle;"/>
-                    <span>🌙 ${escapeHtml(moon.name ?? t("auto.118"))}</span>
+                    <span>🌙 ${escapeHtml(localizeMoonName(moon.name))}</span>
                   </label>`
                 : `<span class="tab-cell-moon" style="flex:1; color:#3a4658; font-size:11px; font-style:italic;">—</span>`;
               return `<div style="padding:4px 8px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #1a2030;">
@@ -1610,10 +1643,14 @@ function openGoalsSettings(
         const cat = (LIFEFORM_TECH as Record<string, { buildings?: Record<string, LfBuilding> }>)[species];
         const buildings = cat?.buildings ?? {};
         const entries = Object.entries(buildings);
+        // v0.0.665 — operator "LF 建筑中文名不对": thread DOM-scraped
+        // tech_labels into pickLfName so TC labels come from ogame ground
+        // truth (catalog handcrafted display_name_zh has drift vs ogame).
+        const techLabels = (storeRef?.state as { tech_labels?: Record<string, string> } | undefined)?.tech_labels ?? {};
         currentBuildings.clear();
-        for (const [k, v] of entries) currentBuildings.set(k, pickLfName(v, k));
+        for (const [k, v] of entries) currentBuildings.set(k, pickLfName(v, k, techLabels));
         lfBuildingList.innerHTML = entries.map(([k, v]) => {
-          const name = pickLfName(v, k);
+          const name = pickLfName(v, k, techLabels);
           return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="lf-building-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)}</span></label>`;
         }).join("");
         for (const r of lfBuildingRadios()) r.addEventListener("change", refreshLfDesc);
@@ -1985,6 +2022,19 @@ function openGoalsSettings(
         // v0.0.627 — operator 2026-06-01 "研究按照 id 排序". Match the
         // order ogame's lfresearch page renders: ascending numeric ID
         // (T1 first, then T2, then T3 — natural sequence operator sees).
+        // v0.0.665 — operator "LF 科技都是中文" + "中文名称不是 ogame 专有
+        // 名词": catalog lookup for EN (techLabels is server-locale TC
+        // which leaks into EN mode). Search all 4 species catalogs
+        // because artifact swap can put any tech on any planet.
+        type LfResearchEntry = { display_name_zh?: string; display_name_en?: string };
+        const lookupLfResearch = (key: string): LfResearchEntry | undefined => {
+          const cats = LIFEFORM_TECH as Record<string, { research?: Record<string, LfResearchEntry> }>;
+          for (const species of Object.keys(cats)) {
+            const entry = cats[species]?.research?.[key];
+            if (entry) return entry;
+          }
+          return undefined;
+        };
         const html = entries
           .sort(([a], [b]) => {
             const ia = TECH_ID_BY_NAME[a] ?? Number.POSITIVE_INFINITY;
@@ -1992,7 +2042,8 @@ function openGoalsSettings(
             return ia - ib;
           })
           .map(([k, lvl]) => {
-            const name = techLabels[k] ?? k;
+            const entry = lookupLfResearch(k) ?? {};
+            const name = pickLfName(entry, k, techLabels);
             currentLrLabels.set(k, name);
             return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="當前 L${lvl}"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)} <span style="color:#7080a0;">L${lvl}</span></span></label>`;
           }).join("");
@@ -2403,8 +2454,8 @@ function openTransportSettings(
         : `data-tr-type-toggle="${radioName}" disabled`;
       const moonLabelStyle = hasAnyMoon ? "cursor:pointer;" : "cursor:not-allowed; opacity:0.4;";
       const typeRadio = `<div style="padding:6px 8px; display:flex; gap:14px; font-size:11px; color:#d0d8e0; border-bottom:1px solid #2a3a52; background:#0a1018; position:sticky; top:0;">
-        <label style="cursor:pointer;"><input type="radio" name="${radioName}-type" value="planet" checked data-tr-type-toggle="${radioName}" style="margin-right:4px; vertical-align:middle;"/>🌍 星球</label>
-        <label style="${moonLabelStyle}" title="${hasAnyMoon ? "" : "empire 無任何月球, 不可選"}"><input type="radio" name="${radioName}-type" value="moon" ${moonAttrs} style="margin-right:4px; vertical-align:middle;"/>🌙 月球</label>
+        <label style="cursor:pointer;"><input type="radio" name="${radioName}-type" value="planet" checked data-tr-type-toggle="${radioName}" style="margin-right:4px; vertical-align:middle;"/>🌍 ${escapeHtml(t('common.planet'))}</label>
+        <label style="${moonLabelStyle}" title="${hasAnyMoon ? "" : escapeHtml(t('auto.265'))}"><input type="radio" name="${radioName}-type" value="moon" ${moonAttrs} style="margin-right:4px; vertical-align:middle;"/>🌙 ${escapeHtml(t('auto.118'))}</label>
       </div>`;
       const unset = includeUnset
         ? `<div style="padding:4px 8px; border-bottom:1px solid #1a2030;">
@@ -2448,7 +2499,7 @@ function openTransportSettings(
         </label>`)}
       ${sectionCard(t("auto.145"),
         `<label style="display:block; cursor:pointer; color:#d0d8e0; font-size:11px; padding-bottom:6px;">
-          <input type="checkbox" data-tr-resource-sameas-ship checked style="margin-right:6px; vertical-align:middle;"/>同 ① 艦船星球
+          <input type="checkbox" data-tr-resource-sameas-ship checked style="margin-right:6px; vertical-align:middle;"/>${escapeHtml(t('auto.267'))}
         </label>
         <div data-tr-resource-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-resource-radio")}</div>
         <div data-tr-resource-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">${escapeHtml(t('auto.249'))}</div>`)}
@@ -2456,16 +2507,16 @@ function openTransportSettings(
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-target-radio")}</div>`)}
       ${sectionCard(t("auto.147"),
         `<div style="display:flex; gap:14px; flex-wrap:wrap; padding-bottom:6px; font-size:11px; color:#d0d8e0;">
-          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="ship" data-tr-stopover-shortcut checked style="margin-right:4px; vertical-align:middle;"/>艦船星球</label>
-          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="resource" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>資源星球</label>
-          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="target" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>目標星球</label>
-          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="other" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>其他星球</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="ship" data-tr-stopover-shortcut checked style="margin-right:4px; vertical-align:middle;"/>${escapeHtml(t('auto.268'))}</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="resource" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>${escapeHtml(t('auto.269'))}</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="target" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>${escapeHtml(t('auto.270'))}</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="other" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>${escapeHtml(t('auto.271'))}</label>
         </div>
         <div data-tr-stopover-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
       ${sectionCard(t("auto.148"),
         `<div style="display:flex; gap:12px; padding-bottom:6px;">
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> ${techName('largeCargo')} (cap ${fmt(ltCap)})</label>
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小運 SC (cap ${fmt(stCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> ${escapeHtml(techName('smallCargo'))} (cap ${fmt(stCap)})</label>
         </div>
         <div style="display:flex; gap:10px; padding:4px 0; align-items:center; font-size:11px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
@@ -2706,32 +2757,45 @@ function openTransportSettings(
       const needSpan = m.querySelector<HTMLElement>("[data-tr-ship-need]");
       if (needSpan) {
         const shortNote = isShort ? ` <span style="color:#ff6b6b; font-weight:bold;">${t("auto.179", { n: fmt(haveShips) })}</span>` : "";
-        needSpan.innerHTML = `需 ${needed} 艘 · 總載 ${fmt(total)}${moonBufferD ? ` (含 +50K d 月球 buffer)` : ""} (cap ${fmt(cap)})${shortNote}`;
+        needSpan.innerHTML = `${escapeHtml(t('auto.272', { n: String(needed), total: fmt(total) }))}${moonBufferD ? escapeHtml(t('auto.273')) : ""} (cap ${fmt(cap)})${shortNote}`;
       }
     }
     for (const r of m.querySelectorAll<HTMLInputElement>('input[name="tr-resource-radio"]')) {
-      r.addEventListener("change", () => {
+      r.addEventListener("change", (ev) => {
         if (!r.checked || !resInfo) return;
         if (!r.value) { resInfo.textContent = "—"; return; }
-        const p = planetsMap[r.value];
-        const m_v = p?.resources?.m ?? 0;
-        const c_v = p?.resources?.c ?? 0;
-        const d_v = p?.resources?.d ?? 0;
+        // v0.0.667 — operator 2026-06-02 "刷新那个装载资源的资源输入框":
+        // re-read planet LIVE from store (planetsMap is a snapshot from
+        // section render; sniffer may have updated bank since). And on
+        // user-initiated click (isTrusted), OVERRIDE cargo inputs to the
+        // picked planet's bank — explicit click = explicit "use this".
+        // Programmatic dispatchEvent (sameAsShip sync) has isTrusted=false
+        // so keeps legacy "fill-when-empty" behavior to protect operator's
+        // shortage-button prefill (v0.0.504 rule).
+        const liveP = (storeRef?.state?.planets ?? {})[r.value] as StorePlanet | undefined;
+        const m_v = liveP?.resources?.m ?? 0;
+        const c_v = liveP?.resources?.c ?? 0;
+        const d_v = liveP?.resources?.d ?? 0;
         resInfo.innerHTML = `<span style="color:#d0d8e0;">M ${fmt(m_v)} · C ${fmt(c_v)} · D ${fmt(d_v)}</span>`;
-        // v0.0.504 — operator 2026-05-30 "提交後資料不對". Original logic
-        // auto-overwrote cargo with source planet bank on EVERY radio change,
-        // clobbering user's careful prefill from "→ 運輸" shortage button.
-        // New rule: only auto-fill when cargo input is empty/0 (first time).
-        // Operator's manual edit + shortage prefill ALWAYS preserved.
         const mi = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
         const ci = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
         const di = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
-        const curM = parseInt(mi?.value || "0", 10) || 0;
-        const curC = parseInt(ci?.value || "0", 10) || 0;
-        const curD = parseInt(di?.value || "0", 10) || 0;
-        if (mi && curM === 0) mi.value = String(m_v);
-        if (ci && curC === 0) ci.value = String(c_v);
-        if (di && curD === 0) di.value = String(d_v);
+        const userInitiated = ev.isTrusted;
+        if (userInitiated) {
+          // Override regardless of current cargo values — user explicitly
+          // picked this planet, so its bank is the authoritative source.
+          if (mi) mi.value = String(m_v);
+          if (ci) ci.value = String(c_v);
+          if (di) di.value = String(d_v);
+        } else {
+          // Programmatic sync (sameAsShip): preserve any manual prefill.
+          const curM = parseInt(mi?.value || "0", 10) || 0;
+          const curC = parseInt(ci?.value || "0", 10) || 0;
+          const curD = parseInt(di?.value || "0", 10) || 0;
+          if (mi && curM === 0) mi.value = String(m_v);
+          if (ci && curC === 0) ci.value = String(c_v);
+          if (di && curD === 0) di.value = String(d_v);
+        }
         updateShipCount();
       });
     }
@@ -3648,7 +3712,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             };
             const sh = g.resource_shortage;
             const shortageChip = sh && (sh.m + sh.c + sh.d) > 0
-              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title=t("auto.152")>缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title=t("auto.153")>→ 運輸</button>`
+              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title=t("auto.152")>缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`
               : "";
             // v0.0.456: decouple shortageChip from totalEta — moons return
             // ETA=∞ (no local production for deuterium etc.), JSON serializes
@@ -3701,7 +3765,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                 csh.c > 0 ? `${fmtRes(csh.c)} c` : "",
                 csh.d > 0 ? `${fmtRes(csh.d)} d` : "",
               ].filter(Boolean).join(" · ");
-              const stepFillBtn = `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title=t("auto.154")>→ 運輸</button>`;
+              const stepFillBtn = `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.154'))}">${escapeHtml(t('auto.274'))}</button>`;
               return `<div style="font-size:10px; color:#ffaa55; margin-bottom:2px;">↳ 當前: ${escapeHtml(stepLabel)} 缺 ${shortageBits}${stepFillBtn}</div>`;
             })() : "";
             // v0.0.527 — operator 2026-05-31 "前置鏈都要歸入主鏈 tree".
@@ -3789,7 +3853,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         <div style="border-top:1px solid #2a3a52; padding:6px 0; background:rgba(60,160,200,0.04);">
           <div style="display:flex; align-items:center; gap:6px; justify-content:space-between;">
             <span>
-              <span style="color:#80ffd0; font-weight:bold;">🚚 運輸 chain</span>
+              <span style="color:#80ffd0; font-weight:bold;">${escapeHtml(t('auto.275'))}</span>
               <span style="color:#8090a8; font-size:10px; margin-left:6px;">${n} legs · ${escapeHtml(firstSrc)} → … → ${escapeHtml(lastDest)}</span>
             </span>
             <span style="display:flex; gap:4px; align-items:center;">

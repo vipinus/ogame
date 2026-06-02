@@ -142,8 +142,8 @@ const research: Record<string, LifeformResearchEntry> = {
     cost_at: pow(7_000, 2),
     verified_against_live: false,
   },
-  depotAi: {
-    id: "depotAi",
+  depotAI: {
+    id: "depotAI",
     display_name_zh: "倉儲 AI",
     display_name_en: "Depot AI",
     requires: { roboticsResearchCentre: 2 },
@@ -166,8 +166,8 @@ const research: Record<string, LifeformResearchEntry> = {
     cost_at: pow(15_000, 2),
     verified_against_live: false,
   },
-  improvedDroneAi: {
-    id: "improvedDroneAi",
+  improvedDroneAI: {
+    id: "improvedDroneAI",
     display_name_zh: "改進無人機 AI",
     display_name_en: "Improved Drone AI",
     requires: { roboticsResearchCentre: 3 },
@@ -212,6 +212,55 @@ const research: Record<string, LifeformResearchEntry> = {
     display_name_en: "General Overhaul: Battleship",
     requires: { roboticsResearchCentre: 5 },
     cost_at: powD(200_000, 2),
+    verified_against_live: false,
+  },
+  // v0.0.666 — fill missing canonical 13213-13218.
+  artificialSwarmIntelligence: {
+    id: "artificialSwarmIntelligence",
+    display_name_zh: "人工蜂群智能",
+    display_name_en: "Artificial Swarm Intelligence",
+    requires: { roboticsResearchCentre: 5 },
+    cost_at: powD(180_000, 2),
+    verified_against_live: false,
+  },
+  generalOverhaulBattlecruiser: {
+    id: "generalOverhaulBattlecruiser",
+    display_name_zh: "戰鬥巡洋艦大修",
+    display_name_en: "General Overhaul: Battlecruiser",
+    requires: { roboticsResearchCentre: 6 },
+    cost_at: powD(250_000, 2),
+    verified_against_live: false,
+  },
+  generalOverhaulBomber: {
+    id: "generalOverhaulBomber",
+    display_name_zh: "導彈艦大修",
+    display_name_en: "General Overhaul: Bomber",
+    requires: { roboticsResearchCentre: 6 },
+    cost_at: powD(300_000, 2),
+    verified_against_live: false,
+  },
+  generalOverhaulDestroyer: {
+    id: "generalOverhaulDestroyer",
+    display_name_zh: "毀滅者大修",
+    display_name_en: "General Overhaul: Destroyer",
+    requires: { roboticsResearchCentre: 6 },
+    cost_at: powD(350_000, 2),
+    verified_against_live: false,
+  },
+  experimentalWeaponsTechnology: {
+    id: "experimentalWeaponsTechnology",
+    display_name_zh: "實驗性武器技術",
+    display_name_en: "Experimental Weapons Technology",
+    requires: { roboticsResearchCentre: 7 },
+    cost_at: powD(500_000, 2),
+    verified_against_live: false,
+  },
+  mechanGeneralEnhancement: {
+    id: "mechanGeneralEnhancement",
+    display_name_zh: "機械族通用強化",
+    display_name_en: "Mechan General Enhancement",
+    requires: { roboticsResearchCentre: 7 },
+    cost_at: powD(600_000, 2),
     verified_against_live: false,
   },
 };

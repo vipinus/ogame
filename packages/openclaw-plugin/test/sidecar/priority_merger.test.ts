@@ -89,7 +89,7 @@ describe("PriorityMerger", () => {
     try { store.close(); } catch { /* already closed */ }
   });
 
-  it("dispatches a single active goal via send and marks it active", () => {
+  it("dispatches a single active goal via send and marks it active", async () => {
     const goal = makeGoal({ id: "g1", priority: 50 });
     store.add(goal);
     const directive = makeDirective("g1", 50);
@@ -98,7 +98,7 @@ describe("PriorityMerger", () => {
 
     const merger = new PriorityMerger({ store, planGoal, send });
     const state = makeState();
-    const result = merger.dispatch(state);
+    const result = await merger.dispatch(state);
 
     expect(planGoal).toHaveBeenCalledTimes(1);
     expect(planGoal).toHaveBeenCalledWith(expect.objectContaining({ id: "g1" }), state);
@@ -115,7 +115,7 @@ describe("PriorityMerger", () => {
     expect(row!.reason).toBeUndefined();
   });
 
-  it("orders dispatch by priority DESC (highest first)", () => {
+  it("orders dispatch by priority DESC (highest first)", async () => {
     let now = 1_000;
     const clock = (): number => now;
     const s = new GoalsStore({ dbPath: ":memory:", clock });
@@ -128,7 +128,7 @@ describe("PriorityMerger", () => {
       const send = vi.fn<(msg: DownstreamMsg) => void>();
       const merger = new PriorityMerger({ store: s, planGoal, send });
 
-      merger.dispatch(makeState());
+      await merger.dispatch(makeState());
 
       const sendOrder = send.mock.calls.map(
         (c) => (c[0] as { type: "directive.dispatch"; directive: Directive }).directive.goal_id,
@@ -139,7 +139,7 @@ describe("PriorityMerger", () => {
     }
   });
 
-  it("tiebreaks equal priority by created_at ASC (older first)", () => {
+  it("tiebreaks equal priority by created_at ASC (older first)", async () => {
     let now = 1_000;
     const clock = (): number => now;
     const s = new GoalsStore({ dbPath: ":memory:", clock });
@@ -151,7 +151,7 @@ describe("PriorityMerger", () => {
       const send = vi.fn<(msg: DownstreamMsg) => void>();
       const merger = new PriorityMerger({ store: s, planGoal, send });
 
-      merger.dispatch(makeState());
+      await merger.dispatch(makeState());
 
       const sendOrder = send.mock.calls.map(
         (c) => (c[0] as { type: "directive.dispatch"; directive: Directive }).directive.goal_id,
@@ -162,13 +162,13 @@ describe("PriorityMerger", () => {
     }
   });
 
-  it("blocked planner result → status=blocked, reason persisted, no send", () => {
+  it("blocked planner result → status=blocked, reason persisted, no send", async () => {
     store.add(makeGoal({ id: "g-block", priority: 50 }));
     const planGoal = vi.fn().mockReturnValue({ blocked: "need gravitation 6" });
     const send = vi.fn<(msg: DownstreamMsg) => void>();
 
     const merger = new PriorityMerger({ store, planGoal, send });
-    const result = merger.dispatch(makeState());
+    const result = await merger.dispatch(makeState());
 
     expect(send).not.toHaveBeenCalled();
     expect(result.dispatched).toEqual([]);
@@ -180,7 +180,7 @@ describe("PriorityMerger", () => {
     expect(row!.reason).toBe("need gravitation 6");
   });
 
-  it("already-at-target blocked text → status=completed and counted as skipped_terminal", () => {
+  it("already-at-target blocked text → status=completed and counted as skipped_terminal", async () => {
     store.add(makeGoal({ id: "g-done", priority: 50 }));
     const planGoal = vi
       .fn()
@@ -188,7 +188,7 @@ describe("PriorityMerger", () => {
     const send = vi.fn<(msg: DownstreamMsg) => void>();
 
     const merger = new PriorityMerger({ store, planGoal, send });
-    const result = merger.dispatch(makeState());
+    const result = await merger.dispatch(makeState());
 
     expect(send).not.toHaveBeenCalled();
     expect(result.dispatched).toEqual([]);
@@ -199,7 +199,7 @@ describe("PriorityMerger", () => {
     expect(row!.status).toBe("completed");
   });
 
-  it("species_discovery 'goal complete' blocked text → status=completed (not blocked)", () => {
+  it("species_discovery 'goal complete' blocked text → status=completed (not blocked)", async () => {
     // Operator 2026-05-23: discovery goal finished all 315 coords but UI
     // showed "block" because planner returned blocked-reason "all 315 coords
     // attempted — goal complete" which did not match ALREADY_AT_TARGET_RE.
@@ -212,7 +212,7 @@ describe("PriorityMerger", () => {
     const send = vi.fn<(msg: DownstreamMsg) => void>();
 
     const merger = new PriorityMerger({ store, planGoal, send });
-    const result = merger.dispatch(makeState());
+    const result = await merger.dispatch(makeState());
 
     expect(result.skipped_terminal).toBe(1);
     expect(result.blocked).toEqual([]);
@@ -220,7 +220,7 @@ describe("PriorityMerger", () => {
     expect(row!.status).toBe("completed");
   });
 
-  it("mixed batch handles dispatch + blocked + already-at-target correctly", () => {
+  it("mixed batch handles dispatch + blocked + already-at-target correctly", async () => {
     let now = 1_000;
     const clock = (): number => now;
     const s = new GoalsStore({ dbPath: ":memory:", clock });
@@ -238,7 +238,7 @@ describe("PriorityMerger", () => {
       const send = vi.fn<(msg: DownstreamMsg) => void>();
 
       const merger = new PriorityMerger({ store: s, planGoal, send });
-      const result = merger.dispatch(makeState());
+      const result = await merger.dispatch(makeState());
 
       expect(result.dispatched).toHaveLength(1);
       expect(result.dispatched[0]).toBe(directive);
@@ -257,7 +257,7 @@ describe("PriorityMerger", () => {
     }
   });
 
-  it("skips PAUSED rows (status=blocked, reason starts with 'PAUSED')", () => {
+  it("skips PAUSED rows (status=blocked, reason starts with 'PAUSED')", async () => {
     // Two pending goals; one then gets paused by the operator (status=blocked
     // + magic "PAUSED:..." reason). PriorityMerger.dispatch must skip the
     // paused row entirely — planner not invoked, status untouched, no send.
@@ -271,7 +271,7 @@ describe("PriorityMerger", () => {
     const send = vi.fn<(msg: DownstreamMsg) => void>();
 
     const merger = new PriorityMerger({ store, planGoal, send });
-    const result = merger.dispatch(makeState());
+    const result = await merger.dispatch(makeState());
 
     // Planner should have been called ONCE — only for g-live, not g-paused.
     expect(planGoal).toHaveBeenCalledTimes(1);
@@ -286,7 +286,7 @@ describe("PriorityMerger", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("non-PAUSED blocked rows are still re-planned (state may have unblocked them)", () => {
+  it("non-PAUSED blocked rows are still re-planned (state may have unblocked them)", async () => {
     // Regression guard: only rows with the PAUSED prefix are skipped.
     // A naturally-blocked row (e.g. "need crystal mine 10") must still go
     // through the planner so a resource update can unblock it next tick.
@@ -298,13 +298,13 @@ describe("PriorityMerger", () => {
     const send = vi.fn<(msg: DownstreamMsg) => void>();
 
     const merger = new PriorityMerger({ store, planGoal, send });
-    merger.dispatch(makeState());
+    await merger.dispatch(makeState());
 
     expect(planGoal).toHaveBeenCalledTimes(1);
     expect(store.get("g-blk")?.status).toBe("active");
   });
 
-  it("main goal dispatches FIRST regardless of nominal priority", () => {
+  it("main goal dispatches FIRST regardless of nominal priority", async () => {
     // Lower-priority goal flagged as main should beat a higher-priority
     // regular goal because the merger sorts main first.
     let now = 1_000;
@@ -317,7 +317,7 @@ describe("PriorityMerger", () => {
       const planGoal = vi.fn((g: Goal) => makeDirective(g.id, g.priority));
       const send = vi.fn<(msg: DownstreamMsg) => void>();
       const merger = new PriorityMerger({ store: s, planGoal, send });
-      merger.dispatch(makeState());
+      await merger.dispatch(makeState());
       const order = send.mock.calls.map(
         (c) => (c[0] as { type: "directive.dispatch"; directive: Directive }).directive.goal_id,
       );
@@ -328,7 +328,7 @@ describe("PriorityMerger", () => {
     }
   });
 
-  it("research slot is GLOBAL — second research goal in same tick is deferred", () => {
+  it("research slot is GLOBAL — second research goal in same tick is deferred", async () => {
     store.add(makeGoal({ id: "r1", priority: 10 }));
     store.add(makeGoal({ id: "r2", priority: 9  }));
     const planGoal = vi.fn((g: Goal) => ({
@@ -339,7 +339,7 @@ describe("PriorityMerger", () => {
     }));
     const send = vi.fn<(msg: DownstreamMsg) => void>();
     const merger = new PriorityMerger({ store, planGoal, send });
-    const result = merger.dispatch(makeState());
+    const result = await merger.dispatch(makeState());
     // Only one research dispatched; the second blocked on slot.
     expect(send).toHaveBeenCalledTimes(1);
     expect(result.dispatched).toHaveLength(1);
@@ -347,21 +347,21 @@ describe("PriorityMerger", () => {
     expect(result.blocked).toContainEqual({ goal_id: "r2", reason: "research slot in use" });
   });
 
-  it("build slot is PER PLANET — two builds on same planet → one dispatched, other deferred", () => {
+  it("build slot is PER PLANET — two builds on same planet → one dispatched, other deferred", async () => {
     store.add(makeGoal({ id: "b1", priority: 10 }));
     store.add(makeGoal({ id: "b2", priority: 9  }));
     // Both directives target the same planet "earth".
     const planGoal = vi.fn((g: Goal) => makeDirective(g.id, g.priority, "earth"));
     const send = vi.fn<(msg: DownstreamMsg) => void>();
     const merger = new PriorityMerger({ store, planGoal, send });
-    const result = merger.dispatch(makeState());
+    const result = await merger.dispatch(makeState());
     expect(send).toHaveBeenCalledTimes(1);
     expect(result.dispatched[0]!.goal_id).toBe("b1");
     expect(result.blocked[0]!.goal_id).toBe("b2");
     expect(result.blocked[0]!.reason).toMatch(/build slot on earth in use/);
   });
 
-  it("planet build_q non-empty → all build goals on that planet deferred this tick", () => {
+  it("planet build_q non-empty → all build goals on that planet deferred this tick", async () => {
     store.add(makeGoal({ id: "b1", priority: 10 }));
     const planGoal = vi.fn((g: Goal) => makeDirective(g.id, g.priority, "p1"));
     const send = vi.fn<(msg: DownstreamMsg) => void>();
@@ -369,12 +369,12 @@ describe("PriorityMerger", () => {
     const state = makeState();
     // Simulate planet p1 already having a build in flight.
     (Object.values(state.planets) as any)[0]!.build_q = { item: "metalMine", level: 2, ends_at: Date.now() + 60_000 };
-    const result = merger.dispatch(state);
+    const result = await merger.dispatch(state);
     expect(send).not.toHaveBeenCalled();
     expect(result.blocked[0]!.reason).toMatch(/build slot on p1 in use/);
   });
 
-  it("empty active list → no calls, empty result arrays", () => {
+  it("empty active list → no calls, empty result arrays", async () => {
     // Add a goal then mark it cancelled and another completed → both terminal,
     // so listActive() should return nothing.
     store.add(makeGoal({ id: "g-cancel" }));
@@ -386,7 +386,7 @@ describe("PriorityMerger", () => {
     const send = vi.fn<(msg: DownstreamMsg) => void>();
 
     const merger = new PriorityMerger({ store, planGoal, send });
-    const result = merger.dispatch(makeState());
+    const result = await merger.dispatch(makeState());
 
     expect(planGoal).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();

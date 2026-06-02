@@ -18,6 +18,9 @@
  */
 
 import postgres from "postgres";
+import type { Goal, WorldState } from "@ogamex/shared";
+
+import type { GoalRow, GoalStatus } from "./goals_store.js";
 
 export interface WorldStateStorePgOptions {
   /** Postgres connection URL, e.g. `postgres://ogamex:ogamex@127.0.0.1:5432/ogamex` */
@@ -89,6 +92,39 @@ export class WorldStateStorePg {
     return { json: rows[0]!.json as unknown, updatedAt: rows[0]!.updated_at as Date };
   }
 
+  /**
+   * Phase 4b: SQLite-shape read mirror. Returns `{ state, updated_at }` where
+   * `updated_at` is epoch-ms (matching the SQLite WorldStateStore.hydrate
+   * contract byte-for-byte so callers in priority_merger / index.ts can swap
+   * without edits).
+   *
+   * Returns null if the user has no persisted row yet (fresh install).
+   */
+  async hydrate(userId: string): Promise<{ state: WorldState; updated_at: number } | null> {
+    const rows = await this.sql`
+      SELECT json, EXTRACT(EPOCH FROM updated_at) * 1000 AS ts_ms
+      FROM ogame_world_state
+      WHERE user_id = ${userId}
+    `;
+    if (rows.length === 0) return null;
+    const row = rows[0]!;
+    return {
+      state: row.json as WorldState,
+      updated_at: Math.floor(Number(row.ts_ms)),
+    };
+  }
+
+  /** Last persisted updated_at (epoch-ms), or null if never written. */
+  async lastUpdatedAt(userId: string): Promise<number | null> {
+    const rows = await this.sql`
+      SELECT EXTRACT(EPOCH FROM updated_at) * 1000 AS ts_ms
+      FROM ogame_world_state
+      WHERE user_id = ${userId}
+    `;
+    if (rows.length === 0) return null;
+    return Math.floor(Number(rows[0]!.ts_ms));
+  }
+
   // ---------------------------------------------------------------------------
   // events — append-only audit, user_id partitioned
   // ---------------------------------------------------------------------------
@@ -107,6 +143,23 @@ export class WorldStateStorePg {
       SELECT id, type, payload, EXTRACT(EPOCH FROM created_at) * 1000 AS ts_ms
       FROM ogame_events
       WHERE user_id = ${userId}
+      ORDER BY id DESC
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      type: String(r.type),
+      payload: r.payload as unknown,
+      created_at: Math.floor(Number(r.ts_ms)),
+    }));
+  }
+
+  /** Filter by event type, most-recent first. Mirrors SQLite listEventsByType. */
+  async listEventsByType(userId: string, type: string, limit = 100): Promise<PgEventRow[]> {
+    const rows = await this.sql`
+      SELECT id, type, payload, EXTRACT(EPOCH FROM created_at) * 1000 AS ts_ms
+      FROM ogame_events
+      WHERE user_id = ${userId} AND type = ${type}
       ORDER BY id DESC
       LIMIT ${limit}
     `;
@@ -254,6 +307,149 @@ export class WorldStateStorePg {
     if (!row) return null;
     const url = row.discord_webhook_url;
     return typeof url === "string" && url.length > 0 ? url : null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // ogame_goals — Phase 4a shadow writes. SQLite (goals_store.ts) is still
+  // primary; these mirror every mutation so the PG row reflects current
+  // state. epoch-ms timestamps are converted to timestamptz on the way in
+  // (and back out in the future read methods Phase 4b will add).
+  //
+  // Schema reminder:
+  //   id varchar(80) PK, user_id text NOT NULL FK→users,
+  //   goal_json jsonb, status varchar(20), reason text,
+  //   is_main_goal bool DEFAULT false,
+  //   created_at timestamptz, updated_at timestamptz
+  // ---------------------------------------------------------------------------
+
+  /** Insert or replace a full goal row. Mirrors GoalsStore.add/addForUser. */
+  async upsertGoal(userId: string, row: GoalRow): Promise<void> {
+    const goalJson = row.goal as unknown as postgres.JSONValue;
+    const isMain = row.goal.is_main_goal === true;
+    const createdAt = new Date(row.created_at);
+    const updatedAt = new Date(row.updated_at);
+    const reason = row.reason ?? null;
+    await this.sql`
+      INSERT INTO ogame_goals (id, user_id, goal_json, status, reason, is_main_goal, created_at, updated_at)
+      VALUES (
+        ${row.goal.id},
+        ${userId},
+        ${this.sql.json(goalJson)},
+        ${row.status},
+        ${reason},
+        ${isMain},
+        ${createdAt},
+        ${updatedAt}
+      )
+      ON CONFLICT (id) DO UPDATE
+        SET goal_json = EXCLUDED.goal_json,
+            status = EXCLUDED.status,
+            reason = EXCLUDED.reason,
+            is_main_goal = EXCLUDED.is_main_goal,
+            updated_at = EXCLUDED.updated_at
+    `;
+  }
+
+  /** Mirror GoalsStore.updateStatus — sets status, reason, updated_at. */
+  async updateGoalStatus(
+    userId: string,
+    id: string,
+    status: GoalStatus,
+    reason: string | null,
+  ): Promise<void> {
+    await this.sql`
+      UPDATE ogame_goals
+         SET status = ${status},
+             reason = ${reason},
+             updated_at = NOW()
+       WHERE id = ${id} AND user_id = ${userId}
+    `;
+  }
+
+  /**
+   * Mirror GoalsStore.updateTarget — merges newTarget into goal_json.target
+   * via jsonb deep merge (|| at the target subtree). Safer than jsonb_set
+   * with a fixed path because the caller passes a partial target object
+   * we want to shallow-merge into existing.target.
+   */
+  async updateGoalTarget(
+    userId: string,
+    id: string,
+    newTarget: Record<string, unknown>,
+  ): Promise<void> {
+    const patch = { target: newTarget } as unknown as postgres.JSONValue;
+    await this.sql`
+      UPDATE ogame_goals
+         SET goal_json = jsonb_set(
+               goal_json,
+               '{target}',
+               COALESCE(goal_json->'target', '{}'::jsonb) || ${this.sql.json(patch)}::jsonb -> 'target',
+               true
+             ),
+             updated_at = NOW()
+       WHERE id = ${id} AND user_id = ${userId}
+    `;
+  }
+
+  /**
+   * Mirror GoalsStore.updateGoalJson — full goal_json replacement for
+   * cases (setMainGoal) where the JSON has structural changes beyond
+   * the target subtree.
+   */
+  async updateGoalJson(
+    userId: string,
+    id: string,
+    goal: Goal,
+  ): Promise<void> {
+    const goalJson = goal as unknown as postgres.JSONValue;
+    const isMain = goal.is_main_goal === true;
+    await this.sql`
+      UPDATE ogame_goals
+         SET goal_json = ${this.sql.json(goalJson)},
+             is_main_goal = ${isMain},
+             updated_at = NOW()
+       WHERE id = ${id} AND user_id = ${userId}
+    `;
+  }
+
+  /** Mirror GoalsStore.remove. */
+  async deleteGoal(userId: string, id: string): Promise<void> {
+    await this.sql`
+      DELETE FROM ogame_goals WHERE id = ${id} AND user_id = ${userId}
+    `;
+  }
+
+  /**
+   * Mirror GoalsStore.setMainGoal — clear is_main_goal for all the
+   * user's other goals, then flip one to true (or none if id is null).
+   * Also mirrors the in-Goal-JSON flag so future reads from PG see the
+   * same shape SQLite does.
+   *
+   * Done as two statements; we don't open a transaction because shadow
+   * writes are best-effort fire-and-forget — a partial failure here is
+   * acceptable (next setMainGoal call will reconcile). SQLite primary
+   * has the source of truth.
+   */
+  async setMainGoal(userId: string, id: string | null): Promise<void> {
+    // Clear every other row for this user.
+    await this.sql`
+      UPDATE ogame_goals
+         SET is_main_goal = false,
+             goal_json = jsonb_set(goal_json, '{is_main_goal}', 'false'::jsonb, true),
+             updated_at = NOW()
+       WHERE user_id = ${userId}
+         AND (${id}::varchar IS NULL OR id <> ${id})
+         AND is_main_goal = true
+    `;
+    if (id !== null) {
+      await this.sql`
+        UPDATE ogame_goals
+           SET is_main_goal = true,
+               goal_json = jsonb_set(goal_json, '{is_main_goal}', 'true'::jsonb, true),
+               updated_at = NOW()
+         WHERE id = ${id} AND user_id = ${userId}
+      `;
+    }
   }
 
   async close(): Promise<void> {

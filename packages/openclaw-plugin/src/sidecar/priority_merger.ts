@@ -18,13 +18,20 @@
  * directives only; the higher-level merge slot is reserved for later wiring.
  */
 import type { Directive, DownstreamMsg, Goal, WorldState } from "@ogamex/shared";
-import type { GoalsStore, GoalRow } from "./goals_store.js";
+import type { GoalsStore, GoalRow, GoalStatus } from "./goals_store.js";
 
 export interface PriorityMergerDeps {
   store: GoalsStore;
   planGoal: (goal: Goal, state: WorldState) => Directive | { blocked: string };
   /** Send a DownstreamMsg via the bridge (WsServer.send or HttpServer.queueDownstream). */
   send: (msg: DownstreamMsg) => void;
+  /** Phase 5c — fired AFTER every store.updateStatus mutation so the PG
+   *  shadow writer can mirror merger-driven status transitions (the 11
+   *  call sites previously SQLite-only, surfaced as drift in Phase 5b).
+   *  Receives the POST-update row so the mirror can do INSERT-or-UPDATE
+   *  (upsertGoal) — converges even when the goal never existed in PG
+   *  (e.g. created via a path that pre-dated Phase 0 shadowFire wiring). */
+  onStatusChange?: (row: GoalRow, userId: string | undefined) => void;
 }
 
 export interface DispatchResult {
@@ -99,13 +106,42 @@ export class PriorityMerger {
   // transient retry + slow ogame response without false-positive re-dispatch.
   // True failures (Chrome crash / sidecar restart / long-poll 断) unstuck
   // automatically after 60s — no operator manual intervention needed.
-  private readonly STUCK_TIMEOUT_MS = 60_000;          // all goal types unified
-  private readonly STUCK_TIMEOUT_MS_ATOMIC = 60_000;   // same — no longer distinguished
+  // v0.0.668 — operator 2026-06-02 "全部30": stuck-recovery 收紧至 30s 跨所有
+  // goal 类型。原 60s 是按 sendFleet 最慢 round-trip 估的；实测 ack 通常
+  // <10s，30s 给 3x 安全 margin，让 chain pipeline 卡死后更快 self-heal。
+  // 安全网仍在：planner 重发前 re-check slot/cooldown/库存，不会 double-fire。
+  private readonly STUCK_TIMEOUT_MS = 30_000;
+  private readonly STUCK_TIMEOUT_MS_ATOMIC = 30_000;
+
+  private readonly onStatusChange: ((row: GoalRow, userId: string | undefined) => void) | undefined;
+  /** Set at start of dispatch(), threaded through to onStatusChange so
+   *  the PG mirror knows which tenant the status mutation belongs to. */
+  private currentDispatchUid: string | undefined = undefined;
 
   constructor(deps: PriorityMergerDeps) {
     this.store = deps.store;
     this.planGoal = deps.planGoal;
     this.send = deps.send;
+    this.onStatusChange = deps.onStatusChange;
+  }
+
+  /** v0.0.670 — Phase 5c: helper that mirrors every status mutation to
+   *  the PG shadow writer via the onStatusChange callback. Without this
+   *  hook the 11 merger-driven updateStatus call sites would stay
+   *  SQLite-only (drift observed in Phase 5b: sqlite=13 pg=9). */
+  private updateStatusAndMirror(goalId: string, status: GoalStatus, reason?: string): void {
+    this.store.updateStatus(goalId, status, reason);
+    if (this.onStatusChange) {
+      try {
+        // Re-fetch so the mirror receives the row's POST-update state. If
+        // the row vanished mid-tick (cancelled in parallel), skip.
+        const updated = this.store.get(goalId);
+        if (updated) this.onStatusChange(updated, this.currentDispatchUid);
+      } catch (e) {
+        // Mirror failure must NEVER taint the primary SQLite path.
+        console.warn("[merger] onStatusChange threw (swallowed)", e);
+      }
+    }
   }
 
   /** Mark a goal as awaiting one of the given events. Called when a directive
@@ -178,11 +214,18 @@ export class PriorityMerger {
    * fleet-save / failure-pattern bleed remains a known limitation until
    * 9c.3 lands.
    */
-  dispatch(state: WorldState, userId?: string): DispatchResult {
+  async dispatch(state: WorldState, userId?: string): Promise<DispatchResult> {
+    // v0.0.669 — Phase 5b: dispatch made async so a future swap of
+    // this.store to IGoalsStoreReader (PG/async) requires no further
+    // refactor of the merger loop. `await` on the current sync GoalsStore
+    // returns immediately (identity for non-Promise values).
+    // v0.0.670 — Phase 5c: thread userId through so the mirror callback
+    // knows the tenant. updateStatusAndMirror reads this each call.
+    this.currentDispatchUid = userId;
     const rows = (
       typeof userId === "string" && userId
-        ? [...this.store.listActiveByUser(userId)]
-        : [...this.store.listActive()]
+        ? [...(await this.store.listActiveByUser(userId))]
+        : [...(await this.store.listActive())]
     ).sort(compareRows);
 
     const dispatched: Directive[] = [];
@@ -240,7 +283,7 @@ export class PriorityMerger {
       if (typeof chainId === "string" && chainId && chainBlocked.has(chainId)) {
         const reason = "chain prereq: waiting for prior leg";
         if (row.status !== "blocked" || row.reason !== reason) {
-          this.store.updateStatus(row.goal.id, "blocked", reason);
+          this.updateStatusAndMirror(row.goal.id, "blocked", reason);
         }
         blocked.push({ goal_id: row.goal.id, reason });
         continue;
@@ -284,9 +327,39 @@ export class PriorityMerger {
             break;
           }
         }
+        // v0.0.664 — operator 2026-06-02 "JG 跳了但是船只过去 3 个":
+        // chain race bug. After upstream fleet leaves outbound, the source's
+        // ship inventory may not reflect the just-arrived payload yet
+        // (sniffer/snapshot lag). JG with take_all=true grabs whatever's
+        // CURRENTLY visible → ferries the residual 3 LC instead of the
+        // 2713 LC just delivered by Leg 1. Block this leg until source
+        // ship counts cover the goal's expected ships.
+        if (!upstreamReason) {
+          const myT = row.goal.target as {
+            source_moon?: string;
+            source_planet?: string;
+            ships?: Record<string, number>;
+            take_all?: boolean;
+          };
+          const expected = myT.ships ?? {};
+          // take_all=true 只对 JG 有意义, 但即便 take_all 也要 ≥ expected
+          // (operator 实战: expected=2713 LC, take_all 抓到 3 LC, 显然没等到)
+          const sourceId = myT.source_moon ?? myT.source_planet;
+          if (sourceId && Object.keys(expected).length > 0) {
+            const srcBody = Object.values(state.planets ?? {}).find((p) => p.id === sourceId);
+            const srcShips = (srcBody as { ships?: Record<string, number> } | undefined)?.ships ?? {};
+            for (const [shipType, needed] of Object.entries(expected)) {
+              const have = srcShips[shipType] ?? 0;
+              if (have < needed) {
+                upstreamReason = `chain prereq: source ${sourceId.slice(-4)} ship inventory not yet synced (need ${needed} ${shipType}, have ${have} — upstream fleet just landed, wait for next snapshot)`;
+                break;
+              }
+            }
+          }
+        }
         if (upstreamReason) {
           if (row.status !== "blocked" || row.reason !== upstreamReason) {
-            this.store.updateStatus(row.goal.id, "blocked", upstreamReason);
+            this.updateStatusAndMirror(row.goal.id, "blocked", upstreamReason);
           }
           blocked.push({ goal_id: row.goal.id, reason: upstreamReason });
           chainBlocked.add(chainId);
@@ -367,13 +440,35 @@ export class PriorityMerger {
           // is always true once ack arrives; fleet-slot exhaustion is handled
           // separately by planSpeciesDiscoveryGoal's reserve gate.
           slotEmpty = true;
+        } else if (goalType === "jumpgate") {
+          // v0.0.667 — operator 2026-06-02 "Leg 1 Jump · jumping 卡" root
+          // cause: JG dispatched on a moon whose cooldown was active but
+          // sniffer hadn't written cd_sec yet (stale state at dispatch
+          // time). ogame rejected, userscript ack never propagated → goal
+          // stuck "active" forever, blocking the rest of the chain. Old
+          // comment said "left for operator pause+resume" — turning it
+          // into automatic recovery now. Signal: source moon's JG NOT on
+          // cooldown right now. Both halves of "ack came" (ships moved
+          // out) and "ack lost but cd elapsed" satisfy this — either way
+          // re-dispatching is safe because planner.ts re-checks cd + ship
+          // inventory before firing.
+          const tParams = row.goal.target as { source_moon?: string };
+          const srcMoonId = tParams.source_moon ?? planetIdRaw;
+          const srcMoon = srcMoonId
+            ? (Object.values(state.planets ?? {}).find((p) => p.id === srcMoonId))
+            : undefined;
+          const cdSec = (srcMoon as { jumpgate_cooldown_sec?: number | null } | undefined)?.jumpgate_cooldown_sec;
+          const harvestedAt = (srcMoon as { jumpgate_harvested_at?: number | null } | undefined)?.jumpgate_harvested_at;
+          if (cdSec != null && harvestedAt != null) {
+            const remaining = cdSec - Math.floor((now - harvestedAt) / 1000);
+            slotEmpty = remaining <= 0;
+          } else {
+            // No cd recorded → can't tell; assume ready (planner re-checks).
+            slotEmpty = true;
+          }
         }
-        // jumpgate is the remaining atomic op without a fleet signal — JG
-        // POSTs to ogame's jumpgate endpoint; success = instant ship swap
-        // between moons with no outbound fleet visible. Needs cooldown
-        // detection (separate enhancement) — left for operator pause+resume.
         const snapshotFresher = (state.last_update ?? 0) > (row.updated_at ?? 0);
-        const isAtomic = goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport" || goalType === "species_discovery";
+        const isAtomic = goalType === "expedition" || goalType === "colonize" || goalType === "deploy" || goalType === "transport" || goalType === "species_discovery" || goalType === "jumpgate";
         const timeoutMs = isAtomic ? this.STUCK_TIMEOUT_MS_ATOMIC : this.STUCK_TIMEOUT_MS;
         // Anchor on dispatch time, not snapshot count. Fall back to
         // row.updated_at when dispatchedAt is missing (e.g. after server
@@ -382,7 +477,7 @@ export class PriorityMerger {
         const sinceDispatch = now - dispatchTs;
         if (slotEmpty && snapshotFresher && sinceDispatch >= timeoutMs) {
           this.dispatchedAt.delete(row.goal.id);
-          this.store.updateStatus(row.goal.id, "pending", `stuck-recovery: empty slot ${Math.round(sinceDispatch / 1000)}s after dispatch, directive presumed lost`);
+          this.updateStatusAndMirror(row.goal.id, "pending", `stuck-recovery: empty slot ${Math.round(sinceDispatch / 1000)}s after dispatch, directive presumed lost`);
           // fall through — re-plan as pending below
         } else {
           // Still within timeout window OR slot busy → wait for ack.
@@ -405,7 +500,7 @@ export class PriorityMerger {
       if (stateStale && isFleetPostType) {
         const reason = `state stale (${Math.round(stateAgeMs / 60000)}min) — fleet POST goals defer to fresh state`;
         if (row.status !== "blocked" || row.reason !== reason) {
-          this.store.updateStatus(row.goal.id, "blocked", reason);
+          this.updateStatusAndMirror(row.goal.id, "blocked", reason);
         }
         blocked.push({ goal_id: row.goal.id, reason });
         if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
@@ -414,10 +509,10 @@ export class PriorityMerger {
       const result = this.planGoal(row.goal, state);
       if (isBlocked(result)) {
         if (ALREADY_AT_TARGET_RE.test(result.blocked)) {
-          this.store.updateStatus(row.goal.id, "completed");
+          this.updateStatusAndMirror(row.goal.id, "completed");
           skipped_terminal += 1;
         } else {
-          this.store.updateStatus(row.goal.id, "blocked", result.blocked);
+          this.updateStatusAndMirror(row.goal.id, "blocked", result.blocked);
           blocked.push({ goal_id: row.goal.id, reason: result.blocked });
           // v0.0.433: chain prereq — this leg is blocked, downstream waits.
           if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
@@ -430,7 +525,7 @@ export class PriorityMerger {
       if (result.action === "research") {
         if (researchSlot) {
           const reason = "research slot in use";
-          this.store.updateStatus(row.goal.id, "blocked", reason);
+          this.updateStatusAndMirror(row.goal.id, "blocked", reason);
           blocked.push({ goal_id: row.goal.id, reason });
           continue;
         }
@@ -445,7 +540,7 @@ export class PriorityMerger {
         const slotLabel = isLifeform ? "lf build" : "build";
         if (planetId && slotSet.has(planetId)) {
           const reason = `${slotLabel} slot on ${planetId} in use this tick`;
-          this.store.updateStatus(row.goal.id, "blocked", reason);
+          this.updateStatusAndMirror(row.goal.id, "blocked", reason);
           blocked.push({ goal_id: row.goal.id, reason });
           continue;
         }
@@ -456,7 +551,7 @@ export class PriorityMerger {
         // research in progress) blocks; ogame 120012 retry storm avoided.
         if (planetId && lfResearchSlot.has(planetId)) {
           const reason = `lf research slot on ${planetId} busy (waiting for prereq)`;
-          this.store.updateStatus(row.goal.id, "blocked", reason);
+          this.updateStatusAndMirror(row.goal.id, "blocked", reason);
           blocked.push({ goal_id: row.goal.id, reason });
           continue;
         }
@@ -464,13 +559,13 @@ export class PriorityMerger {
       } else if (result.action === "build_ships" || result.action === "build_defense") {
         if (planetId && shipsSlot.has(planetId)) {
           const reason = `shipyard slot on ${planetId} in use this tick`;
-          this.store.updateStatus(row.goal.id, "blocked", reason);
+          this.updateStatusAndMirror(row.goal.id, "blocked", reason);
           blocked.push({ goal_id: row.goal.id, reason });
           continue;
         }
         if (planetId) shipsSlot.add(planetId);
       }
-      this.store.updateStatus(row.goal.id, "active");
+      this.updateStatusAndMirror(row.goal.id, "active");
       // v0.0.478: stamp dispatch time for time-anchored stuck-recovery and
       // in-flight dedup. Cleared by clearDispatched() in ack handler.
       this.dispatchedAt.set(row.goal.id, Date.now());

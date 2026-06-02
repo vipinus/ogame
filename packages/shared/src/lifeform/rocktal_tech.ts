@@ -117,6 +117,9 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
 };
 
+// v0.0.666 — canonical keys per tech_ids.ts 12201-12218. Old non-
+// canonical entries (highEnergyPyrolysis / nanoRepairBots / etc.)
+// produced no DOM scrape hits, so panel always showed scraped TC.
 const research: Record<string, LifeformResearchEntry> = {
   volcanicBatteries: {
     id: "volcanicBatteries",
@@ -134,18 +137,18 @@ const research: Record<string, LifeformResearchEntry> = {
     cost_at: pow(8_000, 2),
     verified_against_live: false,
   },
-  highEnergyPyrolysis: {
-    id: "highEnergyPyrolysis",
-    display_name_zh: "高能熱解",
-    display_name_en: "High-Energy Pyrolysis",
+  highEnergyPumpSystems: {
+    id: "highEnergyPumpSystems",
+    display_name_zh: "高能泵浦系統",
+    display_name_en: "High-Energy Pump Systems",
     requires: { runeTechnologium: 1 },
     cost_at: pow(11_000, 2),
     verified_against_live: false,
   },
-  nanoRepairBots: {
-    id: "nanoRepairBots",
-    display_name_zh: "納米修復機器人",
-    display_name_en: "Nano Repair Bots",
+  cargoHoldExpansionCivilianShips: {
+    id: "cargoHoldExpansionCivilianShips",
+    display_name_zh: "民用艦貨艙擴展",
+    display_name_en: "Cargo Hold Expansion — Civilian Ships",
     requires: { runeTechnologium: 2 },
     cost_at: pow(20_000, 2),
     verified_against_live: false,
@@ -174,10 +177,10 @@ const research: Record<string, LifeformResearchEntry> = {
     cost_at: pow(50_000, 2),
     verified_against_live: false,
   },
-  ionCrystalEnhancement: {
-    id: "ionCrystalEnhancement",
-    display_name_zh: "離子水晶增強",
-    display_name_en: "Ion Crystal Enhancement",
+  ionCrystalEnhancementHeavyFighter: {
+    id: "ionCrystalEnhancementHeavyFighter",
+    display_name_zh: "離子水晶強化（重型戰鬥機）",
+    display_name_en: "Ion Crystal Enhancement — Heavy Fighter",
     requires: { runeTechnologium: 3 },
     cost_at: pow(40_000, 2),
     verified_against_live: false,
@@ -206,12 +209,60 @@ const research: Record<string, LifeformResearchEntry> = {
     cost_at: powD(150_000, 2),
     verified_against_live: false,
   },
-  magmaPropulsion: {
-    id: "magmaPropulsion",
-    display_name_zh: "巖漿推進器",
-    display_name_en: "Magma Propulsion",
+  magmaPoweredPumpSystems: {
+    id: "magmaPoweredPumpSystems",
+    display_name_zh: "巖漿能源泵浦系統",
+    display_name_en: "Magma Powered Pump Systems",
     requires: { runeTechnologium: 5 },
     cost_at: powD(200_000, 2),
+    verified_against_live: false,
+  },
+  ionCrystalModules: {
+    id: "ionCrystalModules",
+    display_name_zh: "離子水晶模組",
+    display_name_en: "Ion Crystal Modules",
+    requires: { runeTechnologium: 5 },
+    cost_at: powD(220_000, 2),
+    verified_against_live: false,
+  },
+  optimisedSiloConstructionMethod: {
+    id: "optimisedSiloConstructionMethod",
+    display_name_zh: "最佳化發射井建造法",
+    display_name_en: "Optimised Silo Construction Method",
+    requires: { runeTechnologium: 6 },
+    cost_at: powD(260_000, 2),
+    verified_against_live: false,
+  },
+  diamondEnergyTransmitter: {
+    id: "diamondEnergyTransmitter",
+    display_name_zh: "鑽石能量傳輸器",
+    display_name_en: "Diamond Energy Transmitter",
+    requires: { runeTechnologium: 6 },
+    cost_at: powD(300_000, 2),
+    verified_against_live: false,
+  },
+  obsidianShieldReinforcement: {
+    id: "obsidianShieldReinforcement",
+    display_name_zh: "黑曜石護盾強化",
+    display_name_en: "Obsidian Shield Reinforcement",
+    requires: { runeTechnologium: 6 },
+    cost_at: powD(350_000, 2),
+    verified_against_live: false,
+  },
+  runeShields: {
+    id: "runeShields",
+    display_name_zh: "符文護盾",
+    display_name_en: "Rune Shields",
+    requires: { runeTechnologium: 7 },
+    cost_at: powD(500_000, 2),
+    verified_against_live: false,
+  },
+  rocktalCollectorEnhancement: {
+    id: "rocktalCollectorEnhancement",
+    display_name_zh: "巖族採集者強化",
+    display_name_en: "Rocktal Collector Enhancement",
+    requires: { runeTechnologium: 7 },
+    cost_at: powD(600_000, 2),
     verified_against_live: false,
   },
 };
