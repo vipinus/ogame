@@ -91,7 +91,7 @@ export interface HttpServerOptions {
     planet_id: string; fleet_id: number; hostile_event_ids: readonly string[];
   }) => { ok: boolean; reason?: string };
   recordSaveRecallConfirmed?: (fleet_id: number) => { ok: boolean; reason?: string };
-  listActiveSaves?: () => Array<unknown>;
+  listActiveSaves?: (userId?: string) => Array<unknown>;
 }
 
 interface QueueEntry {
@@ -149,7 +149,7 @@ interface ResolvedHttpServerOptions {
     planet_id: string; fleet_id: number; hostile_event_ids: readonly string[];
   }) => { ok: boolean; reason?: string };
   recordSaveRecallConfirmed?: (fleet_id: number) => { ok: boolean; reason?: string };
-  listActiveSaves?: () => Array<unknown>;
+  listActiveSaves?: (userId?: string) => Array<unknown>;
 }
 
 export class HttpServer {
@@ -621,9 +621,7 @@ export class HttpServer {
       }
     }
     if (method === "GET" && url === "/ogamex/v1/save/active") {
-      this.handleProviderGet(res, this.opts.listActiveSaves
-        ? () => this.opts.listActiveSaves?.()
-        : undefined);
+      void this.dispatchSaveActive(req, res);
       return;
     }
 
@@ -1115,6 +1113,42 @@ export class HttpServer {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ ok: true }));
+  }
+
+  /** Phase 9c.6 — resolve Bearer for GET /v1/save/active. Global token →
+   *  legacy listing (sqlite). Per-user Bearer → user-scoped listing.
+   *  No Bearer at all → legacy listing (preserves operator's debug-UI
+   *  fetch which historically had no auth header). */
+  private async dispatchSaveActive(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const globalAuthOk = this.checkAuth(req);
+    const auth = req.headers["authorization"];
+    const bearer = typeof auth === "string" && auth.startsWith("Bearer ")
+      ? auth.slice("Bearer ".length).trim()
+      : "";
+    let userId: string | undefined;
+    if (!globalAuthOk && this.opts.resolveUserToken && bearer) {
+      try {
+        const uid = await this.opts.resolveUserToken(bearer);
+        if (uid) userId = uid;
+        else {
+          // Bearer present, didn't match global, didn't resolve → 401.
+          this.writeCorsHeaders(res);
+          res.statusCode = 401;
+          res.end();
+          return;
+        }
+      } catch (e) {
+        console.warn("[http] save/active resolveUserToken threw", e);
+        this.writeCorsHeaders(res);
+        res.statusCode = 401;
+        res.end();
+        return;
+      }
+    }
+    // userId === undefined here = legacy fallback (operator/no-auth path).
+    this.handleProviderGet(res, this.opts.listActiveSaves
+      ? () => this.opts.listActiveSaves?.(userId)
+      : undefined);
   }
 
   /** Phase 9c.5 — resolve poll auth and route to the right bucket.

@@ -1398,11 +1398,11 @@ export async function startSidecar(
       c.recordRecallConfirmed(fleet_id);
       return { ok: true };
     },
-    listActiveSaves: () => {
-      // listActiveSaves is read-only for the operator's own debug UI; it
-      // returns the legacy instance's FSM rows. Multi-tenant listing would
-      // need a PG query keyed by ALS uid — punted to 9c.5.
-      const u = getCurrentUserId();
+    listActiveSaves: (explicitUid?: string) => {
+      // Phase 9c.6 — explicit uid from dispatchSaveActive Bearer resolution
+      // takes precedence; otherwise fall back to ALS (in case caller is
+      // inside a push frame); otherwise legacy.
+      const u = explicitUid ?? getCurrentUserId();
       const c = isLegacyUid(u) ? saveCoordinator : saveCoordManager.get(u!);
       return c.list();
     },
@@ -1864,13 +1864,18 @@ export async function startSidecar(
             });
           }
         },
-        // Per-user cooldown hydrate would need an async listFailureCooldowns(uid)
-        // PG call before first record() — punted to 9c.5 when paid user2 lands;
-        // empty start is safe (first failure triggers analyzer immediately,
-        // which is the conservative default after a restart anyway).
+        // Phase 9c.6 — synchronous loader stays empty (createFailureAggregator
+        // calls it before our async hydrate can resolve). Real hydrate fires
+        // via the manager's loadCooldowns hook below, which calls
+        // hydrateCooldowns() once PG returns.
         listCooldowns: () => [],
       },
     }),
+    // Phase 9c.6 — async PG fetch on first mint per uid. Empty array if
+    // pgStore not wired (test smoke) — manager skips the hydrate cleanly.
+    ...(pgStore !== null
+      ? { loadCooldowns: (uid: string) => pgStore!.listFailureCooldowns(uid) }
+      : {}),
   });
 
   // --- DigestScheduler (M8.2) ----------------------------------------------

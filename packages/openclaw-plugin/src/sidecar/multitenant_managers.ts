@@ -64,10 +64,17 @@ export class SaveCoordinatorManager {
 export interface FailureAggregatorManagerDeps {
   buildDepsFor(userId: string): FailureAggregatorDeps;
   baseOptions?: FailureAggregatorOptions;
+  /** Phase 9c.6 — async cooldown loader. Manager fires this on first mint
+   *  per uid; when it resolves, the returned rows are merged into the
+   *  instance's lastAnalysisAt map via hydrateCooldowns(). Missing or
+   *  failing loader = empty start (analyzer may re-fire on next failure
+   *  burst, which is the conservative default). */
+  loadCooldowns?(userId: string): Promise<ReadonlyArray<{ task: string; last_analysis_at: number }>>;
 }
 
 export class FailureAggregatorManager {
   private readonly map = new Map<string, FailureAggregator>();
+  private readonly hydrating = new Set<string>();
   constructor(private readonly deps: FailureAggregatorManagerDeps) {}
 
   get(userId: string): FailureAggregator {
@@ -78,6 +85,22 @@ export class FailureAggregatorManager {
         this.deps.baseOptions,
       );
       this.map.set(userId, inst);
+      // Kick async hydrate — fire-and-forget so .get() stays sync.
+      if (this.deps.loadCooldowns && !this.hydrating.has(userId)) {
+        this.hydrating.add(userId);
+        const target = inst;
+        void this.deps.loadCooldowns(userId)
+          .then((rows) => {
+            target.hydrateCooldowns(rows);
+            if (rows.length > 0) {
+              console.info(`[FailureAggMgr] hydrated ${rows.length} cooldown(s) user=${userId.slice(0,8)}`);
+            }
+          })
+          .catch((e) => {
+            console.warn(`[FailureAggMgr] cooldown hydrate user=${userId.slice(0,8)} failed:`, e);
+          })
+          .finally(() => { this.hydrating.delete(userId); });
+      }
     }
     return inst;
   }

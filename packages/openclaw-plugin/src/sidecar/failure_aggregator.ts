@@ -85,6 +85,12 @@ export interface FailureAggregator {
   stats(): AggregatorStats;
   /** Manually clear all buffers (tests). */
   reset(): void;
+  /** Phase 9c.6 — late hydrate of cooldown timestamps from an async source
+   *  (PG). Manager mints instance synchronously then back-fills as the
+   *  query resolves. Existing in-memory cooldowns are NOT overwritten if
+   *  they're already newer than the hydrated row — protects against the
+   *  unlikely case of a record() racing the hydrate. */
+  hydrateCooldowns(rows: ReadonlyArray<{ task: string; last_analysis_at: number }>): void;
 }
 
 const DEFAULT_THRESHOLD = 3;
@@ -234,5 +240,14 @@ export function createFailureAggregator(
     counters.abstains = 0;
   }
 
-  return { record, stats, reset };
+  function hydrateCooldowns(rows: ReadonlyArray<{ task: string; last_analysis_at: number }>): void {
+    for (const r of rows) {
+      const existing = lastAnalysisAt.get(r.task);
+      // Skip if record() already stamped a newer cooldown after mint.
+      if (typeof existing === "number" && existing >= r.last_analysis_at) continue;
+      lastAnalysisAt.set(r.task, r.last_analysis_at);
+    }
+  }
+
+  return { record, stats, reset, hydrateCooldowns };
 }
