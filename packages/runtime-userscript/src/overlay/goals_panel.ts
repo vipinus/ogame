@@ -237,6 +237,101 @@ function openEmergencySettings(doc: Document): void {
 
 // M2 — expedition settings modal. Reads the on-disk config via sidecar
 // `GET /v1/expedition/config` and writes back via POST. Now split into two
+// v0.0.639 — operator audit modal. Surfaces the sidecar's persistent
+// events table (event.emergency / event.daily_failure / directive.dispatch
+// / directive.completed) in a scrollable panel, with a type filter and
+// refresh button. Backs the 📋 button in the main panel header — gives
+// operator a single-click view of "what did the sidecar do recently"
+// without dropping into curl.
+function openAuditModal(
+  doc: Document,
+  baseUrl: string,
+  fetchFn: typeof fetch,
+): void {
+  interface EventRow {
+    id: number;
+    type: string;
+    payload: unknown;
+    created_at: number;
+  }
+  const initialBody = `
+    <div style="display:flex; gap:6px; align-items:center; padding-bottom:8px; border-bottom:1px solid #1a2030; flex-wrap:wrap;">
+      <label style="color:#a0a8b8; font-size:11px;">type</label>
+      <select data-audit-type style="background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:2px 6px; font-size:11px;">
+        <option value="">(all)</option>
+        <option value="directive.dispatch">directive.dispatch</option>
+        <option value="directive.completed">directive.completed</option>
+        <option value="event.emergency">event.emergency</option>
+        <option value="event.daily_failure">event.daily_failure</option>
+      </select>
+      <label style="color:#a0a8b8; font-size:11px;">limit</label>
+      <input data-audit-limit type="number" min="1" max="500" value="100"
+        style="background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:2px 6px; width:60px; font-size:11px;"/>
+      <button data-audit-refresh style="background:#1a2438; color:#7cfc00; border:1px solid #2a3a52; border-radius:3px; cursor:pointer; font-size:11px; padding:2px 10px;">🔄 refresh</button>
+      <span data-audit-meta style="color:#7080a0; font-size:10px; margin-left:auto;"></span>
+    </div>
+    <div data-audit-rows style="padding-top:8px; max-height:60vh; overflow:auto; font-family:monospace; font-size:11px; line-height:1.5; color:#d0d8e0;">
+      loading…
+    </div>`;
+  openSettingsModal(doc, "audit", "📋 Audit Log (sidecar events table)", initialBody, (modal) => {
+    const rowsEl = modal.querySelector<HTMLElement>("[data-audit-rows]")!;
+    const metaEl = modal.querySelector<HTMLElement>("[data-audit-meta]")!;
+    const typeEl = modal.querySelector<HTMLSelectElement>("[data-audit-type]")!;
+    const limitEl = modal.querySelector<HTMLInputElement>("[data-audit-limit]")!;
+    const refreshBtn = modal.querySelector<HTMLElement>("[data-audit-refresh]")!;
+
+    const fetchEvents = async (): Promise<void> => {
+      rowsEl.innerHTML = `<div style="color:#7080a0;">loading…</div>`;
+      const type = typeEl.value;
+      const limit = Math.max(1, Math.min(500, parseInt(limitEl.value || "100", 10) || 100));
+      const qs = new URLSearchParams();
+      qs.set("limit", String(limit));
+      if (type) qs.set("type", type);
+      try {
+        const res = await fetchFn(`${baseUrl}/ogamex/v1/events?${qs.toString()}`);
+        if (!res.ok) {
+          rowsEl.innerHTML = `<div style="color:#ff9b9b;">HTTP ${res.status}</div>`;
+          return;
+        }
+        const data = await res.json() as { events?: EventRow[] };
+        const events = data.events ?? [];
+        metaEl.textContent = `${events.length} rows`;
+        if (events.length === 0) {
+          rowsEl.innerHTML = `<div style="color:#7080a0;">(no events match)</div>`;
+          return;
+        }
+        const fmtTs = (ms: number): string => {
+          const d = new Date(ms);
+          const pad = (n: number): string => String(n).padStart(2, "0");
+          return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        };
+        const typeColor = (t: string): string => {
+          if (t.startsWith("directive.")) return "#80c0ff";
+          if (t === "event.emergency") return "#ff8080";
+          if (t === "event.daily_failure") return "#ffcc40";
+          return "#a0a8b8";
+        };
+        rowsEl.innerHTML = events.map((e) => {
+          const payloadStr = JSON.stringify(e.payload);
+          const truncated = payloadStr.length > 240 ? `${payloadStr.slice(0, 240)}…` : payloadStr;
+          return `<div style="padding:4px 0; border-bottom:1px solid #1a2030; display:flex; gap:8px;">
+            <span style="color:#506070; flex-shrink:0;">${fmtTs(e.created_at)}</span>
+            <span style="color:${typeColor(e.type)}; flex-shrink:0; min-width:160px;">${escapeHtml(e.type)}</span>
+            <span style="color:#d0d8e0; word-break:break-all;" title="${escapeHtml(payloadStr)}">${escapeHtml(truncated)}</span>
+          </div>`;
+        }).join("");
+      } catch (e) {
+        rowsEl.innerHTML = `<div style="color:#ff9b9b;">fetch failed: ${escapeHtml(String(e))}</div>`;
+      }
+    };
+
+    typeEl.addEventListener("change", () => { void fetchEvents(); });
+    limitEl.addEventListener("change", () => { void fetchEvents(); });
+    refreshBtn.addEventListener("click", () => { void fetchEvents(); });
+    void fetchEvents();
+  });
+}
+
 // tabs (operator 2026-05-29: "改成两个 tab"): "发船星球" (per-planet
 // checkboxes for opt-in source pool) and "舰队模板" (per-ship-type number
 // inputs). Target-position removed (always G:S:16). Paused toggle is
@@ -3755,6 +3850,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         <strong style="color:#e0e8f0;">🪐 oGame v${escapeHtml(currentVersion)}</strong>
         <span style="display:flex; gap:4px; align-items:center;">
           ${updateBtn}
+          <button data-action="open-audit" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="审计日志 — sidecar 持久化 events 表">📋</button>
           <button data-action="collapse" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "▸" : "▾"}</button>
           <button data-action="close" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="Close (panel will re-mount on next page load)">×</button>
         </span>
@@ -4324,6 +4420,14 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     }
     const closeBtn = panel.querySelector<HTMLElement>("[data-action=\"close\"]");
     closeBtn?.addEventListener("click", () => stop());
+
+    // v0.0.639 — 📋 audit modal opener. Fetches /v1/events from sidecar
+    // and renders rows in a scrollable filter modal.
+    const auditBtn = panel.querySelector<HTMLElement>("[data-action=\"open-audit\"]");
+    auditBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openAuditModal(doc, baseUrl, fetchFn);
+    });
 
     // Operator 2026-05-29: Update runtime button. Hidden by default; the
     // poll loop below (every 60s) sets window.__ogamexLatestVersion and
