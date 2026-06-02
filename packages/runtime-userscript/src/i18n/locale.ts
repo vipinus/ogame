@@ -60,9 +60,41 @@ function hostnameToOgame(hostname: string | null | undefined): string | null {
 }
 
 /**
+ * Detect UI locale from actually-rendered toolbar text.
+ *
+ * Operator evidence 2026-06-02: ogame's gameforge servers set
+ *   <html lang="en">                          (says English)
+ *   <meta name="ogame-language" content="en"/> (also says English)
+ *   var constants = { language: "en" }         (also says English)
+ * even though the user's account-level UI language is Traditional
+ * Chinese. The ONLY signal of the actual rendered language is the
+ * DOM text itself. So if the in-game toolbar (#menuTable .textlabel)
+ * contains CJK characters, we KNOW the user UI is Traditional
+ * Chinese (ogame ships only `tw` among CJK locales).
+ *
+ * Future: handle more locales by matching specific known toolbar
+ * strings ("Übersicht" → de, "Aperçu" → fr, ...). Today just CJK
+ * detection because that's the operator's actual situation.
+ */
+function detectFromToolbarText(doc: Document | null): string | null {
+  if (!doc) return null;
+  const text = doc.querySelector("#menuTable")?.textContent ?? "";
+  if (/[一-鿿]/.test(text)) return "tw";
+  return null;
+}
+
+/**
  * Resolve current ogame UI locale at panel-render time. Reads
  * synchronously from `document`/`window`; cheap enough to call every
  * render without caching.
+ *
+ * Detection priority (highest to lowest):
+ *   1. ToolBar DOM text — most authoritative. Matches what the user
+ *      actually SEES, regardless of misleading meta tags.
+ *   2. `<html lang>` — useful for non-CJK locales where ogame does
+ *      reliably set the right value.
+ *   3. Hostname server slug — fallback when no other signal.
+ *   4. Hard fallback "en".
  *
  * `documentForTest` / `windowForTest` are TM-sandbox escape hatches —
  * the panel runs inside `env.doc` / `env.win` which may not equal the
@@ -74,6 +106,8 @@ export function getOgameLocale(
 ): string {
   const doc = documentForTest ?? (typeof document !== "undefined" ? document : null);
   const win = windowForTest ?? (typeof window !== "undefined" ? window : null);
+  const fromToolbar = detectFromToolbarText(doc);
+  if (fromToolbar) return fromToolbar;
   const fromHtml = htmlLangToOgame(doc?.documentElement?.lang);
   if (fromHtml) return fromHtml;
   const fromHost = hostnameToOgame(win?.location?.hostname);
