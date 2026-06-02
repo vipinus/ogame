@@ -1106,6 +1106,19 @@ export async function startSidecar(
         snapshot_age_ms: stateRef.current?.last_update ? (now - stateRef.current.last_update) : null,
       };
     },
+    listEvents: (limit, type) => {
+      // v0.0.636 — operator audit view. Defaults bounded by HttpServer at
+      // 100/1000 (limit) — store-level pagination keeps memory tiny since
+      // it's a single LIMIT N query on an indexed table.
+      try {
+        return type !== undefined && type.length > 0
+          ? worldStateStore.listEventsByType(type, limit)
+          : worldStateStore.listRecentEvents(limit);
+      } catch (e) {
+        console.error("[ogamex/sidecar] listEvents failed", e);
+        return [];
+      }
+    },
     cancelGoal: (id) => {
       if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
       // v0.0.481: cascade cancel — cancel all live descendants whose

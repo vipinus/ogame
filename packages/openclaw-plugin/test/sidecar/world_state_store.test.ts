@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { WorldStateStore } from "../../src/sidecar/world_state_store.js";
 import type { WorldState } from "@ogamex/shared";
 
@@ -103,6 +106,44 @@ describe("WorldStateStore", () => {
     // The 5 most-recent (i=15..19) survive.
     expect((rows[0]?.payload as { i: number }).i).toBe(19);
     expect((rows[4]?.payload as { i: number }).i).toBe(15);
+  });
+
+  it("survives store close + reopen on disk (cross-process simulation)", () => {
+    // The canonical sidecar-restart contract: write → close → fresh
+    // instance on the SAME file → hydrate returns the data verbatim.
+    // :memory: db would only test in-process consistency; on-disk db
+    // catches WAL-checkpoint regressions a :memory: roundtrip can't.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ogamex-wss-"));
+    const dbPath = path.join(tmpDir, "world.db");
+    try {
+      const writer = new WorldStateStore({ dbPath, clock: () => 1_700_111_000_000 });
+      writer.upsert(makeState({
+        server: { universe: "persist-test", speed: 7 },
+        tech_labels: { heatRecovery: "热量回收" },
+      }));
+      writer.appendEvent("event.emergency", { subtype: "attack", from: [1, 486, 7] });
+      writer.appendEvent("event.daily_failure", { task: "metal_balance" });
+      writer.close();
+
+      // SIMULATE sidecar restart: fresh WorldStateStore instance, same file.
+      const reader = new WorldStateStore({ dbPath, clock: () => 1_700_111_001_000 });
+      const hydrated = reader.hydrate();
+      expect(hydrated).not.toBeNull();
+      expect(hydrated!.state.server.universe).toBe("persist-test");
+      expect(hydrated!.state.server.speed).toBe(7);
+      expect(hydrated!.state.tech_labels?.heatRecovery).toBe("热量回收");
+      expect(hydrated!.updated_at).toBe(1_700_111_000_000);
+
+      // Events table also survives close+reopen
+      const events = reader.listRecentEvents(10);
+      expect(events).toHaveLength(2);
+      expect(events[0]?.type).toBe("event.daily_failure");
+      expect(events[1]?.type).toBe("event.emergency");
+
+      reader.close();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("hydrate JSON-parses back nested records / arrays preserved", () => {

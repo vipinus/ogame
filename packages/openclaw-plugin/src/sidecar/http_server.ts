@@ -57,6 +57,10 @@ export interface HttpServerOptions {
   listGoals?: () => Array<unknown>;
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
+  /** v0.0.636 — backed by worldStateStore. GET /v1/events?limit=N&type=foo.
+   *  Returns most-recent-first audit log rows from the persisted events table.
+   *  When `type` is supplied, filters server-side; absent ⇒ all types. */
+  listEvents?: (limit: number, type?: string) => Array<unknown>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -118,6 +122,7 @@ interface ResolvedHttpServerOptions {
   listGoals?: () => Array<unknown>;
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
+  listEvents?: (limit: number, type?: string) => Array<unknown>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -165,6 +170,7 @@ export class HttpServer {
       ...(opts.listGoals !== undefined ? { listGoals: opts.listGoals } : {}),
       ...(opts.expeditionProvider !== undefined ? { expeditionProvider: opts.expeditionProvider } : {}),
       ...(opts.emergencyProvider !== undefined ? { emergencyProvider: opts.emergencyProvider } : {}),
+      ...(opts.listEvents !== undefined ? { listEvents: opts.listEvents } : {}),
       ...(opts.cancelGoal !== undefined ? { cancelGoal: opts.cancelGoal } : {}),
       ...(opts.pauseGoal !== undefined ? { pauseGoal: opts.pauseGoal } : {}),
       ...(opts.resumeGoal !== undefined ? { resumeGoal: opts.resumeGoal } : {}),
@@ -334,6 +340,27 @@ export class HttpServer {
     }
     if (method === "GET" && url === "/ogamex/v1/expedition") {
       this.handleProviderGet(res, this.opts.expeditionProvider);
+      return;
+    }
+    // v0.0.636 — operator audit view backed by worldStateStore events table.
+    // GET /ogamex/v1/events?limit=N&type=foo. Defaults to 100, cap at 1000
+    // to prevent payload bloat. No auth (LAN trust).
+    if (method === "GET" && (url === "/ogamex/v1/events" || url?.startsWith("/ogamex/v1/events?"))) {
+      this.writeCorsHeaders(res);
+      if (!this.opts.listEvents) {
+        res.statusCode = 503;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ ok: false, reason: "no events store wired" }));
+        return;
+      }
+      const u = new URL(url ?? "/ogamex/v1/events", "http://_");
+      const limitRaw = Number(u.searchParams.get("limit"));
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(1000, Math.floor(limitRaw)) : 100;
+      const typeFilter = u.searchParams.get("type") ?? undefined;
+      const events = this.opts.listEvents(limit, typeFilter);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ events }));
       return;
     }
     // Operator 2026-05-29: M2 expedition settings modal — panel reads/writes
