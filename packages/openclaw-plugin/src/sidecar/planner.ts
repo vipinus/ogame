@@ -782,6 +782,22 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
     return { blocked: `${building} already upgrading in ogame queue on ${planetId}` };
   }
 
+  // researchLab is a facility that affects research speed network-wide.
+  // ogame rejects researchLab upgrade with error 120024 ("目前研究正在開展中"
+  // / "research in progress") when ANY research is currently running on
+  // any planet — the queue is global, not per-planet. Gate the dispatch
+  // until the active research finishes, otherwise we burn a directive
+  // round-trip and a goal gets parked "blocked" until manual resume.
+  // Operator incident 2026-06-02: build researchLab 15 vs intergalactic L9
+  // research → endless retry until intergalactic finished.
+  if (building === "researchLab") {
+    const rq = ctx.state.research?.queue;
+    if (rq && (rq.ends_at ?? 0) > Date.now()) {
+      const etaS = Math.max(0, Math.round((rq.ends_at - Date.now()) / 1000));
+      return { blocked: `researchLab needs idle research — ${rq.tech} L${rq.level} still running (~${etaS}s)` };
+    }
+  }
+
   const nextLevel = current + 1;
 
   // Energy gate: mines need positive net energy; if a mine upgrade is queued
