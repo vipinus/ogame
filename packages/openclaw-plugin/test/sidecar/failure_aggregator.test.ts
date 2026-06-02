@@ -79,6 +79,8 @@ interface Harness {
   load: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
   setNow: (t: number) => void;
+  /** Reads of persistence sink calls — populated when persistence is wired. */
+  persistedCooldowns: Array<{ task: string; ts: number }>;
 }
 
 function makeHarness(opts: {
@@ -88,6 +90,10 @@ function makeHarness(opts: {
   windowMs?: number;
   cooldownMs?: number;
   initialTime?: number;
+  /** Optional pre-seeded cooldowns the persistence mock will report at boot. */
+  initialPersistedCooldowns?: Array<{ task: string; last_analysis_at: number }>;
+  /** Set to true to wire a persistence sink and record its calls. */
+  withPersistence?: boolean;
 }): Harness {
   let mockTime = opts.initialTime ?? 1_000_000;
 
@@ -106,6 +112,17 @@ function makeHarness(opts: {
 
   const gemini = {} as GeminiClient;
 
+  const persistedCooldowns: Array<{ task: string; ts: number }> = [];
+  const initialPersisted = opts.initialPersistedCooldowns ?? [];
+  const persistence = opts.withPersistence === true || initialPersisted.length > 0
+    ? {
+        upsertCooldown: (task: string, last_analysis_at: number) => {
+          persistedCooldowns.push({ task, ts: last_analysis_at });
+        },
+        listCooldowns: () => [...initialPersisted],
+      }
+    : undefined;
+
   const aggregator = createFailureAggregator(
     {
       strategyManager,
@@ -113,6 +130,7 @@ function makeHarness(opts: {
       getState: () => makeWorldState(),
       send,
       analyzer: analyzer as unknown as (i: AnalyzeInput, l: GeminiClient) => Promise<AnalyzeResult>,
+      ...(persistence !== undefined ? { persistence } : {}),
     },
     {
       ...(opts.threshold !== undefined ? { threshold: opts.threshold } : {}),
@@ -131,6 +149,7 @@ function makeHarness(opts: {
     setNow: (t: number) => {
       mockTime = t;
     },
+    persistedCooldowns,
   };
 }
 
@@ -307,5 +326,78 @@ describe("FailureAggregator", () => {
     expect(h.analyzer).toHaveBeenCalledTimes(1);
     const callArg = h.analyzer.mock.calls[0]![0] as AnalyzeInput;
     expect(callArg.task).toBe("A");
+  });
+
+  it("hydrated cooldown blocks immediate re-fire after restart", async () => {
+    // Simulate: prior sidecar analyzed task "expedition" 5 min ago, then
+    // crashed. New aggregator boots, reads persistence sink, sees the
+    // cooldown. Next failure burst MUST NOT re-fire the analyzer until
+    // the cooldown elapses.
+    const cooldownMs = 30 * 60 * 1000; // 30 min default
+    const initialTime = 1_000_000_000;
+    const h = makeHarness({
+      threshold: 3,
+      cooldownMs,
+      initialTime,
+      analyzerImpl: async () => ({ patch: { daily: { expedition: { enabled: false } } }, reason: "x" }),
+      initialPersistedCooldowns: [
+        { task: "expedition", last_analysis_at: initialTime - 5 * 60 * 1000 }, // 5 min ago
+      ],
+    });
+    for (let i = 0; i < 3; i++) {
+      await h.aggregator.record({ task: "expedition", attempts: i + 1, last_error: "boom", context: {} });
+    }
+    expect(h.analyzer).not.toHaveBeenCalled();
+    // Advance past cooldown — next failure should fire analyzer.
+    h.setNow(initialTime + 26 * 60 * 1000);
+    for (let i = 0; i < 3; i++) {
+      await h.aggregator.record({ task: "expedition", attempts: i + 1, last_error: "boom", context: {} });
+    }
+    expect(h.analyzer).toHaveBeenCalledTimes(1);
+  });
+
+  it("persistence sink — each cooldown stamp mirrored to disk", async () => {
+    const initialTime = 1_000_000_000;
+    const h = makeHarness({
+      threshold: 3,
+      initialTime,
+      analyzerImpl: async () => ({ patch: { daily: { expedition: { enabled: false } } }, reason: "x" }),
+      withPersistence: true,
+    });
+    // 3 failures of "expedition" → analyzer fires → applies → cooldown stamped
+    for (let i = 0; i < 3; i++) {
+      await h.aggregator.record({ task: "expedition", attempts: i + 1, last_error: "e", context: {} });
+    }
+    expect(h.persistedCooldowns).toEqual([
+      { task: "expedition", ts: initialTime },
+    ]);
+    // Another task crosses threshold at a different time
+    h.setNow(initialTime + 1000);
+    for (let i = 0; i < 3; i++) {
+      await h.aggregator.record({ task: "metal_balance", attempts: i + 1, last_error: "e", context: {} });
+    }
+    expect(h.persistedCooldowns).toEqual([
+      { task: "expedition", ts: initialTime },
+      { task: "metal_balance", ts: initialTime + 1000 },
+    ]);
+  });
+
+  it("persistence sink — abstain path also stamps cooldown", async () => {
+    const initialTime = 1_000_000_000;
+    const h = makeHarness({
+      threshold: 3,
+      initialTime,
+      // Analyzer returns abstain (no patch) — cooldown should still be stamped
+      // so we don't re-burn LLM tokens on the same task while it's stale.
+      analyzerImpl: async () => ({ abstain: "insufficient info" }),
+      withPersistence: true,
+    });
+    for (let i = 0; i < 3; i++) {
+      await h.aggregator.record({ task: "expedition", attempts: i + 1, last_error: "e", context: {} });
+    }
+    expect(h.aggregator.stats().abstains).toBe(1);
+    expect(h.persistedCooldowns).toEqual([
+      { task: "expedition", ts: initialTime },
+    ]);
   });
 });

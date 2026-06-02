@@ -34,9 +34,40 @@ externally 由 cloudflared + nginx + `/tmp/ogamex_cf_router.mjs` 反代到 `http
 | 表 | 用途 |
 |---|---|
 | `world_state` | 单行 JSON blob (`id=1`)，每次 `state.snapshot` 抵达后 1s debounce upsert |
-| `events` | append-only audit log (type / payload JSON / created_at)，记录 `event.emergency` / `event.daily_failure`；boot 时 trimEvents(10_000) 守门 ≈2MB 上限 |
+| `events` | append-only audit log (type / payload JSON / created_at)。记录 4 类: `event.emergency`、`event.daily_failure`、`directive.dispatch`、`directive.completed`。boot 时 `trimEvents(10_000)` + 每 1000 次 append 自检剪枝，2MB 上限 |
+| `save_records` (v0.0.637+) | SaveCoordinator FSM (planet_id PK)。`pending_event_ids` 序列化为 JSON 数组。每次 launch / 部分清零 / IN_FLIGHT → RECALLING / recall-confirmed 都 mirror |
+| `failure_cooldowns` (v0.0.638+) | FailureAggregator 每 task LLM 分析冷却 (task PK, last_analysis_at)。重启不再 prematurely re-fire |
 
-sidecar 启动时 `worldStateStore.hydrate()` 从 `world_state` 行读回，喂给 `stateRef.current` — `priorityMerger` 不再需要等 userscript 首次 snapshot 才能干活。
+sidecar 启动时 `worldStateStore.hydrate()` 从 `world_state` 行读回，喂给 `stateRef.current` — `priorityMerger` 不再需要等 userscript 首次 snapshot 才能干活。同样 `SaveCoordinator.rehydrate()` + `FailureAggregator` 构造时拉 `listCooldowns()` 都跨重启续接。
+
+### WAL 维护 (v0.0.637+)
+
+`startSidecar` 起 5min 定时 `worldStateStore.checkpoint()` → `PRAGMA wal_checkpoint(TRUNCATE)`。better-sqlite3 自带的 1000-page 自动 checkpoint 在状态推送 + directive 流量下会让 WAL 涨到几百 MB，5min 周期把它拉回低水位。`stop()` 时还做一次 final checkpoint。
+
+### HTTP 端点全景
+
+| 端点 | 方法 | 用途 |
+|---|---|---|
+| `/ogamex/v1/health` | GET | 健康 + 含 `persistence: { db_path, db_size_bytes, wal_size_bytes, row_counts: { events, save_records, failure_cooldowns, world_state_present } }` 段 (v0.0.638+) |
+| `/ogamex/v1/state` | GET | 全 WorldState JSON |
+| `/ogamex/v1/goals[?all=true]` | GET | 默认只非 terminal goal (operator 2026-05-31 内存炸过) |
+| `/ogamex/v1/events?limit=N&type=foo` | GET | 持久化 audit log，默认 limit=100，硬上限 1000 (v0.0.636+) |
+| `/ogamex/v1/expedition` | GET | 远征 slot 状态 |
+| `/ogamex/v1/save/active` | GET | 当前活跃 SaveCoordinator FSM 行 |
+| `/ogamex/v1/push` | POST | Authorization Bearer token，UpstreamMsg envelope |
+| `/ogamex/v1/poll` | POST | body `{ since_ts, ack_ids }`，long-poll downstream queue |
+| `/dl/ogame-runtime.user.js` | GET | 从 `/tmp/ogame-runtime.user.js` serve userscript bundle |
+
+### 操作员面板 audit UI (v0.0.639+)
+
+panel 头部 📋 按钮 → audit modal：
+
+- type 下拉过滤：`all` / `directive.dispatch` / `directive.completed` / `event.emergency` / `event.daily_failure`
+- limit 输入 1-500，默认 100
+- refresh 按钮 + 打开即抓
+- 时间戳 + 类型颜色 (directive 蓝 / emergency 红 / failure 黄) + payload preview (240 字截断)
+
+无需 ssh + curl 即可看 sidecar audit log。后端走标准 `GET /v1/events` 端点。
 
 ## 操作命令
 
