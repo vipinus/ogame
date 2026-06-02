@@ -7,10 +7,27 @@ import type { AddressInfo } from "node:net";
 import type { UpstreamMsg, DownstreamMsg } from "@ogamex/shared";
 import { runWithUser, getCurrentUserId } from "./user_context.js";
 
-// Phase 9c.5 — symbolic bucket id for operator + any unauthenticated /
-// global-token-authed downstream sink. Real user buckets are keyed by
-// the PG user_id uuid; this sentinel can't collide with one.
+// Phase 9c.5 — symbolic bucket id for truly anonymous traffic (no Bearer,
+// no operator uid configured — only happens in test/CI smoke runs). In
+// production, OGAMEX_LEGACY_USER_ID is set to the operator's PG uid and
+// queueDownstream/dispatchPoll route operator-side traffic into THAT
+// uid's bucket, so write/read paths converge there. LEGACY_BUCKET is
+// only used as the absolute fallback when no operator uid is configured.
 const LEGACY_BUCKET = "_legacy_";
+
+// Read at CALL time, not module init — run_sidecar.mjs sets the env var
+// AFTER its `import { startSidecar }` line (ESM hoisting puts the import
+// effectively before the assignment), so a module-init `process.env` read
+// would always come back empty. queueDownstream / dispatchPoll prefer
+// the operator uid over LEGACY_BUCKET so the daemon's no-Bearer writes
+// and operator's per-user Bearer poll land in the SAME bucket. Without
+// this, operator's expeditions written by the daemon stranded in
+// LEGACY_BUCKET while operator's poll read from his own uid bucket
+// (2026-06-02 incident).
+const fallbackBucketUid = (): string => {
+  const operatorUid = (process.env.OGAMEX_LEGACY_USER_ID ?? "").trim();
+  return operatorUid || LEGACY_BUCKET;
+};
 import {
   renderDebugHtml,
 } from "./debug_render.js";
@@ -265,8 +282,11 @@ export class HttpServer {
   queueDownstream(msg: DownstreamMsg, explicitUid?: string): void {
     // Phase 9c.5 — uid resolution priority: explicit (manager closure has
     // bound uid) → AsyncLocalStorage (dispatch chain inherits the push
-    // request's user) → LEGACY_BUCKET (operator / global-token paths).
-    const uid = explicitUid ?? getCurrentUserId() ?? LEGACY_BUCKET;
+    // request's user) → operator uid env fallback → LEGACY_BUCKET sentinel.
+    // The operator-fallback step (added 2026-06-02) ensures daemon's
+    // no-Bearer writes converge with operator's per-user Bearer poll on
+    // the same bucket key, instead of write→LEGACY/read→uid mismatch.
+    const uid = explicitUid ?? getCurrentUserId() ?? fallbackBucketUid();
     const q = this.bucketQueue(uid);
     // Dedup directive.dispatch — if a directive with the same content
     // (action+building+target_level+planet_id) is already pending undelivered,
@@ -319,10 +339,10 @@ export class HttpServer {
   }
 
   // Drop ALL queued downstream messages for a bucket — invoked on `hello`
-  // (client reconnect). Without explicit uid, defaults to operator's
-  // LEGACY_BUCKET so existing reconnect paths preserve semantics.
+  // (client reconnect). Without explicit uid, defaults to the operator
+  // uid fallback (or LEGACY_BUCKET sentinel if env not set).
   flushQueue(explicitUid?: string): void {
-    const uid = explicitUid ?? getCurrentUserId() ?? LEGACY_BUCKET;
+    const uid = explicitUid ?? getCurrentUserId() ?? fallbackBucketUid();
     const q = this.buckets.get(uid);
     if (!q) return;
     const n = q.length;
@@ -1236,7 +1256,11 @@ export class HttpServer {
       ? auth.slice("Bearer ".length).trim()
       : "";
     if (globalAuthOk) {
-      bucketUid = LEGACY_BUCKET;
+      // Phase 9c.5 hotfix 2026-06-02 — global-token poll routes to the
+      // operator's uid bucket (when env-configured) so it reads the same
+      // bucket that any unauthenticated/legacy-uid write lands in. Falls
+      // back to LEGACY_BUCKET only in test/CI without operator config.
+      bucketUid = fallbackBucketUid();
     } else if (this.opts.resolveUserToken && bearer) {
       try {
         const uid = await this.opts.resolveUserToken(bearer);
