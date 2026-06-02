@@ -274,7 +274,7 @@ function openAuditModal(
     <div data-audit-rows style="padding-top:8px; max-height:60vh; overflow:auto; font-family:monospace; font-size:11px; line-height:1.5; color:#d0d8e0;">
       loading…
     </div>`;
-  openSettingsModal(doc, "audit", "📋 Audit Log (sidecar events table)", initialBody, (modal) => {
+  openSettingsModal(doc, "audit", t("modal.audit.title"), initialBody, (modal) => {
     const rowsEl = modal.querySelector<HTMLElement>("[data-audit-rows]")!;
     const metaEl = modal.querySelector<HTMLElement>("[data-audit-meta]")!;
     const typeEl = modal.querySelector<HTMLSelectElement>("[data-audit-type]")!;

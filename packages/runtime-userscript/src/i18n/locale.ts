@@ -28,11 +28,14 @@ const OGAME_LOCALES = new Set([
 function htmlLangToOgame(lang: string | null | undefined): string | null {
   if (!lang) return null;
   const lower = lang.toLowerCase();
-  // Chinese: ogame ships only Traditional (`tw`); `zh-TW` / `zh-Hant` →
-  // tw, `zh-CN` / `zh-Hans` deliberately falls through to default.
-  if (lower.startsWith("zh")) {
-    return lower.includes("tw") || lower.includes("hk") || lower.includes("hant") ? "tw" : null;
-  }
+  // Chinese: ogame ships ONLY Traditional Chinese (`tw`) — there's no
+  // Simplified Chinese ogame server. So ANY `zh*` (zh, zh-CN, zh-Hans,
+  // zh-TW, zh-Hant, …) maps to `tw`. A mainland user with `zh-CN`
+  // browser setting will see Traditional, which is closer to their
+  // expectation than English. Operator 2026-06-02 confirmed: gameforge
+  // sets `<html lang="zh">` for accounts whose UI language is set to
+  // 繁體 — bare "zh" without a TW/Hant suffix.
+  if (lower.startsWith("zh")) return "tw";
   // Japanese: standard ISO `ja` → ogame slug `jp`.
   if (lower.startsWith("ja")) return "jp";
   // Korean: ISO `ko` → ogame doesn't ship a Korean server today; fall

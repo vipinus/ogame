@@ -44,6 +44,9 @@ export const STRINGS: StringRegistry = {
     "panel.action.resume": "Resume",
     "panel.action.cancel": "Cancel",
 
+    // Modal — audit log
+    "modal.audit.title": "📋 Audit Log (sidecar events table)",
+
     // Modal — emergency settings
     "modal.emergency.title": "🚨 Emergency settings",
     "modal.emergency.global_enable": "Global enable",
@@ -97,6 +100,8 @@ export const STRINGS: StringRegistry = {
     "panel.action.pause": "暫停",
     "panel.action.resume": "繼續",
     "panel.action.cancel": "取消",
+
+    "modal.audit.title": "📋 稽核日誌（sidecar events 表）",
 
     "modal.emergency.title": "🚨 緊急任務設定",
     "modal.emergency.global_enable": "整體啟用",

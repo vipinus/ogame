@@ -88,6 +88,16 @@ if (_inIframe) {
       kv: createIndexedKv(),
     });
     console.info("[OgameX] runtime booted", handle.summary);
+    // i18n diagnostic — show what locale we picked + what source signal won.
+    // operator 2026-06-02 hit "audit modal still English" — would have caught
+    // by checking this log first.
+    try {
+      const lang = (typeof document !== "undefined" ? document.documentElement.lang : "") || "(unset)";
+      const host = (typeof window !== "undefined" ? window.location.hostname : "") || "(unknown)";
+      const { getOgameLocaleWithOverride } = await import("./i18n/locale.js");
+      const resolved = getOgameLocaleWithOverride();
+      console.info(`[OgameX/i18n] locale=${resolved} (html.lang=${lang} hostname=${host})`);
+    } catch (e) { console.warn("[OgameX/i18n] locale resolve failed", e); }
     // Expose for in-browser inspection
     (window as unknown as { __OGAMEX__: unknown }).__OGAMEX__ = handle;
 
