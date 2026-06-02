@@ -296,6 +296,19 @@ export class HttpServer {
     const url = req.url ?? "/";
     const method = (req.method ?? "GET").toUpperCase();
 
+    // v0.0.644 — operator 2026-06-01 部署 ogame.anyfq.com SaaS 网站.
+    // CF tunnel 在 192.168.2.250 token-managed, 改 ingress 要走 CF dashboard.
+    // 短路: sidecar 自己 fan out — sidecar 自家路径 (/ogamex/* + /dl/*)
+    // 走原逻辑, 其余全部代理到本机 Next.js 3002 (ogame-next 站点)。
+    if (
+      method !== "OPTIONS" &&
+      !url.startsWith("/ogamex/") &&
+      !url.startsWith("/dl/")
+    ) {
+      this.proxyToNext(req, res);
+      return;
+    }
+
     if (method === "OPTIONS") {
       this.writeCorsHeaders(res);
       res.statusCode = 204;
@@ -890,6 +903,48 @@ export class HttpServer {
       res.statusCode = 500;
       res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
     }
+  }
+
+  /**
+   * v0.0.644 — Proxy any non-sidecar-API request to the local Next.js server
+   * at 127.0.0.1:3002 (ogame-next, the ogame.anyfq.com SaaS site). Lets a
+   * single CF tunnel ingress (`ogame.anyfq.com → europa:28791`) serve BOTH
+   * the sidecar API (paths under `/ogamex/*` + `/dl/*`) and the Next.js
+   * SaaS site (everything else) without touching the CF tunnel config.
+   *
+   * Forwards method, headers, body. Streams response back. Failures become
+   * 502 so the operator sees a clear "next.js down" signal.
+   */
+  private proxyToNext(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const headers = { ...req.headers };
+    headers["x-forwarded-host"] = req.headers["host"] ?? "";
+    headers["x-forwarded-proto"] = "https";
+    headers["host"] = "127.0.0.1:3002";
+    const upstream = http.request({
+      host: "127.0.0.1",
+      port: 3002,
+      method: req.method,
+      path: req.url,
+      headers,
+      timeout: 30_000,
+    }, (upRes) => {
+      res.statusCode = upRes.statusCode ?? 502;
+      for (const [k, v] of Object.entries(upRes.headers)) {
+        if (v !== undefined) res.setHeader(k, v as string | string[]);
+      }
+      upRes.pipe(res);
+    });
+    upstream.on("error", (e: NodeJS.ErrnoException) => {
+      console.warn("[next-proxy] error:", e.code ?? e.message);
+      if (!res.headersSent) {
+        res.statusCode = 502;
+        res.setHeader("content-type", "text/plain");
+        res.end(`next-proxy: upstream unreachable (${e.code ?? "ERR"})`);
+      } else {
+        res.end();
+      }
+    });
+    req.pipe(upstream);
   }
 
   private writeCorsHeaders(res: http.ServerResponse): void {
