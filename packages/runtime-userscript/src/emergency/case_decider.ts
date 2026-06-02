@@ -42,7 +42,7 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     throw new Error(`no ships available at ${source.name}`);
   }
   // recycler check moved into Case C branch — operator 2026-05-24:
-  // "没有 recycler 的时候是 FS 星球或者月球吗?" Yes — Case A (moon→planet)
+  // "沒有 recycler 的時候是 FS 星球或者月球嗎?" Yes — Case A (moon→planet)
   // and Case B (planet→moon) are TRANSPORT missions, no recycler needed.
   // Only Case C (recycle to local debris) actually requires recycler ≥ 1.
 
@@ -73,7 +73,7 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     const perShip = cargoMap[k] ?? CARGO_BASE[k] ?? 0;
     capacity += perShip * (n ?? 0);
   }
-  // Operator 2026-05-24 priority: 重氢 → 晶体 → 金属. When cargo doesn't
+  // Operator 2026-05-24 priority: 重氫 → 晶體 → 金屬. When cargo doesn't
   // fit everything, fill deuterium first (also the fleet fuel — keep it
   // off the planet for the attacker), then crystal, finally metal.
   // Moon source reserves 50K deut on the moon for jump-gate fuel before
@@ -93,14 +93,14 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
   const cargo = { m: mLoad, c: cLoad, d: dLoad };
 
   // Operator 2026-05-24 strategy update:
-  //   1. 从星球FS → 同坐标月球 @ 10% (transport)   ← Case B
-  //   2. 从月球FS → 同坐标星球 @ 10% (transport)   ← Case A
-  //   3. 没有月球    → 同坐标 debris @ 10% (recycle) ← Case C
+  //   1. 從星球FS → 同坐標月球 @ 10% (transport)   ← Case B
+  //   2. 從月球FS → 同坐標星球 @ 10% (transport)   ← Case A
+  //   3. 沒有月球    → 同坐標 debris @ 10% (recycle) ← Case C
   // All cases share the same 10% phalanx-avoidance flight pattern: short
   // path (same-coord), long flight time, recall before arrival.
 
   // Case A: source IS a moon → deploy to same-coord planet @ 10%
-  // Operator 2026-05-25: "FS 用部署替换运输". mission=4 DEPLOY ≠ mission=3
+  // Operator 2026-05-25: "FS 用部署替換運輸". mission=4 DEPLOY ≠ mission=3
   // TRANSPORT. DEPLOY permanently relocates the fleet to own planet/moon;
   // TRANSPORT has different recall/holding semantics. For FS purposes the
   // fleet is a long-term move, not a courier round-trip.

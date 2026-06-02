@@ -140,7 +140,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       ?? (directive.params as { source_planet?: string }).source_planet;
     if (!planetId) throw new Error(`api: no planet_id for ${directive.action}`);
 
-    // Operator 2026-05-25: "调用api也必须切星球吗？" — yes, ogame's cp=
+    // Operator 2026-05-25: "調用api也必須切星球嗎？" — yes, ogame's cp=
     // in URL switches session-cp regardless of ajax/HTML. ALL action
     // handlers below carry cp=<sourcePlanet> in their POSTs, which
     // shifts the operator's tab too. Capture original session-cp here
@@ -164,10 +164,10 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       opSucceeded = true;
       return result;
     } finally {
-      // v0.0.581 — operator 2026-06-01: JG completion 应 restore 到目标月球
-      // 的 cp (而不是 operator 入口时的视角). 跳跃后操作员通常想看 target
-      // 落地的舰队 — 自动 navigate 过去比拉回原视角更符合直觉. JG 失败时
-      // 仍 restore 原 operatorCp (避免操作员被无效导航打扰).
+      // v0.0.581 — operator 2026-06-01: JG completion 應 restore 到目標月球
+      // 的 cp (而不是 operator 入口時的視角). 跳躍後操作員通常想看 target
+      // 落地的艦隊 — 自動 navigate 過去比拉回原視角更符合直覺. JG 失敗時
+      // 仍 restore 原 operatorCp (避免操作員被無效導航打擾).
       let restoreTo: string | null = operatorCp;
       if (opSucceeded && directive.action === "jumpgate") {
         const tgt = (directive.params as { target_moon_id?: string }).target_moon_id;
@@ -245,7 +245,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   }
 
   // Live-DOM click + menu nav + URL wait paths REMOVED (v0.0.222).
-  // Operator directive: 装 A — full API化, 删 DOM 点击 fallback.
+  // Operator directive: 裝 A — full API化, 刪 DOM 點選 fallback.
   // Audit found these methods (tryLivePageClick / tryLivePageClickAsync /
   // kickMenuNav / waitForUrl) were never called by execute() — execute()
   // already uses captures-replay (TIER 1) or fetchTokenAndStatus-based
@@ -431,8 +431,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     };
     const ships = params.ships ?? { smallCargo: 1, espionageProbe: 1 };
 
-    // EXPEDITION SLOT GATE — operator 2026-05-27: "远征怎么会有警告？发船之前
-    // 没有查看是否有可用的slot？". ogame error 140043/140019 = expedition slots
+    // EXPEDITION SLOT GATE — operator 2026-05-27: "遠征怎麼會有警告？發船之前
+    // 沒有查看是否有可用的slot？". ogame error 140043/140019 = expedition slots
     // exhausted; 140029 = TOTAL fleet slot exhausted (expedition fleet ALSO
     // occupies 1 fleet slot on top of 1 expedition slot). Both checks needed.
     // store.server.* is updated by /movement harvest + galaxy fetch.
@@ -446,8 +446,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
       // Operator 2026-05-28: expedition occupies BOTH expedition slot AND
       // fleet slot. Originally kept 1 fleet slot reserved for emergency FS,
-      // but operator now: "修好远征自动发船,不用管发现任务,发现任务会慢慢
-      // 让出空间". Expedition takes the last slot too — emergency FS goes
+      // but operator now: "修好遠征自動發船,不用管發現任務,發現任務會慢慢
+      // 讓出空間". Expedition takes the last slot too — emergency FS goes
       // through FSM bypass (memory: fleet_slot_gate_invariant says FSM
       // ignores slot gate to save fleet at all costs).
       const usedFleet = srv?.used_fleet_slots ?? -1;
@@ -460,14 +460,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       // missing store = skip gate, fall through
     }
 
-    // BLOCKING preflight — owner explicit requirement: "每次远征之前从 api
-    // 拿最新的舰船数量". v0.0.166 had fire-and-forget pollEmpire (data lands
+    // BLOCKING preflight — owner explicit requirement: "每次遠征之前從 api
+    // 拿最新的艦船數量". v0.0.166 had fire-and-forget pollEmpire (data lands
     // too late). v0.0.167 had fdHtml2 parse (caused 140042). This version
     // calls a focused helper that does (a) ogame empire API fetch, (b) parses
     // ship counts per planet, (c) writes them to store, (d) returns this
     // planet's ships. AWAIT it — block 100-500ms — then compare to template.
     // Step 0: force fresh empire pull BEFORE preflight. operator:
-    // "远征出发之前又没有同步最新的舰船列表吧". This refreshes store with
+    // "遠征出發之前又沒有同步最新的艦船列表吧". This refreshes store with
     // current ogame ship counts for ALL planets. fetchPlanetShips can then
     // fall back to store.ships safely (was stale data before).
     const pollEmpireFn = (this.win as Window & {
@@ -678,7 +678,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       throw new Error(`jumpgate ghost-ack: success flag set but errors=${JSON.stringify(errsArr).slice(0, 200)}`);
     }
     console.info(`[ApiExec/jumpgate] OK src=${sourceMoonId} → tgt=${targetMoonId} cooldown=${resp.cooldown ?? resp.nextActionAt ?? "?"}s`);
-    // v0.0.546 — operator 2026-05-31 "跳跃以后要立刻刷新舰队数量". Old code
+    // v0.0.546 — operator 2026-05-31 "跳躍以後要立刻刷新艦隊數量". Old code
     // fired one pollEmpire force, but ogame's empire endpoint can return
     // pre-JG ship counts if the server-side state hasn't committed yet
     // (observed: src moon 4:299:8 LC=195 still shown after JG, dest moon
@@ -784,7 +784,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     }
     // v0.0.436: delegate to fleet_api.sendFleet — the SAME function FS uses
     // to deploy ships to sibling moon (wire_runtime.ts:103). Operator
-    // 2026-05-29: "复用以前成功的代码,不要每次都调试新代码". This path is
+    // 2026-05-29: "復用以前成功的代碼,不要每次都調試新代碼". This path is
     // proven on s274-en/ogame v12 (FS works), so it must work for our
     // chain ferry too. Includes 4-attempt transient retry, storage overflow
     // self-heal, module-level mutex against concurrent fleet POSTs.
@@ -849,7 +849,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     }
 
     // Pre-check: fetch galaxy system content + classify position's discovery
-    // state. Operator: "先从 api 拿到星球是否扫过, 没扫过的继续, 扫过的跳过".
+    // state. Operator: "先從 api 拿到星球是否掃過, 沒掃過的繼續, 掃過的跳過".
     // Cached 5min per "G:S" so 15 positions in same system reuse one fetch.
     const cacheKey = `${galaxy}:${system}`;
     type Cache = { ts: number; states: Map<number, string> };
@@ -916,7 +916,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
             (this.win as Window & { __ogamexLastGalaxyToken?: string }).__ogamexLastGalaxyToken = j.token;
           }
           // Authoritative slot data from ogame — push immediately so planner
-          // doesn't rely on 10s /movement harvest. Operator: "你的舰队槽的数量
+          // doesn't rely on 10s /movement harvest. Operator: "你的艦隊槽的數量
           // 是不是又是猜的？" — answer is now no, we read it from ogame's own
           // response on every galaxy fetch.
           const usedFs = j.system?.usedFleetSlots;
@@ -938,7 +938,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
             //   missionType 18 entry present in availableMissions → discovery
             //     mechanically possible for this coord (planet+lifeform tech).
             //   canSend is union-typed across galaxies:
-            //     • string non-empty ("您可以在 X 之後再次搜索…") → cooldown
+            //     • string non-empty ("您可以在 X 之後再次搜尋…") → cooldown
             //     • string empty / undefined → available
             //     • boolean true → available
             //     • boolean false → cooldown / blocked
@@ -1001,7 +1001,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // — if used >= max - 1 (would consume the last empty slot), refuse POST.
     // Planner has the same gate, but it operates on snapshots and may be
     // stale within a burst of dispatches; this is the actual point of no
-    // return. Operator 2026-05-23: "艦隊:16/16 不要满 保留一槽".
+    // return. Operator 2026-05-23: "艦隊:16/16 不要滿 保留一槽".
     try {
       const storeRef = (this.win as Window & { __ogamexStore?: { state: { server?: { used_fleet_slots?: number; max_fleet_slots?: number; used_expedition_slots?: number; max_expedition_slots?: number } } } }).__ogamexStore;
       const srv = storeRef?.state.server;
@@ -1021,7 +1021,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
     } catch (e) { void e; /* missing store = skip the gate, fall through */ }
 
-    // Operator 2026-05-25: "种族发现任务是不是在点击网页，打开以后就会
+    // Operator 2026-05-25: "種族發現任務是不是在點選網頁，打開以後就會
     // 很卡，改成api方式". Previously we did a second HTTP GET to
     // /component=galaxy&cp=PID just to extract a CSRF token from the
     // HTML page. That GET carries cp= which SWITCHES ogame's session-cp
@@ -1050,7 +1050,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // tokenProvider supplies cached galaxy token. successCheck gates on
     // nested `response.success` OR top-level `success` (defensive: ogame
     // sometimes returns nested, sometimes flat). Business retry logic
-    // (cooldown/token-race/资源不足) lives below — too branchy for cpPost's
+    // (cooldown/token-race/資源不足) lives below — too branchy for cpPost's
     // single-retry-path semantics.
     if (!this.tokenManager) throw new Error("discover: no tokenManager wired");
     const buildDiscBody = (tk: string): URLSearchParams => {
@@ -1126,11 +1126,11 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (failed) {
       const msg = parsed?.response?.message ?? parsed?.errors?.[0]?.message ?? parsed?.message ?? "unknown";
       // Cooldown rejection (system-level rate limit OR per-coord 7d):
-      // ogame text contains "再次搜索" / "再次搜索生命形式" / "next" / 等待 / cooldown.
+      // ogame text contains "再次搜尋" / "再次搜尋生命形式" / "next" / 等待 / cooldown.
       // Treat as "this coord attempted" — append to completed[] via the
       // standard success path so planner moves to next coord. Throwing
       // here flips goal to blocked which stops progress entirely.
-      const isCooldown = /再次搜索|再次搜尋|next.*search|cooldown|wait|#time#/i.test(msg);
+      const isCooldown = /再次搜尋|再次搜尋|next.*search|cooldown|wait|#time#/i.test(msg);
       if (isCooldown) {
         console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} COOLDOWN — marking attempted, moving to next`);
         return ackOk("server-cooldown");
@@ -1187,14 +1187,14 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       // backend race / lock contention during burst discovery. Self-heal:
       // when our state shows resources >= threshold, retry once. Persistent
       // failure → throw.
-      const isResShortage = /資源不足|资源不足|insufficient.*resource|resource.*insufficient|not enough/i.test(msg);
+      const isResShortage = /資源不足|資源不足|insufficient.*resource|resource.*insufficient|not enough/i.test(msg);
       if (isResShortage) {
         const storeRes = (this.win as Window & { __ogamexStore?: { state: { planets: Record<string, { resources?: { m?: number; c?: number; d?: number } }> } } })
           .__ogamexStore?.state?.planets?.[planetId]?.resources;
         const m = storeRes?.m ?? 0, c = storeRes?.c ?? 0, d = storeRes?.d ?? 0;
         const aboveThreshold = m >= 5000 && c >= 1000 && d >= 500;
         if (aboveThreshold) {
-          console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} 資源不足 误报 (store m=${m} c=${c} d=${d}) — single retry`);
+          console.warn(`[ApiExec/discover] ${galaxy}:${system}:${position} 資源不足 誤報 (store m=${m} c=${c} d=${d}) — single retry`);
           const retryTokenRes = parsed?.newAjaxToken ?? token;
           const r2 = await cpPostWithRetry({
             endpoint: `/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&ajax=1&asJson=1`,
@@ -1246,7 +1246,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   /**
    * Restore ogame session-cp back to the operator's view planet after a
    * background POST that used cp=<otherPlanet>. Operator 2026-05-25:
-   * "发现任务会干扰前台操作，其他星球发的舰队的任务会变到从进行发现的星球上".
+   * "發現任務會幹擾前臺操作，其他星球發的艦隊的任務會變到從進行發現的星球上".
    * Background POSTs carry cp= to target a specific source planet, which
    * also SHIFTS the session's active planet — so the operator's next
    * manual click in their tab inherits OUR planet, not theirs. Fix by
@@ -1256,7 +1256,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   /**
    * Get a fresh CSRF token for fleet dispatch chains without fetching the
    * heavy /component=fleetdispatch HTML page. Operator 2026-05-25:
-   * "用 api 实现 不要点网页". Sources, in priority:
+   * "用 api 實現 不要點網頁". Sources, in priority:
    *   1. document.documentElement.dataset.ogamexToken — sniffer-cached
    *      from operator's recent ogame interactions or our prior successful
    *      POSTs. Zero HTTP if present.

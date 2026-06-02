@@ -68,7 +68,7 @@ function readMeta(doc: Document, name: string): string | undefined {
  * the current planetList scrape) are NOT lost.
  */
 /**
- * Race-safe planet identity merge (operator 2026-05-27: "不稳定" — full
+ * Race-safe planet identity merge (operator 2026-05-27: "不穩定" — full
  * planet-record overwrites raced against jumpgate cooldown writes).
  *
  * Returns ONLY per-planet identity patches (id/name/coords/type for existing,
@@ -129,7 +129,7 @@ function detectVacationMode(doc: Document): boolean {
 function mergeTechLevels(doc: Document, store: StateStore): void {
   const levels = extractTechLevels(doc);
   // v0.0.615 — harvest localized labels from same DOM. Operator
-  // 2026-06-01 "网页上有名字" — ogame's title/aria-label is ground truth.
+  // 2026-06-01 "網頁上有名字" — ogame's title/aria-label is ground truth.
   const newLabels = extractTechLabels(doc);
   if (Object.keys(newLabels).length > 0) {
     const existing = (store.state as { tech_labels?: Record<string, string> }).tech_labels ?? {};
@@ -145,7 +145,7 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
   const buildings: Record<string, number> = {};
   const research: Record<string, number> = {};
   const lifeformBuildings: Record<string, number> = {};
-  // v0.0.616 — operator 2026-06-01 "不会后台请求数据吗?". Passive harvest
+  // v0.0.616 — operator 2026-06-01 "不會後臺請求資料嗎?". Passive harvest
   // now buckets lifeform_research too. When operator visits any planet's
   // lfresearch page, env.doc reflects it; bucket the entries so the goals
   // panel sees data without re-fetch.
@@ -204,7 +204,7 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
       for (const [k, v] of Object.entries(buildings)) {
         if (v >= (mergedB[k] ?? 0)) mergedB[k] = v;
       }
-      // v0.0.620 — operator 2026-06-01 "已经切换了种族的星球老科技是无效
+      // v0.0.620 — operator 2026-06-01 "已經切換了種族的星球老科技是無效
       // 的". On lfbuildings/lfresearch pages, ogame renders ONLY the
       // current-species set; that's the authoritative truth for THIS
       // planet at THIS moment. So REPLACE (not merge) — stale entries
@@ -271,7 +271,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     // Hydration failure should not break boot — log and continue with empty state
     console.warn("[OgameX] hydrate failed; continuing with empty state", e);
   }
-  // 1a. Detect player class from DOM — Discoverer / 探险家 = +2 expedition.
+  // 1a. Detect player class from DOM — Discoverer / 探險家 = +2 expedition.
   //     Class appears in topbar / player-info widget on every page.
   function detectPlayerClass(): "discoverer" | "collector" | "general" | "unknown" {
     try {
@@ -337,7 +337,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   } catch (_) { void _; }
 
   // 1b'. Slot-data write helpers exposed to ApiExec.
-  // Operator 2026-05-23: "你的舰队槽的数量是不是又是猜的？" / "艦隊:16/16 不要满 保留一槽".
+  // Operator 2026-05-23: "你的艦隊槽的數量是不是又是猜的？" / "艦隊:16/16 不要滿 保留一槽".
   // Previously slot counts came only from 10s /movement DOM harvest — discoveries
   // burst-dispatched between ticks would all fire before harvester caught up,
   // overshooting the "keep 1 slot empty" rule. Galaxy POST already returns
@@ -366,7 +366,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     __ogamexIncrementUsedSlot?: typeof incrementUsedSlotFn;
   }).__ogamexIncrementUsedSlot = incrementUsedSlotFn;
 
-  // Operator 2026-05-28 "删除以前设计的防止和前端冲突的机制": removed
+  // Operator 2026-05-28 "刪除以前設計的防止和前端衝突的機制": removed
   // the old user-busy gate (mousedown/keydown listeners → __ogamexUser
   // BusyUntil + user_busy_until store write → consumers SKIP-on-mousedown).
   // The new conflict-prevention stack is:
@@ -378,7 +378,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   //      dispatch; resumes when operator navigates away.
   // These two layers together replace the old userBusy mechanism.
 
-  // Operator 2026-05-28 "cp 锁机制": when operator clicks while a background
+  // Operator 2026-05-28 "cp 鎖機制": when operator clicks while a background
   // cp= fetch is in flight, intercept the click in capture phase, await the
   // session-cp restore, then re-dispatch the click as a synthetic event.
   // Without this, ogame UI submits with stale session-cp → server race.
@@ -504,8 +504,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           void pollFn({ force: true }).catch((e) => console.warn("[OgameX/species] post-lf pollEmpire failed", e));
         }
       }
-      // v0.0.606 — operator 2026-06-01 "每次从星球添加和重置科技的时候更新
-      // 维护列表". Sniffer detected an lfresearch upgrade/reset → force
+      // v0.0.606 — operator 2026-06-01 "每次從星球添加和重置科技的時候更新
+      // 維護列表". Sniffer detected an lfresearch upgrade/reset → force
       // refreshOnePage("lfresearch") so the planet's research catalog stays
       // current without waiting for the periodic cycle (~70s).
       const lfrTsRaw = env.doc.documentElement.dataset["ogamexLfResearchChangeTs"];
@@ -616,16 +616,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             if (isJump && respText) rec.resp = String(respText).slice(0, 2000);
             persist(rec);
           }
-          // v0.0.597 — operator 2026-06-01 "星球切换种族类型的时候, 重新拿
-          // 种族类型, 事件触发". Detect lifeform pick / lfsettings change
+          // v0.0.597 — operator 2026-06-01 "星球切換種族類型的時候, 重新拿
+          // 種族類型, 事件觸發". Detect lifeform pick / lfsettings change
           // and bump a dataset timestamp so the sandbox-side mirror tick
           // can trigger pollEmpire(force) immediately (no waiting for the
           // periodic ~5s empire poll).
           if (/lfsettings|pickLifeform|component=lfsettings/i.test(u)) {
             document.documentElement.dataset.ogamexLfChangeTs = String(Date.now());
           }
-          // v0.0.606 — operator 2026-06-01 "每次从星球添加和重置科技的时候
-          // 更新维护列表". Detect lfresearch upgrade/reset on any planet —
+          // v0.0.606 — operator 2026-06-01 "每次從星球添加和重置科技的時候
+          // 更新維護列表". Detect lfresearch upgrade/reset on any planet —
           // force the sandbox-side mirror tick to immediately refresh the
           // lfresearch page so the per-planet research catalog stays current.
           if (/component=lfresearch|action=upgrade.*lfresearch|action=resetTree/i.test(u)) {
@@ -674,7 +674,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                   }
                   // v0.0.472: operator-initiated build cancel/queue change
                   // → force empire poll so sidecar sees fresh build_q
-                  // immediately (operator 2026-05-30 "前台取消后台没有反应").
+                  // immediately (operator 2026-05-30 "前臺取消後臺沒有反應").
                   // Without this, sidecar's stale build_q blocked stuck-recovery
                   // until next natural empire poll (could be minutes).
                   if (url.includes("cancelEntry") || url.includes("cancelbuildlistEntry")) {
@@ -691,11 +691,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                       }
                     } catch (_) { /* not JSON */ }
                   }
-                  // Operator 2026-05-26/27: "发生跳跃事件 从 api 拿到源和目的
-                  // 月球的计时时长并开始计时". Robust sniff — broader URL match
+                  // Operator 2026-05-26/27: "發生跳躍事件 從 api 拿到源和目的
+                  // 月球的計時時長並開始計時". Robust sniff — broader URL match
                   // + multiple body field candidates + 起始座標 fallback parse.
                   // 2026-05-27: relax to ANY url/body containing "jump" — ogame
-                  // may use action=ajaxJumpgateAction etc. (operator: 跳了没拿到数据)
+                  // may use action=ajaxJumpgateAction etc. (operator: 跳了沒拿到資料)
                   if (/jump/i.test(url) || (body && /jump/i.test(body))) {
                     try {
                       // JSON parse first (executeJump endpoint returns JSON)
@@ -729,7 +729,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                               || body.match(/dest_planet=(\\d+)/);
                         if (m) targetMoonId = m[1];
                       }
-                      const origCoordMatch = t.match(/起始座[標标][\\s\\S]{0,300}?\\[(\\d+):(\\d+):(\\d+)\\]/);
+                      const origCoordMatch = t.match(/起始座[標標][\\s\\S]{0,300}?\\[(\\d+):(\\d+):(\\d+)\\]/);
                       const originCoords = origCoordMatch ? [origCoordMatch[1], origCoordMatch[2], origCoordMatch[3]].join(":") : null;
                       console.log("[OgameXSniff] jumpgate detected url=" + url.slice(0, 80) + " src=" + sourceMoonId + " tgt=" + targetMoonId + " cd=" + cd + " origCoords=" + originCoords);
                       if (cd === null && jsonResp) {
@@ -785,15 +785,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                 if (/jump/i.test(url) || (reqBody && /jump/i.test(reqBody))) {
                   try {
                     const t = xhr.responseText || "";
-                    // 2026-05-27 真实 ogame v12 evidence:
+                    // 2026-05-27 真實 ogame v12 evidence:
                     //   POST .../component=jumpgate&action=executeJump&asJson=1
-                    //   resp 是 JSON 274B (不是 HTML overlay) → 必须 JSON parse
+                    //   resp 是 JSON 274B (不是 HTML overlay) → 必須 JSON parse
                     //   cooldown 字段大概率叫 cooldown / nextActionAt / time
                     let cd = null;
                     let jsonResp = null;
                     try { jsonResp = JSON.parse(t); } catch(_) {}
                     if (jsonResp) {
-                      // try common field names — operator paste 1 次后我对症
+                      // try common field names — operator paste 1 次後我對症
                       cd = jsonResp.cooldown ?? jsonResp.nextActionAt ?? jsonResp.cooldownSec ?? jsonResp.time ?? null;
                       if (cd !== null) cd = parseInt(cd, 10);
                     }
@@ -802,7 +802,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                       const cdMatch = t.match(/simpleCountdown\\s*\\(\\s*\\$\\(["']#cooldown["']\\)\\s*,\\s*(\\d+)/);
                       cd = cdMatch ? parseInt(cdMatch[1], 10) : null;
                     }
-                    // SOURCE: real ogame URL/body 都没 cp= (executeJump endpoint).
+                    // SOURCE: real ogame URL/body 都沒 cp= (executeJump endpoint).
                     // Fallback chain: URL cp= → body cp= → current session meta planet-id
                     const cpMatch = url.match(/[?&]cp=(\\d+)/) || (reqBody && reqBody.match(/[?&]cp=(\\d+)/));
                     let sourceMoonId = cpMatch ? cpMatch[1] : null;
@@ -812,8 +812,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                         if (meta) sourceMoonId = meta.getAttribute("content");
                       } catch(_) {}
                     }
-                    // v0.0.516 — operator 2026-05-31 "跳跃的时候源地址和目
-                    // 标地址都要抓". 扩 target 提取 regex + URL params 也兜底.
+                    // v0.0.516 — operator 2026-05-31 "跳躍的時候源地址和目
+                    // 標地址都要抓". 擴 target 提取 regex + URL params 也兜底.
                     let targetMoonId = null;
                     if (reqBody) {
                       const m = reqBody.match(/targetSpaceObjectId=(\\d+)/)
@@ -843,7 +843,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                                        ?? jsonResp.tgt;
                       if (targetField) targetMoonId = String(targetField);
                     }
-                    const origCoordMatch = t.match(/起始座[標标][\\s\\S]{0,300}?\\[(\\d+):(\\d+):(\\d+)\\]/);
+                    const origCoordMatch = t.match(/起始座[標標][\\s\\S]{0,300}?\\[(\\d+):(\\d+):(\\d+)\\]/);
                     const originCoords = origCoordMatch ? [origCoordMatch[1], origCoordMatch[2], origCoordMatch[3]].join(":") : null;
                     console.log("[OgameXSniff] XHR jumpgate url=" + url.slice(0, 80) + " src=" + sourceMoonId + " tgt=" + targetMoonId + " cd=" + cd);
                     if (cd === null && jsonResp) {
@@ -857,29 +857,29 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                       sourceMoonId, targetMoonId, cooldownSec: cd, originCoords,
                       url, hasNotReady: t.includes("jumpgateNotReady") || (jsonResp && (jsonResp.status === true || jsonResp.success === true)),
                     }, window.location.origin);
-                    // 2026-05-27 operator: 点确认对话框 = page navigate target moon,
-                    // sandbox async overlay re-fetch 来不及跑完就被 abort. 这里同步
-                    // 写 localStorage (blocking) — navigate 前必然落盘. boot 时
-                    // hydrate. ONLY 真实 jump (有 target) 写, overlay GET 不写.
-                    // v0.0.516 — 放宽 log 写入条件: 只要 URL 是 executeJump
-                    // 并且能拿到 src AND tgt, 不管 jsonResp 是不是有 status:true
-                    // (ogame 不同版本 success 字段名变化, 不能要求)。 这样:
-                    //   - sniffer 不会因为 status field 名错就漏抓
-                    //   - 即使 response 不解析 (HTML overlay 或网络抖), 仍记录
-                    //   - 后续 hydrate 拿真值 cooldown 不依赖 sniffer 解析对
+                    // 2026-05-27 operator: 點確認對話框 = page navigate target moon,
+                    // sandbox async overlay re-fetch 來不及跑完就被 abort. 這裏同步
+                    // 寫 localStorage (blocking) — navigate 前必然落盤. boot 時
+                    // hydrate. ONLY 真實 jump (有 target) 寫, overlay GET 不寫.
+                    // v0.0.516 — 放寬 log 寫入條件: 只要 URL 是 executeJump
+                    // 並且能拿到 src AND tgt, 不管 jsonResp 是不是有 status:true
+                    // (ogame 不同版本 success 字段名變化, 不能要求)。 這樣:
+                    //   - sniffer 不會因爲 status field 名錯就漏抓
+                    //   - 即使 response 不解析 (HTML overlay 或網路抖), 仍記錄
+                    //   - 後續 hydrate 拿真值 cooldown 不依賴 sniffer 解析對
                     if (url.includes("action=executeJump") && targetMoonId && sourceMoonId) {
                       try {
                         const key = "OGAMEX_JUMPGATE_LOG";
                         const log = JSON.parse(localStorage.getItem(key) || "[]");
-                        // 只记 ts+pair, 不假设 cooldown 时长 (jumpgate level 决定真实值).
-                        // hydrate 时 fire overlay re-fetch 拿精确剩余, 而非用默认值.
+                        // 只記 ts+pair, 不假設 cooldown 時長 (jumpgate level 決定真實值).
+                        // hydrate 時 fire overlay re-fetch 拿精確剩餘, 而非用預設值.
                         log.push({ ts: Date.now(), src: sourceMoonId, tgt: targetMoonId });
                         while (log.length > 20) log.shift();
                         localStorage.setItem(key, JSON.stringify(log));
                         console.log("[OgameXSniff] jumpgate sync-persisted src=" + sourceMoonId + " tgt=" + targetMoonId);
                       } catch (_) {}
                     } else if (url.includes("action=executeJump")) {
-                      // 捕获失败诊断 — 看下次咋错
+                      // 捕獲失敗診斷 — 看下次咋錯
                       console.warn("[OgameXSniff] jumpgate executeJump captured but src/tgt MISSING — src=" + sourceMoonId + " tgt=" + targetMoonId + " body=" + String(reqBody).slice(0, 300));
                     }
                   } catch(_) {}
@@ -923,10 +923,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   env.doc.documentElement.appendChild(sniffer);
   setTimeout(() => { try { sniffer.remove(); } catch { /* gone */ } }, 500);
 
-  // Active cargo-cap probe — operator 2026-05-26: cache 一直空因为 boot 后
-  // ogame 没自动 fire checkTarget (operator 没手动 select 目标). 主动跑 stage1+
+  // Active cargo-cap probe — operator 2026-05-26: cache 一直空因爲 boot 後
+  // ogame 沒自動 fire checkTarget (operator 沒手動 select 目標). 主動跑 stage1+
   // stage2 chain (fleetSelectionAjax → checkTarget) ABORT 在 stage3 之前.
-  // sniffer postMessage 自动 piggyback cache. 不依赖 ogame UI / daemon expedition.
+  // sniffer postMessage 自動 piggyback cache. 不依賴 ogame UI / daemon expedition.
   async function probeShipCargoCap(): Promise<void> {
     // Operator 2026-05-28 evidence: cargo-probe POSTs fleetSelectionAjax
     // (am202=1) + checkTarget which MUTATE ogame's server-side fleet
@@ -1025,9 +1025,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (data && typeof data === "object" && data.source && String(data.source).startsWith("ogamex:")) {
         console.info("[OgameX/msg-listener] received source=" + data.source + " ev.source===env.win? " + (ev.source === env.win) + " origin=" + ev.origin);
       }
-      // 2026-05-27: 放宽 source check —— Tampermonkey sandbox 隔离下
+      // 2026-05-27: 放寬 source check —— Tampermonkey sandbox 隔離下
       // ev.source (page-world window) !== env.win (sandbox proxy) is possible
-      // even though they are the same underlying window. Origin check 已足够.
+      // even though they are the same underlying window. Origin check 已足夠.
       if (ev.origin !== env.win.location.origin) return;
       if (!data) return;
       if (data.source === "ogamex:shipsData" && data.shipsData) {
@@ -1035,9 +1035,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           cacheShipsData(data.shipsData, env.win);
         }).catch((e) => console.warn("[OgameX] shipsData cache import failed:", e));
       }
-      // Operator 2026-05-26: 跳跃事件驱动 update jumpgate cooldown.
-      // Sniffer 监听 component=jumpgate POST/GET response, post message 含
-      // sourceMoonId / targetMoonId / cooldownSec → 写 store, ticker 自动倒计时.
+      // Operator 2026-05-26: 跳躍事件驅動 update jumpgate cooldown.
+      // Sniffer 監聽 component=jumpgate POST/GET response, post message 含
+      // sourceMoonId / targetMoonId / cooldownSec → 寫 store, ticker 自動倒計時.
       if (data.source === "ogamex:jumpgateEvent") {
         const e = data as unknown as { sourceMoonId?: string; targetMoonId?: string; cooldownSec?: number | null; hasNotReady?: boolean; originCoords?: string };
         const cd = e.cooldownSec ?? null;
@@ -1079,9 +1079,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             }
             patch[srcId] = srcPatch;
             if (pairTgt && store.state.planets[pairTgt] && pairSrc !== null) {
-              // v0.0.525 — operator 2026-05-31: target 月球也进 cooldown
-              // (ogame 物理: JG 跳完两边都"充能中"). 写 cd_sec + harvested_at
-              // 到目的月球, 不仅写 pair_with.
+              // v0.0.525 — operator 2026-05-31: target 月球也進 cooldown
+              // (ogame 物理: JG 跳完兩邊都"充能中"). 寫 cd_sec + harvested_at
+              // 到目的月球, 不僅寫 pair_with.
               patch[pairTgt] = {
                 jumpgate_cooldown_sec: cdSec,
                 jumpgate_harvested_at: Date.now(),
@@ -1095,7 +1095,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           store.setPlanetsPatch(patch);
           // Auto-expand Moons section so operator sees the new cooldown row even
           // if they previously collapsed it. Operator 2026-05-27 第一次跳完
-          // "panel 里面没有显示" — 极可能是 section collapsed 状态遗留.
+          // "panel 裏面沒有顯示" — 極可能是 section collapsed 狀態遺留.
           try { window.localStorage.setItem("ogamex.panel.section.moons", "false"); } catch (_) {}
           const fmt = (sec: number): string => `${Math.floor(sec / 60)}:${(sec % 60).toString().padStart(2, "0")}`;
           console.info(`[OgameX/jumpgate-event] src=${srcId} tgt=${pairTgt ?? "?"} cd=${cdSec !== null ? fmt(cdSec) : "READY"}`);
@@ -1107,17 +1107,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           console.info(`[OgameX/jumpgate-event] post-commit store snapshot: ${debug.length} entries → ${debug.join(" | ")}`);
         };
 
-        // CASE A: sniffer 拿到了精确 cooldown → 直接 commit
+        // CASE A: sniffer 拿到了精確 cooldown → 直接 commit
         if (cd !== null && cd > 0) {
           commitCooldown(resolvedSourceId ?? null, cd);
         } else if (e.hasNotReady === true && resolvedSourceId && e.targetMoonId) {
-          // CASE B: 真实 jump 事件 (有 target) — 跳跃成功但 ogame executeJump
+          // CASE B: 真實 jump 事件 (有 target) — 跳躍成功但 ogame executeJump
           // JSON 不返回 cd. Event-driven re-fetch overlay GET → parse cooldown.
-          // **关键 gate**: 必须有 e.targetMoonId. Operator 2026-05-27 第二次跳前
-          // 打开 jumpgate widget → overlay GET 也触发 sniffer with tgt=null +
-          // hasNotReady=true (源月球还在 cooldown). 如果不 gate,会:
-          //   (1) 死循环: re-fetch overlay → sniffer 拦它 → 又 fire CASE B
-          //   (2) pair_with 被 overlay GET (tgt=null) 覆写成 null → panel 坏
+          // **關鍵 gate**: 必須有 e.targetMoonId. Operator 2026-05-27 第二次跳前
+          // 打開 jumpgate widget → overlay GET 也觸發 sniffer with tgt=null +
+          // hasNotReady=true (源月球還在 cooldown). 如果不 gate,會:
+          //   (1) 死循環: re-fetch overlay → sniffer 攔它 → 又 fire CASE B
+          //   (2) pair_with 被 overlay GET (tgt=null) 覆寫成 null → panel 壞
           // Try several regex variants (ogame v12 may use different markup).
           // Fallback to 3600 (60 min, level-1 jumpgate default).
           console.info(`[OgameX/jumpgate-event] success but JSON no cd — re-fetch overlay cp=${resolvedSourceId} for precise cooldown`);
@@ -1245,7 +1245,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.647";
+  const USERSCRIPT_VERSION = "0.0.648";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1272,9 +1272,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   }
   store.setPartial({
     server: {
-      // Operator 2026-05-26 evidence: SC/LC 反复回 5000/25000 base — 因为
+      // Operator 2026-05-26 evidence: SC/LC 反復回 5000/25000 base — 因爲
       // boot init 每次 (ogame SPA navigate 重 inject) 跑此 setPartial 用
-      // hardcode server build, 覆盖 ship_cargo_capacity. Fix: spread existing
+      // hardcode server build, 覆蓋 ship_cargo_capacity. Fix: spread existing
       // store.state.server (rehydrated from IndexedDB) 才保留 cache 字段.
       ...(store.state.server ?? {}),
       universe: ogame_meta.universe ?? "",
@@ -1303,7 +1303,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const prod = extractProduction(env.doc);
       if (r || prod) {
         // Route updates to the ACTIVE planet (per `<meta name="ogame-planet-id">`).
-        // Production is needed by the bridge optimizer for "矿升到几级最快" —
+        // Production is needed by the bridge optimizer for "礦升到幾級最快" —
         // without it, prodPerSec=0 and every mine candidate gets discarded.
         const activeIdRaw = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
         if (activeIdRaw && store.state.planets[activeIdRaw]) {
@@ -1537,11 +1537,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // digit/slash/digit pattern can match across nested <span> wrappers.
       const stripped = html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
       const maxFleetMatch =
-        stripped.match(/(?:[Ff]leets?|艦隊|舰队)\s*:?\s*(\d+)\s*\/\s*(\d+)/)
-        ?? stripped.match(/(\d+)\s*\/\s*(\d+)\s*[^\d]{0,30}?(?:[Ff]leets?|艦隊|舰队)/);
+        stripped.match(/(?:[Ff]leets?|艦隊|艦隊)\s*:?\s*(\d+)\s*\/\s*(\d+)/)
+        ?? stripped.match(/(\d+)\s*\/\s*(\d+)\s*[^\d]{0,30}?(?:[Ff]leets?|艦隊|艦隊)/);
       const maxExpMatch =
-        stripped.match(/(?:[Ee]xpedit\w*|遠征艦隊|远征舰队|遠征|远征)\s*:?\s*(\d+)\s*\/\s*(\d+)/)
-        ?? stripped.match(/(\d+)\s*\/\s*(\d+)\s*[^\d]{0,30}?(?:[Ee]xpedit\w*|遠征|远征)/);
+        stripped.match(/(?:[Ee]xpedit\w*|遠征艦隊|遠征艦隊|遠征|遠征)\s*:?\s*(\d+)\s*\/\s*(\d+)/)
+        ?? stripped.match(/(\d+)\s*\/\s*(\d+)\s*[^\d]{0,30}?(?:[Ee]xpedit\w*|遠征|遠征)/);
       const maxFleet = maxFleetMatch ? parseInt(maxFleetMatch[2]!, 10) : 0;
       const maxExp = maxExpMatch ? parseInt(maxExpMatch[2]!, 10) : 0;
       // Sanity guard: if scrape shows usedExp=0 but previous tick had ≥2,
@@ -1608,7 +1608,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
   }
   setTimeout(() => { void harvestSlotsFromMovement(); }, 2000);
-  // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed the 10s
+  // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed the 10s
   // setInterval. Triggers that refresh /movement now:
   //   1. eventbox_hook friendly-fleet-count delta (launch OR return)
   //   2. ApiExec sendFleet success (api_executor.ts after step5)
@@ -1624,12 +1624,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   //   2. sandbox CASE B fires overlay re-fetch via fetchWithCpBypassBusy
   //   3. sync-log in localStorage survives page-navigate; boot+2s hydrate
   // Old code dropped (~110 lines). Function not exposed; no callers.
-  // 2026-05-27 operator: "不要用 boot 时的 harvest 探针 改成截取跳跃事件 / 事件驱动".
-  // harvestJumpgateCooldowns() FULLY DEPRECATED — boot 时不再 fire, 不再 expose.
-  // 仅靠 sniffer (fetch+XHR+form-submit) 截取 ogame 真实 jumpgate POST 事件
-  // → message listener 写 source.pair_with=target + target.pair_with=source.
-  // Boot 时清空所有月球已有的 jumpgate_cooldown_sec — 那些是历史 harvest 来的
-  // 污染数据 (无 pair, 时间不准, 3-singles 显示 bug 根因). 静默清掉.
+  // 2026-05-27 operator: "不要用 boot 時的 harvest 探針 改成截取跳躍事件 / 事件驅動".
+  // harvestJumpgateCooldowns() FULLY DEPRECATED — boot 時不再 fire, 不再 expose.
+  // 僅靠 sniffer (fetch+XHR+form-submit) 截取 ogame 真實 jumpgate POST 事件
+  // → message listener 寫 source.pair_with=target + target.pair_with=source.
+  // Boot 時清空所有月球已有的 jumpgate_cooldown_sec — 那些是歷史 harvest 來的
+  // 污染資料 (無 pair, 時間不準, 3-singles 顯示 bug 根因). 靜默清掉.
   setTimeout(() => {
     // Operator 2026-05-27 evidence: aggressive clear-on-boot wiped 9 jumpgate
     // fields → hydrate then race-skipped (expedition fired concurrent cp=,
@@ -1674,15 +1674,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         .filter(e => {
           const src = store.state.planets?.[e.src];
           if (!src || src.type !== "moon") return false;
-          // 已经有更新的精确 cd (CASE B 校正), 不重新 fetch
+          // 已經有更新的精確 cd (CASE B 校正), 不重新 fetch
           if (typeof src.jumpgate_cooldown_sec === "number" && src.jumpgate_cooldown_sec > 0
               && src.jumpgate_harvested_at && src.jumpgate_harvested_at > e.ts) return false;
           return true;
         });
-      // v0.0.524 — REVERT v0.0.515 (operator 2026-05-31 "又开始自动切星球了").
-      // v0.0.515 加的"扫所有有 JG 月球 cp= overlay 拉真值"会让 ogame 顶栏
-      // 9 次跳来跳去, 视觉很糟。 退回 log-only candidates (sniffer 抓到的才
-      // 探测), 完全事件驱动。 跨 session 的 cooldown 等 sniffer 下次抓。
+      // v0.0.524 — REVERT v0.0.515 (operator 2026-05-31 "又開始自動切星球了").
+      // v0.0.515 加的"掃所有有 JG 月球 cp= overlay 拉真值"會讓 ogame 頂欄
+      // 9 次跳來跳去, 視覺很糟。 退回 log-only candidates (sniffer 抓到的才
+      // 探測), 完全事件驅動。 跨 session 的 cooldown 等 sniffer 下次抓。
       if (candidates.length > 0) {
         // Operator 2026-05-27 evidence: 3 rows with identical cd=29:15 after
         // multi-moon hydrate. ogame session-cp is single-slot per session;
@@ -1693,11 +1693,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         // session-cp race even when serial.
         console.info(`[OgameX/jumpgate] hydrating ${candidates.length} cooldown(s) from sync log (SERIAL to avoid session-cp race)`);
         void (async (): Promise<void> => {
-          // v0.0.632 — owner 2026-06-01 "有没有其他的没有使用标准接口?".
+          // v0.0.632 — owner 2026-06-01 "有沒有其他的沒有使用標準接口?".
           // JG cooldown hydrate is sniffer-driven but NOT directly owner-
           // requested at this moment — it's a deferred background reconcile
           // for cooldowns we observed earlier. Per memory cp-shift-visible:
-          // "operator busy 时所有 cp= fetch 必须 defer". Switch to standard
+          // "operator busy 時所有 cp= fetch 必須 defer". Switch to standard
           // fetchWithCp (bypassBusy:false) so safe_fetch.awaitCpIdle gates
           // each iteration until owner stops clicking. Restore stays on.
           const { fetchWithCp } = await import("./api/safe_fetch.js");
@@ -1711,7 +1711,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               const html = await r.text();
               // Origin verify: parse 起始座標 from response; if it doesn't match
               // entry.src's coords, server saw a different cp (race) — skip.
-              const originMatch = html.match(/起始座[標标][\s\S]{0,300}?\[(\d+):(\d+):(\d+)\]/);
+              const originMatch = html.match(/起始座[標標][\s\S]{0,300}?\[(\d+):(\d+):(\d+)\]/);
               if (originMatch) {
                 const got = `${originMatch[1]}:${originMatch[2]}:${originMatch[3]}`;
                 const want = (store.state.planets[entry.src]?.coords ?? []).join(":");
@@ -1734,10 +1734,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                 continue;
               }
               if (!store.state.planets[entry.src]) continue;
-              // v0.0.525 — operator 2026-05-31 "目的月球的冷却时间没抓到".
-              // ogame 物理: JG 跳跃后 BOTH src 和 tgt 月球都进 cooldown
-              // (每月球只 1 个 JG, 用过 = 充能). 之前只在 src 写 cd_sec, target
-              // 只写 pair_with → target panel 不显示倒计时。 现在 target 也
+              // v0.0.525 — operator 2026-05-31 "目的月球的冷卻時間沒抓到".
+              // ogame 物理: JG 跳躍後 BOTH src 和 tgt 月球都進 cooldown
+              // (每月球只 1 個 JG, 用過 = 充能). 之前只在 src 寫 cd_sec, target
+              // 只寫 pair_with → target panel 不顯示倒計時。 現在 target 也
               // 同步 cd_sec + harvested_at。
               const harvestNow = Date.now();
               const hydratePatch: Record<string, Partial<typeof store.state.planets[string]>> = {
@@ -1791,7 +1791,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // text for the slot labels — robust against component-array layout
   // changes.
   async function harvestSlotsFromFleetdispatch(): Promise<void> {
-    // Operator 2026-05-25 "真的没有 api 直接拿 slot 位吗?". Yes — /movement
+    // Operator 2026-05-25 "真的沒有 api 直接拿 slot 位嗎?". Yes — /movement
     // is the ajax-only (page=componentOnly&ajax=1) endpoint we already use
     // via harvestSlotsFromMovement, and its HTML renders the
     // "艦隊:X/Y 遠征艦隊:N/M" labels. Delegate. Keeps a single source of
@@ -1799,10 +1799,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     return harvestSlotsFromMovement();
   }
   setTimeout(() => { void harvestSlotsFromFleetdispatch(); }, 3500);
-  // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed 30s setInterval;
+  // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed 30s setInterval;
   // slot caps from /fleetdispatch are now refreshed by ApiExec when it
   // touches that endpoint as part of its expedition/save flows.
-  // Operator 2026-05-25 follow-up "远征有空槽没有自动起飞": daemon needs
+  // Operator 2026-05-25 follow-up "遠征有空槽沒有自動起飛": daemon needs
   // accurate max_expedition_slots to decide free slots. The computed
   // fallback (sqrt(astro) + class) misses lifeform tech bonus. Expose
   // so wire.ts data.refresh handler can trigger a fresh harvest on
@@ -1857,7 +1857,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     //  in steady state. Resurfaces via server.{max,used}_*_slots in /v1/state.)
   }
   // Boot retries (5 attempts in 20s) catch the slot-bar DOM as it
-  // hydrates. Operator 2026-05-25: "不要用倒计时，都用事件驱动".
+  // hydrates. Operator 2026-05-25: "不要用倒計時，都用事件驅動".
   // Removed continuous 30s setInterval — slot caps change rarely and
   // pollEmpire / harvestSlotsFromMovement events catch slot changes.
   [800, 2400, 4800, 10_000, 20_000].forEach((ms) => setTimeout(harvestSlots, ms));
@@ -2074,11 +2074,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // we COULD parasite via eventbox_hook (isFetchResourcesURL filter wired)
   // — but the parser is tightly coupled to the fetch here. Lighter to just
   // slow our own poll than refactor parser into a callable. Operator
-  // directive "改成事件触发": event-driven via DOM mutation observers
+  // directive "改成事件觸發": event-driven via DOM mutation observers
   // already updates resources when user navigates; this 30s is just for
   // background-tab cases where mutations don't fire.
   setTimeout(() => { void pollFetchResources(); }, 1500);
-  // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed 30s
+  // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed 30s
   // setInterval. Resources accumulate predictably (production rates +
   // delta T), DOM mutation observers update on navigation. Background-
   // tab drift is acceptable; planner re-derives from server.resources
@@ -2097,7 +2097,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     const page = forcePage ?? REFRESH_PAGES[refreshIdx % REFRESH_PAGES.length]!;
     if (!forcePage) refreshIdx += 1;
     try {
-      // v0.0.616 — operator 2026-06-01 "不会后台请求数据吗?". Accept
+      // v0.0.616 — operator 2026-06-01 "不會後臺請求資料嗎?". Accept
       // explicit planetId for per-planet background sweeps. When provided,
       // use it as cp=<pid> (safe_fetch RESTORES afterward so session-cp
       // returns to whatever it was). Default = current planet meta.
@@ -2116,9 +2116,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       //   - skipRestore: false → safe_fetch restores session-cp afterward
       //   - bypassBusy: false → safe_fetch DEFERS until operator idle, so
       //     boot-sync (which fires per-planet cp= shifts) doesn't fight
-      //     owner clicks. v0.0.631 — owner 2026-06-01 "新代码又没有走
-      //     标准接口?" — boot-sync 用 bypassBusy=true 把 awaitCpIdle 闸
-      //     拆了, 看到切星球. 改成 foreign 时遵循 idle gate.
+      //     owner clicks. v0.0.631 — owner 2026-06-01 "新代碼又沒有走
+      //     標準接口?" — boot-sync 用 bypassBusy=true 把 awaitCpIdle 閘
+      //     拆了, 看到切星球. 改成 foreign 時遵循 idle gate.
       const isForeign = forcePlanetId !== undefined
         && forcePlanetId !== env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
       const resp = planetId
@@ -2147,7 +2147,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       //    lfresearch → lifeform_research per planet, v0.0.603)
       const buildingsModule = await import("./probes/extractors/buildings.js");
       const techMap = buildingsModule.extractTechLevels(parsedDoc);
-      // v0.0.615 — operator 2026-06-01 "不要兜底，网页上有名字". Harvest
+      // v0.0.615 — operator 2026-06-01 "不要兜底，網頁上有名字". Harvest
       // localized labels from same DOM pass and merge into global
       // store.tech_labels (canonical → zh per server locale).
       const labelMap = buildingsModule.extractTechLabels(parsedDoc);
@@ -2192,9 +2192,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             }
             continue;
           }
-          // v0.0.605 — operator 2026-06-01 "每个星球对应的生命形式科技也是
-          // 不同的, 不是所有科技都有, 也可以有不同种族的科技, 要根据 ogame
-          // 当前数据显示". Page-aware bucket: when extracting from lfresearch
+          // v0.0.605 — operator 2026-06-01 "每個星球對應的生命形式科技也是
+          // 不同的, 不是所有科技都有, 也可以有不同種族的科技, 要根據 ogame
+          // 當前資料顯示". Page-aware bucket: when extracting from lfresearch
           // page, ALL entries are lifeform research (regardless of catalog
           // completeness or species — same planet may carry items from
           // multiple species due to historical switches).
@@ -2215,8 +2215,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           const lifeformPatch = detectedSpecies !== null && (existingLf === null || existingLf.species !== detectedSpecies)
             ? { lifeform: { ...(existingLf ?? {}), species: detectedSpecies } }
             : {};
-          // v0.0.620 — operator 2026-06-01 "已经切换了种族的星球老科技是
-          // 无效的". When fetching lfresearch/lfbuildings pages, the
+          // v0.0.620 — operator 2026-06-01 "已經切換了種族的星球老科技是
+          // 無效的". When fetching lfresearch/lfbuildings pages, the
           // extracted set IS the complete current-species state. Old
           // species' entries from before a switch must be EVICTED, not
           // merged. So replace the whole field for this planet instead
@@ -2311,8 +2311,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             console.log(`[OgameX/bg] lf queue refreshed (planet ${planetId}): ${name} L${target_level}`);
           }
         } else if (kind2 === "lifeform_research") {
-          // v0.0.633 — owner 2026-06-01 "从0级往上升级的, 当然是有前置任务
-          // 在跑, 为什么不等待前置任务完成, 在不断重试干嘛?". Without
+          // v0.0.633 — owner 2026-06-01 "從0級往上升級的, 當然是有前置任務
+          // 在跑, 爲什麼不等待前置任務完成, 在不斷重試幹嘛?". Without
           // surfacing the lf research queue, priority_merger's slotEmpty
           // detection defaulted to true → kept re-dispatching directives
           // ogame had to reject (queue busy). Track lf_research_q per
@@ -2386,7 +2386,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // doesn't compete with operator's own ogame POSTs.
   setTimeout(refreshOnePage, 8000);
 
-  // v0.0.635 — owner 2026-06-01 "要持久化 ogame 里面的所有数据". Sidecar
+  // v0.0.635 — owner 2026-06-01 "要持久化 ogame 裏面的所有資料". Sidecar
   // now owns WorldState persistence (better-sqlite3 ogamex-world.db). The
   // userscript no longer needs a forced boot-sync sweep: sidecar hydrates
   // its mirror from disk on restart, and pollEmpire + per-page passive
@@ -2405,7 +2405,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     // Periodic state-push poller passes no force=true so it still defers
     // to user activity for politeness; ApiExec helper passes force=true.
     if (!opts.force && userBusy()) return;
-    // Operator 2026-05-25: "全有月球，你的数据有问题 ... 从api拿数据".
+    // Operator 2026-05-25: "全有月球，你的資料有問題 ... 從api拿資料".
     // empire endpoint takes planetType param. v12: 0 = planets, 1 = moons.
     // We fetch BOTH and merge — every poll cycle. Without this, moons
     // never reach state.planets, case_decider's same-coord-moon lookup
@@ -2415,10 +2415,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   }
   async function pollEmpireForType(typeLabel: "planet" | "moon", planetTypeParam: number): Promise<void> {
     try {
-      // v0.0.556 — operator 2026-05-31 "sidecar empire 数据陈旧". ogame's
+      // v0.0.556 — operator 2026-05-31 "sidecar empire 資料陳舊". ogame's
       // standalone&component=empire response is server-cached for a few
       // seconds → eventbox_hook fires pollEmpire after fleet arrival but
-      // gets the SAME stale numbers (e.g. operator's planet 33666823 真实
+      // gets the SAME stale numbers (e.g. operator's planet 33666823 真實
       // LC=3092 vs sidecar LC=600 even after force refresh). Append a
       // cache-bust param so each force-refresh actually hits a fresh
       // backend computation.
@@ -2511,7 +2511,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       } catch (e) { console.warn("[OgameX/empire DEBUG] dump failed", e); }
       const cur = store.state;
       const patchPlanets: Record<string, typeof cur.planets[string]> = { ...cur.planets };
-      // Operator 2026-05-25: "远征船不够以后卡住了，有新船到达星球也没有起飞".
+      // Operator 2026-05-25: "遠征船不夠以後卡住了，有新船到達星球也沒有起飛".
       // Detect ship-count INCREASE between empire polls per planet — ships
       // returned. Prune __ogamexInflightLaunches[pid] so the next preflight
       // stops subtracting "in-flight" that's already landed. Empire-delta
@@ -2528,7 +2528,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const pid = String(planet["id"] ?? "");
         if (!pid) continue;
         // If not in state yet (typical for moons — operator 2026-05-25
-        // "全有月球, 你的数据有问题"), synthesize a minimal entry so the
+        // "全有月球, 你的資料有問題"), synthesize a minimal entry so the
         // case_decider's same-coord-moon lookup finds it. Coords + name
         // pulled from the empire row itself.
         if (!patchPlanets[pid]) {
@@ -2557,7 +2557,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         //   < 200   → regular buildings (metalMine=1, crystalMine=2, ...)
         //   200-300 → ships (smallCargo=202, ...)
         //   11000-15000 → lifeform buildings (residentialSector=11101, sanctuary=14101, ...)
-        // Operator: "已经 42 级了, 为啥你的数据是 37 级" — empire was only
+        // Operator: "已經 42 級了, 爲啥你的資料是 37 級" — empire was only
         // refreshing ships, so building/lifeform_building levels stayed stale
         // forever. Planner kept thinking sanctuary L37, kept queuing builds.
         const buildings: Record<string, number> = {};
@@ -2611,12 +2611,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           }
           lastShipSnap.set(pid, { ...ships });
         }
-        // v0.0.489 — operator 2026-05-30 "如果我不在线就不干了?". empire 返回
-        // 的 planet 对象除了 numeric tid 之外, 还带 resources 字段 (用 string
-        // key, 跟 fetchResources 同构)。 之前 parser 只看 numeric tid 漏抓
-        // resources → 月球资源永远走不进 sidecar (除非 operator 浏览器打开
-        // 该月球页触发 fetchResources)。 现在 broad-net 抓常见 key 候选,
-        // 命中任意一种就 patch resources / production / storage。
+        // v0.0.489 — operator 2026-05-30 "如果我不在線就不幹了?". empire 返回
+        // 的 planet 對象除了 numeric tid 之外, 還帶 resources 字段 (用 string
+        // key, 跟 fetchResources 同構)。 之前 parser 只看 numeric tid 漏抓
+        // resources → 月球資源永遠走不進 sidecar (除非 operator 瀏覽器打開
+        // 該月球頁觸發 fetchResources)。 現在 broad-net 抓常見 key 候選,
+        // 命中任意一種就 patch resources / production / storage。
         const candResources = (() => {
           const r: { m?: number; c?: number; d?: number; e?: number } = {};
           const num = (v: unknown): number | undefined => {
@@ -2638,7 +2638,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             return num(cur);
           };
           const res = planet["resources"];
-          // ogame v12 candidates (各种 schema 都试):
+          // ogame v12 candidates (各種 schema 都試):
           const m =
             num(planet["metal"]) ?? num(planet["m"]) ?? num(planet["metalAmount"]) ?? num(planet["metal_amount"])
             ?? nested(res, "metal") ?? nested(res, "metal", "amount") ?? nested(res, "metal", "value")
@@ -2681,17 +2681,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             const tid = parseInt(m[1]!, 10);
             // v0.0.497 — body build_q (per-planet/moon supplies/facilities)
             // only takes tid 1-50 (buildings). tid 100-199 = research (全
-            // empire 单槽, goes to state.research.queue, NOT body build_q).
+            // empire 單槽, goes to state.research.queue, NOT body build_q).
             // tid 200-300 = ships (goes to shipyard_q). tid 400+ = defense.
             // tid 11000+ = lifeform (separate lf_build_q).
-            // Operator 2026-05-30: panel 显示 "building astrophysics" 错了,
-            // astrophysics(tid124)是 research, 不该写到 moon body build_q.
+            // Operator 2026-05-30: panel 顯示 "building astrophysics" 錯了,
+            // astrophysics(tid124)是 research, 不該寫到 moon body build_q.
             if (tid >= 100) continue;
             const html = String(planet[key] ?? "");
             // v0.0.496 fix — match `class="active tooltipRight"` (multi-class).
             // Original `class="active"` substring miss caused build_q to
-            // never be detected (operator 2026-05-30 实证: 41_html 有 active
-            // 但 v0.0.495 没抓). Use word-boundary regex inside the class attr.
+            // never be detected (operator 2026-05-30 實證: 41_html 有 active
+            // 但 v0.0.495 沒抓). Use word-boundary regex inside the class attr.
             if (!/class=["'][^"']*\bactive\b/.test(html)) continue;
             // Distinguish "active = upgrading" from any other active class
             // by looking for the Chinese cancellation title; ogame uses
@@ -2717,15 +2717,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         // Always set it (valid object OR null). Without this, after parser
         // tightens (v0.0.497 skipped research tids), the OLD bad build_q
         // value stayed in store because we didn't explicitly clear it.
-        // Operator 2026-05-30 实证: moon 3:260:8 stuck on astrophysics build_q
+        // Operator 2026-05-30 實證: moon 3:260:8 stuck on astrophysics build_q
         // even after parser stopped writing it.
         const buildQEffective: typeof candBuildQ | null = candBuildQ ?? null;
         const hasAny = true; // always patch — even if just to clear stale build_q
         if (hasAny) {
           const cur = patchPlanets[pid];
           const curResources = (cur as { resources?: { m?: number; c?: number; d?: number; e?: number } }).resources ?? { m: 0, c: 0, d: 0, e: 0 };
-          // v0.0.610 — operator 2026-06-01 "选种族的时候, 只有对应种族的
-          // 星球亮起 — 这个问题修了 5 次了". Root cause: pollEmpire's
+          // v0.0.610 — operator 2026-06-01 "選種族的時候, 只有對應種族的
+          // 星球亮起 — 這個問題修了 5 次了". Root cause: pollEmpire's
           // empire/standalone page doesn't include lifeform building
           // data-technology entries — refreshOnePage (lfbuildings page)
           // is what actually populates lifeform_buildings. pollEmpire's
@@ -2815,10 +2815,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         store.setPlanetsPatch(patchByPid);
         // v0.0.492 — diagnostic: push version + moon 1:486:7 resources to
         // sidecar journal after each pollEmpire so we can verify v0.0.491+
-        // filter fix is REALLY running (operator: v0.0.491 deploy 没动).
+        // filter fix is REALLY running (operator: v0.0.491 deploy 沒動).
         // v0.0.508 — pollEmpire-tick POST 砍掉 (operator 2026-05-31 chrome 崩),
-        // 每秒级触发, 累积太多 fetch + journal 噪音。 保留 empire-dump 一次性
-        // 诊断和 fleet-strip 罕见事件。 整段保护在 if (false) 里方便以后开。
+        // 每秒級觸發, 累積太多 fetch + journal 噪音。 保留 empire-dump 一次性
+        // 診斷和 fleet-strip 罕見事件。 整段保護在 if (false) 裏方便以後開。
         if (false as boolean) {
         try {
           const debugMoonId = "33650177"; // moon 1:486:7
@@ -2855,7 +2855,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       console.warn(`[OgameX/empire] fetch failed:`, e);
     }
   }
-  // Operator 2026-05-25: "不要用倒计时，都用事件驱动". Removed periodic
+  // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed periodic
   // pollEmpire setInterval. Triggers that refresh empire now:
   //   1. Boot seed +12s (initial state hydration).
   //   2. eventbox_hook friendly-fleet-count delta DECREASE → fleet
@@ -2872,7 +2872,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   (env.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire = pollEmpire;
   // v0.0.606 — expose forced refreshOnePage for event-driven sniffer signals.
   // v0.0.625 — extended to forward forcePlanetId so the goals panel's
-  // "🔄 同步该星球" button can target a specific planet without changing
+  // "🔄 同步該星球" button can target a specific planet without changing
   // operator's current session cp.
   (env.win as Window & { __ogamexRefreshOnePage?: (forcePage?: string, forcePlanetId?: string) => Promise<void> }).__ogamexRefreshOnePage = refreshOnePage;
   // Diagnostic helper — operator calls __ogamexDebugGalaxy(g,s) in DevTools.
@@ -2922,7 +2922,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Also expose a focused helper: refresh empire then return THIS planet's
   // ship counts. ApiExec calls this RIGHT BEFORE each expedition so the
   // launch decision is based on data fetched microseconds ago. Owner's
-  // explicit requirement: "每次远征之前从 api 拿最新的舰船数量".
+  // explicit requirement: "每次遠征之前從 api 拿最新的艦船數量".
   (env.win as Window & { __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>> })
     .__ogamexFetchPlanetShips = async (pid: string): Promise<Record<string, number>> => {
     // GROUND TRUTH = fleetdispatch SPA chunk. Endpoint chosen 2026-05-25
@@ -3062,7 +3062,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           // after a successful sendFleet POST. This is the AUTHORITATIVE
           // count of ships we just launched from this planet but haven't
           // seen reflected in empire yet. Operator 2026-05-25: "派了缺船的
-          // 舰队" — empire reports owned ships (= still counts in-flight as
+          // 艦隊" — empire reports owned ships (= still counts in-flight as
           // owned), state.fleets_outbound has empty ships{}, so preflight
           // over-estimated. Track our own launches as ground truth.
           const inflight = (env.win as Window & {
@@ -3101,7 +3101,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       return ships;
     } catch (e) {
       // Network error → CONSERVATIVE ABORT (was: return store stale data which
-      // led to "发了缺船的远征"). Daemon retries next tick.
+      // led to "發了缺船的遠征"). Daemon retries next tick.
       console.warn(`[OgameX/fetchShips] fd fetch failed for ${pid} → ABORT preflight:`, e);
       return {};
     }
@@ -3159,7 +3159,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
     // (lf-prereq discovery-complete silenced — one-shot boot diagnostic, done)
   }, 15_000);
-  // refreshOnePage periodic timer REMOVED (operator: "ogame 的改成事件触发").
+  // refreshOnePage periodic timer REMOVED (operator: "ogame 的改成事件觸發").
   // The function is still called from DOM mutation handler when ogame's
   // ajaxNavigation actually loads a research/supplies/etc page — which
   // means data refreshes when it CAN change (operator visits page) rather
@@ -3187,7 +3187,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           body: "{}",
         }).catch(() => { /* sidecar may be down; safety net catches */ });
       } catch { /* */ }
-      // v0.0.489 — operator 2026-05-30 "有船到了要更新资源" event-driven.
+      // v0.0.489 — operator 2026-05-30 "有船到了要更新資源" event-driven.
       // Fleet count dropped = a fleet returned OR arrived at its destination
       // (cargo unloaded there). Either way the destination/source body's
       // resources just changed. Trigger immediate pollEmpire(force) to refresh
@@ -3228,7 +3228,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     pw.__ogamexStore = store;
   } catch { /* unsafeWindow may be undefined in non-Tampermonkey contexts (tests) */ }
 
-  // Cargo Calc pending-fill — operator 2026-05-26: "从本星球准备多少船去拉资源".
+  // Cargo Calc pending-fill — operator 2026-05-26: "從本星球準備多少船去拉資源".
   // Panel "📤 Fill" navigates to CURRENT planet's fleetdispatch (source = current
   // planet, has ships). pending-fill carries {shipId, n}; planetId is the cp we
   // navigated to (current cp). Apply if numeric n > 0, regardless of cp match.

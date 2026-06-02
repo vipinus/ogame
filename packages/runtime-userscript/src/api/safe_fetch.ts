@@ -1,20 +1,20 @@
 /**
  * safe_fetch — 唯一 cp= fetch 入口.
  *
- * 顶层逻辑: ogame `/game/index.php?...&cp=PID` 在服务端立刻切 session-cp,
- * UI 顶栏跟着跳. 即使 try/finally restoreSessionCp 也是 ~500ms 可见跳跃.
- * Operator 2026-05-27 反复中招 "操作时被自动切到其他月球".
+ * 頂層邏輯: ogame `/game/index.php?...&cp=PID` 在服務端立刻切 session-cp,
+ * UI 頂欄跟着跳. 即使 try/finally restoreSessionCp 也是 ~500ms 可見跳躍.
+ * Operator 2026-05-27 反復中招 "操作時被自動切到其他月球".
  *
- * 架构 enforcement (operator: "架构层缺乏 enforcement"):
- * - 所有带 cp= 的 fetch **必须** 通过 fetchWithCp / fetchWithCpBypassBusy
- * - 严禁直接 fetch 拼 `&cp=` 字面 (CI grep gate, see scripts/check-no-raw-cp.sh)
+ * 架構 enforcement (operator: "架構層缺乏 enforcement"):
+ * - 所有帶 cp= 的 fetch **必須** 透過 fetchWithCp / fetchWithCpBypassBusy
+ * - 嚴禁直接 fetch 拼 `&cp=` 字面 (CI grep gate, see scripts/check-no-raw-cp.sh)
  *
- * 行为:
- * - userBusy (store.server.user_busy_until > now) 时 throw BusyDeferredError
- *   除非 bypassBusy=true (仅限 emergency.* FS save 路径)
+ * 行爲:
+ * - userBusy (store.server.user_busy_until > now) 時 throw BusyDeferredError
+ *   除非 bypassBusy=true (僅限 emergency.* FS save 路徑)
  * - try { fetch } finally { fetchEventBox cp=operatorCp } 把 session-cp 切回
- *   operator 当前 planet (避免 UI 顶栏长期停留在 fetch 目标 planet/moon)
- * - operatorCp 取自 meta[name=ogame-planet-id], 即 ogame 自己暴露的"当前页"
+ *   operator 當前 planet (避免 UI 頂欄長期停留在 fetch 目標 planet/moon)
+ * - operatorCp 取自 meta[name=ogame-planet-id], 即 ogame 自己暴露的"當前頁"
  */
 
 import type { StateStore } from "../state_store.js";
@@ -61,7 +61,7 @@ export function cpInFlightCount(): number {
   return inFlightCpFetches.size;
 }
 
-/** Operator 2026-05-28 "cp 的点击保护机制能不能一起保护 token": general-
+/** Operator 2026-05-28 "cp 的點選保護機制能不能一起保護 token": general-
  *  purpose background-op tracker. Use for ogame ajax that ROTATES THE
  *  GLOBAL TOKEN but doesn't itself carry cp= (e.g. recallFleet — raw POST
  *  to /movement). click_lock awaits inFlightCpFetches → so caller pushes
@@ -92,7 +92,7 @@ export async function awaitCpIdle(): Promise<void> {
 }
 
 function userBusyNow(): boolean {
-  // Operator 2026-05-28: "取消 userbusy 机制". Click intercept (boot.ts
+  // Operator 2026-05-28: "取消 userbusy 機制". Click intercept (boot.ts
   // v0.0.386 clickInterceptSync) replaces the userBusy gate as the operator-
   // protection layer. No more fetch deferral based on mousedown activity —
   // background cp= fetches always proceed, and operator clicks are awaited
@@ -125,7 +125,7 @@ const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
  * (clearTimeout cancels the abort scheduling on success). Failure path: throws
  * AbortError after timeoutMs, letting caller retry loop kick in.
  *
- * Operator 2026-06-01 "全 api 操作通过返回值执行后续, 为什么要等待": fetch
+ * Operator 2026-06-01 "全 api 操作透過返回值執行後續, 爲什麼要等待": fetch
  * without timeout was the silent killer — ogame hang → fetch promise pending
  * forever → cpFetchChain mutex locked forever → all subsequent cp= ops dead.
  * Adding timeout makes "hang" indistinguishable from "fail" — both go through
@@ -176,7 +176,7 @@ export async function fetchWithCp(
     throw new BusyDeferredError();
   }
   // v0.0.461: register THIS fetch as in-flight BEFORE acquiring the cp slot.
-  // Operator 2026-05-29 "我点击的时候正好去建造也能拦住吗?" — without
+  // Operator 2026-05-29 "我點選的時候正好去建造也能攔住嗎?" — without
   // pre-mutex registration, two queued cp= fetches (A running, B awaiting
   // mutex) create a microsecond gap mirror=0 between A's release and B's
   // start. A click in that gap slipped through. Registering up front means
@@ -209,9 +209,9 @@ export async function fetchWithCp(
         // sidebar moonlink/planetlink resolves to with ajax=1). Also capture
         // newAjaxToken from response — fire-and-forget was leaking token
         // rotations to global ogame state without our tokenManager learning
-        // about them (operator: "没有恢复cp和token").
+        // about them (operator: "沒有恢復cp和token").
         // v0.0.580 — restore retry × 3 with 250/500/1000ms backoff. Operator
-        // 2026-06-01 "会不会又发生 cp shift 跳屏": single-attempt restore
+        // 2026-06-01 "會不會又發生 cp shift 跳屏": single-attempt restore
         // could leave operator stuck on origin planet if that ONE call also
         // hit timeout/network blip. Three attempts make the failure rate
         // ≈ (single-fail-rate)³ — typically <0.1% even under flaky network.
@@ -261,7 +261,7 @@ export async function fetchWithCp(
 }
 
 // v0.0.456: module-level mutex serializing ALL cp= fetches — mirrors
-// fleet_api.ts sendFleetChain pattern (operator 2026-05-29 "照着发船的接口
+// fleet_api.ts sendFleetChain pattern (operator 2026-05-29 "照着發船的接口
 // 改"). Without this, two concurrent cp= POSTs race ogame's session-cp:
 //   T0: build A starts cp=planetX, captures operatorCp=Y
 //   T0+ε: build B starts cp=planetZ, captures operatorCp=Y

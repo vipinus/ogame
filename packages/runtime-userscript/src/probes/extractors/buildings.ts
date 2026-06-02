@@ -39,7 +39,7 @@ export function extractTechLevels(doc: Document): Record<string, number> {
       out[stringId] = lvl;
       continue;
     }
-    // v0.0.609 — operator 2026-06-01 "别猜了". LIFEFORM_RESEARCH_IDS now
+    // v0.0.609 — operator 2026-06-01 "別猜了". LIFEFORM_RESEARCH_IDS now
     // imported from alaingilbert/ogame protocol library, so reverse-map
     // hits on all 72 entries. Drop the raw `id_<num>` fallback — unknown
     // IDs at this point are genuine unknowns (skip).
@@ -50,7 +50,7 @@ export function extractTechLevels(doc: Document): Record<string, number> {
 /**
  * Extract localized tech labels from the current ogame page DOM.
  *
- * Operator 2026-06-01 directive: "不要兜底，网页上有名字" — server-rendered
+ * Operator 2026-06-01 directive: "不要兜底，網頁上有名字" — server-rendered
  * `title` / `aria-label` attributes carry the player's locale (zh / en /
  * etc.). Use those as the SOLE source of truth for display names. No
  * hardcoded catalog translations.
@@ -66,7 +66,7 @@ export function extractTechLevels(doc: Document): Record<string, number> {
  */
 export function extractTechLabels(doc: Document): Record<string, string> {
   const out: Record<string, string> = {};
-  // v0.0.621 — operator 2026-06-01 "研究 1 級 熱量回收 L5 不应该出现".
+  // v0.0.621 — operator 2026-06-01 "研究 1 級 熱量回收 L5 不應該出現".
   // The lfresearch DOM has BOTH <li data-technology="14201"
   // aria-label="熱量回收"> AND <button data-technology="14201"
   // aria-label="研究 1 級 熱量回收"> (= upgrade button's tooltip, not tech

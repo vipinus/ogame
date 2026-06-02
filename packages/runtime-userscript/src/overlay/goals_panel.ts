@@ -207,10 +207,10 @@ function openEmergencySettings(doc: Document): void {
   const paused = lsGet("ogamex.emergency.paused") === "true";
   const spyOn = lsGet("OGAMEX_SPY_TRIGGERS_SAVE") !== "off";  // default ON
   const bodyHTML = `
-    <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">紧急任务 (Fleet Save) — attack/spy 触发自动起飞 + 召回</div>
-    ${renderToggleRow("整体启用", !paused, "em-paused", "OFF = 全局暂停 FS 自动起飞 (手动操作不受影响)")}
-    ${renderToggleRow("侦察触发 FS", spyOn, "em-spy", "ON = spy event 也走 FS 链路 (默认开); OFF = 仅 attack 触发")}
-    <div style="color:#5a7090; font-size:10px; padding-top:10px;">变更立即生效, 无需保存.</div>
+    <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">緊急任務 (Fleet Save) — attack/spy 觸發自動起飛 + 召回</div>
+    ${renderToggleRow("整體啟用", !paused, "em-paused", "OFF = 全局暫停 FS 自動起飛 (手動操作不受影響)")}
+    ${renderToggleRow("偵察觸發 FS", spyOn, "em-spy", "ON = spy event 也走 FS 鏈路 (預設開); OFF = 僅 attack 觸發")}
+    <div style="color:#5a7090; font-size:10px; padding-top:10px;">變更立即生效, 無需保存.</div>
   `;
   openSettingsModal(doc, "emergency", t("modal.emergency.title"), bodyHTML, (m) => {
     const reflect = (sel: string, isOn: boolean): void => {
@@ -333,8 +333,8 @@ function openAuditModal(
   });
 }
 
-// tabs (operator 2026-05-29: "改成两个 tab"): "发船星球" (per-planet
-// checkboxes for opt-in source pool) and "舰队模板" (per-ship-type number
+// tabs (operator 2026-05-29: "改成兩個 tab"): "發船星球" (per-planet
+// checkboxes for opt-in source pool) and "艦隊模板" (per-ship-type number
 // inputs). Target-position removed (always G:S:16). Paused toggle is
 // global, lives above the tabs.
 function openExpeditionSettings(
@@ -424,9 +424,9 @@ function openExpeditionSettings(
       </label>`;
     };
     const planetRows = sortedCoordKeys.length === 0
-      ? `<div style="color:#7080a0; padding:8px 0; font-size:11px;">(无 planet — state 未就绪, 刷新 ogame 页面)</div>`
+      ? `<div style="color:#7080a0; padding:8px 0; font-size:11px;">(無 planet — state 未就緒, 刷新 ogame 頁面)</div>`
       : `<div style="padding:4px 0 6px; display:flex; gap:8px; font-size:10px; color:#7080a0; border-bottom:1px solid #2a3a52;">
-          <span style="width:78px;">坐标</span>
+          <span style="width:78px;">坐標</span>
           <span style="flex:1;">🌍 行星</span>
           <span style="flex:1;">🌙 月球</span>
         </div>` + sortedCoordKeys.map((k) => {
@@ -448,33 +448,33 @@ function openExpeditionSettings(
       </div>`;
     }).join("");
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">远征任务 — 勾选发船星球 + 设置舰队模板</div>
-      ${renderToggleRow("整体启用", !paused, "exp-paused", "OFF = daemon 跳过本轮 tick (现有 fleet 不受影响)")}
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">遠征探險 — 勾選發船星球 + 設定艦隊模板</div>
+      ${renderToggleRow("整體啟用", !paused, "exp-paused", "OFF = daemon 跳過本輪 tick (現有 fleet 不受影響)")}
       <div style="padding-top:10px; display:flex; gap:0; border-bottom:1px solid #2a3a52;">
-        ${tabBtn("planets", "发船星球", true)}
-        ${tabBtn("template", "舰队模板", false)}
+        ${tabBtn("planets", "發船星球", true)}
+        ${tabBtn("template", "艦隊模板", false)}
       </div>
       <div data-exp-pane="planets" style="display:block; padding-top:8px;">
         <div style="display:flex; justify-content:space-between; padding:4px 0; font-size:10px;">
-          <span style="color:#7080a0;">勾选 = 加入 round-robin 发船池</span>
+          <span style="color:#7080a0;">勾選 = 加入 round-robin 發船池</span>
           <span>
-            <button data-exp-planet-all="1" style="background:transparent; color:#7cfc00; border:none; cursor:pointer; font-size:10px; padding:0 4px;">全选</button>
+            <button data-exp-planet-all="1" style="background:transparent; color:#7cfc00; border:none; cursor:pointer; font-size:10px; padding:0 4px;">全選</button>
             <button data-exp-planet-none="1" style="background:transparent; color:#ff9b9b; border:none; cursor:pointer; font-size:10px; padding:0 4px;">全清</button>
           </span>
         </div>
         ${planetRows}
       </div>
       <div data-exp-pane="template" style="display:none; padding-top:8px;">
-        <!-- Operator 2026-05-29: 顶部 chips summary 显示当前舰队组成,
-             跟着 input 变化实时更新. 无船时显 placeholder. -->
+        <!-- Operator 2026-05-29: 頂部 chips summary 顯示當前艦隊組成,
+             跟着 input 變化實時更新. 無船時顯 placeholder. -->
         <div style="padding:6px 8px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
-          <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">当前舰队组成</div>
+          <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">當前艦隊組成</div>
           <div data-exp-fleet-summary style="display:flex; flex-wrap:wrap; gap:6px; min-height:18px;"></div>
           <div data-exp-fleet-total style="color:#7080a0; font-size:10px; padding-top:6px; text-align:right;"></div>
         </div>
-        ${renderToggleRow("船不够自动造船", initial.auto_build_ships === true, "exp-autobuild", "ON = 船数不足的星球自动创建 build_ships 任务 (会按 priority 8 占用 shipyard 资源)")}
-        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">每次派遣的船数 (0 = 不派此类船 · 点击输入框=全选)</div>
-        <!-- Operator 2026-05-29: 改成两列 — grid 自动按行填充, 高度对半 -->
+        ${renderToggleRow("船不夠自動造船", initial.auto_build_ships === true, "exp-autobuild", "ON = 船數不足的星球自動創建 build_ships 任務 (會按 priority 8 佔用 shipyard 資源)")}
+        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">每次派遣的船數 (0 = 不派此類船 · 點選輸入框=全選)</div>
+        <!-- Operator 2026-05-29: 改成兩列 — grid 自動按行填充, 高度對半 -->
         <div style="display:grid; grid-template-columns:1fr 1fr; column-gap:14px;">${shipRows}</div>
       </div>
       <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:12px;">
@@ -524,7 +524,7 @@ function openExpeditionSettings(
     m.querySelectorAll<HTMLElement>("[data-exp-tab]").forEach((b) => {
       b.addEventListener("click", () => { switchTab(b.getAttribute("data-exp-tab") ?? "planets"); });
     });
-    // 全选 / 全清 helpers.
+    // 全選 / 全清 helpers.
     m.querySelector<HTMLElement>("[data-exp-planet-all]")?.addEventListener("click", () => {
       m.querySelectorAll<HTMLInputElement>("[data-exp-planet]").forEach((cb) => { cb.checked = true; });
     });
@@ -607,7 +607,7 @@ function openDiscoverySettings(
   fetchFn: typeof fetch,
 ): void {
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading discovery state…</div>`;
-  openSettingsModal(doc, "discovery", "🧬 发现任务设置", placeholder, async (m) => {
+  openSettingsModal(doc, "discovery", "🧬 發現任務設定", placeholder, async (m) => {
     const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
     if (!body) return;
     // Pull goals list (active species_discovery only) + planet list.
@@ -634,8 +634,8 @@ function openDiscoverySettings(
         return 0;
       });
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
-    // Status block (when goal is active). Operator 2026-05-29: 来源星球
-    // 显示坐标 (+ name), 不要 internal planet id.
+    // Status block (when goal is active). Operator 2026-05-29: 來源星球
+    // 顯示坐標 (+ name), 不要 internal planet id.
     let statusHTML = "";
     if (activeGoal) {
       const tgt = activeGoal.target ?? {};
@@ -648,15 +648,15 @@ function openDiscoverySettings(
         ? `${srcPlanet.name ?? "殖民"} [${srcPlanet.coords.join(":")}]`
         : (srcId || "?");
       statusHTML = `<div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:10px;">
-        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">当前活跃发现任务</div>
+        <div style="color:#7080a0; font-size:10px; padding-bottom:4px;">當前活躍發現任務</div>
         <div style="color:#d0d8e0; font-size:11px;">
-          <div>★ 来源星球: <span style="color:#c080ff;">${escapeHtml(srcDisplay)}</span></div>
-          <div>★ 中心系统: <span style="color:#c080ff;">${escapeHtml(String(tgt.galaxy ?? "?"))}:${escapeHtml(String(tgt.base_system ?? "?"))}</span> · 半径 ${escapeHtml(String(tgt.range ?? 10))}</div>
-          <div>★ 进度: ${completedCount} / ${total} (${pct}%)</div>
-          <div>★ 当前步骤: ${escapeHtml(String(activeGoal.current_step ?? "—"))}</div>
+          <div>★ 來源星球: <span style="color:#c080ff;">${escapeHtml(srcDisplay)}</span></div>
+          <div>★ 中心系統: <span style="color:#c080ff;">${escapeHtml(String(tgt.galaxy ?? "?"))}:${escapeHtml(String(tgt.base_system ?? "?"))}</span> · 半徑 ${escapeHtml(String(tgt.range ?? 10))}</div>
+          <div>★ 進度: ${completedCount} / ${total} (${pct}%)</div>
+          <div>★ 當前步驟: ${escapeHtml(String(activeGoal.current_step ?? "—"))}</div>
         </div>
         <div style="display:flex; justify-content:flex-end; padding-top:8px;">
-          <button data-disc-stop="1" data-disc-goal-id="${escapeHtml(activeGoal.id)}" style="background:#5a2020; color:#fff; border:1px solid #8a4040; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">停止当前任务</button>
+          <button data-disc-stop="1" data-disc-goal-id="${escapeHtml(activeGoal.id)}" style="background:#5a2020; color:#fff; border:1px solid #8a4040; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">停止當前任務</button>
         </div>
       </div>`;
     }
@@ -665,18 +665,18 @@ function openDiscoverySettings(
       return `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name ?? "殖民")} [${escapeHtml(cs)}]</option>`;
     }).join("");
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">物种发现 — 探路者扫描系统物种, 1 个 active goal at a time</div>
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">物種發現 — 探路者掃描系統物種, 1 個 active goal at a time</div>
       ${statusHTML}
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px;">
-        <div style="color:#7080a0; font-size:10px; padding-bottom:6px;">${activeGoal ? "替换当前任务 (先 Stop 再 Start, 或直接 Start — 旧 goal 会被替换)" : "创建新发现任务"}</div>
+        <div style="color:#7080a0; font-size:10px; padding-bottom:6px;">${activeGoal ? "替換當前任務 (先 Stop 再 Start, 或直接 Start — 舊 goal 會被替換)" : "創建新發現任務"}</div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">来源星球</span>
-          <select data-disc-planet style="${inputStyle} flex:1;">${planetOpts || `<option value="">(无 planet)</option>`}</select>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">來源星球</span>
+          <select data-disc-planet style="${inputStyle} flex:1;">${planetOpts || `<option value="">(無 planet)</option>`}</select>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">扫描半径</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">掃描半徑</span>
           <input data-disc-range type="number" min="1" max="20" value="${escapeHtml(String(activeGoal?.target?.range ?? 10))}" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">中心 ± N 系统 (1-20), 每个系统扫 15 位置</span>
+          <span style="color:#7080a0; font-size:10px;">中心 ± N 系統 (1-20), 每個系統掃 15 位置</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-disc-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
@@ -705,7 +705,7 @@ function openDiscoverySettings(
       const pid = sel?.value ?? "";
       const range = Math.max(1, Math.min(20, parseInt(rng?.value ?? "10", 10) || 10));
       if (!pid) {
-        if (status) { status.textContent = "× 请选择来源星球"; status.style.color = "#ff6b6b"; }
+        if (status) { status.textContent = "× 請選擇來源星球"; status.style.color = "#ff6b6b"; }
         return;
       }
       const planet = planets.find((p) => p.id === pid);
@@ -747,18 +747,18 @@ function openGoalsSettings(
   const GOAL_PRESETS: Array<{ value: string; label: string; planetReq: boolean; targetPlaceholder: string }> = [
     { value: "build",             label: "build · 建造",           planetReq: true,  targetPlaceholder: `{"building":"metalMine","level":42}` },
     { value: "research",          label: "research · 科研",         planetReq: true,  targetPlaceholder: `{"tech":"astrophysics","level":18}` },
-    { value: "build_universal",   label: "build_universal · 全部统一建", planetReq: false, targetPlaceholder: `{"building":"shipyard","level":12}` },
-    { value: "build_ships",       label: "build_ships · 造舰",      planetReq: true,  targetPlaceholder: `{"ship":"largeCargo","amount":500}` },
+    { value: "build_universal",   label: "build_universal · 全部統一建", planetReq: false, targetPlaceholder: `{"building":"shipyard","level":12}` },
+    { value: "build_ships",       label: "build_ships · 造艦",      planetReq: true,  targetPlaceholder: `{"ship":"largeCargo","amount":500}` },
     { value: "build_defense",     label: "build_defense · 造防",    planetReq: true,  targetPlaceholder: `{"defense":"rocketLauncher","amount":1000}` },
     { value: "colonize",          label: "colonize · 殖民",         planetReq: true,  targetPlaceholder: `{"target_coords":"3:280:7"}` },
-    { value: "lifeform_building", label: "lifeform_building · 生命形式建筑", planetReq: true,  targetPlaceholder: `{"building":"residentialSector","level":40}` },
+    { value: "lifeform_building", label: "lifeform_building · 生命形式建築", planetReq: true,  targetPlaceholder: `{"building":"residentialSector","level":40}` },
     { value: "lifeform_research", label: "lifeform_research · 生命形式科研", planetReq: true,  targetPlaceholder: `{"tech":"intergalacticEnvoys","level":10}` },
-    { value: "lifeform_level_to", label: "lifeform_level_to · 生命形式等级", planetReq: true,  targetPlaceholder: `{"level":3}` },
-    { value: "pick_lifeform",     label: "pick_lifeform · 选生命形式", planetReq: true,  targetPlaceholder: `{"species":"kaelesh"}` },
+    { value: "lifeform_level_to", label: "lifeform_level_to · 生命形式等級", planetReq: true,  targetPlaceholder: `{"level":3}` },
+    { value: "pick_lifeform",     label: "pick_lifeform · 選生命形式", planetReq: true,  targetPlaceholder: `{"species":"kaelesh"}` },
     { value: "terraformer_to",    label: "terraformer_to · 地形改造", planetReq: true,  targetPlaceholder: `{"level":8}` },
-    { value: "expedition",        label: "expedition · 远征",       planetReq: false, targetPlaceholder: `{"source_planet":"<id>","ships":{"largeCargo":1600,"explorer":1000}}` },
+    { value: "expedition",        label: "expedition · 遠征",       planetReq: false, targetPlaceholder: `{"source_planet":"<id>","ships":{"largeCargo":1600,"explorer":1000}}` },
     { value: "deploy",            label: "deploy · 部署",           planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","target_type":"moon","ships":{"largeCargo":100}}` },
-    { value: "transport",         label: "transport · 运输",        planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","ships":{"largeCargo":100},"cargo":{"m":1000000,"c":0,"d":0}}` },
+    { value: "transport",         label: "transport · 運輸",        planetReq: true,  targetPlaceholder: `{"target_coords":"4:241:8","ships":{"largeCargo":100},"cargo":{"m":1000000,"c":0,"d":0}}` },
   ];
   const placeholder = `<div style="color:#7080a0; padding:8px 0;">loading planet list…</div>`;
   openSettingsModal(doc, "goals", t("modal.goals.title"), placeholder, async (m) => {
@@ -766,7 +766,7 @@ function openGoalsSettings(
     if (!body) return;
     interface StorePlanet { id: string; type?: string; coords?: number[]; name?: string }
     const storeRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, StorePlanet> } } }).__ogamexStore;
-    // Operator 2026-05-29: "星球选择改成两列 星球在第一列，月球在第二列".
+    // Operator 2026-05-29: "星球選擇改成兩列 星球在第一列，月球在第二列".
     // Group by coord G:S:P so each row carries the planet (col 1) and its
     // sibling moon (col 2). Single radio group across all rows so only one
     // celestial body is selected at a time.
@@ -789,8 +789,8 @@ function openGoalsSettings(
       }
       return 0;
     });
-    // v0.0.611 — operator 2026-06-01 "选种族的时候只有对应种族的星球亮起
-    // — 这个问题修了 6 次了". Root cause across multiple panes: each pane's
+    // v0.0.611 — operator 2026-06-01 "選種族的時候只有對應種族的星球亮起
+    // — 這個問題修了 6 次了". Root cause across multiple panes: each pane's
     // {} block scoped its own copy of livePlanetSpecies; lf-research's
     // copy referenced the lf-build version (out of block scope) → silent
     // ReferenceError, applyLrSpeciesFilter never fired. Lift the helper
@@ -823,30 +823,30 @@ function openGoalsSettings(
     };
 
     // v0.0.582 — operator 2026-06-01: tab mode. 6 tabs:
-    //   1. 星球建筑 — build (planet), build_universal, terraformer_to
-    //   2. 月球建筑 — build (moon-only buildings: jumpgate, sensorPhalanx, lunarBase, moonShield)
-    //   3. 生命形态建筑 — lifeform_building, pick_lifeform, lifeform_level_to
+    //   1. 星球建築 — build (planet), build_universal, terraformer_to
+    //   2. 月球建築 — build (moon-only buildings: jumpgate, sensorPhalanx, lunarBase, moonShield)
+    //   3. 生命形態建築 — lifeform_building, pick_lifeform, lifeform_level_to
     //   4. 普通研究 — research
-    //   5. 生命形态研究 — lifeform_research
-    //   6. 舰队任务 — colonize, expedition, deploy, transport, build_ships, build_defense
+    //   5. 生命形態研究 — lifeform_research
+    //   6. 艦隊任務 — colonize, expedition, deploy, transport, build_ships, build_defense
     // Tab switch filters goal type select options + dims planet/moon rows
     // that don't match the tab's body kind.
     type TabId = "planet-build" | "moon-build" | "lf-build" | "research" | "lf-research" | "fleet";
     const TAB_DEFS: Array<{ id: TabId; label: string; goalTypes: string[]; bodyFilter: "planet" | "moon" | "any" }> = [
-      { id: "planet-build", label: "🌍 星球建筑", goalTypes: ["build", "build_universal", "terraformer_to"], bodyFilter: "planet" },
-      { id: "moon-build",   label: "🌙 月球建筑", goalTypes: ["build"],                                       bodyFilter: "moon"   },
-      { id: "lf-build",     label: "🧬 生命建筑", goalTypes: ["lifeform_building", "pick_lifeform", "lifeform_level_to"], bodyFilter: "planet" },
+      { id: "planet-build", label: "🌍 星球建築", goalTypes: ["build", "build_universal", "terraformer_to"], bodyFilter: "planet" },
+      { id: "moon-build",   label: "🌙 月球建築", goalTypes: ["build"],                                       bodyFilter: "moon"   },
+      { id: "lf-build",     label: "🧬 生命建築", goalTypes: ["lifeform_building", "pick_lifeform", "lifeform_level_to"], bodyFilter: "planet" },
       { id: "research",     label: "🔬 普通研究", goalTypes: ["research"],                                    bodyFilter: "planet" },
       { id: "lf-research",  label: "⚗️ 生命研究", goalTypes: ["lifeform_research"],                            bodyFilter: "planet" },
-      { id: "fleet",        label: "🚀 舰队任务", goalTypes: ["colonize", "expedition", "deploy", "transport", "build_ships", "build_defense"], bodyFilter: "any" },
+      { id: "fleet",        label: "🚀 艦隊任務", goalTypes: ["colonize", "expedition", "deploy", "transport", "build_ships", "build_defense"], bodyFilter: "any" },
     ];
     const presetByValue = new Map(GOAL_PRESETS.map((g) => [g.value, g] as const));
     const renderTabBar = (): string => TAB_DEFS.map((t) =>
       `<button data-tab-btn="${t.id}" style="background:#0a1018; color:#7080a0; border:1px solid #2a3a52; border-bottom:none; padding:6px 10px; font-size:11px; cursor:pointer; border-top-left-radius:4px; border-top-right-radius:4px;">${escapeHtml(t.label)}</button>`,
     ).join("");
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
-    // v0.0.583 — operator 2026-06-01: "星球建筑 tab" 独立 form (去掉 NL,
-    // 只列 planet, 占用灰显, 建筑 radio + level input + 实时描述). Other 5
+    // v0.0.583 — operator 2026-06-01: "星球建築 tab" 獨立 form (去掉 NL,
+    // 只列 planet, 佔用灰顯, 建築 radio + level input + 實時描述). Other 5
     // tabs continue using the shared (NL + free-form target JSON) panel.
     // v0.0.588 — operator 2026-06-01 "要支持 terraformer". Re-added after
     // shared/tech_tree.ts gained a terraformer entry (prereqs naniteFactory
@@ -860,13 +860,13 @@ function openGoalsSettings(
       "terraformer",
     ] as const;
     const PLANET_BUILDING_LABEL: Record<string, string> = {
-      metalMine: "金属矿", crystalMine: "晶体矿", deuteriumSynth: "重氢合成器",
-      solarPlant: "太阳能", fusionReactor: "核聚变",
-      metalStorage: "金属仓库", crystalStorage: "晶体仓库", deuteriumTank: "重氢罐",
-      roboticsFactory: "机械工厂", shipyard: "船坞", researchLab: "实验室", naniteFactory: "纳米工厂",
+      metalMine: "金屬礦", crystalMine: "晶體礦", deuteriumSynth: "重氫合成器",
+      solarPlant: "太陽能", fusionReactor: "核聚變",
+      metalStorage: "金屬倉庫", crystalStorage: "晶體倉庫", deuteriumTank: "重氫罐",
+      roboticsFactory: "機械工廠", shipyard: "船塢", researchLab: "實驗室", naniteFactory: "納米工廠",
       terraformer: "地形改造",
     };
-    // v0.0.584 — operator 2026-06-01 "都是灰色是不对的, 多数星球上没有建造任务":
+    // v0.0.584 — operator 2026-06-01 "都是灰色是不對的, 多數星球上沒有建造任務":
     // occupied judgment was based on sidecar goal queue (always many blocked
     // resource-shortage goals → all planets flagged occupied). Fix: read
     // ogame's REAL build_q.ends_at — only planets actively building right
@@ -888,12 +888,12 @@ function openGoalsSettings(
       return !!bq && (bq.ends_at ?? 0) > nowMs;
     };
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">普通任务 — 选 tab 创建任务. 已有 active goals 在主面板 Goals section 显示</div>
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">普通任務 — 選 tab 創建任務. 已有 active goals 在主面板 Goals section 顯示</div>
       <div data-tab-bar style="display:flex; gap:2px; margin-bottom:0;">${renderTabBar()}</div>
-      <!-- v0.0.583 — 星球建筑独立 pane / v0.0.584 — 2-col + ogame-real-occupancy -->
+      <!-- v0.0.583 — 星球建築獨立 pane / v0.0.584 — 2-col + ogame-real-occupancy -->
       <div data-pane="planet-build" style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选, 正在建造的星球灰显不可选)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (單選, 正在建造的星球灰顯不可選)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; display:flex; gap:16px; border-bottom:1px solid #1a2030;">
               <label data-pb-all-wrap style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
@@ -902,7 +902,7 @@ function openGoalsSettings(
               </label>
               <label data-pb-idle-wrap style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-pb-planet type="radio" name="pb-planet-radio" value="idle-planets" style="vertical-align:middle;"/>
-                <span>🌍 空闲星球</span>
+                <span>🌍 空閒星球</span>
               </label>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
@@ -914,7 +914,7 @@ function openGoalsSettings(
                 const occ = planetOccupied(p.id);
                 const bq = planetBuildQ(p.id);
                 const eta = occ && bq?.ends_at ? Math.max(0, Math.round((bq.ends_at - nowMs) / 60000)) : 0;
-                const tip = occ ? `title="ogame 在建中, ${eta}min 后完成"` : "";
+                const tip = occ ? `title="ogame 在建中, ${eta}min 後完成"` : "";
                 const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
                 const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[${eta}m]</span>` : "";
                 return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
@@ -929,7 +929,7 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">建筑 (单选)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">建築 (單選)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
             ${PLANET_BUILDING_KEYS.map((bk) => `
               <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
@@ -940,7 +940,7 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
           <input data-pb-level type="number" min="1" max="50" value="" placeholder="例: 7" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
         </div>
@@ -948,19 +948,19 @@ function openGoalsSettings(
           <span data-pb-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
           <input data-pb-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-pb-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-pb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+          <button data-pb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
         </div>
       </div>
-      <!-- v0.0.589 — 月球建筑独立 pane (类似 planet-build, 仅月球 + 月球建筑) -->
+      <!-- v0.0.589 — 月球建築獨立 pane (類似 planet-build, 僅月球 + 月球建築) -->
       <div data-pane="moon-build" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">月球 (单选, 正在建造的月球灰显不可选)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">月球 (單選, 正在建造的月球灰顯不可選)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; display:flex; gap:16px; border-bottom:1px solid #1a2030;">
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
@@ -969,7 +969,7 @@ function openGoalsSettings(
               </label>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-mb-moon type="radio" name="mb-moon-radio" value="idle-moons" style="vertical-align:middle;"/>
-                <span>🌙 空闲月球</span>
+                <span>🌙 空閒月球</span>
               </label>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
@@ -981,7 +981,7 @@ function openGoalsSettings(
                 const occ = planetOccupied(mb.id);
                 const bq = planetBuildQ(mb.id);
                 const eta = occ && bq?.ends_at ? Math.max(0, Math.round((bq.ends_at - nowMs) / 60000)) : 0;
-                const tip = occ ? `title="ogame 在建中, ${eta}min 后完成"` : "";
+                const tip = occ ? `title="ogame 在建中, ${eta}min 後完成"` : "";
                 const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
                 const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[${eta}m]</span>` : "";
                 return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
@@ -996,18 +996,18 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">建筑 (单选)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">建築 (單選)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="lunarBase" style="vertical-align:middle;"/><span>月球基地</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="sensorPhalanx" style="vertical-align:middle;"/><span>传感器</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="jumpgate" style="vertical-align:middle;"/><span>跳跃门</span></label>
-            <!-- v0.0.592 — operator 2026-06-01 "月球缺机器人工厂和造船厂, 和星球分开": ogame moon has its own independent roboticsFactory / shipyard counters from the planet sibling. Adding to moon-build options. -->
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="roboticsFactory" style="vertical-align:middle;"/><span>机械工厂</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="shipyard" style="vertical-align:middle;"/><span>船坞</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="sensorPhalanx" style="vertical-align:middle;"/><span>傳感器</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="jumpgate" style="vertical-align:middle;"/><span>跳躍門</span></label>
+            <!-- v0.0.592 — operator 2026-06-01 "月球缺機器人工廠和造船廠, 和星球分開": ogame moon has its own independent roboticsFactory / shipyard counters from the planet sibling. Adding to moon-build options. -->
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="roboticsFactory" style="vertical-align:middle;"/><span>機械工廠</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-mb-building type="radio" name="mb-building-radio" value="shipyard" style="vertical-align:middle;"/><span>船塢</span></label>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
           <input data-mb-level type="number" min="1" max="50" value="" placeholder="例: 2" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
         </div>
@@ -1015,28 +1015,28 @@ function openGoalsSettings(
           <span data-mb-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
           <input data-mb-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-mb-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-mb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+          <button data-mb-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
         </div>
       </div>
-      <!-- v0.0.593 — 生命建筑独立 pane -->
+      <!-- v0.0.593 — 生命建築獨立 pane -->
       <div data-pane="lf-build" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命形态 (单选, 决定可建建筑列表)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命形態 (單選, 決定可建建築列表)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="humans" style="vertical-align:middle;"/><span>人类</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="rocktal" style="vertical-align:middle;"/><span>岩族</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="mechas" style="vertical-align:middle;"/><span>机械族</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>凯莱什</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="humans" style="vertical-align:middle;"/><span>人類</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="rocktal" style="vertical-align:middle;"/><span>巖族</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="mechas" style="vertical-align:middle;"/><span>機械族</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lf-species type="radio" name="lf-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>凱萊什</span></label>
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选, lifeform 仅星球可建)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (單選, lifeform 僅星球可建)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; display:flex; gap:16px; border-bottom:1px solid #1a2030;">
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
@@ -1045,7 +1045,7 @@ function openGoalsSettings(
               </label>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-lf-planet type="radio" name="lf-planet-radio" value="idle-planets" style="vertical-align:middle;"/>
-                <span>🌍 空闲星球</span>
+                <span>🌍 空閒星球</span>
               </label>
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:0;">
@@ -1058,7 +1058,7 @@ function openGoalsSettings(
                 const lfBq = (storeRef?.state?.planets?.[p.id] as { lf_build_q?: { ends_at?: number } } | undefined)?.lf_build_q;
                 const occ = !!lfBq && (lfBq.ends_at ?? 0) > nowMs;
                 const eta = occ && lfBq?.ends_at ? Math.max(0, Math.round((lfBq.ends_at - nowMs) / 60000)) : 0;
-                const tip = occ ? `title="生命建筑队列在建中, ${eta}min 后完成"` : "";
+                const tip = occ ? `title="生命建築隊列在建中, ${eta}min 後完成"` : "";
                 const dim = occ ? "opacity:0.4; cursor:not-allowed;" : "cursor:pointer;";
                 const occSuffix = occ ? ` <span style=\"color:#a06060; font-size:10px;\">[${eta}m]</span>` : "";
                 return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
@@ -1073,13 +1073,13 @@ function openGoalsSettings(
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命建筑 (单选, 切换 species 时重新加载)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命建築 (單選, 切換 species 時重新加載)</div>
           <div data-lf-building-list style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
             <span style="color:#5a7090; font-size:11px;">loading…</span>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
           <input data-lf-level type="number" min="1" max="50" value="" placeholder="例: 3" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
         </div>
@@ -1087,43 +1087,43 @@ function openGoalsSettings(
           <span data-lf-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
           <input data-lf-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-lf-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-lf-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+          <button data-lf-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
         </div>
       </div>
-      <!-- v0.0.599 — 普通研究独立 pane. Research is GLOBAL (single queue
+      <!-- v0.0.599 — 普通研究獨立 pane. Research is GLOBAL (single queue
            per account), no planet selector needed; planner auto-picks
            source planet with the highest researchLab. -->
       <div data-pane="research" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div data-rs-queue style="padding:6px 0; color:#7080a0; font-size:11px;">global queue: <span style="color:#a06060;">loading…</span></div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">研究项目 (单选)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">研究專案 (單選)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="energyTech" style="vertical-align:middle;"/><span>能量技术</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="laserTech" style="vertical-align:middle;"/><span>激光技术</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="ionTech" style="vertical-align:middle;"/><span>离子技术</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceTech" style="vertical-align:middle;"/><span>超空间技术</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="plasmaTech" style="vertical-align:middle;"/><span>等离子技术</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="combustion" style="vertical-align:middle;"/><span>内燃机引擎</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="impulseDrive" style="vertical-align:middle;"/><span>脉冲引擎</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceDrive" style="vertical-align:middle;"/><span>超空间引擎</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="espionageTech" style="vertical-align:middle;"/><span>间谍技术</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="computerTech" style="vertical-align:middle;"/><span>电脑技术</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="astrophysics" style="vertical-align:middle;"/><span>天体物理</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="intergalactic" style="vertical-align:middle;"/><span>星际研究</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="gravitonTech" style="vertical-align:middle;"/><span>引力技术</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="weapons" style="vertical-align:middle;"/><span>武器技术</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="shielding" style="vertical-align:middle;"/><span>防御护盾</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="armor" style="vertical-align:middle;"/><span>装甲技术</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="energyTech" style="vertical-align:middle;"/><span>能量技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="laserTech" style="vertical-align:middle;"/><span>激光技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="ionTech" style="vertical-align:middle;"/><span>離子技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceTech" style="vertical-align:middle;"/><span>超空間技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="plasmaTech" style="vertical-align:middle;"/><span>等離子技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="combustion" style="vertical-align:middle;"/><span>內燃機引擎</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="impulseDrive" style="vertical-align:middle;"/><span>脈衝引擎</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="hyperspaceDrive" style="vertical-align:middle;"/><span>超空間引擎</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="espionageTech" style="vertical-align:middle;"/><span>間諜技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="computerTech" style="vertical-align:middle;"/><span>電腦技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="astrophysics" style="vertical-align:middle;"/><span>天體物理</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="intergalactic" style="vertical-align:middle;"/><span>星際研究</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="gravitonTech" style="vertical-align:middle;"/><span>引力技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="weapons" style="vertical-align:middle;"/><span>武器技術</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="shielding" style="vertical-align:middle;"/><span>防御護盾</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-rs-tech type="radio" name="rs-tech-radio" value="armor" style="vertical-align:middle;"/><span>裝甲技術</span></label>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
           <input data-rs-level type="number" min="1" max="30" value="" placeholder="例: 9" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-30</span>
         </div>
@@ -1131,28 +1131,28 @@ function openGoalsSettings(
           <span data-rs-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
           <input data-rs-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-rs-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-rs-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+          <button data-rs-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
         </div>
       </div>
-      <!-- v0.0.602 — 生命研究独立 pane (per-species catalog.research) -->
+      <!-- v0.0.602 — 生命研究獨立 pane (per-species catalog.research) -->
       <div data-pane="lf-research" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命形态 (单选, 决定可研究列表)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">生命形態 (單選, 決定可研究列表)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="humans" style="vertical-align:middle;"/><span>人类</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="rocktal" style="vertical-align:middle;"/><span>岩族</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="mechas" style="vertical-align:middle;"/><span>机械族</span></label>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>凯莱什</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="humans" style="vertical-align:middle;"/><span>人類</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="rocktal" style="vertical-align:middle;"/><span>巖族</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="mechas" style="vertical-align:middle;"/><span>機械族</span></label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input data-lr-species type="radio" name="lr-species-radio" value="kaelesh" checked style="vertical-align:middle;"/><span>凱萊什</span></label>
           </div>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选, lifeform research per-planet)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (單選, lifeform research per-planet)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:240px; overflow-y:auto; background:#06090f; display:grid; grid-template-columns:1fr 1fr; gap:0;">
             ${sortedCoordKeys
               .filter((k) => groupedByCoord.get(k)!.planet)
@@ -1171,15 +1171,15 @@ function openGoalsSettings(
         </div>
         <div style="padding:6px 0;">
           <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:4px;">
-            <span style="color:#d0d8e0; font-size:11px;">生命研究项目 (单选, 切换 species 重新加载)</span>
-            <button data-lr-force-sync type="button" style="background:#1a2438; color:#7cfc00; border:1px solid #2a3a52; border-radius:3px; cursor:pointer; font-size:10px; padding:2px 8px;" title="强制 fetch 当前选中星球的 lfresearch 页, 替换 store 数据">🔄 同步该星球</button>
+            <span style="color:#d0d8e0; font-size:11px;">生命研究專案 (單選, 切換 species 重新加載)</span>
+            <button data-lr-force-sync type="button" style="background:#1a2438; color:#7cfc00; border:1px solid #2a3a52; border-radius:3px; cursor:pointer; font-size:10px; padding:2px 8px;" title="強制 fetch 當前選中星球的 lfresearch 頁, 替換 store 資料">🔄 同步該星球</button>
           </div>
           <div data-lr-research-list style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px;">
             <span style="color:#5a7090; font-size:11px;">loading…</span>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">目标级别</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">目標級別</span>
           <input data-lr-level type="number" min="1" max="50" value="" placeholder="例: 3" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">支持 1-50</span>
         </div>
@@ -1187,36 +1187,36 @@ function openGoalsSettings(
           <span data-lr-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
           <input data-lr-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-lr-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-lr-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+          <button data-lr-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
         </div>
       </div>
       <!-- Shared pane (used by 1 non-dedicated tab) -->
       <div data-pane="shared" style="display:none;">
-      <!-- Operator 2026-05-29: 自然语言入口 — Gemini 解析 → 填表单 -->
+      <!-- Operator 2026-05-29: 自然語言入口 — Gemini 解析 → 填表單 -->
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-radius:4px; margin-bottom:8px;">
-        <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">自然语言描述 <span style="color:#7080a0; font-size:10px;">(可选 — 让 AI 解析填表单)</span></div>
-        <textarea data-goal-nl rows="2" placeholder="例: 在 3:279:7 建金属矿到 42 级 / 母星出引力 6 / 在 4:241:8 造 500 大型运输舰" style="${inputStyle} width:100%; box-sizing:border-box; resize:vertical;"></textarea>
+        <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">自然語言描述 <span style="color:#7080a0; font-size:10px;">(可選 — 讓 AI 解析填表單)</span></div>
+        <textarea data-goal-nl rows="2" placeholder="例: 在 3:279:7 建金屬礦到 42 級 / 母星出引力 6 / 在 4:241:8 造 500 大型運輸艦" style="${inputStyle} width:100%; box-sizing:border-box; resize:vertical;"></textarea>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:6px;">
           <span data-goal-nl-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-goal-nl-parse="1" style="background:#3a3a5a; color:#fff; border:1px solid #6a6a8a; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">🤖 解析填表单</button>
+          <button data-goal-nl-parse="1" style="background:#3a3a5a; color:#fff; border:1px solid #6a6a8a; padding:3px 12px; border-radius:3px; cursor:pointer; font-size:11px;">🤖 解析填表單</button>
         </div>
       </div>
       <div style="padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">任务类型</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">任務類型</span>
           <select data-goal-type style="${inputStyle} flex:1;"></select>
         </div>
         <div style="padding:6px 0;">
-          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (单选)</div>
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">星球 (單選)</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; max-height:180px; overflow-y:auto; background:#06090f;">
             <div style="padding:4px 8px; display:flex; gap:8px; font-size:10px; color:#7080a0; border-bottom:1px solid #2a3a52; background:#0a1018; position:sticky; top:0;">
-              <span style="width:72px;">坐标</span>
+              <span style="width:72px;">坐標</span>
               <span style="flex:1;">🌍 行星</span>
               <span style="flex:1;">🌙 月球</span>
             </div>
@@ -1224,11 +1224,11 @@ function openGoalsSettings(
               <span style="width:72px; color:#7080a0; font-size:11px;">—</span>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-goal-planet type="radio" name="goal-planet-radio" value="all-planets" checked style="vertical-align:middle;"/>
-                <span>🌍 所有星球 (扇出每个星球各建一个)</span>
+                <span>🌍 所有星球 (扇出每個星球各建一個)</span>
               </label>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
                 <input data-goal-planet type="radio" name="goal-planet-radio" value="all-moons" style="vertical-align:middle;"/>
-                <span>🌙 所有月球 (扇出每个月球各建一个)</span>
+                <span>🌙 所有月球 (扇出每個月球各建一個)</span>
               </label>
             </div>
             ${sortedCoordKeys.map((k) => {
@@ -1259,13 +1259,13 @@ function openGoalsSettings(
           <div data-goal-target-hint style="color:#5a7090; font-size:10px; padding-top:2px;"></div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
-          <span style="color:#d0d8e0; font-size:11px; width:80px;">优先级</span>
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">優先級</span>
           <input data-goal-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
-          <span style="color:#7080a0; font-size:10px;">默认 5; 越大越优先</span>
+          <span style="color:#7080a0; font-size:10px;">預設 5; 越大越優先</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
           <span data-goal-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-          <button data-goal-create="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建任务</button>
+          <button data-goal-create="1" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建任務</button>
         </div>
       </div>
       </div><!-- /data-pane="shared" -->
@@ -1279,7 +1279,7 @@ function openGoalsSettings(
       const preset = presetByValue.get(t);
       if (!preset || !targetTa || !targetHint) return;
       targetTa.value = preset.targetPlaceholder;
-      targetHint.textContent = preset.planetReq ? "需要选 planet — 该类型必须指定 source" : "可不选 planet — planner 会默认或读 target 内字段";
+      targetHint.textContent = preset.planetReq ? "需要選 planet — 該類型必須指定 source" : "可不選 planet — planner 會預設或讀 target 內字段";
     };
     typeSel?.addEventListener("change", refreshPreset);
 
@@ -1371,11 +1371,11 @@ function openGoalsSettings(
     const pbPriorityInput = m.querySelector<HTMLInputElement>("[data-pb-priority]");
     const pbStatusEl = m.querySelector<HTMLElement>("[data-pb-status]");
     const pbCreateBtn = m.querySelector<HTMLButtonElement>("[data-pb-create]");
-    // v0.0.590 — operator 2026-06-01 "有月球不能选, 所有月球就不能选, 星球
-    // 页面也是": if ANY body is occupied, the "所有" radio doesn't make sense
+    // v0.0.590 — operator 2026-06-01 "有月球不能選, 所有月球就不能選, 星球
+    // 頁面也是": if ANY body is occupied, the "所有" radio doesn't make sense
     // (literally cannot include them). Disable + gray it out, force operator
-    // to pick "空闲" or a single body. "空闲" remains available always.
-    // v0.0.590-591 — "有占用 ⇒ disable 所有", "无空闲 ⇒ disable 空闲".
+    // to pick "空閒" or a single body. "空閒" remains available always.
+    // v0.0.590-591 — "有佔用 ⇒ disable 所有", "無空閒 ⇒ disable 空閒".
     let anyPlanetOccupied = false, anyPlanetIdle = false;
     for (const k of sortedCoordKeys) {
       const planet = groupedByCoord.get(k)?.planet;
@@ -1391,26 +1391,26 @@ function openGoalsSettings(
     };
     const pbAllPlanetsRadio = m.querySelector<HTMLInputElement>('input[name="pb-planet-radio"][value="all-planets"]');
     const pbIdlePlanetsRadio = m.querySelector<HTMLInputElement>('input[name="pb-planet-radio"][value="idle-planets"]');
-    if (anyPlanetOccupied) dimRadio(pbAllPlanetsRadio, "有星球被占用, 不能选 '所有星球' (改选 '空闲星球' 或单个)");
-    if (!anyPlanetIdle) dimRadio(pbIdlePlanetsRadio, "无空闲星球, 不能选 '空闲星球'");
+    if (anyPlanetOccupied) dimRadio(pbAllPlanetsRadio, "有星球被佔用, 不能選 '所有星球' (改選 '空閒星球' 或單個)");
+    if (!anyPlanetIdle) dimRadio(pbIdlePlanetsRadio, "無空閒星球, 不能選 '空閒星球'");
     const refreshPbDesc = (): void => {
       if (!pbDescEl) return;
       const planetRadio = pbPlanetRadios().find((r) => r.checked);
       const buildingRadio = pbBuildingRadios().find((r) => r.checked);
       const lvl = parseInt(pbLevelInput?.value ?? "", 10);
       if (!planetRadio || !buildingRadio || !lvl) {
-        pbDescEl.textContent = "（选星球 + 建筑 + 级别后显示）";
+        pbDescEl.textContent = "（選星球 + 建築 + 級別後顯示）";
         pbDescEl.style.color = "#5a7090";
         return;
       }
       const bLabel = PLANET_BUILDING_LABEL[buildingRadio.value] ?? buildingRadio.value;
       if (planetRadio.value === "all-planets") {
-        pbDescEl.textContent = `目标在 所有星球 建造 ${bLabel} ${lvl} 级`;
+        pbDescEl.textContent = `目標在 所有星球 建造 ${bLabel} ${lvl} 級`;
       } else if (planetRadio.value === "idle-planets") {
-        pbDescEl.textContent = `目标在 所有空闲星球 建造 ${bLabel} ${lvl} 级`;
+        pbDescEl.textContent = `目標在 所有空閒星球 建造 ${bLabel} ${lvl} 級`;
       } else {
         const coord = planetCoordById.get(planetRadio.value) ?? "?";
-        pbDescEl.textContent = `目标在 ${coord} 建造 ${bLabel} ${lvl} 级`;
+        pbDescEl.textContent = `目標在 ${coord} 建造 ${bLabel} ${lvl} 級`;
       }
       pbDescEl.style.color = "#7cfc00";
     };
@@ -1424,10 +1424,10 @@ function openGoalsSettings(
       const buildingRadio = pbBuildingRadios().find((r) => r.checked);
       const lvl = parseInt(pbLevelInput?.value ?? "", 10);
       const pri = parseInt(pbPriorityInput?.value ?? "5", 10) || 5;
-      if (!planetRadio) { pbStatusEl.textContent = "请选星球"; pbStatusEl.style.color = "#a06060"; return; }
-      if (!buildingRadio) { pbStatusEl.textContent = "请选建筑"; pbStatusEl.style.color = "#a06060"; return; }
-      if (!lvl || lvl < 1 || lvl > 50) { pbStatusEl.textContent = "级别须 1-50"; pbStatusEl.style.color = "#a06060"; return; }
-      pbStatusEl.textContent = "创建中…"; pbStatusEl.style.color = "#7080a0";
+      if (!planetRadio) { pbStatusEl.textContent = "請選星球"; pbStatusEl.style.color = "#a06060"; return; }
+      if (!buildingRadio) { pbStatusEl.textContent = "請選建築"; pbStatusEl.style.color = "#a06060"; return; }
+      if (!lvl || lvl < 1 || lvl > 50) { pbStatusEl.textContent = "級別須 1-50"; pbStatusEl.style.color = "#a06060"; return; }
+      pbStatusEl.textContent = "創建中…"; pbStatusEl.style.color = "#7080a0";
       let planetsToCreate: string[];
       if (planetRadio.value === "all-planets") {
         // Literal all — include occupied (ogame may reject those, but
@@ -1462,18 +1462,18 @@ function openGoalsSettings(
         } catch (e) { errs.push(`${pid}: ${(e as Error).message ?? e}`); }
       }
       if (errs.length === 0) {
-        pbStatusEl.textContent = `✓ 已创建 ${okCount} 个任务`;
+        pbStatusEl.textContent = `✓ 已創建 ${okCount} 個任務`;
         pbStatusEl.style.color = "#7cfc00";
       } else {
-        pbStatusEl.textContent = `部分失败: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
+        pbStatusEl.textContent = `部分失敗: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
         pbStatusEl.style.color = "#a06060";
       }
     });
 
     // v0.0.589 — moon-build pane wiring (mirrors planet-build).
     const MOON_BUILDING_LABEL: Record<string, string> = {
-      lunarBase: "月球基地", sensorPhalanx: "传感器", jumpgate: "跳跃门",
-      roboticsFactory: "机械工厂", shipyard: "船坞",
+      lunarBase: "月球基地", sensorPhalanx: "傳感器", jumpgate: "跳躍門",
+      roboticsFactory: "機械工廠", shipyard: "船塢",
     };
     const moonCoordById = new Map<string, string>();
     for (const k of sortedCoordKeys) {
@@ -1501,26 +1501,26 @@ function openGoalsSettings(
     }
     const mbAllMoonsRadio = m.querySelector<HTMLInputElement>('input[name="mb-moon-radio"][value="all-moons"]');
     const mbIdleMoonsRadio = m.querySelector<HTMLInputElement>('input[name="mb-moon-radio"][value="idle-moons"]');
-    if (anyMoonOccupied) dimRadio(mbAllMoonsRadio, "有月球被占用, 不能选 '所有月球' (改选 '空闲月球' 或单个)");
-    if (!anyMoonIdle) dimRadio(mbIdleMoonsRadio, "无空闲月球, 不能选 '空闲月球'");
+    if (anyMoonOccupied) dimRadio(mbAllMoonsRadio, "有月球被佔用, 不能選 '所有月球' (改選 '空閒月球' 或單個)");
+    if (!anyMoonIdle) dimRadio(mbIdleMoonsRadio, "無空閒月球, 不能選 '空閒月球'");
     const refreshMbDesc = (): void => {
       if (!mbDescEl) return;
       const moonRadio = mbMoonRadios().find((r) => r.checked);
       const buildingRadio = mbBuildingRadios().find((r) => r.checked);
       const lvl = parseInt(mbLevelInput?.value ?? "", 10);
       if (!moonRadio || !buildingRadio || !lvl) {
-        mbDescEl.textContent = "（选月球 + 建筑 + 级别后显示）";
+        mbDescEl.textContent = "（選月球 + 建築 + 級別後顯示）";
         mbDescEl.style.color = "#5a7090";
         return;
       }
       const bLabel = MOON_BUILDING_LABEL[buildingRadio.value] ?? buildingRadio.value;
       if (moonRadio.value === "all-moons") {
-        mbDescEl.textContent = `目标在 所有月球 建造 ${bLabel} ${lvl} 级`;
+        mbDescEl.textContent = `目標在 所有月球 建造 ${bLabel} ${lvl} 級`;
       } else if (moonRadio.value === "idle-moons") {
-        mbDescEl.textContent = `目标在 所有空闲月球 建造 ${bLabel} ${lvl} 级`;
+        mbDescEl.textContent = `目標在 所有空閒月球 建造 ${bLabel} ${lvl} 級`;
       } else {
         const coord = moonCoordById.get(moonRadio.value) ?? "?";
-        mbDescEl.textContent = `目标在 ${coord}(月球) 建造 ${bLabel} ${lvl} 级`;
+        mbDescEl.textContent = `目標在 ${coord}(月球) 建造 ${bLabel} ${lvl} 級`;
       }
       mbDescEl.style.color = "#7cfc00";
     };
@@ -1534,10 +1534,10 @@ function openGoalsSettings(
       const buildingRadio = mbBuildingRadios().find((r) => r.checked);
       const lvl = parseInt(mbLevelInput?.value ?? "", 10);
       const pri = parseInt(mbPriorityInput?.value ?? "5", 10) || 5;
-      if (!moonRadio) { mbStatusEl.textContent = "请选月球"; mbStatusEl.style.color = "#a06060"; return; }
-      if (!buildingRadio) { mbStatusEl.textContent = "请选建筑"; mbStatusEl.style.color = "#a06060"; return; }
-      if (!lvl || lvl < 1 || lvl > 50) { mbStatusEl.textContent = "级别须 1-50"; mbStatusEl.style.color = "#a06060"; return; }
-      mbStatusEl.textContent = "创建中…"; mbStatusEl.style.color = "#7080a0";
+      if (!moonRadio) { mbStatusEl.textContent = "請選月球"; mbStatusEl.style.color = "#a06060"; return; }
+      if (!buildingRadio) { mbStatusEl.textContent = "請選建築"; mbStatusEl.style.color = "#a06060"; return; }
+      if (!lvl || lvl < 1 || lvl > 50) { mbStatusEl.textContent = "級別須 1-50"; mbStatusEl.style.color = "#a06060"; return; }
+      mbStatusEl.textContent = "創建中…"; mbStatusEl.style.color = "#7080a0";
       let moonsToCreate: string[];
       if (moonRadio.value === "all-moons") {
         moonsToCreate = sortedCoordKeys
@@ -1569,10 +1569,10 @@ function openGoalsSettings(
         } catch (e) { errs.push(`${mid}: ${(e as Error).message ?? e}`); }
       }
       if (errs.length === 0) {
-        mbStatusEl.textContent = `✓ 已创建 ${okCount} 个任务`;
+        mbStatusEl.textContent = `✓ 已創建 ${okCount} 個任務`;
         mbStatusEl.style.color = "#7cfc00";
       } else {
-        mbStatusEl.textContent = `部分失败: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
+        mbStatusEl.textContent = `部分失敗: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
         mbStatusEl.style.color = "#a06060";
       }
     });
@@ -1617,32 +1617,32 @@ function openGoalsSettings(
         const buildingRadio = lfBuildingRadios().find((r) => r.checked);
         const lvl = parseInt(lfLevelInput?.value ?? "", 10);
         if (!speciesRadio || !planetRadio || !buildingRadio || !lvl) {
-          lfDescEl.textContent = "（选物种 + 星球 + 建筑 + 级别后显示）";
+          lfDescEl.textContent = "（選物種 + 星球 + 建築 + 級別後顯示）";
           lfDescEl.style.color = "#5a7090";
           return;
         }
         const bLabel = currentBuildings.get(buildingRadio.value) ?? buildingRadio.value;
-        const speciesLabel: Record<string, string> = { humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什" };
+        const speciesLabel: Record<string, string> = { humans: "人類", rocktal: "巖族", mechas: "機械族", kaelesh: "凱萊什" };
         const sn = speciesLabel[speciesRadio.value] ?? speciesRadio.value;
         if (planetRadio.value === "all-planets") {
-          lfDescEl.textContent = `目标在 所有星球 建造 ${bLabel} ${lvl} 级 (${sn})`;
+          lfDescEl.textContent = `目標在 所有星球 建造 ${bLabel} ${lvl} 級 (${sn})`;
         } else if (planetRadio.value === "idle-planets") {
-          lfDescEl.textContent = `目标在 所有空闲星球 建造 ${bLabel} ${lvl} 级 (${sn})`;
+          lfDescEl.textContent = `目標在 所有空閒星球 建造 ${bLabel} ${lvl} 級 (${sn})`;
         } else {
           const coord = planetCoordById.get(planetRadio.value) ?? "?";
-          lfDescEl.textContent = `目标在 ${coord} 建造 ${bLabel} ${lvl} 级 (${sn})`;
+          lfDescEl.textContent = `目標在 ${coord} 建造 ${bLabel} ${lvl} 級 (${sn})`;
         }
         lfDescEl.style.color = "#7cfc00";
       };
-      // v0.0.594 — operator 2026-06-01 "每颗星球的种族不同, 选 species 后
-      // 只有对应的星球可选, 其他灰色". Read each planet's lifeform.species
+      // v0.0.594 — operator 2026-06-01 "每顆星球的種族不同, 選 species 後
+      // 只有對應的星球可選, 其他灰色". Read each planet's lifeform.species
       // from store; planets with mismatched (or null) species get dimmed
       // and disabled when a species is selected.
       const speciesLabelMap: Record<string, string> = {
-        humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什",
+        humans: "人類", rocktal: "巖族", mechas: "機械族", kaelesh: "凱萊什",
       };
-      // v0.0.595/596 — operator 2026-06-01 "没有拿种族的 api 吗 / 怎么都
-      // 是未设置, 全部设置过了". Two-tier species lookup:
+      // v0.0.595/596 — operator 2026-06-01 "沒有拿種族的 api 嗎 / 怎麼都
+      // 是未設定, 全部設定過了". Two-tier species lookup:
       //   1. store.planets[pid].lifeform.species (if boot.ts refreshOnePage
       //      visited lfbuildings page) — direct answer
       //   2. Fallback: infer from lifeform_buildings prefix. Building IDs
@@ -1657,11 +1657,11 @@ function openGoalsSettings(
           const pid = radio.value;
           if (pid === "all-planets" || pid === "idle-planets") continue;
           const sp = livePlanetSpecies(pid);
-          const tag = sp ? speciesLabelMap[sp] ?? sp : "未设置";
+          const tag = sp ? speciesLabelMap[sp] ?? sp : "未設定";
           const span = radio.parentElement?.querySelector("span");
           if (!span) continue;
           // Strip existing tag (if any) then re-append fresh.
-          const base = (span.textContent ?? "").replace(/\s*\[(人类|岩族|机械族|凯莱什|未设置)\]\s*$/, "");
+          const base = (span.textContent ?? "").replace(/\s*\[(人類|巖族|機械族|凱萊什|未設定)\]\s*$/, "");
           span.textContent = `${base} [${tag}]`;
         }
       };
@@ -1679,14 +1679,14 @@ function openGoalsSettings(
           const label = radio.closest("label") as HTMLElement | null;
           if (!label) continue;
           // Don't override the lf_build_q occupancy disable (that has its own dim).
-          const wasLfqDim = label.title.includes("生命建筑队列在建中");
+          const wasLfqDim = label.title.includes("生命建築隊列在建中");
           if (!matches) {
             radio.disabled = true;
             label.style.opacity = "0.3";
             label.style.cursor = "not-allowed";
             label.title = sp
-              ? `该星球 species=${speciesLabelMap[sp] ?? sp}, 不匹配当前选择 (${speciesLabelMap[species] ?? species})`
-              : `该星球未选择 species, 无法建生命建筑`;
+              ? `該星球 species=${speciesLabelMap[sp] ?? sp}, 不匹配當前選擇 (${speciesLabelMap[species] ?? species})`
+              : `該星球未選擇 species, 無法建生命建築`;
           } else if (!wasLfqDim) {
             radio.disabled = false;
             label.style.opacity = "1";
@@ -1697,14 +1697,14 @@ function openGoalsSettings(
         // If currently checked radio was just disabled, clear selection.
         const checked = lfPlanetRadios().find((r) => r.checked);
         if (checked?.disabled) checked.checked = false;
-        // If 0 matching planets, also dim "所有星球" / "空闲星球" since neither
+        // If 0 matching planets, also dim "所有星球" / "空閒星球" since neither
         // dispatch makes sense.
         const lfAllRadio2 = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="all-planets"]');
         const lfIdleRadio2 = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="idle-planets"]');
         if (lfAllRadio2 && lfIdleRadio2) {
           if (matchCount === 0) {
-            dimRadio(lfAllRadio2, `无 ${speciesLabelMap[species] ?? species} species 的星球, 不能扇出`);
-            dimRadio(lfIdleRadio2, `无 ${speciesLabelMap[species] ?? species} species 的星球, 不能扇出`);
+            dimRadio(lfAllRadio2, `無 ${speciesLabelMap[species] ?? species} species 的星球, 不能扇出`);
+            dimRadio(lfIdleRadio2, `無 ${speciesLabelMap[species] ?? species} species 的星球, 不能扇出`);
           } else {
             // Restore (subject to original anyOccupied / anyIdle rules below).
             lfAllRadio2.disabled = false;
@@ -1738,8 +1738,8 @@ function openGoalsSettings(
       }
       const lfAllRadio = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="all-planets"]');
       const lfIdleRadio = m.querySelector<HTMLInputElement>('input[name="lf-planet-radio"][value="idle-planets"]');
-      if (anyLfOccupied) dimRadio(lfAllRadio, "有星球生命建筑队列在建, 不能选 '所有星球'");
-      if (!anyLfIdle) dimRadio(lfIdleRadio, "无空闲星球, 不能选 '空闲星球'");
+      if (anyLfOccupied) dimRadio(lfAllRadio, "有星球生命建築隊列在建, 不能選 '所有星球'");
+      if (!anyLfIdle) dimRadio(lfIdleRadio, "無空閒星球, 不能選 '空閒星球'");
       refreshLfDesc();
       lfCreateBtn?.addEventListener("click", async () => {
         if (!lfStatusEl) return;
@@ -1747,10 +1747,10 @@ function openGoalsSettings(
         const buildingRadio = lfBuildingRadios().find((r) => r.checked);
         const lvl = parseInt(lfLevelInput?.value ?? "", 10);
         const pri = parseInt(lfPriorityInput?.value ?? "5", 10) || 5;
-        if (!planetRadio) { lfStatusEl.textContent = "请选星球"; lfStatusEl.style.color = "#a06060"; return; }
-        if (!buildingRadio) { lfStatusEl.textContent = "请选建筑"; lfStatusEl.style.color = "#a06060"; return; }
-        if (!lvl || lvl < 1 || lvl > 50) { lfStatusEl.textContent = "级别须 1-50"; lfStatusEl.style.color = "#a06060"; return; }
-        lfStatusEl.textContent = "创建中…"; lfStatusEl.style.color = "#7080a0";
+        if (!planetRadio) { lfStatusEl.textContent = "請選星球"; lfStatusEl.style.color = "#a06060"; return; }
+        if (!buildingRadio) { lfStatusEl.textContent = "請選建築"; lfStatusEl.style.color = "#a06060"; return; }
+        if (!lvl || lvl < 1 || lvl > 50) { lfStatusEl.textContent = "級別須 1-50"; lfStatusEl.style.color = "#a06060"; return; }
+        lfStatusEl.textContent = "創建中…"; lfStatusEl.style.color = "#7080a0";
         const lfOccCheck = (pid: string): boolean => {
           const lfBq = (storeRef?.state?.planets?.[pid] as { lf_build_q?: { ends_at?: number } } | undefined)?.lf_build_q;
           return !!lfBq && (lfBq.ends_at ?? 0) > nowMs;
@@ -1780,10 +1780,10 @@ function openGoalsSettings(
           } catch (e) { errs.push(`${pid}: ${(e as Error).message ?? e}`); }
         }
         if (errs.length === 0) {
-          lfStatusEl.textContent = `✓ 已创建 ${okCount} 个任务`;
+          lfStatusEl.textContent = `✓ 已創建 ${okCount} 個任務`;
           lfStatusEl.style.color = "#7cfc00";
         } else {
-          lfStatusEl.textContent = `部分失败: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
+          lfStatusEl.textContent = `部分失敗: ${okCount} ok / ${errs.length} err — ${errs[0]}`;
           lfStatusEl.style.color = "#a06060";
         }
       });
@@ -1792,12 +1792,12 @@ function openGoalsSettings(
     // v0.0.599 — research pane wiring (global queue, no planet selector).
     {
       const RESEARCH_LABEL: Record<string, string> = {
-        energyTech: "能量技术", laserTech: "激光技术", ionTech: "离子技术",
-        hyperspaceTech: "超空间技术", plasmaTech: "等离子技术",
-        combustion: "内燃机引擎", impulseDrive: "脉冲引擎", hyperspaceDrive: "超空间引擎",
-        espionageTech: "间谍技术", computerTech: "电脑技术",
-        astrophysics: "天体物理", intergalactic: "星际研究", gravitonTech: "引力技术",
-        weapons: "武器技术", shielding: "防御护盾", armor: "装甲技术",
+        energyTech: "能量技術", laserTech: "激光技術", ionTech: "離子技術",
+        hyperspaceTech: "超空間技術", plasmaTech: "等離子技術",
+        combustion: "內燃機引擎", impulseDrive: "脈衝引擎", hyperspaceDrive: "超空間引擎",
+        espionageTech: "間諜技術", computerTech: "電腦技術",
+        astrophysics: "天體物理", intergalactic: "星際研究", gravitonTech: "引力技術",
+        weapons: "武器技術", shielding: "防御護盾", armor: "裝甲技術",
       };
       const rsTechRadios = (): HTMLInputElement[] => Array.from(
         m.querySelectorAll<HTMLInputElement>('input[name="rs-tech-radio"]'),
@@ -1808,7 +1808,7 @@ function openGoalsSettings(
       const rsStatusEl = m.querySelector<HTMLElement>("[data-rs-status]");
       const rsCreateBtn = m.querySelector<HTMLButtonElement>("[data-rs-create]");
       const rsQueueEl = m.querySelector<HTMLElement>("[data-rs-queue]");
-      // v0.0.601 — operator 2026-06-01 "引力技术如果已经研究了, 就变成灰色".
+      // v0.0.601 — operator 2026-06-01 "引力技術如果已經研究了, 就變成灰色".
       // gravitonTech is a one-shot research (L1 unlocks deathstar — ogame
       // doesn't let it go higher without re-researching for cost cycles).
       // Disable the radio when already at L1+.
@@ -1821,7 +1821,7 @@ function openGoalsSettings(
           if (lbl) {
             lbl.style.opacity = "0.4";
             lbl.style.cursor = "not-allowed";
-            lbl.title = `引力技术已研究 (L${rsLevelsInit["gravitonTech"]}) — 一次性研究, 不能重做`;
+            lbl.title = `引力技術已研究 (L${rsLevelsInit["gravitonTech"]}) — 一次性研究, 不能重做`;
           }
         }
       }
@@ -1832,31 +1832,31 @@ function openGoalsSettings(
           const techLabel = RESEARCH_LABEL[rq.tech ?? ""] ?? rq.tech ?? "?";
           rsQueueEl.innerHTML = `global queue: <span style="color:#ffaa66;">${escapeHtml(techLabel)} L${rq.level} eta=${etaMin}min</span>`;
         } else {
-          rsQueueEl.innerHTML = `global queue: <span style="color:#7cfc00;">空闲</span>`;
+          rsQueueEl.innerHTML = `global queue: <span style="color:#7cfc00;">空閒</span>`;
         }
       }
-      // v0.0.600 — operator 2026-06-01 "点对应的科技, 下面显示这个科技的当前
-      // 等级". When operator selects a tech radio, show current level from
+      // v0.0.600 — operator 2026-06-01 "點對應的科技, 下面顯示這個科技的當前
+      // 等級". When operator selects a tech radio, show current level from
       // store.research.levels so they know what target level to type.
       const refreshRsDesc = (): void => {
         if (!rsDescEl) return;
         const techRadio = rsTechRadios().find((r) => r.checked);
         const lvl = parseInt(rsLevelInput?.value ?? "", 10);
         if (!techRadio) {
-          rsDescEl.textContent = "（选研究项目 + 级别后显示）";
+          rsDescEl.textContent = "（選研究專案 + 級別後顯示）";
           rsDescEl.style.color = "#5a7090";
           return;
         }
         const tLabel = RESEARCH_LABEL[techRadio.value] ?? techRadio.value;
         const levels = (storeRef?.state as { research?: { levels?: Record<string, number> } } | undefined)?.research?.levels ?? {};
         const curLvl = levels[techRadio.value] ?? 0;
-        const curPart = `当前 ${tLabel} L${curLvl}`;
+        const curPart = `當前 ${tLabel} L${curLvl}`;
         if (!lvl) {
-          rsDescEl.textContent = `${curPart}（输入目标级别即可创建）`;
+          rsDescEl.textContent = `${curPart}（輸入目標級別即可創建）`;
           rsDescEl.style.color = "#7cfc00";
           return;
         }
-        rsDescEl.textContent = `${curPart} → 目标 L${lvl}`;
+        rsDescEl.textContent = `${curPart} → 目標 L${lvl}`;
         rsDescEl.style.color = "#7cfc00";
       };
       for (const r of rsTechRadios()) r.addEventListener("change", refreshRsDesc);
@@ -1867,9 +1867,9 @@ function openGoalsSettings(
         const techRadio = rsTechRadios().find((r) => r.checked);
         const lvl = parseInt(rsLevelInput?.value ?? "", 10);
         const pri = parseInt(rsPriorityInput?.value ?? "5", 10) || 5;
-        if (!techRadio) { rsStatusEl.textContent = "请选研究项目"; rsStatusEl.style.color = "#a06060"; return; }
-        if (!lvl || lvl < 1 || lvl > 30) { rsStatusEl.textContent = "级别须 1-30"; rsStatusEl.style.color = "#a06060"; return; }
-        rsStatusEl.textContent = "创建中…"; rsStatusEl.style.color = "#7080a0";
+        if (!techRadio) { rsStatusEl.textContent = "請選研究專案"; rsStatusEl.style.color = "#a06060"; return; }
+        if (!lvl || lvl < 1 || lvl > 30) { rsStatusEl.textContent = "級別須 1-30"; rsStatusEl.style.color = "#a06060"; return; }
+        rsStatusEl.textContent = "創建中…"; rsStatusEl.style.color = "#7080a0";
         try {
           const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
             method: "POST",
@@ -1881,7 +1881,7 @@ function openGoalsSettings(
             }),
           });
           if (r.ok) {
-            rsStatusEl.textContent = `✓ 已创建研究任务`;
+            rsStatusEl.textContent = `✓ 已創建研究任務`;
             rsStatusEl.style.color = "#7cfc00";
           } else {
             rsStatusEl.textContent = `HTTP ${r.status}`;
@@ -1916,12 +1916,12 @@ function openGoalsSettings(
       // v0.0.605 — operator 2026-06-01 真相: lifeform_research is per-planet,
       // not per-species globally. ogame may carry research entries from
       // multiple species on the same planet (historical species switches).
-      // v0.0.615 — operator 2026-06-01 "不要兜底，网页上有名字". Labels
+      // v0.0.615 — operator 2026-06-01 "不要兜底，網頁上有名字". Labels
       // come from store.tech_labels (harvested from ogame DOM at
       // lfresearch page visit). No catalog fallback. If a tech has no
       // harvested label (planet/page not yet visited), show the canonical
       // key + a hint to visit the page.
-      // v0.0.620 — operator "已经切换了种族的星球老科技是无效的". Defense
+      // v0.0.620 — operator "已經切換了種族的星球老科技是無效的". Defense
       // in depth: even if boot-sync hasn't replaced stale entries yet,
       // filter at render time by planet's CURRENT species. lf research IDs
       // are species-tagged by prefix (11xxx human, 12xxx rocktal,
@@ -1954,7 +1954,7 @@ function openGoalsSettings(
           console.info(`[panel/lf-research/render] planet=${planetRadio.value} coord=${coord} species=${planetSpecies} entries=${Object.keys(lfr).length} lfr={${lfrSummary}}`);
         }
         currentLrLabels.clear();
-        // v0.0.628 — operator 2026-06-01 "3:260:9 用了一个人类科技".
+        // v0.0.628 — operator 2026-06-01 "3:260:9 用了一個人類科技".
         // ogame allows cross-species lf research via artifacts (3,600
         // artifacts = swap one tech to a non-native species). 3:260:9
         // has humans 11201 (星際使者 L5) alongside kaelesh 14202-14212.
@@ -1970,8 +1970,8 @@ function openGoalsSettings(
         void planetSpecies;
         if (entries.length === 0) {
           lrResearchList.innerHTML = planetRadio
-            ? `<span style="color:#5a7090; font-size:11px;">该星球未 unlock 任何生命研究 — boot 同步未完成或该星球数据未到, 等几秒</span>`
-            : `<span style="color:#5a7090; font-size:11px;">请先选星球</span>`;
+            ? `<span style="color:#5a7090; font-size:11px;">該星球未 unlock 任何生命研究 — boot 同步未完成或該星球資料未到, 等幾秒</span>`
+            : `<span style="color:#5a7090; font-size:11px;">請先選星球</span>`;
           return;
         }
         // v0.0.627 — operator 2026-06-01 "研究按照 id 排序". Match the
@@ -1986,14 +1986,14 @@ function openGoalsSettings(
           .map(([k, lvl]) => {
             const name = techLabels[k] ?? k;
             currentLrLabels.set(k, name);
-            return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="当前 L${lvl}"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)} <span style="color:#7080a0;">L${lvl}</span></span></label>`;
+            return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="當前 L${lvl}"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)} <span style="color:#7080a0;">L${lvl}</span></span></label>`;
           }).join("");
         lrResearchList.innerHTML = html;
         for (const r of lrTechRadios()) r.addEventListener("change", refreshLrDesc);
       };
-      const speciesLabelMapLr: Record<string, string> = { humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什" };
+      const speciesLabelMapLr: Record<string, string> = { humans: "人類", rocktal: "巖族", mechas: "機械族", kaelesh: "凱萊什" };
       // v0.0.603 — per-planet current level display. lifeform_research is
-      // per-planet (operator 2026-06-01 "生命研究每个星球是不同的"), read
+      // per-planet (operator 2026-06-01 "生命研究每個星球是不同的"), read
       // from store.planets[pid].lifeform_research[tech].
       const refreshLrDesc = (): void => {
         if (!lrDescEl) return;
@@ -2002,7 +2002,7 @@ function openGoalsSettings(
         const techRadio = lrTechRadios().find((r) => r.checked);
         const lvl = parseInt(lrLevelInput?.value ?? "", 10);
         if (!speciesRadio || !planetRadio || !techRadio) {
-          lrDescEl.textContent = "（选物种 + 星球 + 研究 + 级别后显示）";
+          lrDescEl.textContent = "（選物種 + 星球 + 研究 + 級別後顯示）";
           lrDescEl.style.color = "#5a7090";
           return;
         }
@@ -2011,15 +2011,15 @@ function openGoalsSettings(
         const coord = planetCoordById.get(planetRadio.value) ?? "?";
         const lfResearch = (storeRef?.state?.planets?.[planetRadio.value] as { lifeform_research?: Record<string, number> } | undefined)?.lifeform_research ?? {};
         const curLvl = lfResearch[techRadio.value] ?? 0;
-        const curPart = `当前 ${coord} ${tLabel} L${curLvl}`;
+        const curPart = `當前 ${coord} ${tLabel} L${curLvl}`;
         if (!lvl) {
-          lrDescEl.textContent = `${curPart}（输入目标级别即可创建, ${sn}）`;
+          lrDescEl.textContent = `${curPart}（輸入目標級別即可創建, ${sn}）`;
         } else {
-          lrDescEl.textContent = `${curPart} → 目标 L${lvl} (${sn})`;
+          lrDescEl.textContent = `${curPart} → 目標 L${lvl} (${sn})`;
         }
         lrDescEl.style.color = "#7cfc00";
       };
-      const speciesLabelLrMap: Record<string, string> = { humans: "人类", rocktal: "岩族", mechas: "机械族", kaelesh: "凯莱什" };
+      const speciesLabelLrMap: Record<string, string> = { humans: "人類", rocktal: "巖族", mechas: "機械族", kaelesh: "凱萊什" };
       // v0.0.607 — operator 2026-06-01 bug ①: species change should dim
       // planet rows whose species ≠ selected (mirror lf-build).
       const applyLrSpeciesFilter = (species: string): void => {
@@ -2034,8 +2034,8 @@ function openGoalsSettings(
             label.style.opacity = "0.3";
             label.style.cursor = "not-allowed";
             label.title = sp
-              ? `该星球 species=${speciesLabelLrMap[sp] ?? sp}, 不匹配当前选择 (${speciesLabelLrMap[species] ?? species})`
-              : `该星球未识别 species`;
+              ? `該星球 species=${speciesLabelLrMap[sp] ?? sp}, 不匹配當前選擇 (${speciesLabelLrMap[species] ?? species})`
+              : `該星球未識別 species`;
           } else {
             radio.disabled = false;
             label.style.opacity = "1";
@@ -2046,7 +2046,7 @@ function openGoalsSettings(
         const checked = lrPlanetRadios().find((r) => r.checked);
         if (checked?.disabled) checked.checked = false;
       };
-      // v0.0.625 — operator 2026-06-01 "是没有更新吗?". Two add-ons:
+      // v0.0.625 — operator 2026-06-01 "是沒有更新嗎?". Two add-ons:
       // 1. 🔄 button: force-fetch the SELECTED planet's lfresearch (uses
       //    refreshOnePage with forcePlanetId; REPLACES store data).
       // 2. Auto-rerender on store updates so post-fetch the new data
@@ -2056,7 +2056,7 @@ function openGoalsSettings(
         lrForceSyncBtn.addEventListener("click", async () => {
           const planetRadio = lrPlanetRadios().find((r) => r.checked);
           if (!planetRadio) {
-            if (lrResearchList) lrResearchList.innerHTML = `<span style="color:#ffaa00; font-size:11px;">请先选星球</span>`;
+            if (lrResearchList) lrResearchList.innerHTML = `<span style="color:#ffaa00; font-size:11px;">請先選星球</span>`;
             return;
           }
           const pid = planetRadio.value;
@@ -2088,20 +2088,20 @@ function openGoalsSettings(
         renderLrResearch(r.value);
         refreshLrDesc();
       });
-      // v0.0.604 — operator 2026-06-01 "选择星球的时候, 显示当前星球的生命
+      // v0.0.604 — operator 2026-06-01 "選擇星球的時候, 顯示當前星球的生命
       // 科技". Two-piece UX: (a) annotate each planet row with [species tag]
       // (b) on planet change, auto-pick the matching species radio so the
       // research catalog re-renders for the planet's actual species.
       for (const radio of lrPlanetRadios()) {
         const pid = radio.value;
         const sp = livePlanetSpecies(pid);
-        const tag = sp ? speciesLabelMapLr[sp] ?? sp : "未设置";
+        const tag = sp ? speciesLabelMapLr[sp] ?? sp : "未設定";
         const span = radio.parentElement?.querySelector("span");
         if (span && !span.textContent?.includes("[")) {
           span.textContent = `${span.textContent} [${tag}]`;
         }
       }
-      // v0.0.608 — operator 2026-06-01 "不要猜, 不懂要去看官方文档".
+      // v0.0.608 — operator 2026-06-01 "不要猜, 不懂要去看官方文檔".
       // Auto-fetch lfresearch page on planet pick if store is empty for
       // that planet. The page's HTML carries the REAL data-technology IDs
       // and levels — no more catalog guessing. Uses cpPostWithRetry (the
@@ -2110,7 +2110,7 @@ function openGoalsSettings(
         if (!lrResearchList) return;
         const existing = (storeRef?.state?.planets?.[pid] as { lifeform_research?: Record<string, number> } | undefined)?.lifeform_research;
         if (existing && Object.keys(existing).length > 0) return; // already loaded
-        lrResearchList.innerHTML = `<span style="color:#7080a0; font-size:11px;">加载该星球 lfresearch 真实数据…</span>`;
+        lrResearchList.innerHTML = `<span style="color:#7080a0; font-size:11px;">加載該星球 lfresearch 真實資料…</span>`;
         try {
           // Trigger boot.ts page-aware extraction via the exposed force
           // refresh hook. boot.ts will fetch component=lfresearch, parse
@@ -2153,10 +2153,10 @@ function openGoalsSettings(
         const techRadio = lrTechRadios().find((r) => r.checked);
         const lvl = parseInt(lrLevelInput?.value ?? "", 10);
         const pri = parseInt(lrPriorityInput?.value ?? "5", 10) || 5;
-        if (!planetRadio) { lrStatusEl.textContent = "请选星球"; lrStatusEl.style.color = "#a06060"; return; }
-        if (!techRadio) { lrStatusEl.textContent = "请选研究项目"; lrStatusEl.style.color = "#a06060"; return; }
-        if (!lvl || lvl < 1 || lvl > 50) { lrStatusEl.textContent = "级别须 1-50"; lrStatusEl.style.color = "#a06060"; return; }
-        lrStatusEl.textContent = "创建中…"; lrStatusEl.style.color = "#7080a0";
+        if (!planetRadio) { lrStatusEl.textContent = "請選星球"; lrStatusEl.style.color = "#a06060"; return; }
+        if (!techRadio) { lrStatusEl.textContent = "請選研究專案"; lrStatusEl.style.color = "#a06060"; return; }
+        if (!lvl || lvl < 1 || lvl > 50) { lrStatusEl.textContent = "級別須 1-50"; lrStatusEl.style.color = "#a06060"; return; }
+        lrStatusEl.textContent = "創建中…"; lrStatusEl.style.color = "#7080a0";
         try {
           const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
             method: "POST",
@@ -2169,7 +2169,7 @@ function openGoalsSettings(
             }),
           });
           if (r.ok) {
-            lrStatusEl.textContent = `✓ 已创建生命研究任务`;
+            lrStatusEl.textContent = `✓ 已創建生命研究任務`;
             lrStatusEl.style.color = "#7cfc00";
           } else {
             lrStatusEl.textContent = `HTTP ${r.status}`;
@@ -2218,7 +2218,7 @@ function openGoalsSettings(
       const status = m.querySelector<HTMLElement>("[data-goal-nl-status]");
       const description = (ta?.value ?? "").trim();
       if (!description) {
-        if (status) { status.textContent = "× 描述不能为空"; status.style.color = "#ff6b6b"; }
+        if (status) { status.textContent = "× 描述不能爲空"; status.style.color = "#ff6b6b"; }
         return;
       }
       if (status) { status.textContent = "parsing…"; status.style.color = "#7080a0"; }
@@ -2243,7 +2243,7 @@ function openGoalsSettings(
           const radio = m.querySelector<HTMLInputElement>(`input[name="goal-planet-radio"][value="${j.parsed.planet}"]`);
           if (radio) radio.checked = true;
         }
-        if (status) { status.textContent = "✓ 已填入表单, 检查后点击创建任务"; status.style.color = "#7cfc00"; }
+        if (status) { status.textContent = "✓ 已填入表單, 檢查後點選創建任務"; status.style.color = "#7cfc00"; }
       } catch (e) {
         if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
       }
@@ -2258,9 +2258,9 @@ function openGoalsSettings(
       let target: Record<string, unknown>;
       try {
         const raw = (targetTa?.value ?? "").trim();
-        if (!raw) throw new Error("target JSON 不能为空");
+        if (!raw) throw new Error("target JSON 不能爲空");
         const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("target 必须是 object");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("target 必須是 object");
         target = parsed;
       } catch (e) {
         if (status) { status.textContent = `× ${(e as Error).message}`; status.style.color = "#ff6b6b"; }
@@ -2268,8 +2268,8 @@ function openGoalsSettings(
       }
       // v0.0.451: fanout — "all-planets" / "all-moons" iterates every
       // matching body and POSTs one goal per. Single-planet radio still
-      // sends one POST. Operator 2026-05-29: "不指定 — 让 planner 默认"
-      // 改成"所有星球",并加"所有月球"扇出。
+      // sends one POST. Operator 2026-05-29: "不指定 — 讓 planner 預設"
+      // 改成"所有星球",並加"所有月球"扇出。
       const planetIds: (string | undefined)[] = [];
       if (planetSel === "all-planets") {
         for (const k of sortedCoordKeys) {
@@ -2277,7 +2277,7 @@ function openGoalsSettings(
           if (p) planetIds.push(p.id);
         }
         if (planetIds.length === 0) {
-          if (status) { status.textContent = "× 没有 planet 可扇出"; status.style.color = "#ff6b6b"; }
+          if (status) { status.textContent = "× 沒有 planet 可扇出"; status.style.color = "#ff6b6b"; }
           return;
         }
       } else if (planetSel === "all-moons") {
@@ -2286,7 +2286,7 @@ function openGoalsSettings(
           if (mn) planetIds.push(mn.id);
         }
         if (planetIds.length === 0) {
-          if (status) { status.textContent = "× 没有 moon 可扇出"; status.style.color = "#ff6b6b"; }
+          if (status) { status.textContent = "× 沒有 moon 可扇出"; status.style.color = "#ff6b6b"; }
           return;
         }
       } else {
@@ -2328,12 +2328,12 @@ function openGoalsSettings(
 }
 
 // M5 — Transport settings modal. Operator 2026-05-29 spec:
-//   1. 选择运输舰的来源星球 (displays LC/SC counts on that planet),
-//      checkbox "空船跳跃门可用时 是否使用跳跃门".
-//   2. 资源所在星球 — pick planet, shows M/C/D, lets operator override
+//   1. 選擇運輸艦的來源星球 (displays LC/SC counts on that planet),
+//      checkbox "空船跳躍門可用時 是否使用跳躍門".
+//   2. 資源所在星球 — pick planet, shows M/C/D, lets operator override
 //      the amount to ship per resource, computes needed LC vs SC.
-//   3. 目标星球.
-//   4. 选 LC or SC → 自动填入数量 = ceil(total_res / ship_cap).
+//   3. 目標星球.
+//   4. 選 LC or SC → 自動填入數量 = ceil(total_res / ship_cap).
 // Submit: Phase 1 POSTs a single `transport` goal (sidecar's existing
 // type). Phase 2 will add the JG-aware multi-hop chain (deploy →
 // jumpgate → deploy → transport).
@@ -2365,7 +2365,7 @@ function openTransportSettings(
     const stCap = storeRef?.state?.server?.ship_cargo_capacity?.smallCargo ?? 5000;
     const inputStyle = "background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:3px 6px; font-size:11px;";
     const fmt = (n: number): string => n.toLocaleString("en-US");
-    // Operator 2026-05-29: 所有星球选择框统一 2 列 grid (行星 | 月球).
+    // Operator 2026-05-29: 所有星球選擇框統一 2 列 grid (行星 | 月球).
     // Group by coord key so planet + sibling moon share the same row.
     const groupedByCoord = new Map<string, { planet?: StorePlanet; moon?: StorePlanet }>();
     for (const p of allPlanets) {
@@ -2384,9 +2384,9 @@ function openTransportSettings(
       }
       return 0;
     });
-    // v0.0.512 — operator 2026-05-31: 改成 type 切换 + 2 列 coord cells.
-    // 头排 radio "🌍 星球 / 🌙 月球" 切类型, 下面 coord cells 2 列, 每 cell
-    // 是 [G:S:P] + 选择 radio. 切换 type 时显示对应类型的 cells。
+    // v0.0.512 — operator 2026-05-31: 改成 type 切換 + 2 列 coord cells.
+    // 頭排 radio "🌍 星球 / 🌙 月球" 切類型, 下面 coord cells 2 列, 每 cell
+    // 是 [G:S:P] + 選擇 radio. 切換 type 時顯示對應類型的 cells。
     // v0.0.519 — empire-wide moon count, drives type-toggle moon disable.
     const hasAnyMoon = sortedCoordKeys.some(k => !!groupedByCoord.get(k)?.moon);
     const planetSelectHtml = (radioName: string, includeUnset = false): string => {
@@ -2396,12 +2396,12 @@ function openTransportSettings(
       const moonLabelStyle = hasAnyMoon ? "cursor:pointer;" : "cursor:not-allowed; opacity:0.4;";
       const typeRadio = `<div style="padding:6px 8px; display:flex; gap:14px; font-size:11px; color:#d0d8e0; border-bottom:1px solid #2a3a52; background:#0a1018; position:sticky; top:0;">
         <label style="cursor:pointer;"><input type="radio" name="${radioName}-type" value="planet" checked data-tr-type-toggle="${radioName}" style="margin-right:4px; vertical-align:middle;"/>🌍 星球</label>
-        <label style="${moonLabelStyle}" title="${hasAnyMoon ? "" : "empire 无任何月球, 不可选"}"><input type="radio" name="${radioName}-type" value="moon" ${moonAttrs} style="margin-right:4px; vertical-align:middle;"/>🌙 月球</label>
+        <label style="${moonLabelStyle}" title="${hasAnyMoon ? "" : "empire 無任何月球, 不可選"}"><input type="radio" name="${radioName}-type" value="moon" ${moonAttrs} style="margin-right:4px; vertical-align:middle;"/>🌙 月球</label>
       </div>`;
       const unset = includeUnset
         ? `<div style="padding:4px 8px; border-bottom:1px solid #1a2030;">
             <label style="cursor:pointer; color:#7080a0; font-size:11px;">
-              <input type="radio" name="${radioName}" value="" checked style="margin-right:6px; vertical-align:middle;"/>(不选 — 默认目标)
+              <input type="radio" name="${radioName}" value="" checked style="margin-right:6px; vertical-align:middle;"/>(不選 — 預設目標)
             </label>
           </div>`
         : "";
@@ -2430,70 +2430,70 @@ function openTransportSettings(
         ${inner}
       </div>`;
     body.innerHTML = `
-      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">三步选择: 舰船 → 资源 → 目标 (→ 停泊). JG 多跳链需选停泊星球.</div>
-      ${sectionCard("① 舰船星球",
+      <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">三步選擇: 艦船 → 資源 → 目標 (→ 停泊). JG 多跳鏈需選停泊星球.</div>
+      ${sectionCard("① 艦船星球",
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-source-radio")}</div>
-        <div data-tr-source-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(选择来源星球后显示船数)</div>
+        <div data-tr-source-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(選擇來源星球後顯示船數)</div>
         <label style="display:flex; gap:6px; align-items:center; padding-top:6px; cursor:pointer; color:#d0d8e0; font-size:11px;">
           <input type="checkbox" data-tr-jg-enable checked/>
-          <span>空船跳跃门可用时 → 使用跳跃门 (Phase 2 生效)</span>
+          <span>空船跳躍門可用時 → 使用跳躍門 (Phase 2 生效)</span>
         </label>`)}
-      ${sectionCard("② 资源星球",
+      ${sectionCard("② 資源星球",
         `<label style="display:block; cursor:pointer; color:#d0d8e0; font-size:11px; padding-bottom:6px;">
-          <input type="checkbox" data-tr-resource-sameas-ship checked style="margin-right:6px; vertical-align:middle;"/>同 ① 舰船星球
+          <input type="checkbox" data-tr-resource-sameas-ship checked style="margin-right:6px; vertical-align:middle;"/>同 ① 艦船星球
         </label>
         <div data-tr-resource-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-resource-radio")}</div>
-        <div data-tr-resource-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(选择后显示当前资源)</div>`)}
-      ${sectionCard("③ 目标星球",
+        <div data-tr-resource-info style="color:#7080a0; font-size:10px; padding-top:6px; min-height:14px;">(選擇後顯示當前資源)</div>`)}
+      ${sectionCard("③ 目標星球",
         `<div style="max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-target-radio")}</div>`)}
-      ${sectionCard("④ 停泊星球 <span style='color:#7080a0; font-weight:normal;'>(不选 = 停在目标 / 选另一处 = 卸完资源用 deploy 飞过去)</span>",
+      ${sectionCard("④ 停泊星球 <span style='color:#7080a0; font-weight:normal;'>(不選 = 停在目標 / 選另一處 = 卸完資源用 deploy 飛過去)</span>",
         `<div style="display:flex; gap:14px; flex-wrap:wrap; padding-bottom:6px; font-size:11px; color:#d0d8e0;">
-          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="ship" data-tr-stopover-shortcut checked style="margin-right:4px; vertical-align:middle;"/>舰船星球</label>
-          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="resource" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>资源星球</label>
-          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="target" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>目标星球</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="ship" data-tr-stopover-shortcut checked style="margin-right:4px; vertical-align:middle;"/>艦船星球</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="resource" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>資源星球</label>
+          <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="target" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>目標星球</label>
           <label style="cursor:pointer;"><input type="radio" name="tr-stopover-shortcut" value="other" data-tr-stopover-shortcut style="margin-right:4px; vertical-align:middle;"/>其他星球</label>
         </div>
         <div data-tr-stopover-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
-      ${sectionCard("⑤ 选船类型 + 资源装载 + 数量",
+      ${sectionCard("⑤ 選船類型 + 資源裝載 + 數量",
         `<div style="display:flex; gap:12px; padding-bottom:6px;">
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> 大运 LC (cap ${fmt(ltCap)})</label>
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小运 SC (cap ${fmt(stCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="largeCargo" checked data-tr-ship/> 大運 LC (cap ${fmt(ltCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="tr-ship" value="smallCargo" data-tr-ship/> 小運 SC (cap ${fmt(stCap)})</label>
         </div>
         <div style="display:flex; gap:10px; padding:4px 0; align-items:center; font-size:11px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="m" checked style="margin:0;"/>
-            <span>金属 M</span>
+            <span>金屬 M</span>
             <input data-tr-cargo="m" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
           </label>
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="c" checked style="margin:0;"/>
-            <span>晶体 C</span>
+            <span>晶體 C</span>
             <input data-tr-cargo="c" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
           </label>
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="d" checked style="margin:0;"/>
-            <span>重氢 D</span>
+            <span>重氫 D</span>
             <input data-tr-cargo="d" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
           </label>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding-top:4px;">
-          <span style="color:#d0d8e0; font-size:11px; width:60px;">数量</span>
+          <span style="color:#d0d8e0; font-size:11px; width:60px;">數量</span>
           <input data-tr-ship-count type="number" min="0" step="1" value="0" onclick="this.select()" style="${inputStyle} width:100px;"/>
-          <span data-tr-ship-need style="color:#7cfc00; font-size:10px;">(改 ②/④ 后自动算)</span>
+          <span data-tr-ship-need style="color:#7cfc00; font-size:10px;">(改 ②/④ 後自動算)</span>
         </div>`)}
-      ${sectionCard("⑥ 跳跃门返程选项",
+      ${sectionCard("⑥ 跳躍門返程選項",
         `<label style="cursor:pointer; color:#d0d8e0; font-size:11px; display:block;">
           <input type="checkbox" data-tr-jg-take-all checked/>
-          <span style="margin-left:4px;">用跳跃门往回走的时候带回月球上所有的船</span>
-          <span style="color:#7080a0; font-size:10px; display:block; margin-left:20px; margin-top:2px;">勾选 = JG 那一段动态带走源月球当时所有 ships (LC/SC/其他)<br/>不勾选 = JG 只带配置的 ships, 其他留在月球</span>
+          <span style="margin-left:4px;">用跳躍門往回走的時候帶回月球上所有的船</span>
+          <span style="color:#7080a0; font-size:10px; display:block; margin-left:20px; margin-top:2px;">勾選 = JG 那一段動態帶走源月球當時所有 ships (LC/SC/其他)<br/>不勾選 = JG 只帶配置的 ships, 其他留在月球</span>
         </label>`)}
       <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
         <span data-tr-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
-        <button data-tr-submit style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">创建运输任务</button>
+        <button data-tr-submit style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">創建運輸任務</button>
       </div>
     `;
     // v0.0.518 — section ②/④ shortcut wiring (operator 2026-05-31).
-    // ② 同 ① 舰船 checkbox (默认勾选, 折叠 picker; ship!=resource 时自动展开):
+    // ② 同 ① 艦船 checkbox (預設勾選, 折疊 picker; ship!=resource 時自動展開):
     const resourceSameAsShipCb = m.querySelector<HTMLInputElement>("[data-tr-resource-sameas-ship]");
     const resourcePickerWrap = m.querySelector<HTMLElement>("[data-tr-resource-picker-wrap]");
     const syncResourceFromShip = (): void => {
@@ -2525,8 +2525,8 @@ function openTransportSettings(
         }
       });
     }
-    // ④ stopover shortcut wiring: 舰船/资源/目标/其他 → 自动设 tr-stopover-radio
-    // 到对应 body id; "其他" 才显 picker。
+    // ④ stopover shortcut wiring: 艦船/資源/目標/其他 → 自動設 tr-stopover-radio
+    // 到對應 body id; "其他" 才顯 picker。
     const stopoverPickerWrap = m.querySelector<HTMLElement>("[data-tr-stopover-picker-wrap]");
     const applyStopoverShortcut = (val: string): void => {
       if (stopoverPickerWrap) stopoverPickerWrap.style.display = val === "other" ? "block" : "none";
@@ -2588,18 +2588,18 @@ function openTransportSettings(
         const p = planetsMap[r.value];
         const lt = p?.ships?.largeCargo ?? 0;
         const st = p?.ships?.smallCargo ?? 0;
-        sourceInfo.innerHTML = `<span style="color:#d0d8e0;">大运 LC × ${fmt(lt)} · 小运 SC × ${fmt(st)}</span>`;
+        sourceInfo.innerHTML = `<span style="color:#d0d8e0;">大運 LC × ${fmt(lt)} · 小運 SC × ${fmt(st)}</span>`;
       });
     }
-    // Operator 2026-05-29: 默认来源 = 当前 ogame 所在 planet. Reads the
+    // Operator 2026-05-29: 預設來源 = 當前 ogame 所在 planet. Reads the
     // ogame-planet-id meta (which ogame keeps in sync with the active
     // session-cp). Falls back silently if meta missing or planet not in
     // the grid (e.g. operator on a moon row not exposed).
     const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
     if (ogameCurrentPid) {
-      // v0.0.521 — operator 2026-05-31 "我在月球时默认舰船星球不对". 之前只
-      // setChecked 但 type toggle 默认 "星球" mode, 月球 radio 在隐藏 section。
-      // 现在: 先判断当前 body type, 把 type toggle 切到对应 mode, 再 set radio。
+      // v0.0.521 — operator 2026-05-31 "我在月球時預設艦船星球不對". 之前只
+      // setChecked 但 type toggle 預設 "星球" mode, 月球 radio 在隱藏 section。
+      // 現在: 先判斷當前 body type, 把 type toggle 切到對應 mode, 再 set radio。
       const currentBody = planetsMap[ogameCurrentPid];
       const currentKind: "planet" | "moon" = currentBody?.type === "moon" ? "moon" : "planet";
       const switchTypeToggle = (radioName: string, kind: "planet" | "moon"): void => {
@@ -2620,13 +2620,13 @@ function openTransportSettings(
         // Scroll the row into view so operator sees the preset selection.
         sourceRadio.scrollIntoView({ block: "center" });
       }
-      // v0.0.518 — section ③ 目标默认也 = 当前星球 (operator 2026-05-31).
+      // v0.0.518 — section ③ 目標預設也 = 當前星球 (operator 2026-05-31).
       const targetRadioDefault = m.querySelector<HTMLInputElement>(`input[name="tr-target-radio"][value="${ogameCurrentPid}"]`);
       if (targetRadioDefault) {
         targetRadioDefault.checked = true;
         targetRadioDefault.dispatchEvent(new Event("change", { bubbles: true }));
       }
-      // v0.0.518 — section ② "同上" 默认勾选, 同步 resource = ship。
+      // v0.0.518 — section ② "同上" 預設勾選, 同步 resource = ship。
       const resCb = m.querySelector<HTMLInputElement>("[data-tr-resource-sameas-ship]");
       if (resCb?.checked) {
         const rr = m.querySelector<HTMLInputElement>(`input[name="tr-resource-radio"][value="${ogameCurrentPid}"]`);
@@ -2635,12 +2635,12 @@ function openTransportSettings(
           rr.dispatchEvent(new Event("change", { bubbles: true }));
         }
       }
-      // v0.0.518 — section ④ shortcut 默认 "舰船星球", stopover = ship planet。
+      // v0.0.518 — section ④ shortcut 預設 "艦船星球", stopover = ship planet。
       const stopRadio = m.querySelector<HTMLInputElement>(`input[name="tr-stopover-radio"][value="${ogameCurrentPid}"]`);
       if (stopRadio) stopRadio.checked = true;
-      // v0.0.521 — operator "显示当前资源部分默认显示舰船星球资源"
-      // 同上模式下虽然 resource radio 已经 set + dispatched change, 但如果 resInfo
-      // 元素查询发生在这之前就漏了。 这里直接强制更新一次。
+      // v0.0.521 — operator "顯示當前資源部分預設顯示艦船星球資源"
+      // 同上模式下雖然 resource radio 已經 set + dispatched change, 但如果 resInfo
+      // 元素查詢發生在這之前就漏了。 這裏直接強制更新一次。
       const resInfo2 = m.querySelector<HTMLElement>("[data-tr-resource-info]");
       const currentP = planetsMap[ogameCurrentPid];
       if (resInfo2 && currentP) {
@@ -2648,18 +2648,18 @@ function openTransportSettings(
         const c_v = currentP.resources?.c ?? 0;
         const d_v = currentP.resources?.d ?? 0;
         resInfo2.innerHTML = `<span style="color:#d0d8e0;">M ${fmt(m_v)} · C ${fmt(c_v)} · D ${fmt(d_v)}</span>`;
-        // v0.0.523 — operator 2026-05-31 "资源没有自动填入输入框". 真因:
-        // boot 时 dispatch change 比 resource radio listener 注册早, change 事件
-        // 没人接 → cargo auto-fill 路径漏了。 这里直接强制把当前星球 bank
-        // 写到 cargo input (curM === 0 时), 跟正常 change handler 行为对齐。
+        // v0.0.523 — operator 2026-05-31 "資源沒有自動填入輸入框". 真因:
+        // boot 時 dispatch change 比 resource radio listener 注冊早, change 事件
+        // 沒人接 → cargo auto-fill 路徑漏了。 這裏直接強制把當前星球 bank
+        // 寫到 cargo input (curM === 0 時), 跟正常 change handler 行爲對齊。
         const cmEl = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
         const ccEl = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
         const cdEl = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
         if (cmEl && (parseInt(cmEl.value || "0", 10) || 0) === 0) cmEl.value = String(m_v);
         if (ccEl && (parseInt(ccEl.value || "0", 10) || 0) === 0) ccEl.value = String(c_v);
         if (cdEl && (parseInt(cdEl.value || "0", 10) || 0) === 0) cdEl.value = String(d_v);
-        // v0.0.530 — operator 2026-05-31 "第一次进入页面没有和资源联动".
-        // 填完 cargo 后强制 updateShipCount, 不再等 input 事件。
+        // v0.0.530 — operator 2026-05-31 "第一次進入頁面沒有和資源聯動".
+        // 填完 cargo 後強制 updateShipCount, 不再等 input 事件。
         updateShipCount();
       }
     }
@@ -2670,7 +2670,7 @@ function openTransportSettings(
       return cb ? cb.checked : true;
     }
     function updateShipCount(): void {
-      // v0.0.531 — 未勾选的资源视为 0
+      // v0.0.531 — 未勾選的資源視爲 0
       const cm = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
       const cc = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
       const cd = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
@@ -2684,8 +2684,8 @@ function openTransportSettings(
       const needed = total > 0 ? Math.ceil(total / cap) : 0;
       const countInput = m.querySelector<HTMLInputElement>("[data-tr-ship-count]");
       if (countInput) countInput.value = String(needed);
-      // v0.0.530 — operator 2026-05-31 "船不够显示红色". 比对 ① 舰船星球 的
-      // 真实船数 (LC 或 SC) vs needed, 不够 → 数量输入框 + 旁边提示 红字。
+      // v0.0.530 — operator 2026-05-31 "船不夠顯示紅色". 比對 ① 艦船星球 的
+      // 真實船數 (LC 或 SC) vs needed, 不夠 → 數量輸入框 + 旁邊提示 紅字。
       const sourceVal = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
       const sourceP = sourceVal ? planetsMap[sourceVal] : null;
       const shipKey = ship === "smallCargo" ? "smallCargo" : "largeCargo";
@@ -2697,8 +2697,8 @@ function openTransportSettings(
       }
       const needSpan = m.querySelector<HTMLElement>("[data-tr-ship-need]");
       if (needSpan) {
-        const shortNote = isShort ? ` <span style="color:#ff6b6b; font-weight:bold;">船不够 (有 ${fmt(haveShips)})</span>` : "";
-        needSpan.innerHTML = `需 ${needed} 艘 · 总载 ${fmt(total)}${moonBufferD ? ` (含 +50K d 月球 buffer)` : ""} (cap ${fmt(cap)})${shortNote}`;
+        const shortNote = isShort ? ` <span style="color:#ff6b6b; font-weight:bold;">船不夠 (有 ${fmt(haveShips)})</span>` : "";
+        needSpan.innerHTML = `需 ${needed} 艘 · 總載 ${fmt(total)}${moonBufferD ? ` (含 +50K d 月球 buffer)` : ""} (cap ${fmt(cap)})${shortNote}`;
       }
     }
     for (const r of m.querySelectorAll<HTMLInputElement>('input[name="tr-resource-radio"]')) {
@@ -2710,9 +2710,9 @@ function openTransportSettings(
         const c_v = p?.resources?.c ?? 0;
         const d_v = p?.resources?.d ?? 0;
         resInfo.innerHTML = `<span style="color:#d0d8e0;">M ${fmt(m_v)} · C ${fmt(c_v)} · D ${fmt(d_v)}</span>`;
-        // v0.0.504 — operator 2026-05-30 "提交后数据不对". Original logic
+        // v0.0.504 — operator 2026-05-30 "提交後資料不對". Original logic
         // auto-overwrote cargo with source planet bank on EVERY radio change,
-        // clobbering user's careful prefill from "→ 运输" shortage button.
+        // clobbering user's careful prefill from "→ 運輸" shortage button.
         // New rule: only auto-fill when cargo input is empty/0 (first time).
         // Operator's manual edit + shortage prefill ALWAYS preserved.
         const mi = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
@@ -2727,8 +2727,8 @@ function openTransportSettings(
         updateShipCount();
       });
     }
-    // v0.0.477: cargo overflow indicator (operator 2026-05-30 "如果填的资源
-    // 大于星球有的资源，资源显示红字"). Each input compares against the
+    // v0.0.477: cargo overflow indicator (operator 2026-05-30 "如果填的資源
+    // 大於星球有的資源，資源顯示紅字"). Each input compares against the
     // CURRENT resource-source planet's bank; if user-typed value exceeds,
     // paint the input text red. Reads from radio selection live.
     const refreshCargoOverflowColors = (): void => {
@@ -2750,7 +2750,7 @@ function openTransportSettings(
         } else {
           // v0.0.504 — operator 2026-05-30: setting style.color="" wiped the
           // inline style attr color (#e0e8f0), letting browser default win
-          // (usually dark on dark bg → 文字不可见). Restore explicit values.
+          // (usually dark on dark bg → 文字不可見). Restore explicit values.
           ci.style.color = "#e0e8f0";
           ci.style.borderColor = "#2a3a52";
           ci.title = "";
@@ -2761,8 +2761,8 @@ function openTransportSettings(
     for (const ci of m.querySelectorAll<HTMLInputElement>("[data-tr-cargo]")) {
       ci.addEventListener("input", () => { updateShipCount(); refreshCargoOverflowColors(); });
     }
-    // v0.0.531 — operator 2026-05-31: cargo enable checkbox (M/C/D 各一个).
-    // 默认勾选, 不勾时该资源不装船 (cargo 视为 0)。 同时灰禁对应 input。
+    // v0.0.531 — operator 2026-05-31: cargo enable checkbox (M/C/D 各一個).
+    // 預設勾選, 不勾時該資源不裝船 (cargo 視爲 0)。 同時灰禁對應 input。
     const updateCargoEnabledState = (key: "m" | "c" | "d"): void => {
       const cb = m.querySelector<HTMLInputElement>(`[data-tr-cargo-enable="${key}"]`);
       const inp = m.querySelector<HTMLInputElement>(`[data-tr-cargo="${key}"]`);
@@ -2800,18 +2800,18 @@ function openTransportSettings(
       const target = m.querySelector<HTMLInputElement>('input[name="tr-target-radio"]:checked')?.value ?? "";
       const ship = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
       const shipCount = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
-      // v0.0.531 — 未勾选的资源 cargo = 0
+      // v0.0.531 — 未勾選的資源 cargo = 0
       const cargoM = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
       const cargoC = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
       const cargoD = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
-      if (!source) { if (status) { status.textContent = "× 选 ① 来源星球"; status.style.color = "#ff6b6b"; } return; }
-      if (!target) { if (status) { status.textContent = "× 选 ③ 目标星球"; status.style.color = "#ff6b6b"; } return; }
-      if (shipCount <= 0) { if (status) { status.textContent = "× 数量必须 > 0"; status.style.color = "#ff6b6b"; } return; }
+      if (!source) { if (status) { status.textContent = "× 選 ① 來源星球"; status.style.color = "#ff6b6b"; } return; }
+      if (!target) { if (status) { status.textContent = "× 選 ③ 目標星球"; status.style.color = "#ff6b6b"; } return; }
+      if (shipCount <= 0) { if (status) { status.textContent = "× 數量必須 > 0"; status.style.color = "#ff6b6b"; } return; }
       const targetPlanet = planetsMap[target];
       const targetCoords = (targetPlanet?.coords ?? []).join(":");
       const jgEnabled = (m.querySelector<HTMLInputElement>("[data-tr-jg-enable]")?.checked) ?? false;
       // v0.0.468: operator-controlled take_all per chain (operator 2026-05-30
-      // "默认勾选"). Modal checkbox → checked=true means JG hop legs do dynamic
+      // "預設勾選"). Modal checkbox → checked=true means JG hop legs do dynamic
       // ship sweep on dispatch; unchecked means JG hop carries only configured
       // ships count. Default checked.
       const jgTakeAll = (m.querySelector<HTMLInputElement>("[data-tr-jg-take-all]")?.checked) ?? true;
@@ -2820,16 +2820,16 @@ function openTransportSettings(
       // dispatches them in order as ships arrive at each waypoint.
       const chainId = `txc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const ships = { [ship]: shipCount };
-      // v0.0.466: moon-source deuterium reserve (operator 2026-05-29 "从月球
-      // 装载资源的时候留500000重氢在月球上"). When the resource source body
+      // v0.0.466: moon-source deuterium reserve (operator 2026-05-29 "從月球
+      // 裝載資源的時候留500000重氫在月球上"). When the resource source body
       // is a moon, automatically cap deuterium cargo to leave 500k on the
       // moon — moons don't produce, those 500k are the recall-fuel +
       // JG-cooldown safety reserve. Doesn't touch planet-sourced d.
       const resourceSourceId = resourceSrc ?? source;
       const resourceSourceP = planetsMap[resourceSourceId];
-      const MOON_SOURCE_D_RESERVE = 500_000;   // 月球出发, 留 500K 应急 (operator 2026-05-29 拍板, 不变)
+      const MOON_SOURCE_D_RESERVE = 500_000;   // 月球出發, 留 500K 應急 (operator 2026-05-29 拍板, 不變)
       const MOON_TARGET_D_BUFFER = 50_000;     // v0.0.505 — operator 2026-05-30: 500K 太多, 改 50K
-      // v0.0.494 — TARGET 月球时加 buffer 给到货后做 build 留底。
+      // v0.0.494 — TARGET 月球時加 buffer 給到貨後做 build 留底。
       let cargoDFinal = cargoD;
       if (targetPlanet?.type === "moon") {
         cargoDFinal += MOON_TARGET_D_BUFFER;
@@ -2870,8 +2870,8 @@ function openTransportSettings(
         if (!fromP || !toP || fromP.id === toP.id) return [];
         const fromCoords = (fromP.coords ?? []).join(":");
         const toCoords = (toP.coords ?? []).join(":");
-        // v0.0.462: same-coord shortcut (operator 2026-05-29 "运到本星球的
-        // 月球 任务规划的不对"). When fromCoords === toCoords (planet↔moon
+        // v0.0.462: same-coord shortcut (operator 2026-05-29 "運到本星球的
+        // 月球 任務規劃的不對"). When fromCoords === toCoords (planet↔moon
         // at same G:S:P), there's no long-distance to bridge — JG hop would
         // be moon→itself (nonsense). Emit ONE direct deploy and bail out
         // before the JG-vs-direct decision.
@@ -2936,7 +2936,7 @@ function openTransportSettings(
         goalBodies.push(...genFerry(sourceP.id, resourceP.id, false, "deploy", "ferry_to_res", 12));
       }
       // Segment 2: resource → target (carries cargo). Always fires.
-      // v0.0.465: operator 2026-05-29 rule "运输里面不要有运输 全部都用部署".
+      // v0.0.465: operator 2026-05-29 rule "運輸裏面不要有運輸 全部都用部署".
       // Changed from "transport" (mission=3, ships return) to "deploy"
       // (mission=4, ships stay). Whole chain now uses deploy consistently —
       // ships propagate along the path, no return leg. cargo still goes.
@@ -2974,20 +2974,20 @@ function openTransportSettings(
     // passes targetPlanetId + cargo. Apply order:
     //   ① target radio pre-check
     //   ② resource radio pre-check = current planet (operator 2026-05-29
-    //      "源地址和船所在的星球地址 用我的当前星球"). Set .checked = true
+    //      "源地址和船所在的星球地址 用我的當前星球"). Set .checked = true
     //      WITHOUT firing change event — the change handler auto-fills
     //      cargo from resource planet's stockpile, which would overwrite
     //      the shortage cargo we want.
     //   ③ cargo inputs filled with shortage amounts
-    //   ④ call updateShipCount() so 大运数量 auto-computes (input event
+    //   ④ call updateShipCount() so 大運數量 auto-computes (input event
     //      doesn't fire when setting .value programmatically).
     // Source ships planet auto-defaults to current planet via the
     // existing tr-source-radio default-checked logic.
     if (prefill?.targetPlanetId) {
-      // v0.0.522 — goals 的 → 运输 按钮过来时, prefill.targetPlanetId 可能
+      // v0.0.522 — goals 的 → 運輸 按鈕過來時, prefill.targetPlanetId 可能
       // 是 moon (lunarBase / jumpgate goal). 之前只 setChecked 但 type toggle
-      // 默认 "星球" → moon radio 在隐藏 section, submit 读不到正确 body。
-      // 现在: 判 target body 的 type → 切 target type toggle 到对应 mode → 再 set radio。
+      // 預設 "星球" → moon radio 在隱藏 section, submit 讀不到正確 body。
+      // 現在: 判 target body 的 type → 切 target type toggle 到對應 mode → 再 set radio。
       const tgtBody = planetsMap[prefill.targetPlanetId];
       if (tgtBody?.type === "moon") {
         const tt = m.querySelector<HTMLInputElement>('input[name="tr-target-radio-type"][value="moon"]');
@@ -3005,7 +3005,7 @@ function openTransportSettings(
     if (prefill) {
       const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
       if (ogameCurrentPid) {
-        // v0.0.522 — 同 v0.0.521, 资源 radio 在 hidden moon section 时切 type toggle
+        // v0.0.522 — 同 v0.0.521, 資源 radio 在 hidden moon section 時切 type toggle
         const curBody2 = planetsMap[ogameCurrentPid];
         if (curBody2?.type === "moon") {
           const tt = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio-type"][value="moon"]');
@@ -3022,12 +3022,12 @@ function openTransportSettings(
       }
     }
     if (prefill?.cargo) {
-      // v0.0.541 — operator 2026-05-31 "建筑任务里面点运输以后,所需资源
-      // 没有正确填入". Bug: 旧逻辑 if (X > 0) 只覆盖正值, X=0 时保留 boot 块
-      // 填的"当前星球库存"残留 → shortage 只缺 c 时, m/d 输入框还是当前
-      // 星球的 m/d 库存, 操作员看到的"所需资源"跟实际填的对不上.
-      // 修法: 显式按 prefill.cargo 三件都写, 0 就是 0; 同步把 cargoEnable
-      // checkbox 在该资源 == 0 时取消, 不勾不装船 (跟 v0.0.531 配套).
+      // v0.0.541 — operator 2026-05-31 "建築任務裏面點運輸以後,所需資源
+      // 沒有正確填入". Bug: 舊邏輯 if (X > 0) 只覆蓋正值, X=0 時保留 boot 塊
+      // 填的"當前星球庫存"殘留 → shortage 只缺 c 時, m/d 輸入框還是當前
+      // 星球的 m/d 庫存, 操作員看到的"所需資源"跟實際填的對不上.
+      // 修法: 顯式按 prefill.cargo 三件都寫, 0 就是 0; 同步把 cargoEnable
+      // checkbox 在該資源 == 0 時取消, 不勾不裝船 (跟 v0.0.531 配套).
       const cm = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
       const cc = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
       const cd = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
@@ -3041,10 +3041,10 @@ function openTransportSettings(
       }
       updateShipCount();
     }
-    // v0.0.522 — prefill 来源是 goals "→ 运输" 按钮 (有 targetPlanetId), 这意味着
-    // 操作员要 ship → 目标, 跟"同上"语义不冲突, resource 仍然 = ship 默认对。
-    // 但 stopover shortcut 默认 ship 也对 (operator 想运到目标, 然后船回舰船星球
-    // 是合理的)。 这里不强制改 shortcut, 让 v0.0.518 默认 = ship 生效。
+    // v0.0.522 — prefill 來源是 goals "→ 運輸" 按鈕 (有 targetPlanetId), 這意味着
+    // 操作員要 ship → 目標, 跟"同上"語義不衝突, resource 仍然 = ship 預設對。
+    // 但 stopover shortcut 預設 ship 也對 (operator 想運到目標, 然後船回艦船星球
+    // 是合理的)。 這裏不強制改 shortcut, 讓 v0.0.518 預設 = ship 生效。
   });
 }
 
@@ -3144,8 +3144,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   // Last fetched goals — used so tree-toggle clicks can re-render without
   // hitting /v1/goals again.
   let lastGoals: GoalRowFromHttp[] | null = null;
-  // v0.0.487 accordion — operator 2026-05-30 "panel goals 全部展开太长了, 改
-  // 成手风琴". Only one goal expanded at a time; click row header to toggle.
+  // v0.0.487 accordion — operator 2026-05-30 "panel goals 全部展開太長了, 改
+  // 成手風琴". Only one goal expanded at a time; click row header to toggle.
   // null = all collapsed. Persists in localStorage so panel re-mounts (page
   // reload, panel close+open) keep the same row open.
   let expandedGoalId: string | null = (() => {
@@ -3161,7 +3161,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   let lastEmergency: EmergencyPayload | null = null;
   let lastExpedition: ExpeditionPayload | null = null;
   // Persisted section-level collapse state.
-  // Operator 2026-05-26: "panel 菜单 默认都是收起的". One-time migration:
+  // Operator 2026-05-26: "panel 菜單 預設都是收起的". One-time migration:
   // if sentinel v302 not set, overwrite all section flags to collapsed=true
   // (old users had localStorage values from before this directive).
   const COLLAPSED_DEFAULT_SENTINEL = "ogamex.panel.collapsed-default.v302";
@@ -3184,9 +3184,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   };
   // Cargo calculator local state (persisted across re-renders within session).
   // auto-follow: when true, Cargo Calc planet auto-tracks ogame's active planet
-  // (meta[name="ogame-planet-id"]). operator 切星球时资源自动刷新. 一旦 operator
-  // 手动改 dropdown → autoFollow=false, planet 锁定. 重置 autoFollow 通过再次
-  // 选中"= ogame 当前" (UI暂不暴露, 默认就是自动).
+  // (meta[name="ogame-planet-id"]). operator 切星球時資源自動刷新. 一旦 operator
+  // 手動改 dropdown → autoFollow=false, planet 鎖定. 重置 autoFollow 透過再次
+  // 選中"= ogame 當前" (UI暫不暴露, 預設就是自動).
   const cargoState: { planetId: string; ship: "smallCargo" | "largeCargo"; use: { m: boolean; c: boolean; d: boolean }; autoFollow: boolean } = {
     planetId: loadJSON<string>("ogamex.panel.cargo.planet", ""),
     ship: (loadJSON<string>("ogamex.panel.cargo.ship", "largeCargo") as "smallCargo" | "largeCargo"),
@@ -3255,11 +3255,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   }
 
   // v0.0.474: derive panel display status from goal status+reason+type.
-  // Operator 2026-05-30: "停下的时候不要都显示block 添加 building reseaching
-  // 可以反映真实的状态". Maps raw "blocked" + reason text into specific
+  // Operator 2026-05-30: "停下的時候不要都顯示block 添加 building reseaching
+  // 可以反映真實的狀態". Maps raw "blocked" + reason text into specific
   // sub-states so operator can see WHY a goal isn't progressing at a glance.
   function deriveDisplayStatus(g: GoalRowFromHttp, allGoals: GoalRowFromHttp[] = []): { label: string; color: string } {
-    // v0.0.484 — operator 2026-05-30 "统一检查所有任务状态". Single unified
+    // v0.0.484 — operator 2026-05-30 "統一檢查所有任務狀態". Single unified
     // priority ladder, top to bottom. Every layer carries current_step or
     // body_build_q specificity (not just generic "blocked / waiting"). The
     // ladder is documented inline so future edits don't drift.
@@ -3284,8 +3284,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     if (isPaused(g)) return { label: "paused", color: "#8a8aff" };
     // L2 — body's ogame queue is ground truth FOR BUILD/RESEARCH FAMILY ONLY.
     // v0.0.510 — operator 2026-05-31: deploy/transport/jumpgate chain leg
-    // 误显示 "building <body's tech>" 因为 body_build_q 跟 deploy 语义无关。
-    // fleet/jg goals 走自己 status 路径, 不蹭 body 的 build_q。
+    // 誤顯示 "building <body's tech>" 因爲 body_build_q 跟 deploy 語義無關。
+    // fleet/jg goals 走自己 status 路徑, 不蹭 body 的 build_q。
     const isBuildFamily = goalType === "build" || goalType === "build_universal"
       || goalType === "research" || goalType === "build_ships" || goalType === "build_defense"
       || goalType === "lifeform_building";
@@ -3365,10 +3365,10 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       if (/chain prereq.*waiting/i.test(reason)) return { label: "chain wait", color: "#bdb76b" };
       if (/has \d+× .*, need \d+|insufficient.*ship|0× .*, need/i.test(reason)) return { label: "ships short", color: "#ff9b6b" };
       if (/expedition slots full|fleet slots full|early skip, not queued/i.test(reason)) return { label: "slots full", color: "#bdb76b" };
-      if (/storage.*insufficient|insufficient.*storage|倉存容量不足|仓存容量不足|140028/i.test(reason)) return { label: "dest storage full", color: "#ff9b6b" };
-      if (/transient race|140043|請稍後再試|请稍后再试|try again later/i.test(reason)) return { label: "ogame race, retrying", color: "#bdb76b" };
-      if (/100001|未知的錯誤|未知的错误/i.test(reason)) return { label: "ogame error 100001", color: "#ff6b6b" };
-      if (/120023|沒有空間|没有空间|月球上.*空間|月球上.*空间/i.test(reason)) return { label: "moon space full", color: "#ff6b6b" };
+      if (/storage.*insufficient|insufficient.*storage|倉存容量不足|倉存容量不足|140028/i.test(reason)) return { label: "dest storage full", color: "#ff9b6b" };
+      if (/transient race|140043|請稍後再試|請稍後再試|try again later/i.test(reason)) return { label: "ogame race, retrying", color: "#bdb76b" };
+      if (/100001|未知的錯誤|未知的錯誤/i.test(reason)) return { label: "ogame error 100001", color: "#ff6b6b" };
+      if (/120023|沒有空間|沒有空間|月球上.*空間|月球上.*空間/i.test(reason)) return { label: "moon space full", color: "#ff6b6b" };
       if (/cooldown.*remaining/i.test(reason)) return { label: "cooldown", color: "#bdb76b" };
       if (/jumpgate.*not on moon|missing source_moon|missing target_moon/i.test(reason)) return { label: "JG misconfig", color: "#ff6b6b" };
       if (/planet-only building.*cannot.*moon|moon-only building.*cannot.*planet/i.test(reason)) return { label: "body type mismatch", color: "#ff6b6b" };
@@ -3381,9 +3381,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     return { label: g.status, color: "#ccc" };
   }
 
-  // v0.0.526 — operator 2026-05-31 "这部分为什么不折叠?". 翻转默认:
-  // tree node 默认全部折叠, 点击 chevron 才展开 (而不是默认全展开)。
-  // treeExpanded Set 装当前展开的 node key, 没在 set 里的就是折叠。
+  // v0.0.526 — operator 2026-05-31 "這部分爲什麼不折疊?". 翻轉預設:
+  // tree node 預設全部折疊, 點選 chevron 才展開 (而不是預設全展開)。
+  // treeExpanded Set 裝當前展開的 node key, 沒在 set 裏的就是折疊。
   const treeExpanded = new Set<string>();
   function treeKey(n: PrereqTreeNode): string { return `${n.tech}:${n.targetLevel}`; }
 
@@ -3406,7 +3406,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const indent = depth * 14;
     const hasChildren = n.children.length > 0;
     const key = treeKey(n);
-    const collapsed = !treeExpanded.has(key); // v0.0.526 默认折叠
+    const collapsed = !treeExpanded.has(key); // v0.0.526 預設折疊
     const chev = hasChildren
       ? `<span data-tree-toggle="${escapeHtml(key)}" style="display:inline-block; width:12px; cursor:pointer; color:#8090a8; user-select:none;">${collapsed ? "▸" : "▾"}</span>`
       : `<span style="display:inline-block; width:12px;"></span>`;
@@ -3516,8 +3516,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     };
     // Operator 2026-05-29: chain-aware grouping. Goals carrying the same
     // target.chain_id (written by the transport modal) collapse under one
-    // synthetic "🚚 运输 chain" parent row, with each leg shown as a
-    // compact "* G:S:P → G:S:P 部署/跳跃/运输" line.
+    // synthetic "🚚 運輸 chain" parent row, with each leg shown as a
+    // compact "* G:S:P → G:S:P 部署/跳躍/運輸" line.
     const chainStoreRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, { id?: string; coords?: number[] }> } } }).__ogamexStore;
     const planetCoordMap = chainStoreRef?.state?.planets ?? {};
     const resolveCoord = (idOrCoord: string): string => {
@@ -3528,8 +3528,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     };
     const actionCN = (type: string): string =>
       type === "deploy" ? "部署"
-      : type === "jumpgate" ? "跳跃"
-      : type === "transport" ? "运输"
+      : type === "jumpgate" ? "跳躍"
+      : type === "transport" ? "運輸"
       : type;
     const formatChainLeg = (g: GoalRowFromHttp): string => {
       const tgt = (g.target ?? {}) as Record<string, unknown>;
@@ -3638,12 +3638,12 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             };
             const sh = g.resource_shortage;
             const shortageChip = sh && (sh.m + sh.c + sh.d) > 0
-              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title="假设当前产能不变, 这是还需要从其他星球 transport 进来的资源总量">缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="打开运输 modal 自动填写目的+资源 (源=当前星球)">→ 运输</button>`
+              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title="假設當前產能不變, 這是還需要從其他星球 transport 進來的資源總量">缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="打開運輸 modal 自動填寫目的+資源 (源=當前星球)">→ 運輸</button>`
               : "";
             // v0.0.456: decouple shortageChip from totalEta — moons return
             // ETA=∞ (no local production for deuterium etc.), JSON serializes
             // to null, ?? 0 collapses to 0, fallback path was hiding the
-            // shortage chip + 运输 button. Render shortage whenever it's
+            // shortage chip + 運輸 button. Render shortage whenever it's
             // positive regardless of whether ETA is computable.
             const hasShortage = sh && (sh.m + sh.c + sh.d) > 0;
             // v0.0.486 — if body's build_q is currently building the
@@ -3663,7 +3663,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                 : hasShortage
                   ? `<span style="color:#ffaa55;">awaiting transport (ETA n/a — moon local prod = 0)</span>${shortageChip}`
                   : `<span style="color:#7cfc00;">all prereqs met — can execute now</span>`;
-            // v0.0.461: current-step row — "↳ 当前步骤: lunarBase L4 缺 ..."
+            // v0.0.461: current-step row — "↳ 當前步驟: lunarBase L4 缺 ..."
             // separate line below the chain summary so operator sees what
             // the bot is RIGHT NOW trying to fire, and how short on cash.
             const cs = g.current_step;
@@ -3672,31 +3672,31 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
               const csTotal = csh.m + csh.c + csh.d;
               const stepLabel = `${cs.tech} L${cs.level}`;
               // v0.0.486 — operator 2026-05-30: jumpgate L1 已在 build_q,
-              // current_step 还说"缺 X 资源"是逻辑错。 当 body_build_q 跟
-              // current_step 同 tech+level → 这级钱已付, 不再 emit 缺口,
-              // 改显示"在造中, ~Xm 后完工"。
+              // current_step 還說"缺 X 資源"是邏輯錯。 當 body_build_q 跟
+              // current_step 同 tech+level → 這級錢已付, 不再 emit 缺口,
+              // 改顯示"在造中, ~Xm 後完工"。
               const bqMatchesCS = g.body_build_q
                 && g.body_build_q.tech === cs.tech
                 && g.body_build_q.level === cs.level
                 && g.body_build_q.ends_at > Date.now();
               if (bqMatchesCS) {
                 const etaMin = Math.max(0, Math.round((g.body_build_q!.ends_at - Date.now()) / 60_000));
-                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ 当前: ${escapeHtml(stepLabel)} · 🏗 在造中 (~${etaMin}m 完工)</div>`;
+                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ 當前: ${escapeHtml(stepLabel)} · 🏗 在造中 (~${etaMin}m 完工)</div>`;
               }
               if (csTotal === 0) {
-                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ 当前: ${escapeHtml(stepLabel)} · ✅ 资源够, 立即可派</div>`;
+                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ 當前: ${escapeHtml(stepLabel)} · ✅ 資源夠, 立即可派</div>`;
               }
               const shortageBits = [
                 csh.m > 0 ? `${fmtRes(csh.m)} m` : "",
                 csh.c > 0 ? `${fmtRes(csh.c)} c` : "",
                 csh.d > 0 ? `${fmtRes(csh.d)} d` : "",
               ].filter(Boolean).join(" · ");
-              const stepFillBtn = `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="按当前步骤缺口装运">→ 运输</button>`;
-              return `<div style="font-size:10px; color:#ffaa55; margin-bottom:2px;">↳ 当前: ${escapeHtml(stepLabel)} 缺 ${shortageBits}${stepFillBtn}</div>`;
+              const stepFillBtn = `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="按當前步驟缺口裝運">→ 運輸</button>`;
+              return `<div style="font-size:10px; color:#ffaa55; margin-bottom:2px;">↳ 當前: ${escapeHtml(stepLabel)} 缺 ${shortageBits}${stepFillBtn}</div>`;
             })() : "";
-            // v0.0.527 — operator 2026-05-31 "前置链都要归入主链 tree".
-            // 去掉独立 "prereq chain" label, etaHeader 直接挂在 tree 顶部,
-            // 整段就是这一个 goal 的主链 (前置 + 当前 step + 自身).
+            // v0.0.527 — operator 2026-05-31 "前置鏈都要歸入主鏈 tree".
+            // 去掉獨立 "prereq chain" label, etaHeader 直接掛在 tree 頂部,
+            // 整段就是這一個 goal 的主鏈 (前置 + 當前 step + 自身).
             return `<div style="margin-top:6px; padding:4px 0 2px; border-top:1px dashed #2a3a52;">
               <div style="font-size:10px; color:#8090a8; margin-bottom:2px;">${etaHeader}</div>
               ${csLine}
@@ -3713,7 +3713,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // v0.0.487 accordion — header row is clickable to toggle expansion.
       // Detail block (reason + prereq tree + current_step + buttons) only
       // renders for the currently-expanded goal. Chevron indicates state.
-      // v0.0.488 — operator 2026-05-30 "bar 上要显示星球坐标". Coord shows
+      // v0.0.488 — operator 2026-05-30 "bar 上要顯示星球坐標". Coord shows
       // inline on the bar even when collapsed, so operator can scan moons
       // without expanding.
       const isExpanded = expandedGoalId === g.id;
@@ -3726,7 +3726,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         : "";
       return `
         <div style="${mainBg}border-top: 1px solid #2a3a52; padding: 6px 0;">
-          <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? "点击折叠" : "点击展开详情"}">
+          <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? "點選折疊" : "點選展開詳情"}">
             <span>${chevron}${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${coordChip}${etaAtBadge}${awaitingChip}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
             <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${mainBtn}${pauseOrResume}${cancelBtn}</span>
@@ -3746,7 +3746,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const color = derivedLeg.color;
       const displayStatus = derivedLeg.label;
       const prereq = idx === 0
-        ? `<span style="color:#7cfc00; font-size:10px;">(无前置 · 立即派遣)</span>`
+        ? `<span style="color:#7cfc00; font-size:10px;">(無前置 · 立即派遣)</span>`
         : `<span style="color:#a0a8b8; font-size:10px;">前置: 等 Leg ${idx} (${escapeHtml(actionCN(prevType ?? ""))}) 完成</span>`;
       const reasonLine = g.reason ? `<div style="color:#a0a0a0; font-size:10px; margin-top:1px; padding-left:18px;">↳ ${escapeHtml(g.reason)}</div>` : "";
       return `
@@ -3779,7 +3779,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         <div style="border-top:1px solid #2a3a52; padding:6px 0; background:rgba(60,160,200,0.04);">
           <div style="display:flex; align-items:center; gap:6px; justify-content:space-between;">
             <span>
-              <span style="color:#80ffd0; font-weight:bold;">🚚 运输 chain</span>
+              <span style="color:#80ffd0; font-weight:bold;">🚚 運輸 chain</span>
               <span style="color:#8090a8; font-size:10px; margin-left:6px;">${n} legs · ${escapeHtml(firstSrc)} → … → ${escapeHtml(lastDest)}</span>
             </span>
             <span style="display:flex; gap:4px; align-items:center;">
@@ -3815,8 +3815,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     };
     const singletonRows = singletonsTopLevel.map((g) => renderWithChildren(g, 0)).join("");
     const rows = chainBlocks.join("") + singletonRows;
-    // v0.0.529 — operator 2026-05-31 "把运输任务从 goals 移到这里 (cargo 位置)".
-    // 拆 rows: 运输系 (deploy/transport/jumpgate, 含 chain) 单独到 cargoSection,
+    // v0.0.529 — operator 2026-05-31 "把運輸任務從 goals 移到這裏 (cargo 位置)".
+    // 拆 rows: 運輸系 (deploy/transport/jumpgate, 含 chain) 單獨到 cargoSection,
     // 其它 (build/research/expedition 等) 留在 goalsSection.
     const isTransportType = (t: string): boolean => t === "deploy" || t === "transport" || t === "jumpgate";
     const transportChainBlocks_v529: string[] = [];
@@ -3837,7 +3837,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const restGoalCount_v529 = filtered.length - transportGoalCount_v529;
     // Header is the drag handle (cursor:move). Collapse button toggles the
     // body. Close removes the panel entirely.
-    // Operator 2026-05-29 "panel 名称改成 oGame+版本号 添加按钮更新版本":
+    // Operator 2026-05-29 "panel 名稱改成 oGame+版本號 添加按鈕更新版本":
     // title shows current runtime version, update button hidden by default,
     // shown when latestRuntimeVersion (polled from sidecar) > currentVersion.
     // Operator 2026-06-02 — title prefix shows the actual ogame server slug
@@ -3907,7 +3907,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       catch { return true; }
     })();
     const spyToggleRow = `<div style="font-size:11px; padding:4px 0; display:flex; justify-content:space-between; align-items:center; border-top:1px solid #2a2a3a;">
-        <span style="color:#a0a8b8;">侦察 → 紧急起飞</span>
+        <span style="color:#a0a8b8;">偵察 → 緊急起飛</span>
         <button data-spy-save-toggle="1" style="${spySaveOn ? btnStyle("#205a20", "#408a40") : btnStyle("#5a2020", "#8a4040")}">${spySaveOn ? "ON" : "OFF"}</button>
       </div>`;
     const emRows = !emCollapsed && lastEmergency
@@ -3923,9 +3923,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
               </div>`).join("") + spyToggleRow)
       : "";
     // Operator 2026-05-29: ⚙️ button opens emergency-specific settings modal.
-    // Per "每个功能用自己的设置页面" — section header gets a per-feature
-    // settings button instead of a global "AI 设置" tab.
-    const emSettingsBtn = `<button data-settings="emergency" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="紧急任务设置">⚙</button>`;
+    // Per "每個功能用自己的設定頁面" — section header gets a per-feature
+    // settings button instead of a global "AI 設定" tab.
+    const emSettingsBtn = `<button data-settings="emergency" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="緊急任務設定">⚙</button>`;
     const emergencySection = `${sectionHeader("emergency", "🚨 Emergency", emCount, emColor, emSettingsBtn)}<div style="display:${emCollapsed ? "none" : "block"};">${emRows}</div>`;
 
     // Expedition section
@@ -3949,21 +3949,21 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
               </div>`).join(""))
       : "";
     // M2 — expedition section ⚙ button → openExpeditionSettings modal.
-    const exSettingsBtn = `<button data-settings="expedition" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="远征任务设置">⚙</button>`;
+    const exSettingsBtn = `<button data-settings="expedition" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="遠征探險設定">⚙</button>`;
     const expeditionSection = `${sectionHeader("expedition", exLabel, ex?.active.length ?? 0, "#8a8aff", exSettingsBtn)}<div style="display:${exCollapsed ? "none" : "block"};">${exRows}</div>`;
 
     // Goals section — wraps existing goal rows with a collapsible header.
     const goalsCollapsed = sectionCollapsed.goals;
     const goalsBody = !goalsCollapsed ? `${empty}${rows}` : "";
     // M4 — Goals section ⚙ → openGoalsSettings modal (create new goal form).
-    const goalsSettingsBtn = `<button data-settings="goals" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="普通任务设置 — 创建新任务">⚙</button>`;
+    const goalsSettingsBtn = `<button data-settings="goals" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="普通任務設定 — 創建新任務">⚙</button>`;
     // v0.0.460: awaiting count badge — operator sees at a glance how many
     // goals are quiet because they're waiting for empire_poll / operator_retry.
     const awaitingCount = filtered.filter((g) => g.status === "blocked" && Array.isArray(g.awaiting_events) && g.awaiting_events.length > 0).length;
     const awaitingBadge = awaitingCount > 0
       ? `<span style="color:#80c0ff; font-size:10px; background:#1a3a5a; padding:1px 6px; border-radius:8px; margin-left:6px;" title="goals quietly waiting for an event before next dispatch attempt">⏸ ${awaitingCount} awaiting</span>`
       : "";
-    // v0.0.529 — goalsSection 只装非运输 goals (运输移到 cargoSection)
+    // v0.0.529 — goalsSection 只裝非運輸 goals (運輸移到 cargoSection)
     const goalsBody_v529 = !goalsCollapsed ? `${empty}${restRowsHtml_v529}` : "";
     const goalsSection = `${sectionHeader("goals", "🪐 Goals", restGoalCount_v529, "#e0e8f0", awaitingBadge + goalsSettingsBtn)}<div style="display:${goalsCollapsed ? "none" : "block"};">${goalsBody_v529}</div>`;
 
@@ -3990,7 +3990,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       `<option value="${p.id}" data-galaxy="${p.coords[0]}" data-system="${p.coords[1]}">[${p.coords.join(":")}] ${p.name}</option>`
     ).join("");
     // Resolve activeDisc target → display strings + a header Stop button.
-    // Operator 2026-05-23: "发现的 stop 按钮放上一层 位置类似于远征" —
+    // Operator 2026-05-23: "發現的 stop 按鈕放上一層 位置類似於遠征" —
     // section-scope actions live in the header right slot, same as the
     // pause-daemon button in Expedition / Emergency headers. Keeps the
     // body row purely informational (coords + progress).
@@ -4018,12 +4018,12 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // M3 — section header ⚙ → openDiscoverySettings modal. Keeps existing
     // Stop/inline UI intact for backward compat; modal adds rich status +
     // structured Start form.
-    const discSettingsBtn = `<button data-settings="discovery" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="发现任务设置">⚙</button>`;
+    const discSettingsBtn = `<button data-settings="discovery" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="發現任務設定">⚙</button>`;
     const discSection = `${sectionHeader("discovery", "🧬 Discovery", activeDisc ? 1 : 0, "#c080ff", `${discHeaderBtn}${discSettingsBtn}`)}<div style="display:${discCollapsed ? "none" : "block"};">${discBody}</div>`;
 
     // Jumpgate cooldown per moon — operator 2026-05-26:
-    //   "在月球上显示，跳跃门冷却时间" + "ready 的不用显示，只显示倒计时的，
-    //    时间加上秒 mm:ss"
+    //   "在月球上顯示，跳躍門冷卻時間" + "ready 的不用顯示，只顯示倒計時的，
+    //    時間加上秒 mm:ss"
     // Lazy computation: live remaining = max(0, snapshot - (now - harvestedAt)).
     // 1-second ticker (#jg-cd-N spans) updates display without re-rendering whole panel.
     let moonsSection = "";
@@ -4031,11 +4031,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const st = (window as Window & { __ogamexStore?: { state: { planets?: Record<string, { id?: string; type?: string; coords?: number[]; buildings?: Record<string, number | undefined>; jumpgate_cooldown_sec?: number | null; jumpgate_harvested_at?: number | null; jumpgate_pair_with?: string | null }> } } }).__ogamexStore;
       const planets = st?.state?.planets ?? {};
       const now = Date.now();
-      // v0.0.514 — operator 2026-05-31 "应该有 4 个月球倒计时, 只显示了 2 个".
-      // 实证: 4 月球 pair_with 被 sniffer 抓到, 但只 3 cd_sec 被 overlay 拉取 (cp race).
-      // Fallback: 用 localStorage OGAMEX_JUMPGATE_LOG 兜底, log 里 ts 30min 内
-      // 的 src moon 即使 cd_sec=null 也按 1800-elapsed 估算显示。
-      // (JG L1 cooldown ~30min, L2 24min, L3 20min...; 用 1800 L1 默认猜测)
+      // v0.0.514 — operator 2026-05-31 "應該有 4 個月球倒計時, 只顯示了 2 個".
+      // 實證: 4 月球 pair_with 被 sniffer 抓到, 但只 3 cd_sec 被 overlay 拉取 (cp race).
+      // Fallback: 用 localStorage OGAMEX_JUMPGATE_LOG 兜底, log 裏 ts 30min 內
+      // 的 src moon 即使 cd_sec=null 也按 1800-elapsed 估算顯示。
+      // (JG L1 cooldown ~30min, L2 24min, L3 20min...; 用 1800 L1 預設猜測)
       const jgLog = (() => {
         try {
           return JSON.parse(window.localStorage.getItem("OGAMEX_JUMPGATE_LOG") || "[]") as Array<{ ts: number; src: string; tgt: string }>;
@@ -4046,9 +4046,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         const cur = jgLogBySrc.get(e.src);
         if (!cur || e.ts > cur.ts) jgLogBySrc.set(e.src, { ts: e.ts, tgt: e.tgt });
       }
-      // v0.0.513 — operator 2026-05-31 "显示的月球不全". 改成显示**所有有 JG 建筑**的月球
-      // (建造了 jumpgate L≥1 都列出), 无冷却的显示 "ready" 绿色, 有冷却的显示 mm:ss 黄。
-      // 排序按 G:S:P, 2 列布局不变。
+      // v0.0.513 — operator 2026-05-31 "顯示的月球不全". 改成顯示**所有有 JG 建築**的月球
+      // (建造了 jumpgate L≥1 都列出), 無冷卻的顯示 "ready" 綠色, 有冷卻的顯示 mm:ss 黃。
+      // 排序按 G:S:P, 2 列布局不變。
       const allJgMoons = Object.entries(planets)
         .filter(([_id, p]) => {
           if (p.type !== "moon") return false;
@@ -4066,14 +4066,14 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           if ((ac[1] ?? 0) !== (bc[1] ?? 0)) return (ac[1] ?? 0) - (bc[1] ?? 0);
           return (ac[2] ?? 0) - (bc[2] ?? 0);
         });
-      // v0.0.517 — operator 2026-05-31 "不要显示 ready". 只渲染有真 cooldown
-      // 的月球。 cd_sec 没值但 log 30min 内有记录的, 按 1800 fallback 显示。
-      const FALLBACK_JG_CD_SEC = 1800; // JG L1 默认 30 min; 真值 hydrate 后覆盖
+      // v0.0.517 — operator 2026-05-31 "不要顯示 ready". 只渲染有真 cooldown
+      // 的月球。 cd_sec 沒值但 log 30min 內有記錄的, 按 1800 fallback 顯示。
+      const FALLBACK_JG_CD_SEC = 1800; // JG L1 預設 30 min; 真值 hydrate 後覆蓋
       const cells: string[] = [];
       for (const { id, p } of allJgMoons) {
         let cd = p.jumpgate_cooldown_sec ?? 0;
         let at = p.jumpgate_harvested_at ?? now;
-        // Fallback: 没 cd_sec 但 log 30min 内有记录 → 按 (1800 - elapsed) 估算
+        // Fallback: 沒 cd_sec 但 log 30min 內有記錄 → 按 (1800 - elapsed) 估算
         if ((!p.jumpgate_cooldown_sec) && jgLogBySrc.has(id)) {
           const logEntry = jgLogBySrc.get(id)!;
           const elapsedFromLog = Math.floor((now - logEntry.ts) / 1000);
@@ -4084,7 +4084,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         }
         const elapsed = Math.floor((now - at) / 1000);
         const remain = Math.max(0, cd - elapsed);
-        if (remain <= 0) continue; // ready 不显示
+        if (remain <= 0) continue; // ready 不顯示
         const mm = Math.floor(remain / 60);
         const ss = remain % 60;
         const coordsThis = (p.coords ?? []).join(":");
@@ -4094,11 +4094,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         ? [`<div style="display:flex; flex-wrap:wrap;">${cells.join("")}</div>`]
         : [];
       if (cells.length > 0) {
-        // v0.0.513 — section header 计数显示 monn 总数 (有 JG 的), 之前是
-        // pair-row 数会被误以为"很少"。
-        // v0.0.528 — operator 2026-05-31 "Moons/JumpGate 无法折叠".
-        // 之前 body 写死 display:block (源于 v0.0.??? "force expand" hack),
-        // 现在尊重 sectionCollapsed.moons 状态, 跟其他 section 一致。
+        // v0.0.513 — section header 計數顯示 monn 總數 (有 JG 的), 之前是
+        // pair-row 數會被誤以爲"很少"。
+        // v0.0.528 — operator 2026-05-31 "Moons/JumpGate 無法折疊".
+        // 之前 body 寫死 display:block (源於 v0.0.??? "force expand" hack),
+        // 現在尊重 sectionCollapsed.moons 狀態, 跟其他 section 一致。
         const moonsBodyDisp = sectionCollapsed.moons ? "none" : "block";
         moonsSection = `${sectionHeader("moons", "🌙 Moons / Jumpgate", cells.length, "#80c0ff", "")}<div style="display:${moonsBodyDisp};">${pairRows.join("")}</div>`;
       }
@@ -4106,18 +4106,18 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     } catch (e) { console.warn("[panel/moons] render failed:", e); }
 
     // Cargo calculator section — operator 2026-05-26:
-    //   "1 选择星球 2 选择运输舰类型 LC/SC 3 checkbox 列出星球三种资源
-    //    自动算需要的战舰数量 点击复制到剪贴板"
+    //   "1 選擇星球 2 選擇運輸艦類型 LC/SC 3 checkbox 列出星球三種資源
+    //    自動算需要的戰艦數量 點選復制到剪貼板"
     let cargoSection = "";
     try {
       const st = (window as Window & { __ogamexStore?: { state: { planets?: Record<string, { id?: string; coords?: number[]; name?: string; resources?: { m?: number; c?: number; d?: number }; type?: string }>; server?: { ship_cargo_capacity?: Record<string, number> } } } }).__ogamexStore;
       const planets = Object.values(st?.state?.planets ?? {})
-        // Operator 2026-05-26: "删除里面的月球，只显示星球" — Cargo Calc 拉资源
-        // 来源限定 planets (月球通常无资源生产), 简化 dropdown 选择.
+        // Operator 2026-05-26: "刪除裏面的月球，只顯示星球" — Cargo Calc 拉資源
+        // 來源限定 planets (月球通常無資源生產), 簡化 dropdown 選擇.
         .filter((p) => Array.isArray(p.coords) && p.coords.length === 3 && p.type === "planet")
         .sort((a, b) => (a.coords![0]! - b.coords![0]!) || (a.coords![1]! - b.coords![1]!) || (a.coords![2]! - b.coords![2]!));
       // Auto-follow ogame's active planet (meta) — operator 2026-05-26:
-      // "切换星球，资源没有刷新". When autoFollow=true, cargoState.planetId
+      // "切換星球，資源沒有刷新". When autoFollow=true, cargoState.planetId
       // tracks the currently-visible planet so resources update immediately
       // as operator clicks between planets in ogame's sidebar.
       const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
@@ -4127,7 +4127,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const selectedId = cargoState.planetId && planets.find((p) => p.id === cargoState.planetId) ? cargoState.planetId : (planets[0]?.id ?? "");
       cargoState.planetId = selectedId;
       const planetOptsCargo = planets.map((p) =>
-        // 只显示坐标 (operator 2026-05-26): planets only, 不含 moon, 不带后缀.
+        // 只顯示坐標 (operator 2026-05-26): planets only, 不含 moon, 不帶後綴.
         `<option value="${escapeHtml(p.id ?? "")}" ${p.id === selectedId ? "selected" : ""}>[${p.coords!.join(":")}]</option>`
       ).join("");
       const selected = planets.find((p) => p.id === selectedId);
@@ -4140,14 +4140,14 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const shipsNeeded = total > 0 && cap > 0 ? Math.ceil(total / cap) : 0;
       const lbl = (v: number): string => v.toLocaleString();
       const cargoCollapsed = sectionCollapsed.cargo;
-      const cargoSettingsBtn = `<button data-settings="transport" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="运输设置">⚙</button>`;
-      // v0.0.529 — operator 2026-05-31 "这部分不要了, 把运输任务从 goals 移到这里".
-      // 旧的 Cargo Calc UI (Planet 选择 / SC|LC / M C D / Need / Deploy→Moon)
-      // 全删, cargo section header 改成 "🚚 运输任务" + 装 transportRowsHtml.
-      // ⚙ 按钮保留 (跳到 transport modal 创建新运输任务).
-      // 静默引用以保留 lbl 等闭包变量, 不致 TS 误报 unused.
+      const cargoSettingsBtn = `<button data-settings="transport" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="運輸設定">⚙</button>`;
+      // v0.0.529 — operator 2026-05-31 "這部分不要了, 把運輸任務從 goals 移到這裏".
+      // 舊的 Cargo Calc UI (Planet 選擇 / SC|LC / M C D / Need / Deploy→Moon)
+      // 全刪, cargo section header 改成 "🚚 運輸任務" + 裝 transportRowsHtml.
+      // ⚙ 按鈕保留 (跳到 transport modal 創建新運輸任務).
+      // 靜默引用以保留 lbl 等閉包變量, 不致 TS 誤報 unused.
       void planetOptsCargo; void m; void c; void d; void total; void cap; void shipsNeeded; void lbl; void selected;
-      cargoSection = `${sectionHeader("cargo", "🚚 运输任务", transportGoalCount_v529, "#80ffd0", cargoSettingsBtn)}<div style="display:${cargoCollapsed ? "none" : "block"};">${transportRowsHtml_v529}</div>`;
+      cargoSection = `${sectionHeader("cargo", "🚚 運輸任務", transportGoalCount_v529, "#80ffd0", cargoSettingsBtn)}<div style="display:${cargoCollapsed ? "none" : "block"};">${transportRowsHtml_v529}</div>`;
     } catch { /* no store yet */ }
 
     const body = `<div data-ogamex-body="1" style="display:${bodyDisplay};">${emergencySection}${expeditionSection}${discSection}${moonsSection}${cargoSection}${goalsSection}</div>`;
@@ -4264,7 +4264,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         if (ok) { ok.textContent = "✗ N=0"; ok.style.color = "#ff8080"; ok.style.display = "inline"; setTimeout(() => { ok.style.display = "none"; ok.style.color = "#7cfc00"; }, 1500); }
         return;
       }
-      // Operator 2026-05-26: "改行为为部署这些船到本星球的月球". 直接 ajax
+      // Operator 2026-05-26: "改行爲爲部署這些船到本星球的月球". 直接 ajax
       // sendFleet mission=4 deploy from current planet → same-coord moon.
       // Helper exposed by wire_runtime.ts __ogamexDeployToMoon.
       const deployFn = (window as Window & {
@@ -4309,18 +4309,18 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         saveJSON(`ogamex.${daemon}.paused`, next);
         btn.textContent = next ? "▶" : "⏸";
         btn.title = next ? "Resume daemon" : "Pause daemon";
-        // Operator 2026-05-26: emergency (FS) 是 frontend FSM, sidecar 没
-        // /ogamex/v1/emergency/pause 端点 → 404. localStorage toggle 即可,
-        // orchestrator handleThreat 读这个 flag 决定是否 skip.
+        // Operator 2026-05-26: emergency (FS) 是 frontend FSM, sidecar 沒
+        // /ogamex/v1/emergency/pause 端點 → 404. localStorage toggle 即可,
+        // orchestrator handleThreat 讀這個 flag 決定是否 skip.
         if (daemon === "emergency") {
           console.info(`[panel] emergency ${action} — localStorage flag set, orchestrator will honor`);
           return;
         }
         try {
-          // Operator 2026-05-26: "远征 stop 按钮无效" — sidecar pause/resume
-          // 端点在 auth-required block, panel POST 没带 bearer → 401 拒绝.
-          // Fix: 带 bearer token (same as bridge). 同时 sidecar 那边 endpoint
-          // 也移到 public block (双保险).
+          // Operator 2026-05-26: "遠征 stop 按鈕無效" — sidecar pause/resume
+          // 端點在 auth-required block, panel POST 沒帶 bearer → 401 拒絕.
+          // Fix: 帶 bearer token (same as bridge). 同時 sidecar 那邊 endpoint
+          // 也移到 public block (雙保險).
           const headers: Record<string, string> = { "Content-Type": "application/json" };
           // Try multi-source token (operator's bridge token, same one bridge uses):
           // 1. opts.bridgeToken (injected by main.ts via readConfig — GM_getValue+localStorage)
@@ -4392,7 +4392,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         if (lastGoals) render(lastGoals);
       });
     }
-    // v0.0.449: shortage-chip → 运输 button. Opens transport modal with
+    // v0.0.449: shortage-chip → 運輸 button. Opens transport modal with
     // target+cargo prefilled. targetCoord is resolved to planet id via
     // store lookup (goal.planet is the coord string post-idToCoords).
     for (const btn of panel.querySelectorAll<HTMLElement>("[data-action-fill-shortage]")) {
@@ -4406,7 +4406,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         const planets = Object.values(store?.state?.planets ?? {});
         const matches = planets.filter((p): p is { id: string; type?: string; coords?: number[] } => !!p && Array.isArray(p.coords) && p.coords.join(":") === targetCoord);
         // v0.0.454: moon-only buildings → prefer the moon at this coord so
-        // the "→ 运输" shortcut on a moon goal (lunarBase / jumpgate /
+        // the "→ 運輸" shortcut on a moon goal (lunarBase / jumpgate /
         // sensorPhalanx shortage) targets the moon, not the same-coord planet.
         const MOON_ONLY = new Set(["lunarBase","sensorPhalanx","jumpgate","moonBase","moon_base","lunar_base","sensor_phalanx","jump_gate"]);
         const wantMoon = MOON_ONLY.has(targetBuilding);
@@ -4426,7 +4426,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         ev.stopPropagation();
         const key = el.getAttribute("data-tree-toggle");
         if (!key) return;
-        // v0.0.526 — toggle in treeExpanded (默认折叠语义)
+        // v0.0.526 — toggle in treeExpanded (預設折疊語義)
         if (treeExpanded.has(key)) treeExpanded.delete(key);
         else treeExpanded.add(key);
         if (lastGoals) render(lastGoals);
@@ -4529,7 +4529,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   // Shared AudioContext. Recreating per-beep cost us: each new instance
   // inherited the suspended state from autoplay policy, so the first
   // tone after page reload was silent. Single ctx, resume() before use.
-  // Operator 2026-05-24: "为啥没听到声音报警".
+  // Operator 2026-05-24: "爲啥沒聽到聲音報警".
   let sharedAudioCtx: AudioContext | null = null;
   function getAudioCtx(): AudioContext | null {
     if (sharedAudioCtx) return sharedAudioCtx;
@@ -4697,8 +4697,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const elapsed = Math.floor((now - at) / 1000);
       const remain = Math.max(0, snap - elapsed);
       if (remain === 0) {
-        // v0.0.517 — operator 2026-05-31 "不要显示 ready": cooldown 到 0 →
-        // 隐藏该 cell (operator 不想看 ready 行)。
+        // v0.0.517 — operator 2026-05-31 "不要顯示 ready": cooldown 到 0 →
+        // 隱藏該 cell (operator 不想看 ready 行)。
         const row = sp.closest("div");
         if (row) (row as HTMLElement).style.display = "none";
         return;

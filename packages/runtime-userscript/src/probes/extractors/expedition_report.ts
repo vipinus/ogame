@@ -116,8 +116,8 @@ function detectOutcomeType(text: string): ExpeditionOutcomeType | null {
   // Order matters: check "黑洞" / "毫無所獲" before resource/ship heuristics,
   // because a black_hole/nothing report might (theoretically) mention numbers.
   if (/黑洞|black\s*hole/i.test(text)) return "black_hole";
-  if (/毫無所獲|什麼都沒|什么都没|nothing\s+found/i.test(text)) return "nothing";
-  if (/獲得了|获得了/.test(text)) return "ships_gained_small";
+  if (/毫無所獲|什麼都沒|什麼都沒|nothing\s+found/i.test(text)) return "nothing";
+  if (/獲得了|獲得了/.test(text)) return "ships_gained_small";
   // Resource-table heuristic: any of the three resource classes appearing.
   // (Kept last so ship-gain text doesn't get misclassified.)
   if (/金屬|晶體|重氫|metal|crystal|deuterium/i.test(text)) {

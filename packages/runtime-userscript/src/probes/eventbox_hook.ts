@@ -10,10 +10,10 @@
  * sync with what the client itself sees.
  *
  * Threat missions = ATTACK paths only:
- *   1 = 普通攻击 (regular attack)
- *   2 = 联合攻击 ACS
- *   9 = 月毁 (moon destruction)
- *   10 = 行星间导弹 (interplanetary missile)
+ *   1 = 普通攻擊 (regular attack)
+ *   2 = 聯合攻擊 ACS
+ *   9 = 月毀 (moon destruction)
+ *   10 = 行星間導彈 (interplanetary missile)
  *
  * Spy (mission 6) is INTENTIONALLY NOT a threat — ogame's 0%-detection
  * probes never appear in any client-side API anyway; only post-arrival
@@ -150,7 +150,7 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
         lastOwnFleetCount = n;
         console.info(`[OgameX/eventbox-hook] friendly fleet count ${before}→${n}, forcing /movement refresh${n < before ? " + empire pollEmpire + state push (fleet finished)" : ""}`);
         const harvest = (win as Window & { __ogamexHarvestMovement?: () => Promise<void> }).__ogamexHarvestMovement;
-        // Operator 2026-05-27: "船回来的事件立即触发起飞任务". state.snapshot
+        // Operator 2026-05-27: "船回來的事件立即觸發起飛任務". state.snapshot
         // push is timer-driven (5s ± 2s jitter); without pushing right after
         // harvest, sidecar+bridge wait 0-7s before seeing the slot freed →
         // dispatch latency 30s+ observed. Chain after harvest: push immediately
@@ -165,7 +165,7 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
         } else {
           triggerImmediatePush();
         }
-        // Operator 2026-05-25: "有船到达事件发生，就刷新舰队库存".
+        // Operator 2026-05-25: "有船到達事件發生，就刷新艦隊庫存".
         if (n < before) {
           const pollEmp = (win as Window & { __ogamexPollEmpire?: (opts?: { force?: boolean }) => Promise<void> }).__ogamexPollEmpire;
           if (typeof pollEmp === "function") void pollEmp({ force: true }).then(triggerImmediatePush).catch(() => { /* */ });
@@ -394,7 +394,7 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
   installAttackAlertObserver();
 
   // ─── API poll: /eventList endpoint ───────────────────────────────────────
-  // Operator: "改成 api 轮询方式" + "Layer 2 不用保留". The previous
+  // Operator: "改成 api 輪詢方式" + "Layer 2 不用保留". The previous
   // #eventContent MutationObserver was dropped entirely — API poll is the
   // only hostile detection source. /eventList?ajax=1 returns full HTML of
   // every event regardless of UI state. 3s active poll catches in-progress

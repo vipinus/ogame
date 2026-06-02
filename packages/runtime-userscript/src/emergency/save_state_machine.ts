@@ -5,7 +5,7 @@ export type SaveState =
   | "LAUNCHING" | "IN_FLIGHT" | "RECALLING"
   | "RETURNED" | "FALLBACK";
 
-// Operator 2026-05-26: "威胁解除立即召回，不要计时，改成事件驱动".
+// Operator 2026-05-26: "威脅解除立即召回，不要計時，改成事件驅動".
 // safetyMarginMinutes dropped — no more RECALL_READY intermediate state.
 // hostile clear → immediate recall POST. Trade-off documented: if ogame's
 // "hostile cleared" signal is a false positive (attacker swapped fleet),
@@ -72,7 +72,7 @@ export class SaveStateMachine {
       this.state = "IN_FLIGHT";
     } catch (e) {
       this.lastError = e instanceof Error ? e.message : String(e);
-      // Operator 2026-05-24: "没船 应该走没船流程". When ogame rejects with
+      // Operator 2026-05-24: "沒船 應該走沒船流程". When ogame rejects with
       // a "fleet too small / no recyclers / no ships" pattern, the planet
       // is functionally unsavable — don't enter FALLBACK (which carries
       // alarm noise + 10s lockout). Reset to WATCHING immediately so
@@ -116,7 +116,7 @@ export class SaveStateMachine {
     else this.pending.clear();
     if (this.state === "IN_FLIGHT" && this.pending.size === 0) {
       this.clearedAt = this.actions.now();
-      // Operator 2026-05-26: "威胁解除立即召回，不要计时". RECALL_READY +
+      // Operator 2026-05-26: "威脅解除立即召回，不要計時". RECALL_READY +
       // safetyMargin tick removed — IN_FLIGHT → RECALLING the moment last
       // hostile drops from events_incoming. POST recall immediately.
       console.warn(`[fsm] IN_FLIGHT → RECALLING  all hostiles clear, instant recall (fleetId=${this.fleetId})`);

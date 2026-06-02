@@ -82,7 +82,7 @@ export function wireRuntime(
     saveWindowMinutes: 30,
     // safetyMarginMinutes removed 2026-05-26 — recall is now instant on
     // hostile clear (event-driven, no timer).
-    // Operator 2026-05-24: "fsm 可以放后台" — orchestrator reports each
+    // Operator 2026-05-24: "fsm 可以放後臺" — orchestrator reports each
     // successful launch to sidecar's SaveCoordinator; sidecar owns recall
     // scheduling and emits save.recall_now downstream when ready.
     sidecarBaseUrl: "https://ogame.anyfq.com",
@@ -94,13 +94,13 @@ export function wireRuntime(
   }).__ogamexRecallFleet = (fleetId: number) =>
     recallFleet(fleetId, { fetch: opts.fetch, token: tokenManager });
 
-  // Cargo Calc one-shot deploy — operator 2026-05-26: 改 Fill 按钮成"部署
-  // 这些船到本星球的月球". Source = current page planet (from meta), dest =
+  // Cargo Calc one-shot deploy — operator 2026-05-26: 改 Fill 按鈕成"部署
+  // 這些船到本星球的月球". Source = current page planet (from meta), dest =
   // SAME coords + type=3 (moon), mission=4 (deploy), speed=10, no cargo.
   // Returns { ok, message } for panel feedback.
   const sendFleetFn = async (p: import("@ogamex/shared").Coords, ships: import("@ogamex/shared").ShipCount, sourceId: string): Promise<{ ok: boolean; message: string }> => {
     const { sendFleet } = await import("./api/fleet_api.js");
-    // restoreSessionCp 由 fleet_api.sendFleet 内部 fetchWithCpBypassBusy 自动处理.
+    // restoreSessionCp 由 fleet_api.sendFleet 內部 fetchWithCpBypassBusy 自動處理.
     try {
       const res = await sendFleet(
         { ships, cargo: { m: 0, c: 0, d: 0 }, coords: p, destType: 3, mission: 4, speed: 10, sourcePlanetId: sourceId },
@@ -181,7 +181,7 @@ export function wireRuntime(
   // GoalRunner (only when a bridge is provided).
   let runner: ReturnType<typeof startGoalRunner> | null = null;
   if (opts.bridge) {
-    // API executor is the ONLY executor (v0.0.222 — operator "装 A 全 API
+    // API executor is the ONLY executor (v0.0.222 — operator "裝 A 全 API
     // 化"). UiDirectiveExecutor (DOM click + iframe path) DROPPED from
     // registration. ApiExec covers all actions (build, research,
     // build_ships, expedition, colonize, deploy, transport) as a superset

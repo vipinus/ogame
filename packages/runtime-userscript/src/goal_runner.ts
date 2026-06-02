@@ -79,7 +79,7 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     };
     client.send(msg);
     // v0.0.548 — dual-path ack via HTTP. WS can be in a zombie state.
-    // v0.0.579 — operator 2026-06-01 "不要手动 resume": single POST sometimes
+    // v0.0.579 — operator 2026-06-01 "不要手動 resume": single POST sometimes
     // fails (cf flakiness, sidecar restart window, network blip). Retry × 3
     // with exponential backoff so ack survives single-point failure. Sidecar's
     // directiveToGoal map is idempotent — re-processing same directive_id
@@ -161,7 +161,7 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       });
       return;
     }
-    // Operator 2026-05-28 "删除以前设计的防止和前端冲突的机制": removed
+    // Operator 2026-05-28 "刪除以前設計的防止和前端衝突的機制": removed
     // userBusy DEFER branch. Conflict prevention is now handled by:
     //   1. click intercept (boot.ts clickInterceptSync) — operator clicks
     //      during in-flight cp= / trackBackgroundOp wait for completion
@@ -175,7 +175,7 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     // While operator is on the fleetdispatch page, defer directives whose
     // source planet MATCHES the current cp — token race is per-cp, so
     // cross-planet dispatches are safe to run concurrently with the operator's
-    // fleet UI. v0.0.640 — operator 2026-06-01 实证: chain-bound deploy chain
+    // fleet UI. v0.0.640 — operator 2026-06-01 實證: chain-bound deploy chain
     // (txc-mpw0r15u-lhxz) parked at unack=75% because operator kept fleet UI
     // open on planet A while the chain's legs targeted planets B/C/D.
     // Pre-v0.0.640 defer-all variant blocked the operator's own automation.
@@ -206,7 +206,7 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     }
     // eslint-disable-next-line no-console
     console.log(`[GoalRunner] executing ${directive.action} via ${chosen.constructor.name}`);
-    // Operator 2026-05-28 "cp 的点击保护机制能不能一起保护 token":
+    // Operator 2026-05-28 "cp 的點選保護機制能不能一起保護 token":
     // Mark this directive as a background op so click_lock (boot.ts) delays
     // operator clicks until the entire executor finishes — not just its
     // cp= sub-fetches. ApiExec's multi-stage chain (token fetch +
@@ -289,8 +289,8 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
   };
   // Action+planet dedup helper.
   // 2026-05-27 v0.0.366 finer-grained for discover: include target coord so
-  // backend's "扫整个 system 15 个 position" 不被 60s 一刀切. expedition /
-  // colonize / deploy / transport 仍按 action+planet (per-planet 节流合理).
+  // backend's "掃整個 system 15 個 position" 不被 60s 一刀切. expedition /
+  // colonize / deploy / transport 仍按 action+planet (per-planet 節流合理).
   const actionPlanetKey = (d: Directive): string => {
     const params = d.params as { planet_id?: string; source_planet?: string; galaxy?: number; system?: number; position?: number } | undefined;
     const planet = params?.planet_id ?? params?.source_planet ?? "";
@@ -326,7 +326,7 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
   const unsubDispatch = client.on("directive.dispatch", (msg) => {
     if (stopped) return;
     const d: unknown = msg.directive;
-    // v0.0.629 — operator 2026-06-01 "lifeform_research ... 不动".
+    // v0.0.629 — operator 2026-06-01 "lifeform_research ... 不動".
     // Entry log BEFORE validation so we can verify WS delivery regardless
     // of directive shape. Diagnose: console-empty = sidecar didn't dispatch
     // or WS dropped; entry log present but no "received" = validator
@@ -352,7 +352,7 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       return;
     }
     // 2026-05-27 v0.0.363 early-skip discover for cooldown/unavailable coord —
-    // operator: "cooldown 的星球不要处理不要进队列，直接跳过". Saves GoalRunner
+    // operator: "cooldown 的星球不要處理不要進隊列，直接跳過". Saves GoalRunner
     // serial slot (~2-3s) + Apiexec preflight time per skipped coord.
     if (dr.action === "discover") {
       const p = dr.params as { galaxy?: number; system?: number; position?: number } | undefined;
@@ -371,7 +371,7 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     // 2026-05-27 v0.0.364 early-skip slot-exhausted fleet POSTs:
     //   expedition → uses expedition slot
     //   colonize / deploy / transport / discover → uses fleet slot (keep-1-empty)
-    // operator 同族 review: 任何 fleet POST action 都该 slot-gate.
+    // operator 同族 review: 任何 fleet POST action 都該 slot-gate.
     {
       const srv = (window as Window & { __ogamexStore?: { state: { server?: {
         used_expedition_slots?: number; max_expedition_slots?: number;

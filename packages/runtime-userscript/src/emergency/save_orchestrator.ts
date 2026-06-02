@@ -25,7 +25,7 @@ export function startEmergencySave(
   stateRef: StateRef,
   opts: OrchestratorOptions,
 ): OrchestratorHandle {
-  // Operator 2026-05-24: "4 个星球同时起飞应该没有问题" — switched from a
+  // Operator 2026-05-24: "4 個星球同時起飛應該沒有問題" — switched from a
   // single FSM (which serialized at one save at a time and silently
   // dropped concurrent threats on other planets) to a per-planet FSM
   // map. Each target planet gets its own state machine so parallel
@@ -47,10 +47,10 @@ export function startEmergencySave(
         {
           decideCase: (sourceId) => decideCase(stateRef.current, sourceId),
           sendFleet: async (decision) => {
-            // Operator 2026-05-26: "前端操作的时候会自动跳到其他星球".
+            // Operator 2026-05-26: "前端操作的時候會自動跳到其他星球".
             // sendFleet POST with cp=sourcePlanetId 切 ogame session-cp.
-            // restoreSessionCp 由 fleet_api.sendFleet 内部经 fetchWithCpBypassBusy
-            // 自动处理 (v0.0.352 架构迁移). 不再外层 try/finally restore.
+            // restoreSessionCp 由 fleet_api.sendFleet 內部經 fetchWithCpBypassBusy
+            // 自動處理 (v0.0.352 架構遷移). 不再外層 try/finally restore.
             return await sendFleet({
               ships: decision.ships, cargo: decision.cargo, coords: decision.destCoords,
               destType: decision.destType, mission: decision.mission, speed: decision.speed,
@@ -69,8 +69,8 @@ export function startEmergencySave(
 
   const stopDetector = startAttackDetector(bus, stateRef, { saveWindowMinutes: opts.saveWindowMinutes });
 
-  // Operator 2026-05-25: "敌人探测和进攻的是月球，星球上的舰队不要FS,
-  // 威胁指向的具体位置上面的舰队FS". planet + moon share G:S:P; the
+  // Operator 2026-05-25: "敵人探測和進攻的是月球，星球上的艦隊不要FS,
+  // 威脅指向的具體位置上面的艦隊FS". planet + moon share G:S:P; the
   // target's body type comes from the event row (parseEventListHTMLAndInject
   // extracts it into ev.to_type). Use type to disambiguate; only fall back
   // to first-match-by-coord when type unknown (defensive).
@@ -95,7 +95,7 @@ export function startEmergencySave(
     return candidates[0]!.id;
   };
 
-  // Operator 2026-05-24: "星球和月球如果没有船就不用执行FS". Skip silently
+  // Operator 2026-05-24: "星球和月球如果沒有船就不用執行FS". Skip silently
   // before fsm — no decision, no POST, no FALLBACK, no alarm noise. Saves
   // operator from the dead-end where case_decider would throw "no ships"
   // and the planet's fsm flips into FALLBACK for 10s.
@@ -155,8 +155,8 @@ export function startEmergencySave(
 
   // Operator 2026-05-26: panel emergency pause button (⏸) → toggles
   // localStorage["ogamex.emergency.paused"]. When true, orchestrator skips
-  // FS auto-launch for BOTH attack and spy events. operator 主动 pause 紧急
-  // 起飞 (e.g. 测试 / 知道是友军 alpha attack / debug).
+  // FS auto-launch for BOTH attack and spy events. operator 主動 pause 緊急
+  // 起飛 (e.g. 測試 / 知道是友軍 alpha attack / debug).
   const emergencyPaused = (): boolean => {
     try {
       const v = window.localStorage.getItem("ogamex.emergency.paused");
@@ -187,15 +187,15 @@ export function startEmergencySave(
       .then(() => reportLaunchToBackend(sourceId, fsm));
   });
 
-  // Spy-as-threat trigger. Operator 2026-05-23: "把侦察也当作威胁测试紧急起飞,
-  // 在面板上设置一个开关". Spy events become threats that drive the same
+  // Spy-as-threat trigger. Operator 2026-05-23: "把偵察也當作威脅測試緊急起飛,
+  // 在面板上設定一個開關". Spy events become threats that drive the same
   // SaveStateMachine attack uses — gives operator a live-fire test of the
   // emergency chain (detect → case_decide → sendFleet → IN_FLIGHT → recall).
   //
   // Toggle source of truth: localStorage["OGAMEX_SPY_TRIGGERS_SAVE"].
   //   "on"  → fire on every spy event
   //   "off" → ignore spy events (info-only)
-  //   unset → default ON (operator's request was "下次侦察来时自动测试")
+  //   unset → default ON (operator's request was "下次偵察來時自動測試")
   // Panel renders a button that flips the localStorage value. Re-read on
   // every spy event so panel changes take effect without reload. Window
   // mirror exposed for DevTools convenience.
@@ -318,7 +318,7 @@ export function startEmergencySave(
     }
   });
 
-  // Operator 2026-05-26: "威胁解除立即召回，不要计时，改成事件驱动".
+  // Operator 2026-05-26: "威脅解除立即召回，不要計時，改成事件驅動".
   // 1Hz tick removed — IN_FLIGHT → RECALLING is now fired the moment
   // notifyHostileClear empties pending (in fsm itself), no timer needed.
 

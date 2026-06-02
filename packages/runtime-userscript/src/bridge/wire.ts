@@ -34,7 +34,7 @@ export interface WireBridgeHandle {
   stop(): void;
 }
 
-// Reduced 20→5s after operator feedback "延时太高了" — most goal→dispatch
+// Reduced 20→5s after operator feedback "延時太高了" — most goal→dispatch
 // latency comes from waiting for the next state.snapshot push. Faster push
 // = faster reactive dispatch. Trade: 4× more /v1/push traffic to sidecar.
 const DEFAULT_PUSH_INTERVAL_MS = 5_000;
@@ -46,7 +46,7 @@ export async function wireBridge(
   boot: BootHandle,
   opts: WireBridgeOptions,
 ): Promise<WireBridgeHandle> {
-  // v0.0.549 — operator 2026-05-31 "没用过 ws 就删了吧". HTTP long-poll only.
+  // v0.0.549 — operator 2026-05-31 "沒用過 ws 就刪了吧". HTTP long-poll only.
   // WS branch (HttpBridgeClient) retired: 100s CF idle timeout, browser inactive-
   // tab throttle, and zombie sockets all caused phantom reconnects without
   // adding any latency benefit for this game-automation workload (planner
@@ -85,7 +85,7 @@ export async function wireBridge(
   // and the goal_runner serializes execution. The 2s delay gives boot
   // time to populate planets/resources/production via the retry harvest.
   const pushOnce = (): void => {
-    // Empire fetch DECOUPLED from push (operator: "ogame 的改成事件触发").
+    // Empire fetch DECOUPLED from push (operator: "ogame 的改成事件觸發").
     // Calling pollEmpire here meant every 5s push triggered an empire fetch
     // → 12 req/min of /empire even when nothing changed. Now empire is
     // event-driven from ApiExec (pre-dispatch + post-success) + a single
@@ -145,7 +145,7 @@ export async function wireBridge(
     // Run harvests in parallel; their setPartial calls fan-out via store
     // and trigger state.updated bus events. After harvests complete, force
     // an immediate state push so sidecar/daemon see fresh data ASAP.
-    // Operator 2026-05-25 "远征有空槽没有自动起飞": daemon's free-slot
+    // Operator 2026-05-25 "遠征有空槽沒有自動起飛": daemon's free-slot
     // calc needs authoritative max_expedition_slots, which only the
     // /fleetdispatch HTML reliably exposes (includes lifeform bonus).
     // Pull it whenever sidecar requests a refresh.
@@ -182,7 +182,7 @@ export async function wireBridge(
     const m = msg as { galaxy?: number; system?: number; position?: number; origin_planet_id?: string; reason?: string };
     let g = m.galaxy ?? 0, s = m.system ?? 0, origin = m.origin_planet_id ?? "";
     // v0.0.570 — operator 2026-06-01 "普通回收是用回收船不是探路者, 只有
-    // 16号位置是探路者". `target_position` selects which debris field to
+    // 16號位置是探路者". `target_position` selects which debris field to
     // harvest within the system. Default 16 (expedition slot) for
     // backwards compat — sidecar's auto-fire from expedition return uses
     // dest_position=16. Ship type follows: pos===16 → pathfinder/explorer,
@@ -213,7 +213,7 @@ export async function wireBridge(
         s = planet.coords[1]!;
         targetPosition = planet.coords[2]!;
         origin = realCp;
-        // operator 2026-06-01: 回收永远从星球出发. If operator is viewing a
+        // operator 2026-06-01: 回收永遠從星球出發. If operator is viewing a
         // moon, swap origin to the sibling planet at the same coords.
         if (planet.type === "moon" && winStore?.state?.planets) {
           const coordKey = planet.coords.slice(0, 3).join(":");
@@ -269,7 +269,7 @@ export async function wireBridge(
     console.info(`[debris] check G:S=${g}:${s}:${targetPosition} origin=${origin} ship=${harvestShipKey} reason=${m.reason ?? ""}`);
     void (async (): Promise<void> => {
       try {
-        // v0.0.570 — operator 2026-06-01 "切 cp 要走标准接口". Galaxy fetch
+        // v0.0.570 — operator 2026-06-01 "切 cp 要走標準接口". Galaxy fetch
         // now goes through cpPostWithRetry (the unified entry) instead of
         // raw fetch — aligns with discover/galaxy chain (api_executor.ts:994
         // Phase 3 migration). Provides the same mutex + restore + click-lock
@@ -277,7 +277,7 @@ export async function wireBridge(
         const wTokMgr = (window as Window & { __ogamexTokenManager?: unknown }).__ogamexTokenManager;
         if (!wTokMgr) { console.warn("[debris] no tokenManager available for galaxy fetch"); return; }
         const { cpPostWithRetry } = await import("../api/fleet_api.js");
-        // v0.0.572 — operator 2026-06-01 "切 cp 跳星球的问题". v0.0.570 set
+        // v0.0.572 — operator 2026-06-01 "切 cp 跳星球的問題". v0.0.570 set
         // skipRestore:true here (copied from api_executor's discover-galaxy
         // path which lives inside execute()'s own restore chain). wire.ts
         // has NO outer restore — leaving skipRestore:true meant the cp shift
@@ -323,11 +323,11 @@ export async function wireBridge(
           }
           return [];
         })();
-        // v0.0.643 — operator 2026-06-01 实证: 远征槽 :16 战利品永远 skip。
-        // 根因: ogame v12 fetchGalaxyContent 的 system.galaxyContent[] 只装
-        // pos 1-15, 远征槽数据在 root 的 reservedPositions 字段里 (rootKeys
-        // 一直显示它存在)。Fallback: pos 16 找不到时, 扫 reservedPositions
-        // (兜底数组+对象两种 shape) 找 position=16 的 debris record。
+        // v0.0.643 — operator 2026-06-01 實證: 遠征槽 :16 戰利品永遠 skip。
+        // 根因: ogame v12 fetchGalaxyContent 的 system.galaxyContent[] 只裝
+        // pos 1-15, 遠征槽資料在 root 的 reservedPositions 字段裏 (rootKeys
+        // 一直顯示它存在)。Fallback: pos 16 找不到時, 掃 reservedPositions
+        // (兜底數組+對象兩種 shape) 找 position=16 的 debris record。
         // Shape variants 同 pos 1-15 (planetType=2 或 recyclePossible=true)。
         let posRow = rows.find((row) => Number(row["position"]) === targetPosition);
         if (!posRow && targetPosition === 16) {
@@ -374,15 +374,15 @@ export async function wireBridge(
         const dd = isDebrisField ? Number(debrisPlanet?.resources?.deuterium?.amount ?? 0) : 0;
         const totalDebris = dm + dc + dd;
         const ogameRequiredShips = isDebrisField ? Number(debrisPlanet?.requiredShips ?? 0) : 0;
-        // v0.0.563 — operator 2026-06-01: 飞行列表没看到回收 → 验证 ogame v12
-        // galaxy response 真实 shape。dump rows[0] + pos16 + root keys.
+        // v0.0.563 — operator 2026-06-01: 飛行列表沒看到回收 → 驗證 ogame v12
+        // galaxy response 真實 shape。dump rows[0] + pos16 + root keys.
         try {
           const rootKeys = Object.keys(json).slice(0, 20).join(",");
           const firstRowKeys = rows[0] ? Object.keys(rows[0]).slice(0, 20).join(",") : "<no rows>";
           const posJson = posRow ? JSON.stringify(posRow).slice(0, 800) : `<no pos${targetPosition} row>`;
-          // v0.0.642 — operator 2026-06-01 实证: ogame v12 galaxyContent
-          // 只装 pos 1-15, :16 不在 rows 里, 怀疑在 reservedPositions 或
-          // system 别的子字段。Dump 一遍真正看 :16 数据在哪。
+          // v0.0.642 — operator 2026-06-01 實證: ogame v12 galaxyContent
+          // 只裝 pos 1-15, :16 不在 rows 裏, 懷疑在 reservedPositions 或
+          // system 別的子字段。Dump 一遍真正看 :16 資料在哪。
           const reservedDump = JSON.stringify(json["reservedPositions"] ?? null).slice(0, 1200);
           const systemKeys = json["system"] && typeof json["system"] === "object"
             ? Object.keys(json["system"] as Record<string, unknown>).slice(0, 20).join(",")
@@ -493,10 +493,10 @@ export async function wireBridge(
         }
         } // end ships-available else (v0.0.641)
         } // end if (primaryHasDebris) (v0.0.641)
-        // v0.0.641 — operator 2026-06-01 "本星有废墟" 实证: 1:486:7 战斗
-        // 残骸 c=14000 需 1 recycler, 但 sidecar 自动 debris-check 只查 :16
-        // (远征槽), 漏家星位 7 的战斗残骸。Galaxy fetch 已拿到全 system,
-        // 同一份 rows 顺便扫 origin planet 自己的位置, 有 debris 也派
+        // v0.0.641 — operator 2026-06-01 "本星有廢墟" 實證: 1:486:7 戰鬥
+        // 殘骸 c=14000 需 1 recycler, 但 sidecar 自動 debris-check 只查 :16
+        // (遠征槽), 漏家星位 7 的戰鬥殘骸。Galaxy fetch 已拿到全 system,
+        // 同一份 rows 順便掃 origin planet 自己的位置, 有 debris 也派
         // recycler (mission=8)。避免漏底。
         try {
           const winStore2 = (window as Window & {
@@ -587,9 +587,9 @@ export async function wireBridge(
   // close the record.
   const offRecallNow = client.on("save.recall_now", (msg) => {
     const m = msg as { planet_id?: string; fleet_id?: number; reason?: string };
-    // Operator 2026-05-27: frontend FSM 自己也会 fire recall (instant on hostile
-    // clear). 如果 FSM 已经 RECALLING/RETURNED, backend 的这次 directive 重复,
-    // ogame 会 reject success=false. 短路掉避免 console 噪音 + 假告警.
+    // Operator 2026-05-27: frontend FSM 自己也會 fire recall (instant on hostile
+    // clear). 如果 FSM 已經 RECALLING/RETURNED, backend 的這次 directive 重復,
+    // ogame 會 reject success=false. 短路掉避免 console 噪音 + 假告警.
     try {
       const snapFn = (window as Window & { __ogamexEmergencySnapshot?: () => { state?: string; fleetId?: number | null } }).__ogamexEmergencySnapshot;
       const snap = snapFn ? snapFn() : null;
