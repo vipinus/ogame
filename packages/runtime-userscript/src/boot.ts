@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.719";
+  const USERSCRIPT_VERSION = "0.0.720";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1792,12 +1792,27 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const launchedAt = Date.now();
       const ttlMin = params.mission === 15 ? 90 : 60;
       const expectedReturnAt = launchedAt + ttlMin * 60 * 1000;
+      // v0.0.720 — operator 2026-06-03 "运输任务的链式任务竟然可以一起执行".
+      // fleet_api.ts 传 origin=[0,0,0] (no coord context at that layer);
+      // sidecar chain prereq inTransit check does `f.origin.join(":") ===
+      // srcCoords` — [0,0,0] 永不匹配 → downstream legs 并行触发。Self-derive
+      // real origin coords from store.planets[sourcePlanetId] when caller's
+      // origin is zero/missing.
+      let effectiveOrigin: readonly number[] = params.origin;
+      let effectiveOriginType: "planet" | "moon" = params.originType ?? "planet";
+      if ((!effectiveOrigin || effectiveOrigin.every((n) => n === 0)) && params.sourcePlanetId) {
+        const sp = store.state.planets[params.sourcePlanetId];
+        if (sp && Array.isArray(sp.coords) && sp.coords.length === 3) {
+          effectiveOrigin = sp.coords;
+          if ((sp as { type?: string }).type === "moon") effectiveOriginType = "moon";
+        }
+      }
       const synthetic = {
         id: `syn-${launchedAt}`,
         source_planet_id: params.sourcePlanetId,  // v0.0.719 — return path reuse
         mission: params.mission,
-        origin: params.origin as unknown,
-        origin_type: params.originType ?? "planet",
+        origin: effectiveOrigin as unknown,
+        origin_type: effectiveOriginType,
         dest: params.dest as unknown,
         dest_type: params.destType ?? "planet",
         arrival_at: 0,
