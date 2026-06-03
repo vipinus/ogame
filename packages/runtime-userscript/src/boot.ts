@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.716";
+  const USERSCRIPT_VERSION = "0.0.717";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1764,7 +1764,19 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       store.setPartial({ fleets_outbound: [...cur, synthetic] as typeof store.state.fleets_outbound });
       const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
       if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
-      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min`);
+      // v0.0.716 — operator 2026-06-03 "起飞的时候可能带走资源，也应该刷新
+      // 资源". sendFleet drains m/c/d cargo + ships from source planet;
+      // pollEmpire forces fresh resources/ships fetch and chains another
+      // pushNow after, so sidecar planner doesn't run on stale balances.
+      const pollEmp = (env.win as Window & {
+        __ogamexPollEmpire?: (opts?: { force?: boolean }) => Promise<void>;
+      }).__ogamexPollEmpire;
+      if (typeof pollEmp === "function") {
+        void pollEmp({ force: true })
+          .then(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } })
+          .catch(() => { /* */ });
+      }
+      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min, fired pollEmpire+push`);
     } catch (e) { console.warn("[fleet-launch-record] threw:", e); }
   };
   (env.win as Window & { __ogamexRecordFleetLaunch?: typeof recordFleetLaunch }).__ogamexRecordFleetLaunch = recordFleetLaunch;
