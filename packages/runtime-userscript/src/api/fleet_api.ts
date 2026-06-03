@@ -448,6 +448,32 @@ async function sendFleetInner(
       // success=true; fleet ID is harvested from the next /movement scrape by
       // boot.ts:761 harvestSlotsFromMovement (and matched by mission+origin).
       if (json.newAjaxToken) ctx.token.set(json.newAjaxToken);
+      // v0.0.716 — operator 2026-06-03 "起飞也应该传". Record synthetic
+      // fleet entry locally and immediate-push to sidecar so it sees the
+      // launch without waiting for /movement chunk harvest (which we no
+      // longer poll). The helper picks up origin coords from the source
+      // planet record. destType defaults to planet — sendFleet body has
+      // type=1/2/3 for planet/moon/debris but we don't re-derive here;
+      // 'planet' is the safer default for slot-count purposes.
+      try {
+        const win = (typeof window !== "undefined" ? window : globalThis) as unknown as Window & {
+          __ogamexRecordFleetLaunch?: (params: {
+            mission: number;
+            origin: readonly number[];
+            originType?: "planet" | "moon";
+            dest: readonly number[];
+            destType?: "planet" | "moon";
+          }) => void;
+        };
+        if (typeof win.__ogamexRecordFleetLaunch === "function") {
+          win.__ogamexRecordFleetLaunch({
+            mission: p.mission,
+            origin: [0, 0, 0],
+            dest: p.coords,
+            destType: p.destType === 2 ? "moon" : "planet",
+          });
+        }
+      } catch { /* */ }
       return { fleetId: json.fleetIdToReturn ?? 0, raw: json };
     }
     if (attempt === 1 && json.message && TOKEN_INVALID_RE.test(json.message)) {

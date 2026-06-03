@@ -155,27 +155,21 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       lastOwnFleetCount = n;
       {
         console.info(`[OgameX/eventbox-hook] friendly fleet count ${isFirstSeed ? "(boot seed)" : before}→${n}, firing official-API slot refresh + /movement scrape${n < before ? " + empire pollEmpire + state push (fleet finished)" : ""}`);
-        // v0.0.679 — operator 2026-06-03 "改成有任何舰队回航，就触发官方
-        // api拿新的空槽数据 + 全事件驱动". Single source of truth for slot
-        // fields is now refreshSlotsViaApi (fetchGalaxyContent JSON). harvest
-        // still runs in parallel for fleets_outbound list refresh.
+        // v0.0.716 — operator 2026-06-03 "没必要一直在跑 /movement". /movement
+        // chunk harvest REMOVED from this trigger. Slot count truth chain:
+        //   • used_fleet_slots / max_fleet_slots ← refreshSlotsViaApi (galaxy)
+        //   • used/max_expedition_slots ← sidecar's directive.completed event
+        //     counter (3h TTL prune), seeded by ack stream.
+        //   • fleet_id for FS recall ← lazy /movement fetched on demand by
+        //     save_state_machine.notifyHostileClear just before recall POST.
+        // Net: /movement is no longer polled. It runs at boot-burst once and
+        // on FS recall (rare). The 2026-06-03 "远征有空槽不飞" phantom-fleet
+        // inflation root cause is structurally eliminated.
         const refreshSlots = (win as Window & { __ogamexRefreshSlots?: () => Promise<void> }).__ogamexRefreshSlots;
-        const harvest = (win as Window & { __ogamexHarvestMovement?: () => Promise<void> }).__ogamexHarvestMovement;
-        // Operator 2026-05-27: "船回來的事件立即觸發起飛任務". state.snapshot
-        // push is timer-driven (5s ± 2s jitter); without pushing right after
-        // harvest, sidecar+bridge wait 0-7s before seeing the slot freed →
-        // dispatch latency 30s+ observed. Chain after refresh: push immediately
-        // → sidecar onSnapshot detects fleets_outbound count drop → bumpExpedition
-        // Trigger → bridge 1s poll fires fillExpedition. priority_merger also
-        // re-runs on this snapshot, so discover/colonize/deploy/transport
-        // dispatch latency drops the same way (same chain).
         const pushNow = (win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
         const triggerImmediatePush = (): void => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } };
-        const tasks: Promise<void>[] = [];
-        if (typeof refreshSlots === "function") tasks.push(refreshSlots());
-        if (typeof harvest === "function") tasks.push(harvest());
-        if (tasks.length > 0) {
-          void Promise.allSettled(tasks).finally(triggerImmediatePush);
+        if (typeof refreshSlots === "function") {
+          void refreshSlots().finally(triggerImmediatePush);
         } else {
           triggerImmediatePush();
         }

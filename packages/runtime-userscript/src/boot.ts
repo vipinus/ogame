@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.715";
+  const USERSCRIPT_VERSION = "0.0.716";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1728,6 +1728,61 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
   }
   (env.win as Window & { __ogamexRefreshSlots?: () => Promise<void> }).__ogamexRefreshSlots = refreshSlotsViaApi;
+
+  // v0.0.716 — operator 2026-06-03 "前端只要有舰队操作，就往后船 solts 信息".
+  // sendFleet success path calls this to append a synthetic fleet record
+  // and trigger an immediate state push. Replaces the periodic /movement
+  // chunk harvest that used to populate fleets_outbound. Synthetic id =
+  // `syn-${Date.now()}`; return time = coarse estimate (90 min for
+  // expedition matching operator's ~1h holding + ~10 min each way; 60 min
+  // default otherwise). Periodic prune (every 60s) drops expired entries —
+  // local in-memory timer, not network polling.
+  type FleetLike = (typeof store.state.fleets_outbound)[number];
+  const recordFleetLaunch = (params: {
+    mission: number;
+    origin: readonly number[];
+    originType?: "planet" | "moon";
+    dest: readonly number[];
+    destType?: "planet" | "moon";
+  }): void => {
+    try {
+      const launchedAt = Date.now();
+      const ttlMin = params.mission === 15 ? 90 : 60;
+      const expectedReturnAt = launchedAt + ttlMin * 60 * 1000;
+      const synthetic = {
+        id: `syn-${launchedAt}`,
+        mission: params.mission,
+        origin: params.origin as unknown,
+        origin_type: params.originType ?? "planet",
+        dest: params.dest as unknown,
+        dest_type: params.destType ?? "planet",
+        arrival_at: 0,
+        return_at: expectedReturnAt,
+        ships: {} as Record<string, number>,
+      } as unknown as FleetLike;
+      const cur = store.state.fleets_outbound ?? [];
+      store.setPartial({ fleets_outbound: [...cur, synthetic] as typeof store.state.fleets_outbound });
+      const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+      if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
+      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min`);
+    } catch (e) { console.warn("[fleet-launch-record] threw:", e); }
+  };
+  (env.win as Window & { __ogamexRecordFleetLaunch?: typeof recordFleetLaunch }).__ogamexRecordFleetLaunch = recordFleetLaunch;
+  const pruneExpiredFleets = (): void => {
+    try {
+      const now = Date.now();
+      const cur = store.state.fleets_outbound ?? [];
+      const fresh = cur.filter((f) => {
+        const r = (f as { return_at?: number | null }).return_at;
+        return r === null || r === undefined || r === 0 || r > now;
+      });
+      if (fresh.length !== cur.length) {
+        store.setPartial({ fleets_outbound: fresh as typeof store.state.fleets_outbound });
+        console.info(`[fleet-prune] removed ${cur.length - fresh.length} expired synthetic fleets`);
+      }
+    } catch { /* */ }
+  };
+  setInterval(pruneExpiredFleets, 60_000);
 
   // Jumpgate cooldown harvester — DELETED 2026-05-27 (architecture migration).
   // Original purpose: probe each moon's jumpgate overlay every boot+15s + 24h

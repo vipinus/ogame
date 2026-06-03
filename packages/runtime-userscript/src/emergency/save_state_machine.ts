@@ -121,18 +121,53 @@ export class SaveStateMachine {
       // hostile drops from events_incoming. POST recall immediately.
       console.warn(`[fsm] IN_FLIGHT → RECALLING  all hostiles clear, instant recall (fleetId=${this.fleetId})`);
       this.state = "RECALLING";
-      if (this.fleetId !== null && this.fleetId > 0) {
-        void this.actions.recallFleet(this.fleetId)
-          .then(() => console.warn(`[fsm] RECALLING → (awaiting fleet return)  recallFleet POST OK`))
-          .catch((e) => {
-            this.lastError = e instanceof Error ? e.message : String(e);
-            console.error(`[fsm] ❌ RECALLING → FALLBACK  err=${this.lastError}`);
-            this.state = "FALLBACK";
-          });
-      } else {
-        console.warn(`[fsm] RECALLING skipped recall POST — fleetId=${this.fleetId} unknown (sendFleet returned placeholder); /movement harvest must populate fleetId before recall can fire`);
+      // v0.0.716 — operator 2026-06-03 "需要recall 的时候再去拿真ID". Lazy
+      // /movement fetch is now triggered HERE (not by eventbox-hook periodic
+      // poll). When fleetId is still placeholder 0, await one /movement
+      // scrape so patcher can populate the real ogame fleet_id, then fire
+      // recall POST. If patcher (state.updated handler) already patched
+      // (rare race), this lazy fetch is just a fresh confirmation pass.
+      void this.fireRecall();
+    }
+  }
+
+  private async fireRecall(): Promise<void> {
+    if (this.fleetId === null || this.fleetId <= 0) {
+      // Lazy fetch /movement to populate real fleet_id. Patcher in
+      // save_orchestrator state.updated handler will match by mission +
+      // origin + origin_type and call patchFleetId. patchFleetId itself
+      // re-fires recall on success, so we just await the harvest then bail.
+      try {
+        const win = (typeof window !== "undefined" ? window : globalThis) as unknown as Window & {
+          __ogamexHarvestMovement?: () => Promise<void>;
+        };
+        if (typeof win.__ogamexHarvestMovement === "function") {
+          console.warn(`[fsm] RECALLING — fleetId still 0, lazy fetching /movement once for patcher`);
+          await win.__ogamexHarvestMovement();
+        } else {
+          console.warn(`[fsm] RECALLING skipped recall POST — fleetId=${this.fleetId} unknown and no __ogamexHarvestMovement available`);
+          return;
+        }
+      } catch (e) {
+        console.error(`[fsm] lazy /movement fetch threw, RECALLING stays stuck:`, e);
+        return;
+      }
+      // After harvest, patcher in orchestrator state.updated handler should
+      // have fired patchFleetId, which itself re-fires recall. If fleetId is
+      // still 0 here, /movement didn't include our fleet (very recent launch
+      // not yet visible) — patcher will retry on next state.updated.
+      if (this.fleetId === null || this.fleetId <= 0) {
+        console.warn(`[fsm] RECALLING still no fleetId after lazy /movement — patcher will retry on next state.updated`);
+        return;
       }
     }
+    void this.actions.recallFleet(this.fleetId)
+      .then(() => console.warn(`[fsm] RECALLING → (awaiting fleet return)  recallFleet POST OK`))
+      .catch((e) => {
+        this.lastError = e instanceof Error ? e.message : String(e);
+        console.error(`[fsm] ❌ RECALLING → FALLBACK  err=${this.lastError}`);
+        this.state = "FALLBACK";
+      });
   }
 
   /** Deprecated — kept for backward compat (call site count). No-op now. */
