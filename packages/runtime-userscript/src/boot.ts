@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.723";
+  const USERSCRIPT_VERSION = "0.0.724";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1699,30 +1699,38 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const j = await r.json() as { system?: { usedFleetSlots?: number; maximumFleetSlots?: number } };
       const sys = j.system ?? {};
       if (typeof sys.usedFleetSlots !== "number" || typeof sys.maximumFleetSlots !== "number") return;
-      const curServer = store.state.server ?? {};
-      // v0.0.715 — operator 2026-06-03 "顶层方案". Expedition slot fields
-      // now ALSO owned by refreshSlotsViaApi (single source per memory
-      // [[feedback_single_source_slot_data]]). The cap to usedFleetSlots
-      // prevents a phantom /movement entry (survived past ogame's deletion)
-      // from inflating the expedition tally and locking out new launches —
-      // the 2026-06-03 "远征有空槽不飞" incident root cause: 6 mission=15
-      // entries in fleets_outbound vs galaxy's authoritative 5 fleets total.
-      // max = floor(sqrt(astro)) + classBonus (Discoverer +2).
+      const curServer = (store.state.server ?? {}) as { used_expedition_slots?: number };
+      // v0.0.724 — operator 2026-06-03 "前台传回的数据都要持久化". Don't
+      // clobber `used_expedition_slots` with a confidently-wrong 0 when
+      // mission15Count is 0 because synthetic prune ran or boot-burst
+      // /movement hasn't repopulated yet. Sidecar persists what we push;
+      // pushing 0 ruins post-restart hydration. New rule:
+      //   • mission15Count > 0   → write min(mission15, usedFleetSlots) (cap)
+      //   • usedFleetSlots == 0  → write 0 (galaxy says truly no fleets out)
+      //   • else                 → SKIP write, preserve previous value
+      //     (galaxy says fleets are out but our tracking lost them — we
+      //     don't know mission breakdown, don't overwrite with a fake 0)
       const mission15Count = (store.state.fleets_outbound ?? [])
         .filter((f) => (f as { mission?: number }).mission === 15).length;
-      const expUsed = Math.min(mission15Count, sys.usedFleetSlots);
       const baseMax = expeditionSlots(store.state.research?.levels?.astrophysics ?? 0);
       const classBonus = playerClass === "discoverer" ? 2 : 0;
       const expMax = baseMax + classBonus;
-      store.setPartial({
-        server: {
-          ...curServer,
-          used_fleet_slots: sys.usedFleetSlots,
-          max_fleet_slots: sys.maximumFleetSlots,
-          ...(expMax > 0 ? { used_expedition_slots: expUsed, max_expedition_slots: expMax } : {}),
-        } as typeof store.state.server,
-      });
-      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} exp ${expUsed}/${expMax} (raw mission15=${mission15Count}, capped by usedFleetSlots)`);
+      const writeExpedition = mission15Count > 0 || sys.usedFleetSlots === 0;
+      const expUsed = writeExpedition ? Math.min(mission15Count, sys.usedFleetSlots) : (curServer.used_expedition_slots ?? 0);
+      const serverPatch: Record<string, unknown> = {
+        ...curServer,
+        used_fleet_slots: sys.usedFleetSlots,
+        max_fleet_slots: sys.maximumFleetSlots,
+      };
+      if (expMax > 0) {
+        serverPatch.max_expedition_slots = expMax;
+        if (writeExpedition) serverPatch.used_expedition_slots = expUsed;
+      }
+      store.setPartial({ server: serverPatch as typeof store.state.server });
+      const expTag = writeExpedition
+        ? `exp ${expUsed}/${expMax}`
+        : `exp PRESERVED(${curServer.used_expedition_slots ?? "?"})/${expMax} — mission15=0 but ${sys.usedFleetSlots} fleets out, breakdown unknown`;
+      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} ${expTag} (raw mission15=${mission15Count})`);
     } catch (e) {
       console.warn("[OgameX/slots-api] failed:", e);
     }

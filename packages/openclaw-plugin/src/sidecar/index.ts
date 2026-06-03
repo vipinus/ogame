@@ -557,14 +557,36 @@ export async function startSidecar(
   // priorityMerger / health / debug endpoints have a real WorldState even
   // before the userscript's first state.snapshot. Corrupt blob → null +
   // warn so boot still completes (next snapshot will overwrite).
+  // v0.0.724 — operator 2026-06-03 "sqlite 马上要放弃了 用PG". Hydrate
+  // PRIMARILY from PG (ogame_world_state table) for the legacy operator
+  // uid. SQLite still tried as fallback only if PG returns null or fails.
   try {
-    const persisted = worldStateStore.hydrate();
+    let persisted: { state: WorldState; updated_at: number } | null = null;
+    let source = "sqlite";
+    if (pgStore && legacyUid) {
+      try {
+        const pgPersisted = await pgStore.hydrate(legacyUid);
+        if (pgPersisted !== null) {
+          persisted = pgPersisted;
+          source = "pg";
+        }
+      } catch (e) {
+        console.warn("[ogamex/sidecar] PG hydrate failed, will try SQLite fallback:", e);
+      }
+    }
+    if (persisted === null) {
+      const sqlitePersisted = worldStateStore.hydrate();
+      if (sqlitePersisted !== null) {
+        persisted = sqlitePersisted;
+        source = "sqlite-fallback";
+      }
+    }
     if (persisted !== null) {
       stateRef.current = persisted.state;
       const ageMin = Math.round((Date.now() - persisted.updated_at) / 60_000);
-      console.info(`[ogamex/sidecar] hydrated WorldState from db (age ${ageMin}min, last_update=${persisted.state.last_update})`);
+      console.info(`[ogamex/sidecar] hydrated WorldState from ${source} (age ${ageMin}min, last_update=${persisted.state.last_update})`);
     } else {
-      console.info("[ogamex/sidecar] no persisted WorldState — waiting for first state.snapshot");
+      console.info("[ogamex/sidecar] no persisted WorldState (neither PG nor SQLite) — waiting for first state.snapshot");
     }
   } catch (e) {
     console.warn("[ogamex/sidecar] WorldState hydrate failed (corrupt blob?), continuing with null:", e);
