@@ -246,21 +246,25 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
 
   // Live-DOM click + menu nav + URL wait paths REMOVED (v0.0.222).
   // Operator directive: 裝 A — full API化, 刪 DOM 點選 fallback.
-  // Audit found these methods (tryLivePageClick / tryLivePageClickAsync /
-  // kickMenuNav / waitForUrl) were never called by execute() — execute()
-  // already uses captures-replay (TIER 1) or fetchTokenAndStatus-based
-  // execSimpleUpgrade/execShipBuild (TIER 2), both pure HTTP. Dead code.
+  // execute() uses captures-replay (TIER 1) or fetchTechStatus-based
+  // execSimpleUpgrade/execShipBuild (TIER 2), both pure HTTP.
   //
-  // For fresh CSRF token without a SPA nav, fetchTokenAndStatus does a
-  // background GET /game/index.php?page=ingame&component=X&cp=PID and
-  // extracts the token from response HTML. No page change.
+  // fetchTechStatus does a background GET /game/index.php?page=ingame&
+  // component=X&cp=PID to read status + reason from response HTML.
+  // (v0.0.684: token + actionUrl extraction dropped; tokenManager handles
+  // token refresh from JSON `newAjaxToken` instead.)
 
-  /** Fetch a fresh CSRF token + check ogame status for the target tech. */
-  private async fetchTokenAndStatus(
+  /**
+   * v0.0.684 — was fetchTokenAndStatus; token + actionUrl were dead weight.
+   * Token regex (5 fallbacks) extracted but caller void'd it — tokenManager
+   * refreshes from JSON `newAjaxToken`. actionUrl computed but caller only
+   * used `!!actionUrl` in a log. Now returns only { status, reason }.
+   */
+  private async fetchTechStatus(
     component: string,
     planetId: string,
     numericId: number,
-  ): Promise<{ token: string; status: string | null; reason: string | null }> {
+  ): Promise<{ status: string | null; reason: string | null }> {
     // v0.0.441: route through fleet_api.cpPostWithRetry (method=GET) so this
     // token-page fetch picks up the same cp-shift + transient handling as
     // every other dispatcher. Returns raw HTML in result.raw (json is null
@@ -276,21 +280,12 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       skipRestore: true,
     });
     const html = resp.raw;
-    // Token can be in: hidden input, meta tag, or inline JS var. Try all.
-    const tokenMatch =
-      html.match(/<input[^>]*name="token"[^>]*value="([^"]+)"/i)
-      ?? html.match(/<input[^>]*value="([^"]+)"[^>]*name="token"/i)
-      ?? html.match(/<meta[^>]*name="ogame-token"[^>]*content="([^"]+)"/i)
-      ?? html.match(/['"]?token['"]?\s*[:=]\s*['"]([a-zA-Z0-9]{16,})['"]/i)
-      ?? html.match(/ajaxToken\s*=\s*['"]([^'"]+)['"]/i);
-    if (!tokenMatch) {
-      console.warn(`[ApiExec] token not found in ${component} page HTML (${html.length}B). First 500 chars: ${html.slice(0, 500)}`);
-      throw new Error(`api: token not found on ${component} page`);
+    // v0.0.684 — token regex shotgun removed (caller didn't use it).
+    // Sanity: page must contain the target tech li, else format change/error.
+    if (!html.includes(`data-technology="${numericId}"`)) {
+      throw new Error(`api: ${component} page missing tech ${numericId} (html=${html.length}B)`);
     }
-    const token = tokenMatch[1]!;
-    // Carve out the <li> block for this tech so we can scan its attrs
-    // AND its inner upgrade button's href (which contains the EXACT
-    // server-side action URL — no guessing modus / param order).
+    // Carve out the <li> block for this tech so we can scan its attrs.
     const liStartIdx = html.indexOf(`data-technology="${numericId}"`);
     let liBlock = "";
     if (liStartIdx > -1) {
@@ -300,22 +295,9 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     }
     const statusMatch = liBlock.match(/data-status="([^"]+)"/i);
     const tooltipMatch = liBlock.match(/data-tooltip-title="([^"]+)"/i);
-    const hrefMatch =
-      liBlock.match(/href="([^"]*(?:modus=|action=upgrade|action=build)[^"]*)"/i)
-      ?? liBlock.match(/data-action="([^"]+)"/i);
-    let actionUrl: string | null = null;
-    if (hrefMatch) {
-      actionUrl = hrefMatch[1]!.replace(/&amp;/g, "&");
-      // Strip absolute origin if present so we POST same-origin.
-      actionUrl = actionUrl.replace(/^https?:\/\/[^/]+/, "");
-      if (!actionUrl.startsWith("/")) actionUrl = "/game/" + actionUrl.replace(/^\.?\//, "");
-      console.info(`[ApiExec] ${component}:${numericId} action URL from page DOM: ${actionUrl.slice(0, 140)}`);
-    }
     return {
-      token,
       status: statusMatch?.[1] ?? null,
       reason: tooltipMatch?.[1] ?? null,
-      actionUrl,
     };
   }
 
@@ -384,8 +366,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const numericId = (directive.params as { technology_id?: number }).technology_id
       ?? OGAME_NUMERIC_ID[ship];
     if (!numericId) throw new Error(`api: no numeric id for ship ${ship}`);
-    const { token, status, reason, actionUrl } = await this.fetchTokenAndStatus("shipyard", planetId, numericId);
-    console.info(`[ApiExec] shipyard:${ship}×${amount} status=${status} reason=${(reason ?? "").slice(0,40)} hasActionUrl=${!!actionUrl}`);
+    const { status, reason } = await this.fetchTechStatus("shipyard", planetId, numericId);
+    console.info(`[ApiExec] shipyard:${ship}×${amount} status=${status} reason=${(reason ?? "").slice(0,40)}`);
     if (status === "active") return { action: directive.action, clicked: false };
     if (status === "disabled") {
       if (reason && /(造船廠|shipyard).*(升級|upgrad|building)/i.test(reason)) {
@@ -393,11 +375,8 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       }
       throw new Error(`${ship} unavailable: ${reason ?? "disabled"}`);
     }
-    void token;  // legacy local fallback; tokenManager handles refresh now
-    // v0.0.443: route through fleet_api.cpPostWithRetry — same retry / token
-    // refresh pattern as the simpleUpgrade path. Caller-side token kept only
-    // for the status/disabled check above; the POST uses tokenManager's
-    // managed token per attempt.
+    // POST via cpPostWithRetry; tokenManager handles per-attempt token refresh
+    // from JSON `newAjaxToken`. status/reason gate above is the only HTML scrape.
     if (!this.tokenManager) throw new Error(`shipyard: no tokenManager wired`);
     const res = await cpPostWithRetry({
       endpoint: `/game/index.php?page=componentOnly&component=buildlistactions&action=scheduleEntry&asJson=1`,
@@ -704,22 +683,40 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
    *  target coords (not position=16). On success ogame plants colony at the
    *  target slot. WARNING: best-guess body shape — capture real click for
    *  accuracy if first attempt fails. */
-  private async execColonize(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean }> {
+  private async execColonize(directive: Directive, planetId: string): Promise<{ action: string; clicked: boolean; colonize_result?: { success: boolean; coord?: string; reason?: string } }> {
     // v0.0.438: delegate to fleet_api.sendFleet (mission=7 colonize, type=1
-    // planet). Fixes pre-existing ReferenceError on line 883 (`destType`
-    // undefined in execColonize scope) introduced when execFleetSend was
-    // refactored. Operator 2026-05-29: "需要切cp的都改成 fleet_api.sendFleet
-    // 模式".
+    // planet). v0.0.689: range-scan branch — operator 2026-06-03 "扫描指定
+    // 范围内离本星球最近的符合殖民条件的坐标".
     if (!this.tokenManager) throw new Error("colonize: no tokenManager wired");
-    const params = directive.params as { target_coords?: string; ships?: Record<string, number>; cargo?: { metal?: number; crystal?: number; deuterium?: number } };
+    const params = directive.params as {
+      target_coords?: string;
+      ships?: Record<string, number>;
+      cargo?: { metal?: number; crystal?: number; deuterium?: number };
+      range?: { galaxy_min: number; galaxy_max: number; system_min: number; system_max: number; position_min: number; position_max: number };
+      source_planet?: string;
+    };
     const ships = params.ships ?? { colonyShip: 1 };
     const cargo = params.cargo ?? { metal: 5000, crystal: 2500, deuterium: 0 };
-    const [tgStr, tsStr, tpStr] = (params.target_coords ?? "").split(":");
-    const tGalaxy = parseInt(tgStr ?? "0", 10);
-    const tSystem = parseInt(tsStr ?? "0", 10);
-    const tPos = parseInt(tpStr ?? "0", 10);
-    if (!tGalaxy || !tSystem || !tPos) throw new Error(`colonize: bad target_coords`);
-    console.info(`[ApiExec] colonize delegate→fleet_api.sendFleet ${tGalaxy}:${tSystem}:${tPos} mission=7 cp=${planetId}`);
+
+    let tGalaxy = 0, tSystem = 0, tPos = 0;
+    if (params.range) {
+      // v0.0.689 — galaxy scan. Find first EMPTY position in range, radial
+      // from source planet's home system. Empty = galaxyContent row absent
+      // or row.planet === null.
+      const scanned = await this.scanColonizeCandidate(params.range, planetId);
+      if (!scanned) {
+        throw new Error(`colonize: no empty position in g[${params.range.galaxy_min}-${params.range.galaxy_max}] s[${params.range.system_min}-${params.range.system_max}] p[${params.range.position_min}-${params.range.position_max}]`);
+      }
+      tGalaxy = scanned[0]; tSystem = scanned[1]; tPos = scanned[2];
+    } else {
+      const [tgStr, tsStr, tpStr] = (params.target_coords ?? "").split(":");
+      tGalaxy = parseInt(tgStr ?? "0", 10);
+      tSystem = parseInt(tsStr ?? "0", 10);
+      tPos = parseInt(tpStr ?? "0", 10);
+      if (!tGalaxy || !tSystem || !tPos) throw new Error(`colonize: bad target_coords`);
+    }
+    const coordStr = `${tGalaxy}:${tSystem}:${tPos}`;
+    console.info(`[ApiExec] colonize delegate→fleet_api.sendFleet ${coordStr} mission=7 cp=${planetId}`);
     try {
       const res = await fleetApiSendFleet(
         {
@@ -733,11 +730,87 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         },
         { fetch: this.fetchFn, token: this.tokenManager },
       );
-      console.info(`[ApiExec] colonize OK fleetId=${res.fleetId}`);
-      return { action: "colonize", clicked: true };
+      console.info(`[ApiExec] colonize OK fleetId=${res.fleetId} coord=${coordStr}`);
+      return { action: "colonize", clicked: true, colonize_result: { success: true, coord: coordStr } };
     } catch (e) {
       throw new Error(`colonize rejected: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
     }
+  }
+
+  /** v0.0.689 — radial galaxy scan for first empty colonize candidate.
+   *  Iterates systems from source's home system outward, within range.
+   *  For each system: POST fetchGalaxyContent → JSON galaxyContent[] →
+   *  empty position = row missing OR row.planet === null in [p_min, p_max].
+   *  Returns [galaxy, system, position] of nearest match, or null. */
+  private async scanColonizeCandidate(
+    range: { galaxy_min: number; galaxy_max: number; system_min: number; system_max: number; position_min: number; position_max: number },
+    sourcePlanetId: string,
+  ): Promise<[number, number, number] | null> {
+    if (!this.tokenManager) return null;
+    // Pull source coords from store for radial seed.
+    const storeRef = (this.win as Window & { __ogamexStore?: { state: { planets?: Record<string, { id?: string; coords?: number[] }> } } }).__ogamexStore;
+    const srcPlanet = storeRef?.state.planets?.[sourcePlanetId];
+    const srcCoords = srcPlanet?.coords ?? [range.galaxy_min, range.system_min, 1];
+    const srcGalaxy = srcCoords[0] ?? range.galaxy_min;
+    const srcSystem = srcCoords[1] ?? range.system_min;
+    // Iterate galaxies (typically one) then systems radially from srcSystem.
+    for (let g = range.galaxy_min; g <= range.galaxy_max; g++) {
+      // Order systems by |s - srcSystem| (nearest first when in source galaxy).
+      const systems: number[] = [];
+      for (let s = range.system_min; s <= range.system_max; s++) systems.push(s);
+      const radialSort = (a: number, b: number): number => {
+        if (g !== srcGalaxy) return a - b;  // foreign galaxy: ascending
+        return Math.abs(a - srcSystem) - Math.abs(b - srcSystem);
+      };
+      systems.sort(radialSort);
+      for (const s of systems) {
+        try {
+          const galRes = await cpPostWithRetry({
+            endpoint: `/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1`,
+            sourcePlanetId,
+            token: this.tokenManager,
+            action: `colonize:scan:${g}:${s}`,
+            method: "POST",
+            tokenProvider: async () => "",
+            buildBody: () => {
+              const b = new URLSearchParams();
+              b.set("galaxy", String(g));
+              b.set("system", String(s));
+              return b;
+            },
+            successCheck: (j) => !!j["system"],
+            maxAttempts: 1,
+            skipRestore: true,
+          });
+          const j = JSON.parse(galRes.raw) as {
+            system?: { galaxyContent?: Array<{ position?: number; planet?: unknown }> };
+          };
+          const content = j.system?.galaxyContent ?? [];
+          // Build set of occupied positions in this system.
+          const occupied = new Set<number>();
+          for (const row of content) {
+            const pos = typeof row.position === "number" ? row.position : 0;
+            if (pos >= 1 && pos <= 15 && row.planet != null) occupied.add(pos);
+          }
+          // First empty in range — radial from source position if same system,
+          // else ascending. Source pos: srcCoords[2] when same g+s, else mid.
+          const positions: number[] = [];
+          for (let p = range.position_min; p <= range.position_max; p++) positions.push(p);
+          const sameSys = g === srcGalaxy && s === srcSystem;
+          const srcPos = sameSys ? (srcCoords[2] ?? 8) : 8;
+          positions.sort((a, b) => Math.abs(a - srcPos) - Math.abs(b - srcPos));
+          for (const p of positions) {
+            if (!occupied.has(p)) {
+              console.info(`[ApiExec/colonize-scan] empty at ${g}:${s}:${p} (occupied=${[...occupied].join(",")})`);
+              return [g, s, p];
+            }
+          }
+        } catch (e) {
+          console.warn(`[ApiExec/colonize-scan] ${g}:${s} fetch failed:`, e);
+        }
+      }
+    }
+    return null;
   }
 
   /** Deploy (mission=4, one-way) or Transport (mission=3, round-trip). Same

@@ -725,6 +725,14 @@ function openDiscoverySettings(
         </div>
       </div>
     `;
+    // v0.0.688 — operator 2026-06-03 "发现任务星球选择器默认为当前星球".
+    {
+      const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
+      const sel = m.querySelector<HTMLSelectElement>("[data-disc-planet]");
+      if (ogameCurrentPid && sel && planets.some((p) => p.id === ogameCurrentPid)) {
+        sel.value = ogameCurrentPid;
+      }
+    }
     // Wire Stop button.
     m.querySelector<HTMLElement>("[data-disc-stop]")?.addEventListener("click", async (e) => {
       const btn = e.currentTarget as HTMLElement;
@@ -872,14 +880,14 @@ function openGoalsSettings(
     //   6. 艦隊任務 — colonize, expedition, deploy, transport, build_ships, build_defense
     // Tab switch filters goal type select options + dims planet/moon rows
     // that don't match the tab's body kind.
-    type TabId = "planet-build" | "moon-build" | "lf-build" | "research" | "lf-research" | "fleet";
+    type TabId = "planet-build" | "moon-build" | "lf-build" | "research" | "lf-research" | "colonize";
     const TAB_DEFS: Array<{ id: TabId; label: string; goalTypes: string[]; bodyFilter: "planet" | "moon" | "any" }> = [
       { id: "planet-build", label: t("auto.024"), goalTypes: ["build", "build_universal", "terraformer_to"], bodyFilter: "planet" },
       { id: "moon-build",   label: t("auto.025"), goalTypes: ["build"],                                       bodyFilter: "moon"   },
       { id: "lf-build",     label: t("auto.026"), goalTypes: ["lifeform_building", "pick_lifeform", "lifeform_level_to"], bodyFilter: "planet" },
       { id: "research",     label: t("auto.027"), goalTypes: ["research"],                                    bodyFilter: "planet" },
       { id: "lf-research",  label: t("auto.028"), goalTypes: ["lifeform_research"],                            bodyFilter: "planet" },
-      { id: "fleet",        label: t("auto.029"), goalTypes: ["colonize", "expedition", "deploy", "transport", "build_ships", "build_defense"], bodyFilter: "any" },
+      { id: "colonize",     label: t("auto.276"), goalTypes: ["colonize"],                                    bodyFilter: "planet" },
     ];
     const presetByValue = new Map(GOAL_PRESETS.map((g) => [g.value, g] as const));
     const renderTabBar = (): string => TAB_DEFS.map((t) =>
@@ -1137,11 +1145,32 @@ function openGoalsSettings(
           <button data-lf-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.237'))}</button>
         </div>
       </div>
-      <!-- v0.0.599 — 普通研究獨立 pane. Research is GLOBAL (single queue
-           per account), no planet selector needed; planner auto-picks
-           source planet with the highest researchLab. -->
+      <!-- v0.0.686 — 普通研究 pane + planet selector (operator 2026-06-03).
+           Research is GLOBAL (single queue per account), but ogame requires
+           the upgrade POST to originate from a SPECIFIC planet's research
+           lab. Operator picks which planet — sidecar honors goal.planet
+           in planner.ts:597-602 (matches state.planets[id] → use, else
+           falls back to first planet). -->
       <div data-pane="research" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
         <div data-rs-queue style="padding:6px 0; color:#7080a0; font-size:11px;">global queue: <span style="color:#a06060;">loading…</span></div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.225'))}</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; max-height:160px; overflow-y:auto; background:#06090f; display:grid; grid-template-columns:1fr 1fr; gap:0;">
+            ${sortedCoordKeys
+              .filter((k) => groupedByCoord.get(k)!.planet)
+              .map((k) => {
+                const { planet } = groupedByCoord.get(k)!;
+                const p = planet!;
+                return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
+                  <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+                  <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; cursor:pointer;">
+                    <input data-rs-planet type="radio" name="rs-planet-radio" value="${escapeHtml(p.id)}" style="vertical-align:middle;"/>
+                    <span>🌍 ${escapeHtml(p.name ?? t("auto.119"))}</span>
+                  </label>
+                </div>`;
+              }).join("")}
+          </div>
+        </div>
         <div style="padding:6px 0;">
           <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.201'))}</div>
           <div style="border:1px solid #2a3a52; border-radius:3px; padding:6px 8px; background:#06090f; display:grid; grid-template-columns:repeat(4, 1fr); gap:4px 8px;">
@@ -1237,6 +1266,55 @@ function openGoalsSettings(
           <button data-lr-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.237'))}</button>
         </div>
       </div>
+      <!-- v0.0.687 — 殖民獨立 pane (operator 2026-06-03 "舰船任务改成殖民任务").
+           Flow: build colonyShip on source planet → galaxy-scan in range
+           for nearest empty coord → dispatch mission=7. Sidecar wires the
+           state machine; UI just collects ranges + shows last result. -->
+      <div data-pane="colonize" style="display:none; padding:8px 10px; background:#0a1018; border:1px solid #2a3a52; border-top:none; border-radius:0 4px 4px 4px;">
+        <div data-cl-last style="padding:6px 0; color:#7080a0; font-size:11px;">${escapeHtml(t('auto.284'))}: <span style="color:#7080a0;">${escapeHtml(t('auto.285'))}</span></div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.277'))}</div>
+          <div style="border:1px solid #2a3a52; border-radius:3px; max-height:160px; overflow-y:auto; background:#06090f; display:grid; grid-template-columns:1fr 1fr; gap:0;">
+            ${sortedCoordKeys
+              .filter((k) => groupedByCoord.get(k)!.planet)
+              .map((k) => {
+                const { planet } = groupedByCoord.get(k)!;
+                const p = planet!;
+                return `<div style="padding:4px 8px; display:flex; gap:6px; align-items:center; border-bottom:1px solid #1a2030;">
+                  <span style="width:60px; color:#7080a0; font-size:11px;">[${escapeHtml(k)}]</span>
+                  <label style="flex:1; display:flex; align-items:center; gap:4px; color:#d0d8e0; font-size:11px; cursor:pointer;">
+                    <input data-cl-planet type="radio" name="cl-planet-radio" value="${escapeHtml(p.id)}" style="vertical-align:middle;"/>
+                    <span>🌍 ${escapeHtml(p.name ?? t("auto.119"))}</span>
+                  </label>
+                </div>`;
+              }).join("")}
+          </div>
+        </div>
+        <div style="padding:6px 0;">
+          <div style="color:#d0d8e0; font-size:11px; padding-bottom:4px;">${escapeHtml(t('auto.278'))}</div>
+          <div style="display:flex; gap:6px; align-items:center; padding:4px 0; flex-wrap:wrap;">
+            <span style="color:#7080a0; font-size:11px;">${escapeHtml(t('auto.279'))}</span>
+            <select data-cl-galaxy style="${inputStyle} width:54px;">${[1,2,3,4,5,6,7,8,9].map(n => `<option value="${n}"${n===3?' selected':''}>${n}</option>`).join("")}</select>
+            <span style="color:#7080a0; font-size:11px; padding-left:8px;">${escapeHtml(t('auto.280'))}</span>
+            <input data-cl-s-min type="number" min="1" max="499" placeholder="${escapeHtml(t('auto.282'))}" onclick="this.select()" style="${inputStyle} width:60px;"/>
+            <span style="color:#7080a0;">~</span>
+            <input data-cl-s-max type="number" min="1" max="499" placeholder="${escapeHtml(t('auto.283'))}" onclick="this.select()" style="${inputStyle} width:60px;"/>
+            <span style="color:#7080a0; font-size:11px; padding-left:8px;">${escapeHtml(t('auto.281'))}</span>
+            <select data-cl-p-min style="${inputStyle} width:54px;">${Array.from({length:15},(_,i)=>i+1).map(n => `<option value="${n}"${n===8?' selected':''}>${n}</option>`).join("")}</select>
+            <span style="color:#7080a0;">~</span>
+            <select data-cl-p-max style="${inputStyle} width:54px;">${Array.from({length:15},(_,i)=>i+1).map(n => `<option value="${n}"${n===8?' selected':''}>${n}</option>`).join("")}</select>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
+          <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.190'))}</span>
+          <input data-cl-priority type="number" min="1" max="20" value="5" onclick="this.select()" style="${inputStyle} width:80px;"/>
+          <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.193'))}</span>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:8px;">
+          <span data-cl-status style="color:#7080a0; font-size:10px; align-self:center;"></span>
+          <button data-cl-create style="background:#205a20; color:#fff; border:1px solid #408a40; padding:4px 14px; border-radius:3px; cursor:pointer; font-size:11px;">${escapeHtml(t('auto.286'))}</button>
+        </div>
+      </div>
       <!-- Shared pane (used by 1 non-dedicated tab) -->
       <div data-pane="shared" style="display:none;">
       <!-- Operator 2026-05-29: 自然語言入口 — Gemini 解析 → 填表單 -->
@@ -1330,8 +1408,9 @@ function openGoalsSettings(
     const lfBuildPane = m.querySelector<HTMLElement>('[data-pane="lf-build"]');
     const researchPane = m.querySelector<HTMLElement>('[data-pane="research"]');
     const lfResearchPane = m.querySelector<HTMLElement>('[data-pane="lf-research"]');
+    const colonizePane = m.querySelector<HTMLElement>('[data-pane="colonize"]');
     const sharedPane = m.querySelector<HTMLElement>('[data-pane="shared"]');
-    const isDedicatedPane = (id: TabId): boolean => id === "planet-build" || id === "moon-build" || id === "lf-build" || id === "research" || id === "lf-research";
+    const isDedicatedPane = (id: TabId): boolean => id === "planet-build" || id === "moon-build" || id === "lf-build" || id === "research" || id === "lf-research" || id === "colonize";
     const applyTab = (tabId: TabId): void => {
       const tab = TAB_DEFS.find((t) => t.id === tabId);
       if (!tab) return;
@@ -1349,6 +1428,7 @@ function openGoalsSettings(
       if (lfBuildPane) lfBuildPane.style.display = tabId === "lf-build" ? "" : "none";
       if (researchPane) researchPane.style.display = tabId === "research" ? "" : "none";
       if (lfResearchPane) lfResearchPane.style.display = tabId === "lf-research" ? "" : "none";
+      if (colonizePane) colonizePane.style.display = tabId === "colonize" ? "" : "none";
       if (sharedPane) sharedPane.style.display = isDedicatedPane(tabId) ? "none" : "";
       if (isDedicatedPane(tabId)) return; // skip shared-form filtering below
       if (!typeSel) return;
@@ -1907,12 +1987,26 @@ function openGoalsSettings(
       for (const r of rsTechRadios()) r.addEventListener("change", refreshRsDesc);
       rsLevelInput?.addEventListener("input", refreshRsDesc);
       refreshRsDesc();
+      const rsPlanetRadios = (): HTMLInputElement[] => Array.from(
+        m.querySelectorAll<HTMLInputElement>('input[name="rs-planet-radio"]'),
+      );
+      // v0.0.686 — operator 2026-06-03 "默认星球是当前星球". Pre-check the
+      // radio for operator's currently-viewed planet (ogame-planet-id meta).
+      {
+        const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
+        if (ogameCurrentPid) {
+          const cur = m.querySelector<HTMLInputElement>(`input[name="rs-planet-radio"][value="${ogameCurrentPid}"]`);
+          if (cur) cur.checked = true;
+        }
+      }
       rsCreateBtn?.addEventListener("click", async () => {
         if (!rsStatusEl) return;
         const techRadio = rsTechRadios().find((r) => r.checked);
+        const planetRadio = rsPlanetRadios().find((r) => r.checked);
         const lvl = parseInt(rsLevelInput?.value ?? "", 10);
         const pri = parseInt(rsPriorityInput?.value ?? "5", 10) || 5;
         if (!techRadio) { rsStatusEl.textContent = t("auto.076"); rsStatusEl.style.color = "#a06060"; return; }
+        if (!planetRadio) { rsStatusEl.textContent = t("auto.045"); rsStatusEl.style.color = "#a06060"; return; }
         if (!lvl || lvl < 1 || lvl > 30) { rsStatusEl.textContent = t("auto.077"); rsStatusEl.style.color = "#a06060"; return; }
         rsStatusEl.textContent = t("auto.048"); rsStatusEl.style.color = "#7080a0";
         try {
@@ -1922,6 +2016,7 @@ function openGoalsSettings(
             body: JSON.stringify({
               type: "research",
               target: { tech: techRadio.value, level: lvl },
+              planet: planetRadio.value,
               priority: pri,
             }),
           });
@@ -2237,6 +2332,96 @@ function openGoalsSettings(
         } catch (e) {
           lrStatusEl.textContent = `error: ${(e as Error).message ?? e}`;
           lrStatusEl.style.color = "#a06060";
+        }
+      });
+    }
+
+    // v0.0.687 — colonize pane wiring. Source planet picker (default current),
+    // 3 range pairs (galaxy/system/position), last-status fetch from sidecar
+    // events, start button POST. Backend (planner.ts scan + dispatch state
+    // machine) staged for v0.0.688 — operator 2026-06-03.
+    {
+      const clPlanetRadios = (): HTMLInputElement[] => Array.from(
+        m.querySelectorAll<HTMLInputElement>('input[name="cl-planet-radio"]'),
+      );
+      const clGalaxy = m.querySelector<HTMLSelectElement>("[data-cl-galaxy]");
+      const clSmin = m.querySelector<HTMLInputElement>("[data-cl-s-min]");
+      const clSmax = m.querySelector<HTMLInputElement>("[data-cl-s-max]");
+      const clPmin = m.querySelector<HTMLSelectElement>("[data-cl-p-min]");
+      const clPmax = m.querySelector<HTMLSelectElement>("[data-cl-p-max]");
+      const clPriority = m.querySelector<HTMLInputElement>("[data-cl-priority]");
+      const clStatusEl = m.querySelector<HTMLElement>("[data-cl-status]");
+      const clLastEl = m.querySelector<HTMLElement>("[data-cl-last]");
+      const clCreateBtn = m.querySelector<HTMLButtonElement>("[data-cl-create]");
+      // Default-check current planet (operator 2026-06-03 "默认星球是当前星球").
+      {
+        const ogameCurrentPid = doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
+        if (ogameCurrentPid) {
+          const cur = m.querySelector<HTMLInputElement>(`input[name="cl-planet-radio"][value="${ogameCurrentPid}"]`);
+          if (cur) cur.checked = true;
+        }
+      }
+      // Fetch last colonize event from sidecar /v1/events (best-effort —
+      // backend wiring lands in v0.0.688; until then this 404s silently).
+      if (clLastEl) {
+        void (async () => {
+          try {
+            const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/events?type=colonize_done&limit=1`);
+            if (!r.ok) return;
+            const j = await r.json() as { events?: Array<{ ts?: number; success?: boolean; coord?: string; reason?: string }> };
+            const ev = j.events?.[0];
+            if (!ev) return;
+            const txt = ev.success
+              ? `${t("auto.284")}: ✅ ${ev.coord ?? "?"}`
+              : `${t("auto.284")}: ❌ ${ev.reason ?? "?"}`;
+            clLastEl.textContent = txt;
+            clLastEl.style.color = ev.success ? "#7cfc00" : "#a06060";
+          } catch { /* */ }
+        })();
+      }
+      clCreateBtn?.addEventListener("click", async () => {
+        if (!clStatusEl) return;
+        const planetRadio = clPlanetRadios().find((r) => r.checked);
+        const galaxy = parseInt(clGalaxy?.value ?? "", 10);
+        const sMin = parseInt(clSmin?.value ?? "", 10);
+        const sMax = parseInt(clSmax?.value ?? "", 10);
+        const pMin = parseInt(clPmin?.value ?? "", 10);
+        const pMax = parseInt(clPmax?.value ?? "", 10);
+        const pri = parseInt(clPriority?.value ?? "5", 10) || 5;
+        if (!planetRadio) { clStatusEl.textContent = t("auto.045"); clStatusEl.style.color = "#a06060"; return; }
+        const rangeOk =
+          Number.isFinite(galaxy) && galaxy >= 1 && galaxy <= 9
+          && Number.isFinite(sMin) && Number.isFinite(sMax) && sMin >= 1 && sMax <= 499 && sMin <= sMax
+          && Number.isFinite(pMin) && Number.isFinite(pMax) && pMin >= 1 && pMax <= 15 && pMin <= pMax;
+        if (!rangeOk) { clStatusEl.textContent = t("auto.287"); clStatusEl.style.color = "#a06060"; return; }
+        clStatusEl.textContent = t("auto.048"); clStatusEl.style.color = "#7080a0";
+        try {
+          const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "colonize",
+              target: {
+                source_planet: planetRadio.value,
+                // v0.0.690 — single galaxy (sidecar schema still has range; map to min=max=N)
+                galaxy_min: galaxy, galaxy_max: galaxy,
+                system_min: sMin, system_max: sMax,
+                position_min: pMin, position_max: pMax,
+              },
+              planet: planetRadio.value,
+              priority: pri,
+            }),
+          });
+          if (r.ok) {
+            clStatusEl.textContent = t("auto.078");
+            clStatusEl.style.color = "#7cfc00";
+          } else {
+            clStatusEl.textContent = `HTTP ${r.status}`;
+            clStatusEl.style.color = "#a06060";
+          }
+        } catch (e) {
+          clStatusEl.textContent = `error: ${(e as Error).message ?? e}`;
+          clStatusEl.style.color = "#a06060";
         }
       });
     }
@@ -3394,6 +3579,21 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         : "goal.state.body_q.building_template";
       return { label: t(tplKey, { tech: techName(bq.tech), lvl: lvLabel, eta: etaMin }), color: "#7cfc00" };
     }
+    // L2.5 — v0.0.692: operator 2026-06-03 "卡资源就写等待资源，为什么用绿色的建造中".
+    // 资源饥饿（current_step 缺 m/c/d 或 goal-level resource_shortage > 0）+ ogame
+    // 队列实际没在 build (bq 不在 future) → 不是"建造中"，是"等待资源/运输"。
+    // 此分支必须比 L3 (eta_at>now) 和 L4 (status=active) 优先，否则 4516d 的
+    // eta_at 会让 L3 误返"🏗 建造中 (绿色)"。
+    const csShortageEarly = cs ? cs.shortage.m + cs.shortage.c + cs.shortage.d : 0;
+    const goalShortageEarly = g.resource_shortage;
+    const hasShortageEarly = csShortageEarly > 0
+      || !!(goalShortageEarly && (goalShortageEarly.m + goalShortageEarly.c + goalShortageEarly.d) > 0);
+    if (isBuildFamily && hasShortageEarly) {
+      // v0.0.693 — operator 2026-06-03 "等待资源和等待运输合并": 单一语义
+      // "等待資源" 覆盖两种 (本地无产能/产能不足都归一)。颜色统一橙 #ffaa55。
+      const target = cs ? stepLabel : "";
+      return { label: target ? t("goal.state.waiting_resources_step", { step: target }) : t("goal.state.waiting_resources"), color: "#ffaa55" };
+    }
     // L3 — planner's eta_at for this goal's tech is in the future
     if (typeof g.eta_at === "number" && g.eta_at > now) {
       const slot = cs ? stepLabel : t("goal.state.in_queue");
@@ -3421,15 +3621,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const csShortageSum = cs ? cs.shortage.m + cs.shortage.c + cs.shortage.d : 0;
     const goalShortage = g.resource_shortage;
     const hasShortage = csShortageSum > 0 || !!(goalShortage && (goalShortage.m + goalShortage.c + goalShortage.d) > 0);
-    const subtreeEta = g.prereq_tree?.subtree_eta_seconds ?? 0;
     if (g.status === "blocked" && hasShortage && /waiting.*resources|waiting \d+s for resources/i.test(reason)) {
+      // v0.0.693 — operator 2026-06-03 "等待资源和等待运输合并". Single
+      // status replaces L5 (awaiting_transport) + L6 (waiting_resources).
       const target = cs ? stepLabel : "";
-      // L5 — no local production → awaiting transport
-      if (subtreeEta <= 0) {
-        return { label: target ? t("goal.state.awaiting_transport_step", { step: target }) : t("goal.state.awaiting_transport"), color: "#ffaa55" };
-      }
-      // L6 — has production, just need to fill up
-      return { label: target ? t("goal.state.waiting_resources_step", { step: target }) : t("goal.state.waiting_resources"), color: "#ff9b6b" };
+      return { label: target ? t("goal.state.waiting_resources_step", { step: target }) : t("goal.state.waiting_resources"), color: "#ffaa55" };
     }
     // L7 — same slot-family sibling currently building (queued behind)
     const slotFamily = (gg: GoalRowFromHttp): string | null => {

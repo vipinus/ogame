@@ -1613,7 +1613,11 @@ export async function startSidecar(
         // v0.0.636 — audit ack into events table. Truncate error string to
         // keep payloads bounded (matches debug-buffer convention).
         try {
-          const r = m.result as { success?: boolean; error?: string } | undefined;
+          const r = m.result as {
+            success?: boolean;
+            error?: string;
+            result?: { action?: string; colonize_result?: { success?: boolean; coord?: string; reason?: string } };
+          } | undefined;
           const errStr = typeof r?.error === "string" ? r.error.slice(0, 400) : undefined;
           const payload = {
             directive_id: m.directive_id,
@@ -1622,6 +1626,21 @@ export async function startSidecar(
           };
           worldStateStore.appendEvent("directive.completed", payload);
           shadowFire("appendEvent.completed", (uid) => pgStore!.appendEvent(uid, "directive.completed", payload));
+          // v0.0.689 — colonize result side-channel: write a dedicated
+          // "colonize_done" event so the panel can render last-status
+          // without parsing directive payloads.
+          const inner = r?.result;
+          if (r?.success === true && inner?.action === "colonize" && inner.colonize_result) {
+            const cr = inner.colonize_result;
+            const clPayload = {
+              ts: Date.now(),
+              success: cr.success === true,
+              coord: typeof cr.coord === "string" ? cr.coord : undefined,
+              reason: typeof cr.reason === "string" ? cr.reason : undefined,
+            };
+            worldStateStore.appendEvent("colonize_done", clPayload);
+            shadowFire("appendEvent.colonize_done", (uid) => pgStore!.appendEvent(uid, "colonize_done", clPayload));
+          }
         } catch (e) { console.error("[ogamex/sidecar] appendEvent completed threw", e); }
         const goalId = directiveToGoal.get(m.directive_id);
         if (goalId) {

@@ -16,7 +16,7 @@ import {
 import { extractIncomingEvents } from "./probes/extractors/events.js";
 import { extractPlanets } from "./probes/extractors/planets.js";
 import { extractTechLevels, extractTechLabels } from "./probes/extractors/buildings.js";
-import { TECH_TREE, TECH_NAME_BY_ID, TECH_ID_BY_NAME, idKind, LIFEFORM_TECH } from "@ogamex/shared";
+import { TECH_TREE, TECH_NAME_BY_ID, TECH_ID_BY_NAME, idKind, LIFEFORM_TECH, expeditionSlots } from "@ogamex/shared";
 import { extractFleetMovements } from "./probes/extractors/fleet.js";
 import { installEventBoxHook } from "./probes/eventbox_hook.js";
 import { extractToken, type OgameWindow } from "./probes/extractors/token.js";
@@ -353,25 +353,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     console.log(`[OgameX] player class unknown — set via: localStorage.OGAMEX_CLASS = "discoverer"`);
   }
 
-  // 1b. Hydrate last-known slot caps from localStorage so first server.snapshot
-  //     carries real max even before any scraper has run this session.
-  try {
-    const maxExpStr = env.win.localStorage.getItem("OGAMEX_MAX_EXP");
-    const maxFleetStr = env.win.localStorage.getItem("OGAMEX_MAX_FLEET");
-    const maxExp = maxExpStr ? parseInt(maxExpStr, 10) : 0;
-    const maxFleet = maxFleetStr ? parseInt(maxFleetStr, 10) : 0;
-    if (maxExp > 0 || maxFleet > 0) {
-      const cur = store.state;
-      store.setPartial({
-        server: {
-          ...(cur.server ?? {}),
-          ...(maxExp > 0 ? { max_expedition_slots: maxExp } : {}),
-          ...(maxFleet > 0 ? { max_fleet_slots: maxFleet } : {}),
-        } as typeof cur.server,
-      });
-      console.log(`[OgameX] hydrated slot caps from localStorage: exp=${maxExp} fleet=${maxFleet}`);
-    }
-  } catch (_) { void _; }
+  // 1b. Slot caps localStorage hydration REMOVED (v0.0.685).
+  //     - max_expedition_slots: now computed in harvestSlotsFromMovement via
+  //       expeditionSlots(astro) + class bonus (formula, no cache needed)
+  //     - max_fleet_slots: galaxy JSON refresh fires on first eventbox poll
+  //       (~5s after boot) — localStorage was always overwritten before any
+  //       consumer read it (write-only data = pure dead weight)
 
   // 1b'. Slot-data write helpers exposed to ApiExec.
   // Operator 2026-05-23: "你的艦隊槽的數量是不是又是猜的？" / "艦隊:16/16 不要滿 保留一槽".
@@ -387,7 +374,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     store.setPartial({
       server: { ...(cur.server ?? {}), used_fleet_slots: used, max_fleet_slots: max } as typeof cur.server,
     });
-    try { env.win.localStorage.setItem("OGAMEX_MAX_FLEET", String(max)); } catch { /* */ }
+    // v0.0.685: OGAMEX_MAX_FLEET localStorage write removed (no consumer).
   };
   const incrementUsedSlotFn = (): void => {
     const cur = store.state;
@@ -1282,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.676";
+  const USERSCRIPT_VERSION = "0.0.693";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1495,8 +1482,6 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // fleet as <div class="fleetDetails" data-mission-type="N">...</div>
       // with coords in <span class="originCoords">[G:S:P]</span> etc.
       const allFleetEls = Array.from(html.matchAll(/data-mission-type="(\d+)"/g));
-      const usedFleet = allFleetEls.length;
-      const usedExp = allFleetEls.filter((m) => m[1] === "15").length;
       // Parse each <li class="fleetDetails"> block with its inner coords.
       const fleetBlockRe = /<(?:li|div)[^>]+(?:class="fleetDetails[^"]*"|data-mission-type="\d+")[^>]*?>([\s\S]*?)(?=<(?:li|div)[^>]+(?:class="fleetDetails|data-mission-type=)|<\/(?:tbody|ul|table)>)/g;
       // Diagnostic: dump first fleet inner block once per session so we
@@ -1570,27 +1555,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const dest_type: "planet" | "moon" = destIconM?.[1] === "moon" ? "moon" : "planet";
         return { mission, origin, origin_type, dest, dest_type, arrival_at, return_at, fleetId };
       });
-      // Max slots — operator 2026-05-25: strip HTML tags first so the
-      // digit/slash/digit pattern can match across nested <span> wrappers.
-      const stripped = html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
-      const maxFleetMatch =
-        stripped.match(/(?:[Ff]leets?|艦隊|艦隊)\s*:?\s*(\d+)\s*\/\s*(\d+)/)
-        ?? stripped.match(/(\d+)\s*\/\s*(\d+)\s*[^\d]{0,30}?(?:[Ff]leets?|艦隊|艦隊)/);
-      const maxExpMatch =
-        stripped.match(/(?:[Ee]xpedit\w*|遠征艦隊|遠征艦隊|遠征|遠征)\s*:?\s*(\d+)\s*\/\s*(\d+)/)
-        ?? stripped.match(/(\d+)\s*\/\s*(\d+)\s*[^\d]{0,30}?(?:[Ee]xpedit\w*|遠征|遠征)/);
-      const maxFleet = maxFleetMatch ? parseInt(maxFleetMatch[2]!, 10) : 0;
-      const maxExp = maxExpMatch ? parseInt(maxExpMatch[2]!, 10) : 0;
-      // Sanity guard: if scrape shows usedExp=0 but previous tick had ≥2,
-      // and the HTML looks suspiciously short (could be a render race or
-      // ogame transient empty page), SKIP the write. Avoids panel flashing
-      // "0/3" between expedition return and next launch.
-      const prevUsed = store.state.server?.used_expedition_slots ?? 0;
-      const suspicious = prevUsed >= 2 && usedExp === 0 && allFleetEls.length === 0;
-      if (suspicious) {
-        console.warn(`[OgameX/movement] suspicious drop ${prevUsed}→0 (html=${html.length}B). Skipping write — preserving last-known value.`);
-        return;
-      }
+      // v0.0.679 — slot fields (used_*/max_*) moved to refreshSlotsViaApi
+      // (official JSON: fetchGalaxyContent). This function now owns only
+      // fleets_outbound. No regex slot scrape, no suspicious-drop gate.
       // /movement hostile detection REMOVED (v0.0.219).
       // Was added v0.0.217 as bandaid before the right signal was found.
       // Operator clarified: red enemy spy lives in #eventContent DOM (page-
@@ -1630,16 +1597,35 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           return_at: ft.return_at ?? null,
           ships: {} as Record<string, number>,
         };
-      }) as unknown as typeof cur.fleets_outbound;
-      const cur = store.state;
-      store.setPartial({
-        server: {
-          ...(cur.server ?? {}),
-          ...(maxExp > 0 ? { max_expedition_slots: maxExp, used_expedition_slots: usedExp } : { used_expedition_slots: usedExp }),
-          ...(maxFleet > 0 ? { max_fleet_slots: maxFleet, used_fleet_slots: usedFleet } : { used_fleet_slots: usedFleet }),
-        } as typeof cur.server,
+      }) as unknown as typeof store.state.fleets_outbound;
+      // v0.0.683 — operator 2026-06-03 "删掉movement这种走网页的方式，全部用api"
+      // + "6 你都计算出来了 为什么不用呢". Slot fields now COMPUTED, not scraped:
+      //   max = expeditionSlots(astro) + classBonus  (Discoverer +2)
+      //   used = mission=15 count in fleets_outbound
+      // No regex, no /movement HTML slot-indicator scrape. Formula = single
+      // source of truth (matches ogame UI bonuses we know about).
+      const baseMax = expeditionSlots(store.state.research?.levels?.astrophysics ?? 0);
+      const classBonus = playerClass === "discoverer" ? 2 : 0;
+      const expMax = baseMax + classBonus;
+      const expUsed = (syntheticFleets as Array<{ mission?: number }>).filter((f) => f.mission === 15).length;
+      const partial: { fleets_outbound: typeof syntheticFleets; server?: typeof store.state.server } = {
         fleets_outbound: syntheticFleets,
-      });
+      };
+      if (expMax > 0) {
+        const curServer = store.state.server ?? {};
+        partial.server = {
+          ...curServer,
+          max_expedition_slots: expMax,
+          used_expedition_slots: expUsed,
+        } as typeof store.state.server;
+      }
+      const dumpKey = "__ogamexExpSlotsLogged";
+      const w = env.win as Window & Record<string, boolean>;
+      if (!w[dumpKey]) {
+        w[dumpKey] = true;
+        console.info(`[OgameX/exp-slots] computed ${expUsed}/${expMax} (astro=${store.state.research?.levels?.astrophysics ?? 0} class=${playerClass} base=${baseMax} bonus=+${classBonus})`);
+      }
+      store.setPartial(partial);
     } catch (e) {
       void e;
     }
@@ -1653,6 +1639,53 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // No periodic poll; if events miss, daemon's data.refresh acts as backup.
   // Expose so eventbox hook + ApiExec can fire it on demand.
   (env.win as Window & { __ogamexHarvestMovement?: () => Promise<void> }).__ogamexHarvestMovement = harvestSlotsFromMovement;
+
+  // v0.0.679/680 — operator 2026-06-03 "改成有任何舰队回航，就触发官方api
+  // 拿新的空槽数据" + "全事件驱动". Galaxy JSON owns FLEET slots only:
+  //   { system: { usedFleetSlots, maximumFleetSlots, ... } }
+  // Expedition slots are NOT in galaxy JSON (verified 2026-06-03 keys dump
+  // — only canExpedition bool present). They come from /movement slot
+  // indicator regex inside harvestSlotsFromMovement.
+  // Both writers fire in parallel via eventbox_hook friendly-count delta.
+  async function refreshSlotsViaApi(): Promise<void> {
+    try {
+      const planetIdEl = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]');
+      const planetId = planetIdEl?.content;
+      if (!planetId) return;
+      const planet = store.state.planets[planetId];
+      if (!planet || !Array.isArray(planet.coords) || planet.coords.length !== 3) return;
+      const url = `/game/index.php?page=ingame&component=galaxy&action=fetchGalaxyContent&ajax=1&asJson=1`;
+      const body = new URLSearchParams({
+        galaxy: String(planet.coords[0]),
+        system: String(planet.coords[1]),
+      }).toString();
+      const r = await env.win.fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        body,
+      });
+      if (!r.ok) return;
+      const j = await r.json() as { system?: { usedFleetSlots?: number; maximumFleetSlots?: number } };
+      const sys = j.system ?? {};
+      if (typeof sys.usedFleetSlots !== "number" || typeof sys.maximumFleetSlots !== "number") return;
+      const curServer = store.state.server ?? {};
+      store.setPartial({
+        server: {
+          ...curServer,
+          used_fleet_slots: sys.usedFleetSlots,
+          max_fleet_slots: sys.maximumFleetSlots,
+        } as typeof store.state.server,
+      });
+      console.info(`[OgameX/slots-api] fleet slots from galaxy JSON: ${sys.usedFleetSlots}/${sys.maximumFleetSlots}`);
+    } catch (e) {
+      console.warn("[OgameX/slots-api] failed:", e);
+    }
+  }
+  (env.win as Window & { __ogamexRefreshSlots?: () => Promise<void> }).__ogamexRefreshSlots = refreshSlotsViaApi;
 
   // Jumpgate cooldown harvester — DELETED 2026-05-27 (architecture migration).
   // Original purpose: probe each moon's jumpgate overlay every boot+15s + 24h
@@ -1879,9 +1912,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     // The real slot count lives in #slots container only. If that's not
     // present on this page, fleetdispatch bg fetcher fills it.
     if (max_expedition === 0 && max_fleet === 0) return;
-    // Persist max to localStorage so other pages / next boot keep the value.
-    if (max_expedition > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_EXP", String(max_expedition)); } catch { /* */ }
-    if (max_fleet > 0) try { env.win.localStorage.setItem("OGAMEX_MAX_FLEET", String(max_fleet)); } catch { /* */ }
+    // v0.0.685: OGAMEX_MAX_EXP / OGAMEX_MAX_FLEET localStorage writes removed
+    // (no consumer — see boot.ts:357 hydration removal note).
     const cur = store.state;
     store.setPartial({
       server: {

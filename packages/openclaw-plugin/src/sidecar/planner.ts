@@ -36,6 +36,37 @@ const ENERGY_GATED_BUILDINGS: ReadonlySet<string> = new Set([
   "deuteriumSynth",
 ]);
 
+// v0.0.696 — operator 2026-06-03 "保留计算矿产量，分成两部分":
+//   pre-expedition phase (no fleet has flown mission=15)
+//     → compute production + auto-upgrade STORAGE (crystalStorage/deuteriumTank).
+//       metalStorage 永远不自动建 (operator: "金属永远过剩").
+//   post-expedition phase (any expedition in flight or slots used > 0)
+//     → no production calc, simple "waiting for resources" — state refresh
+//       is event-driven via fleet-landing events.
+function isPostExpeditionPhase(state: WorldState): boolean {
+  // v0.0.697 — operator 2026-06-03 "astro >= 4 这个合理".
+  // astro 是 capability 的第一性源头 (research level, 单调递增, 不依赖
+  // class detection / 公式 / state push 链路). floor(sqrt(4)) = 2 = 首次解锁
+  // 远征槽位的临界点。max_expedition_slots 是 derived, 上游漏算 class bonus
+  // 就会失真。读 research.levels.astrophysics 直击根因。
+  const astro = state.research?.levels?.["astrophysics"] ?? 0;
+  return astro >= 4;
+}
+
+// Pre-phase storage strategy: when resource bottleneck is crystal or deuterium
+// AND current storage is ≥95% full → recommend storage upgrade. metal is
+// EXCLUDED per operator policy (metal永远过剩). Returns the storage building
+// to upgrade, or null when wait-only path is appropriate.
+function pickStorageUpgrade(planet: Planet, short: { m: number; c: number; d: number }): "crystalStorage" | "deuteriumTank" | null {
+  const r = planet.resources ?? { m: 0, c: 0, d: 0 };
+  const cap = (lvl: number): number => Math.floor(5000 * Math.pow(2.5, lvl));
+  const cStorLvl = planet.buildings?.["crystalStorage"] ?? 0;
+  const dStorLvl = planet.buildings?.["deuteriumTank"] ?? 0;
+  if (short.c > 0 && r.c >= cap(cStorLvl) * 0.95) return "crystalStorage";
+  if (short.d > 0 && r.d >= cap(dStorLvl) * 0.95) return "deuteriumTank";
+  return null;
+}
+
 // ogame v12 vanilla energy formulas (per hour, universe-speed cancels in
 // deltas). Mirrors the daemon's mineEnergyConsumption / solarProduction
 // (ogamex_discord_bridge.mjs L683-700); kept inline to avoid pulling the
@@ -80,136 +111,6 @@ const MOON_ONLY_BUILDINGS: ReadonlySet<string> = new Set([
  * if neither lookup matches — callers must handle that.
  */
 
-// ─── Resource strategy: wait vs mine upgrade ─────────────────────────────
-// When resources are insufficient for a build/research/ship, the planner
-// can either (A) wait for production to accumulate, or (B) upgrade the
-// bottleneck mine to a higher level first (more production, but mine
-// itself costs resources + build time). This helper computes BOTH options'
-// total seconds and returns the cheaper path. Used by planBuild,
-// planBuildShipsGoal, planLifeformBuildingGoal.
-//
-// Returns:
-//   { action: "wait" }                       — direct wait is faster (or equal)
-//   { action: "upgrade_mine", mine: <name> } — upgrade this mine first
-function pickResourceStrategy(
-  planet: Planet,
-  cost: { m: number; c: number; d: number; e: number },
-  universeSpeed: number,
-): { action: "wait" } | { action: "upgrade_mine"; mine: string } {
-  // v0.0.470: moons have NO mines (planet-only buildings). Always "wait"
-  // for moons — resources arrive via transport, not local production.
-  // Operator 2026-05-30: JG L2 on moon was recursing into metalMine
-  // upgrade on the moon, which the planet-only gate (correctly) blocked.
-  if (planet.type === "moon") return { action: "wait" };
-  const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
-  const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
-  // (A) Direct wait time = max across short resources
-  const waitTime = (short: { m: number; c: number; d: number }) => {
-    const tM = (prod.m_h ?? 0) > 0 ? short.m / (prod.m_h ?? 1) * 3600 : (short.m > 0 ? Infinity : 0);
-    const tC = (prod.c_h ?? 0) > 0 ? short.c / (prod.c_h ?? 1) * 3600 : (short.c > 0 ? Infinity : 0);
-    const tD = (prod.d_h ?? 0) > 0 ? short.d / (prod.d_h ?? 1) * 3600 : (short.d > 0 ? Infinity : 0);
-    return Math.max(tM, tC, tD, 0);
-  };
-  const shortDirect = {
-    m: Math.max(0, cost.m - r.m),
-    c: Math.max(0, cost.c - r.c),
-    d: Math.max(0, cost.d - r.d),
-  };
-  const waitA = waitTime(shortDirect);
-  if (waitA === 0) return { action: "wait" }; // already affordable
-  // Per-level build duration formula (uses robotics + nanite factors).
-  const robotics = planet.buildings?.["roboticsFactory"] ?? 0;
-  const nanite = planet.buildings?.["naniteFactory"] ?? 0;
-  const buildSec = (c: { m: number; c: number }) => {
-    const denom = 2500 * (1 + robotics) * Math.pow(2, nanite) * Math.max(1, universeSpeed);
-    return denom > 0 ? ((c.m + c.c) / denom) * 3600 : 3600;
-  };
-  // Mine production at level L (ogame standard, ignoring temperature for D).
-  const mineProdAt = (mine: string, lvl: number): number => {
-    if (lvl <= 0) return 0;
-    if (mine === "metalMine") return 30 * lvl * Math.pow(1.1, lvl) * universeSpeed;
-    if (mine === "crystalMine") return 20 * lvl * Math.pow(1.1, lvl) * universeSpeed;
-    if (mine === "deuteriumSynth") return 10 * lvl * Math.pow(1.1, lvl) * universeSpeed;
-    return 0;
-  };
-  // v0.0.678 — operator 2026-06-03 two-rule combo:
-  //   1) "ogame 资源不平衡永远都是金属太多，所以我不打算建金属工厂和
-  //      金属存储": metal永远过剩 — UNCONDITIONALLY skip metalMine from
-  //      candidates. metalStorage isn't a candidate here anyway (this
-  //      function only iterates mines, not storage buildings).
-  //   2) "出现这种情况，逻辑改成等资源运输，不要瞎建": for crystalMine /
-  //      deuteriumSynth, still skip when production << theoretical
-  //      (storage capped / energy starved / disabled). Upgrade won't fix.
-  // Threshold: actual < 50% of theoretical at current level = stalled.
-  const STALL_PROD_PCT = 0.5;
-  const actualProdByMine: Record<string, number> = {
-    crystalMine: prod.c_h ?? 0,
-    deuteriumSynth: prod.d_h ?? 0,
-  };
-  // (B) For each candidate mine, compute total = upgrade time + remainder wait.
-  // metalMine deliberately omitted per operator policy (永久不自动建金属工厂).
-  const candidates: Array<{ mine: string; total: number }> = [];
-  for (const mine of ["crystalMine", "deuteriumSynth"]) {
-    // Skip if this mine doesn't fix the bottleneck. Pick by which resource
-    // is short relative to cost.
-    const currLvl = planet.buildings?.[mine] ?? 0;
-    if (currLvl >= 35) continue; // upgrade cost gets pathological at high levels
-    // v0.0.678 — stalled-mine skip: if current production is way below
-    // theoretical for this mine's level (storage cap, energy short,
-    // disabled), upgrading the mine won't fix it. Let the goal wait.
-    if (currLvl > 0) {
-      const theoretical = mineProdAt(mine, currLvl);
-      const actual = actualProdByMine[mine] ?? 0;
-      if (theoretical > 0 && actual < theoretical * STALL_PROD_PCT) {
-        continue;
-      }
-    }
-    const tech = TECH_TREE[mine];
-    if (!tech || typeof tech.cost_at !== "function") continue;
-    const mineCost = tech.cost_at(currLvl + 1);
-    const mineCostMC = { m: mineCost.m, c: mineCost.c, d: mineCost.d };
-    // Time to afford the mine upgrade (we don't have it yet either)
-    const mineShort = {
-      m: Math.max(0, mineCostMC.m - r.m),
-      c: Math.max(0, mineCostMC.c - r.c),
-      d: Math.max(0, mineCostMC.d - r.d),
-    };
-    const mineWait = waitTime(mineShort);
-    if (!Number.isFinite(mineWait)) continue;
-    const mineBuild = buildSec(mineCost);
-    const mineUpgradeTotal = mineWait + mineBuild;
-    // Resources accumulated during the upgrade + remaining after paying mine cost.
-    const resAfter = {
-      m: r.m + (prod.m_h ?? 0) * mineUpgradeTotal / 3600 - mineCostMC.m,
-      c: r.c + (prod.c_h ?? 0) * mineUpgradeTotal / 3600 - mineCostMC.c,
-      d: r.d + (prod.d_h ?? 0) * mineUpgradeTotal / 3600 - mineCostMC.d,
-    };
-    // New production rates (only the upgraded mine increases; others unchanged).
-    const newProd = {
-      m_h: mine === "metalMine" ? mineProdAt(mine, currLvl + 1) : (prod.m_h ?? 0),
-      c_h: mine === "crystalMine" ? mineProdAt(mine, currLvl + 1) : (prod.c_h ?? 0),
-      d_h: mine === "deuteriumSynth" ? mineProdAt(mine, currLvl + 1) : (prod.d_h ?? 0),
-    };
-    const shortAfter = {
-      m: Math.max(0, cost.m - resAfter.m),
-      c: Math.max(0, cost.c - resAfter.c),
-      d: Math.max(0, cost.d - resAfter.d),
-    };
-    const waitAfter = ((): number => {
-      const tM = newProd.m_h > 0 ? shortAfter.m / newProd.m_h * 3600 : (shortAfter.m > 0 ? Infinity : 0);
-      const tC = newProd.c_h > 0 ? shortAfter.c / newProd.c_h * 3600 : (shortAfter.c > 0 ? Infinity : 0);
-      const tD = newProd.d_h > 0 ? shortAfter.d / newProd.d_h * 3600 : (shortAfter.d > 0 ? Infinity : 0);
-      return Math.max(tM, tC, tD, 0);
-    })();
-    if (!Number.isFinite(waitAfter)) continue;
-    candidates.push({ mine, total: mineUpgradeTotal + waitAfter });
-  }
-  const best = candidates.sort((a, b) => a.total - b.total)[0];
-  if (best && best.total < waitA) {
-    return { action: "upgrade_mine", mine: best.mine };
-  }
-  return { action: "wait" };
-}
 
 export function resolvePlanet(ref: string | undefined, state: WorldState): Planet | undefined {
   if (!ref) return undefined;
@@ -499,16 +400,20 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
     const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
     const affordable = r.m >= lfCost.m && r.c >= lfCost.c && r.d >= lfCost.d;
     if (!affordable) {
-      const universeSpeed = state.server?.speed ?? 1;
-      const strategy = pickResourceStrategy(planet, lfCost, universeSpeed);
-      if (strategy.action === "upgrade_mine") {
-        const currentLvl = (planet.buildings as Record<string, number>)[strategy.mine] ?? 0;
+      const sM = Math.max(0, lfCost.m - r.m), sC = Math.max(0, lfCost.c - r.c), sD = Math.max(0, lfCost.d - r.d);
+      if (isPostExpeditionPhase(state)) {
+        return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short)` };
+      }
+      // Pre-phase: try storage upgrade first
+      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD });
+      if (storUp) {
+        const curLvl = planet.buildings?.[storUp] ?? 0;
         const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;
         const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id };
-        return planBuild(strategy.mine, currentLvl + 1, planet.id, ctx);
+        return planBuild(storUp, curLvl + 1, planet.id, ctx);
       }
+      // Else: production-rate wait ETA in reason
       const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
-      const sM = Math.max(0, lfCost.m - r.m), sC = Math.max(0, lfCost.c - r.c), sD = Math.max(0, lfCost.d - r.d);
       const tM = (prod.m_h ?? 0) > 0 ? sM / (prod.m_h ?? 1) * 3600 : (sM > 0 ? 999999 : 0);
       const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
       const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
@@ -784,6 +689,16 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
     };
   }
 
+  // v0.0.694 — operator 2026-06-03 "主任务已经做完成，怎么还有后续任务".
+  // FIRST check whether goal target is already met. moon jumpgate L2 already
+  // achieved → goal terminal → NO moon-fields recursion needed.
+  const current = planet.buildings?.[building] ?? 0;
+  if (current >= targetLevel) {
+    return {
+      blocked: `already at or above target level (${current} >= ${targetLevel}) for ${building} on ${planetId}`,
+    };
+  }
+
   // v0.0.452: moon-fields gate. Operator 2026-05-29 rule "月球只剩一个
   // 空间的时候必须先造月球基地,再建其他建筑". When the target body is
   // a moon and the requested building is NOT lunarBase, check whether
@@ -793,6 +708,8 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   // directive for lunarBase L+1 so the single user goal drives its own
   // fields-expansion prereqs across multiple dispatch ticks — no need for
   // operator to manually create separate lunarBase goals.
+  // v0.0.694 — moved BELOW the "already at target" gate so completed
+  // moon goals don't trigger spurious lunarBase recursion.
   if (planet.type === "moon" && building !== "lunarBase") {
     const b = (planet.buildings as Record<string, number | undefined>) ?? {};
     let usedFields = 0;
@@ -803,13 +720,6 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
     if (free <= 1) {
       return planBuild("lunarBase", lunarBaseLevel + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
     }
-  }
-
-  const current = planet.buildings?.[building] ?? 0;
-  if (current >= targetLevel) {
-    return {
-      blocked: `already at or above target level (${current} >= ${targetLevel}) for ${building} on ${planetId}`,
-    };
   }
 
   // Is this building currently upgrading? Only treat as in-flight if the
@@ -889,12 +799,11 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
       // infinite-recursion cycle observed in production (planet 33639762
       // deuteriumSynth L32 blocked with "recursion depth exceeded while
       // planning build solarPlant"). When the chosen power plant is
-      // itself unaffordable, pickResourceStrategy in the next planBuild
-      // recurses into a mine upgrade — but that mine re-triggers the
-      // energy gate, loops back to the power plant, hits the recursion
-      // ceiling. Bail out of the gate when the power plant is
-      // unaffordable so the original mine's cost check below returns
-      // the clearer "waiting Xs for resources" message.
+      // itself unaffordable (deleted in v0.0.696: pickResourceStrategy)
+      // we used to recurse into a mine upgrade — that mine re-triggered the
+      // energy gate, looped back to the power plant, hit recursion ceiling.
+      // Bail out when the power plant is unaffordable so the original mine's
+      // cost check below returns the "waiting for resources" message.
       const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
       const pickAffordable =
         r.m >= pickCost.m &&
@@ -934,62 +843,32 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
     }
   }
 
-  // Resource strategy — same wait-vs-upgrade-mine comparison as for ships/lf.
-  // For mine builds themselves the inner check is degenerate (the mine
-  // would need to upgrade itself), pickResourceStrategy excludes that.
+  // v0.0.695 — operator 2026-06-03 "等待资源的 先检查资源是否够了，再发api请求，
+  // 不够就不用发". Affordability check now applies to ALL buildings (including
+  // mines). Previously mines skipped the check entirely → planner emitted
+  // directive when short → ogame returned "資源不足" → goal hit backoff_60s.
   const costFn = entry.cost_at as ((l: number) => { m: number; c: number; d?: number; e?: number }) | undefined;
-  if (costFn && !["metalMine", "crystalMine", "deuteriumSynth"].includes(building)) {
+  if (costFn) {
     const rawCost = costFn(nextLevel);
     const buildCost = { m: rawCost.m, c: rawCost.c, d: rawCost.d ?? 0, e: rawCost.e ?? 0 };
     const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
     const affordable = r.m >= buildCost.m && r.c >= buildCost.c && r.d >= buildCost.d;
     if (!affordable) {
-      const universeSpeed = ctx.state.server?.speed ?? 1;
-      const strategy = pickResourceStrategy(planet, buildCost, universeSpeed);
-      if (strategy.action === "upgrade_mine") {
-        const currentLvl = planet.buildings?.[strategy.mine] ?? 0;
-        return planBuild(strategy.mine, currentLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
+      const sM = Math.max(0, buildCost.m - r.m), sC = Math.max(0, buildCost.c - r.c), sD = Math.max(0, buildCost.d - r.d);
+      if (isPostExpeditionPhase(ctx.state)) {
+        return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short)` };
+      }
+      // Pre-phase: storage strategy first, then production wait ETA
+      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD });
+      if (storUp) {
+        const curLvl = planet.buildings?.[storUp] ?? 0;
+        return planBuild(storUp, curLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
       }
       const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
-      const sM = Math.max(0, buildCost.m - r.m), sC = Math.max(0, buildCost.c - r.c), sD = Math.max(0, buildCost.d - r.d);
       const tM = (prod.m_h ?? 0) > 0 ? sM / (prod.m_h ?? 1) * 3600 : (sM > 0 ? 999999 : 0);
       const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
       const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
       const wait = Math.round(Math.max(tM, tC, tD));
-      // v0.0.678 — operator 2026-06-03: when a SHORT resource's mine is
-      // stalled (production << theoretical at current level — storage
-      // capped, energy starved, etc.), the wait time blows up to absurd
-      // figures (12383d on planet 2:279:8 metalStorage L4 overflow).
-      // Flag the reason as "awaiting transport" so the panel and operator
-      // can recognize this isn't an organic resource wait and act
-      // accordingly (manual transport / fix the underlying stall).
-      const stalledShort: string[] = [];
-      const mineExpAtLevel = (mine: string, lvl: number, speed: number): number => {
-        if (lvl <= 0) return 0;
-        if (mine === "metalMine") return 30 * lvl * Math.pow(1.1, lvl) * speed;
-        if (mine === "crystalMine") return 20 * lvl * Math.pow(1.1, lvl) * speed;
-        if (mine === "deuteriumSynth") return 10 * lvl * Math.pow(1.1, lvl) * speed;
-        return 0;
-      };
-      const checkStall = (
-        resKey: "m" | "c" | "d",
-        mine: "metalMine" | "crystalMine" | "deuteriumSynth",
-        shortAmt: number,
-        actual: number,
-      ): void => {
-        if (shortAmt <= 0) return;
-        const mineLvl = planet.buildings?.[mine] ?? 0;
-        const theoretical = mineExpAtLevel(mine, mineLvl, universeSpeed);
-        if (theoretical > 0 && actual < theoretical * 0.5) {
-          stalledShort.push(`${resKey} (m_h ≈ ${Math.round(actual)} vs theoretical ${Math.round(theoretical)} at L${mineLvl})`);
-        }
-      };
-      checkStall("m", "metalMine", sM, prod.m_h ?? 0);
-      checkStall("c", "crystalMine", sC, prod.c_h ?? 0);
-      checkStall("d", "deuteriumSynth", sD, prod.d_h ?? 0);
-      if (stalledShort.length > 0) {
-        return { blocked: `awaiting transport — production stalled: ${stalledShort.join(", ")} (m=${sM} c=${sC} d=${sD} short)` };
-      }
       return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
     }
   }
@@ -1052,21 +931,18 @@ function planBuildShipsGoal(goal: Goal, state: WorldState): PlanResult {
     const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
     const affordable = r.m >= totalCost.m && r.c >= totalCost.c && r.d >= totalCost.d;
     if (!affordable) {
-      // Resource-bound. pickResourceStrategy compares (wait) vs (upgrade-mine-then-wait)
-      // and returns the faster path. Execute it deterministically:
-      //   upgrade_mine → recurse into mine build
-      //   wait         → block (don't emit a doomed POST), include eta in reason
-      const universeSpeed = state.server?.speed ?? 1;
-      const strategy = pickResourceStrategy(planet, totalCost, universeSpeed);
-      if (strategy.action === "upgrade_mine") {
-        const currentLvl = (planet.buildings as Record<string, number>)[strategy.mine] ?? 0;
+      const sM = Math.max(0, totalCost.m - r.m), sC = Math.max(0, totalCost.c - r.c), sD = Math.max(0, totalCost.d - r.d);
+      if (isPostExpeditionPhase(state)) {
+        return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short)` };
+      }
+      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD });
+      if (storUp) {
+        const curLvl = (planet.buildings as Record<string, number>)[storUp] ?? 0;
         const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;
         const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id };
-        return planBuild(strategy.mine, currentLvl + 1, planet.id, ctx);
+        return planBuild(storUp, curLvl + 1, planet.id, ctx);
       }
-      // wait path → block. Compute remaining wait seconds for the reason.
       const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
-      const sM = Math.max(0, totalCost.m - r.m), sC = Math.max(0, totalCost.c - r.c), sD = Math.max(0, totalCost.d - r.d);
       const tM = (prod.m_h ?? 0) > 0 ? sM / (prod.m_h ?? 1) * 3600 : (sM > 0 ? 999999 : 0);
       const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
       const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
@@ -1150,9 +1026,22 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
 // ────────────────────────────────────────────────────────────────────────────
 
 function planColonizeGoal(goal: Goal, state: WorldState): PlanResult {
-  const target = goal.target as { target_coords?: unknown; source_planet?: unknown };
+  const target = goal.target as {
+    target_coords?: unknown;
+    source_planet?: unknown;
+    // v0.0.689 — range-scan shape (operator 2026-06-03 "舰船任务改成殖民任务"):
+    galaxy_min?: unknown; galaxy_max?: unknown;
+    system_min?: unknown; system_max?: unknown;
+    position_min?: unknown; position_max?: unknown;
+  };
   const targetCoords = typeof target.target_coords === "string" ? target.target_coords : "";
-  if (!targetCoords) return { blocked: "colonize goal missing target.target_coords" };
+  const hasRange =
+    typeof target.galaxy_min === "number" && typeof target.galaxy_max === "number" &&
+    typeof target.system_min === "number" && typeof target.system_max === "number" &&
+    typeof target.position_min === "number" && typeof target.position_max === "number";
+  if (!targetCoords && !hasRange) {
+    return { blocked: "colonize goal missing target.target_coords or range" };
+  }
 
   const sourceRaw = typeof target.source_planet === "string" ? target.source_planet : undefined;
   const sourcePlanet =
@@ -1170,10 +1059,49 @@ function planColonizeGoal(goal: Goal, state: WorldState): PlanResult {
     }
   }
 
-  // Need at least one colonyShip on the source planet.
+  // v0.0.689 — auto-build colonyShip when missing. Operator's flow step 1
+  // ("在出发星球建造殖民船") becomes implicit: planner emits build_ships when
+  // hangar is empty; next tick re-enters this fn and finds it ready.
   const colonyShips = sourcePlanet.ships?.colonyShip ?? 0;
   if (colonyShips < 1) {
-    return { blocked: `colonize blocked: no colonyShip on ${sourcePlanet.id}` };
+    return {
+      id: `dir-${randomUUID()}`,
+      source: "goal",
+      method: "ui",
+      priority: goal.priority,
+      action: "build_ships",
+      params: {
+        planet_id: sourcePlanet.id,
+        ship: "colonyShip",
+        amount: 1,
+        technology_id: 208,  // colonyShip ogame numeric id
+      },
+      preconds: [],
+      expires_at: Date.now() + DIRECTIVE_TTL_MS,
+      reason: `colonize prereq: build 1 colonyShip on ${sourcePlanet.id}`,
+      goal_id: goal.id,
+    };
+  }
+
+  // ColonyShip ready. Emit colonize directive — legacy single-coord or
+  // new range-scan (api_executor handles galaxy scan at dispatch time).
+  const params: Record<string, unknown> = {
+    planet_id: sourcePlanet.id,
+    source_planet: sourcePlanet.id,
+    mission: MISSION_COLONIZE,
+    ships: { colonyShip: 1 } satisfies ShipCount,
+  };
+  let reason: string;
+  if (hasRange) {
+    params["range"] = {
+      galaxy_min: target.galaxy_min, galaxy_max: target.galaxy_max,
+      system_min: target.system_min, system_max: target.system_max,
+      position_min: target.position_min, position_max: target.position_max,
+    };
+    reason = `colonize scan g[${String(target.galaxy_min)}-${String(target.galaxy_max)}] s[${String(target.system_min)}-${String(target.system_max)}] p[${String(target.position_min)}-${String(target.position_max)}] from ${sourcePlanet.id}`;
+  } else {
+    params["target_coords"] = targetCoords;
+    reason = `colonize ${targetCoords} from ${sourcePlanet.id}`;
   }
 
   return {
@@ -1182,16 +1110,10 @@ function planColonizeGoal(goal: Goal, state: WorldState): PlanResult {
     method: "ui",
     priority: goal.priority,
     action: "colonize",
-    params: {
-      planet_id: sourcePlanet.id,
-      source_planet: sourcePlanet.id,
-      target_coords: targetCoords,
-      mission: MISSION_COLONIZE,
-      ships: { colonyShip: 1 } satisfies ShipCount,
-    },
+    params,
     preconds: [],
     expires_at: Date.now() + DIRECTIVE_TTL_MS,
-    reason: `colonize ${targetCoords} from ${sourcePlanet.id}`,
+    reason,
     goal_id: goal.id,
   };
 }
