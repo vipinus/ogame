@@ -177,7 +177,12 @@ export async function wireBridge(
   // is minutes; dedup window covers same-fleet re-fire without blocking new
   // legitimate harvests for a fresh expedition return to the same coord).
   const recentHarvestDispatch = new Map<string, number>();
-  const HARVEST_DEDUP_TTL_MS = 10 * 60 * 1000;
+  // v0.0.670 — operator 2026-06-03 "10min 太长了 6": 收紧至 6min。
+  // recentHarvestDispatch 只 dedup 真正 DISPATCH 过的 harvest（同
+  // origin→G:S）。6min 仍宽于一次 explorer 单程往返时间，不会触发
+  // 同一残骸场双发；同时让 sidecar 改进后的 A/B/C 三信号每个有
+  // 独立扫描窗口，被前一发挡住的概率降到极低。
+  const HARVEST_DEDUP_TTL_MS = 6 * 60 * 1000;
   const offDebrisCheck = client.on("expedition.debris_check", (msg) => {
     const m = msg as { galaxy?: number; system?: number; position?: number; origin_planet_id?: string; reason?: string };
     let g = m.galaxy ?? 0, s = m.system ?? 0, origin = m.origin_planet_id ?? "";
