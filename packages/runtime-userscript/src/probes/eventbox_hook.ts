@@ -550,6 +550,7 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       __ogamexLiveExpeditionCount?: number;
       __ogamexLiveOwnByMission?: Map<number, number>;
       __ogamexRefreshSlots?: () => Promise<void>;
+      __ogamexHarvestSlots?: () => void;
       __ogamexPushNow?: () => void;
       __ogamexPruneByMission?: (mission: number, n: number) => void;
     };
@@ -572,14 +573,35 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
         }
       }
     }
-    // Mission=15 count change → refreshSlots (drives used_expedition_slots).
-    if (prevLiveExp !== liveOwnMission15) {
+    // v0.0.734 — operator 2026-06-03 "舰队到港没有刷新slots 导致后台和前台
+    // 不同步 让远征飞不起来". v0.0.733 bug: refreshSlots only fired on
+    // mission=15 change. But galaxy's used_fleet_slots reflects ALL
+    // missions — transport (mission=3) return drops total fleet count,
+    // sidecar's used_fleet_slots stays stale high, fleet_slot_gate fails,
+    // expedition can't dispatch. Fix: refreshSlots ANY time the total
+    // own-fleet count changes (drop OR addition), not just mission=15.
+    // Total = sum of liveOwnByMission entries.
+    const prevTotal = Array.from(prevLiveByMission.values()).reduce((a, b) => a + b, 0);
+    const curTotal = Array.from(liveOwnByMission.values()).reduce((a, b) => a + b, 0);
+    if (prevTotal !== curTotal) {
+      // v0.0.734 — refreshSlots (galaxy JSON for fleet_slots) + harvestSlots
+      // (DOM #slots bar for AUTHORITATIVE expedition_slots = ogame's own
+      // operator-visible "5/6"). harvestSlots is the truth source because
+      // eventbox row counting overcounts during phase transitions (outbound
+      // + returning rows for same fleet → liveCount > real slot usage,
+      // sidecar saw used_exp=8 while ogame UI showed 5/6).
+      if (typeof winT.__ogamexHarvestSlots === "function") {
+        try { winT.__ogamexHarvestSlots(); } catch (e) { console.warn(`[OgameX/eventbox-hook] harvestSlots threw`, e); }
+      }
       if (typeof winT.__ogamexRefreshSlots === "function") {
         void winT.__ogamexRefreshSlots().finally(() => { if (typeof winT.__ogamexPushNow === "function") { try { winT.__ogamexPushNow(); } catch { /* */ } } });
       }
-      console.info(`[OgameX/eventbox-hook] live mission15 ${prevLiveExp ?? "?"}→${liveOwnMission15} → refreshSlots${drops.length > 0 ? ` (per-mission drops: ${drops.map((d) => `m${d.mission}=-${d.n}`).join(",")})` : ""}`);
+      const perMissionTag = Array.from(liveOwnByMission.entries()).map(([m, n]) => `m${m}=${n}`).join(",");
+      console.info(`[OgameX/eventbox-hook] total own-fleet ${prevTotal}→${curTotal} (${perMissionTag}) → harvestSlots(DOM) + refreshSlots(galaxy)${drops.length > 0 ? ` + prune ${drops.map((d) => `m${d.mission}=-${d.n}`).join(",")}` : ""}`);
     } else if (drops.length > 0) {
-      console.info(`[OgameX/eventbox-hook] per-mission drops without mission15 change: ${drops.map((d) => `m${d.mission}=-${d.n}`).join(",")}`);
+      // Should be impossible (drop without total change means addition+drop
+      // cancel out, exotic), but log for diagnosis.
+      console.info(`[OgameX/eventbox-hook] per-mission drops without total change: ${drops.map((d) => `m${d.mission}=-${d.n}`).join(",")}`);
     }
     const sig = seen.sort().join("|");
     if (sig === lastApiEventSig) return;

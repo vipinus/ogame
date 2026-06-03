@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.733";
+  const USERSCRIPT_VERSION = "0.0.734";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2141,6 +2141,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Removed continuous 30s setInterval — slot caps change rarely and
   // pollEmpire / harvestSlotsFromMovement events catch slot changes.
   [800, 2400, 4800, 10_000, 20_000].forEach((ms) => scheduleBurst(harvestSlots, ms));
+  // v0.0.734 — operator 2026-06-03 "舰队到港没有刷新slots 导致后台和前台
+  // 不同步 让远征飞不起来" + "艦隊:8/17遠征艦隊: 5/6 后台是 6/6". eventbox
+  // mission=15 row counting was OVERCOUNTING (returning + outbound rows
+  // for same fleet during phase transitions → liveCount=8 written to
+  // used_expedition_slots). ogame's `#slots` DOM bar IS the authoritative
+  // visible-to-operator value (5/6). Expose harvestSlots so eventbox_hook
+  // can trigger DOM scrape on any count change — DOM bar is sync-updated
+  // by ogame's own JS in real-time.
+  (env.win as Window & { __ogamexHarvestSlots?: () => void }).__ogamexHarvestSlots = harvestSlots;
 
   function harvestQueues(): void {
     const actives = env.doc.querySelectorAll<HTMLElement>('li.technology[data-status="active"]');

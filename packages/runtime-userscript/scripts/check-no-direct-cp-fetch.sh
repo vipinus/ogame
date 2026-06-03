@@ -37,10 +37,10 @@ src/boot.ts:1010
 src/boot.ts:1154
 src/boot.ts:1759
 src/boot.ts:1987
-src/boot.ts:2245
-src/boot.ts:2405
-src/boot.ts:3279
-src/boot.ts:3486
+src/boot.ts:2254
+src/boot.ts:2414
+src/boot.ts:3288
+src/boot.ts:3495
 EOF
 )
 
