@@ -1253,7 +1253,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.673";
+  const USERSCRIPT_VERSION = "0.0.674";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -3130,6 +3130,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // One-shot prereq discovery — fetch technologyDetails for every lifeform
   // building on boot and dump real requirements to console. Operator
   // copies this into shared/lifeform/humans_tech.ts. Removes the guessing.
+  // v0.0.674 — operator 2026-06-03 cp/token audit: this loop used to call
+  // env.win.fetch directly with cp written into the POST body, fully
+  // bypassing safe_fetch's cp mutex + restore + click_lock. Routed through
+  // fetchWithCp (the only sanctioned cp= entry; the check-no-raw-cp gate
+  // missed it because cp was in body, not URL). cp now goes in URL via
+  // safe_fetch; bypassBusy + skipRestore keeps the 12-shot loop from
+  // shifting the operator's session-cp view for each request.
   setTimeout(async () => {
     const LF_IDS = [11101, 11102, 11103, 11104, 11105, 11106, 11107, 11108, 11109, 11110, 11111, 11112];
     const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
@@ -3139,23 +3146,27 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
     // ogame's own technologydetails endpoint pattern (from page HTML):
     //   POST /game/index.php?page=ingame&component=technologydetails&ajax=1&action=getDetails
-    //   body: technology=<id>&cp=<planet>&token=<jsToken>
-    // We use whatever 'token' is exposed globally (set by ogame's JS bootstrap).
+    //   body: technology=<id>&token=<jsToken>   (cp moved to URL via fetchWithCp)
     const win = env.win as Window & { token?: string };
     const jsToken = win.token ?? "";
+    const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
     for (const tid of LF_IDS) {
       try {
         const url = `/game/index.php?page=ingame&component=technologydetails&ajax=1&action=getDetails`;
         const body = new URLSearchParams();
         body.set("technology", String(tid));
-        body.set("cp", planetId);
         if (jsToken) body.set("token", jsToken);
-        const r = await env.win.fetch(url, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
-          body,
-        });
+        const r = await fetchWithCpBypassBusy(
+          url,
+          {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+            body,
+          },
+          planetId,
+          { skipRestore: true },
+        );
         if (!r.ok) { console.warn(`[OgameX/lf-prereq] tid=${tid} HTTP ${r.status}`); continue; }
         const txt = await r.text();
         // (silent — body content already used for prereq table; no spam)
