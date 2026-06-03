@@ -36,6 +36,18 @@ const ENERGY_GATED_BUILDINGS: ReadonlySet<string> = new Set([
   "deuteriumSynth",
 ]);
 
+// ogame v12 vanilla energy formulas (per hour, universe-speed cancels in
+// deltas). Mirrors the daemon's mineEnergyConsumption / solarProduction
+// (ogamex_discord_bridge.mjs L683-700); kept inline to avoid pulling the
+// daemon into a sidecar import. metalMine + crystalMine consume base=10,
+// deuteriumSynth consume base=20, solarPlant produces 20, fusionReactor
+// produces 50*(1+0.02*energyTech).
+function mineEnergyConsumption(building: string, level: number): number {
+  if (level <= 0) return 0;
+  const base = building === "deuteriumSynth" ? 20 : 10;
+  return base * level * Math.pow(1.1, level);
+}
+
 // Ogame v12 — list of buildings that can physically exist on a moon. Anything
 // not in this set is planet-only (naniteFactory, terraformer, spaceDock, mines,
 // solar/fusion, research lab, allianceDepot, etc.) and must be rejected when a
@@ -800,24 +812,60 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
 
   const nextLevel = current + 1;
 
-  // Energy gate: mines need positive net energy; if a mine upgrade is queued
-  // but energy is negative (or no solar plant exists yet), recurse into a
-  // solar plant upgrade first. Skip recursion when the target IS solarPlant
-  // — otherwise we'd loop forever.
+  // Energy gate: mines need positive net energy. v0.0.675 — operator
+  // 2026-06-03 拍板两条：
+  //   (1) 预判: 当前 energy - 升级后多消耗的 energy < 0 → 先建电厂
+  //   (2) 太阳能 vs 核融合两种电厂二选一：next level cost (m+c+d) 谁低
+  //       建谁。核融合 D 不够买不起 → 退到太阳能（核融合还有 prereqs:
+  //       deuteriumSynth≥5 + energyTech≥3, 不满足也退太阳能）。
+  // Skip the recursion for the power plants themselves so we don't loop.
   if (
     ENERGY_GATED_BUILDINGS.has(building) &&
-    building !== "solarPlant"
+    building !== "solarPlant" &&
+    building !== "fusionReactor"
   ) {
-    const energy = planet.resources?.e ?? 0;
+    const curEnergy = planet.resources?.e ?? 0;
     const solar = planet.buildings?.["solarPlant"] ?? 0;
-    if (energy < 0 || solar === 0) {
+    const fusion = planet.buildings?.["fusionReactor"] ?? 0;
+    // Predictive — energy delta from upgrading this mine.
+    const extraConsumption =
+      mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, current);
+    const projectedEnergy = curEnergy - extraConsumption;
+    const needsPowerPlant =
+      curEnergy < 0 ||
+      (solar === 0 && fusion === 0) ||
+      projectedEnergy < 0;
+    if (needsPowerPlant) {
+      // Pick cheaper next-level power plant.
+      const solarCostFn = TECH_TREE.solarPlant?.cost_at as
+        | ((l: number) => { m: number; c: number; d?: number; e?: number })
+        | undefined;
+      const fusionCostFn = TECH_TREE.fusionReactor?.cost_at as
+        | ((l: number) => { m: number; c: number; d?: number; e?: number })
+        | undefined;
+      const solarCost = solarCostFn ? solarCostFn(solar + 1) : { m: 0, c: 0, d: 0 };
+      const fusionCost = fusionCostFn ? fusionCostFn(fusion + 1) : { m: 0, c: 0, d: 0 };
+      // Fusion viability: prereqs (deuteriumSynth≥5, energyTech≥3) AND
+      // planet has enough deuterium in stock to PAY the build cost.
+      const dSynth = planet.buildings?.["deuteriumSynth"] ?? 0;
+      const energyTech = ctx.state.research?.levels?.["energyTech"] ?? 0;
+      const planetD = planet.resources?.d ?? 0;
+      const fusionPrereqsMet = dSynth >= 5 && energyTech >= 3;
+      const fusionAffordable = planetD >= (fusionCost.d ?? 0);
+      const fusionViable = fusionPrereqsMet && fusionAffordable;
+      // Total cost compare (m+c+d). Equal → prefer solar (no D drain).
+      const solarTotal = solarCost.m + solarCost.c + (solarCost.d ?? 0);
+      const fusionTotal = fusionCost.m + fusionCost.c + (fusionCost.d ?? 0);
+      const pickFusion = fusionViable && fusionTotal < solarTotal;
+      const pickBuilding = pickFusion ? "fusionReactor" : "solarPlant";
+      const pickLevel = pickFusion ? fusion + 1 : solar + 1;
       const bumped = Math.min(10, ctx.rootGoal.priority + 5);
       const elevCtx: PlanCtx = {
         ...ctx,
         depth: ctx.depth + 1,
         rootGoal: { ...ctx.rootGoal, priority: bumped },
       };
-      return planBuild("solarPlant", solar + 1, planetId, elevCtx);
+      return planBuild(pickBuilding, pickLevel, planetId, elevCtx);
     }
   }
 
