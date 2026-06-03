@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.729";
+  const USERSCRIPT_VERSION = "0.0.731";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2417,6 +2417,54 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const parser = new (env.win as unknown as { DOMParser: typeof DOMParser }).DOMParser();
       const parsedDoc = parser.parseFromString(html, "text/html");
 
+      // v0.0.731 — operator 2026-06-03 "建造 核融合反應器 L14 (~709m)" 实际
+      // L17 + 21min 剩余. ogame fetchResources JSON 在 Scorpius 不返
+      // buildqueue 字段, build_q 只在 boot bursts 跑 harvestQueues 那一刻
+      // 凝固后再也不刷新, 显示与现实越拉越远. 在 chunk 解析时同步抽
+      // 活跃 build queue (用 parsedDoc + 这次 fetch 的 planetId) — 跟
+      // harvestQueues 同语义, 但 source 是周期 chunk 而不是 env.doc.
+      if ((page === "supplies" || page === "facilities" || page === "research" || page === "shipyard") && planetId) {
+        try {
+          const actives = parsedDoc.querySelectorAll<HTMLElement>('li.technology[data-status="active"]');
+          for (const li of Array.from(actives)) {
+            const numeric = li.getAttribute("data-technology") ?? "";
+            const name = TECH_ID_TO_NAME[numeric];
+            if (!name) continue;
+            const timeEl = li.querySelector<HTMLElement>("[data-end], time, .time");
+            let endsAt: number | null = null;
+            const endAttr = timeEl?.getAttribute("data-end") ?? timeEl?.getAttribute("data-target-time");
+            if (endAttr) {
+              const n = Number(endAttr);
+              if (Number.isFinite(n)) endsAt = n * (n < 1e12 ? 1000 : 1);
+            }
+            if (endsAt === null) {
+              const txt = timeEl?.textContent ?? li.textContent ?? "";
+              const m = txt.match(/(\d+)h\s*(\d+)m\s*(\d+)s/i) ?? txt.match(/(\d+):(\d+):(\d+)/);
+              if (m) {
+                const sec = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+                endsAt = Date.now() + sec * 1000;
+              }
+            }
+            const techId = parseInt(numeric, 10);
+            const kind = idKind(techId);
+            const target = store.state.planets[planetId];
+            if (!target) continue;
+            if (kind === "research") {
+              const cur = store.state.research ?? { levels: {}, queue: null };
+              const tgtLvl = (cur.levels[name] ?? 0) + 1;
+              store.setPartial({ research: { ...cur, queue: { tech: name, technology_id: techId, level: tgtLvl, ends_at: endsAt ?? Date.now() + 60000 } as typeof cur.queue } });
+            } else if (kind === "ship" || kind === "defense") {
+              const cnt = (target.ships?.[name] ?? 0);
+              store.setPlanetsPatch({ [planetId]: { shipyard_q: { ship: name, technology_id: techId, count: cnt + 1, ends_at: endsAt ?? Date.now() + 60000 } as typeof target.shipyard_q } });
+            } else {
+              const tgtLvl = (target.buildings?.[name] ?? 0) + 1;
+              store.setPlanetsPatch({ [planetId]: { build_q: { building: name, technology_id: techId, level: tgtLvl, ends_at: endsAt ?? Date.now() + 60000 } as typeof target.build_q } });
+              console.info(`[OgameX/refreshOnePage/queue] planet ${planetId} ${name} L${tgtLvl} ends_at=${endsAt} (${endsAt ? Math.round((endsAt - Date.now()) / 60000) : "?"}min from now)`);
+            }
+          }
+        } catch (e) { console.warn(`[OgameX/refreshOnePage/queue] scan failed:`, e); }
+      }
+
       // 1) Tech levels (research/supplies/facilities → regular; lfbuildings → lifeform;
       //    lfresearch → lifeform_research per planet, v0.0.603)
       const buildingsModule = await import("./probes/extractors/buildings.js");
@@ -2659,6 +2707,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // guard (60s window after any user click/key) so background refresh
   // doesn't compete with operator's own ogame POSTs.
   scheduleBurst(refreshOnePage, 8000);
+  // v0.0.731 — operator 2026-06-03 "建造 核融合反應器 L14 (~709m)" 实际 L17
+  // 还剩 21min. build_q 在 fetchResources JSON 不带 buildqueue 字段时永远
+  // 不刷新 (Scorpius 实测), 只在 boot bursts 那一刻有数据然后永远过期.
+  // periodic 10s force-supplies refresh + chunk-side build queue 抽取 =
+  // build_q 跟 ogame 真值 ≤10s 偏差.
+  setInterval(() => { void refreshOnePage("supplies"); }, 10_000);
+  setInterval(() => { void refreshOnePage("facilities"); }, 15_000);
 
   // v0.0.635 — owner 2026-06-01 "要持久化 ogame 裏面的所有資料". Sidecar
   // now owns WorldState persistence (better-sqlite3 ogamex-world.db). The
