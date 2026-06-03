@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.714";
+  const USERSCRIPT_VERSION = "0.0.715";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1598,34 +1598,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           ships: {} as Record<string, number>,
         };
       }) as unknown as typeof store.state.fleets_outbound;
-      // v0.0.683 — operator 2026-06-03 "删掉movement这种走网页的方式，全部用api"
-      // + "6 你都计算出来了 为什么不用呢". Slot fields now COMPUTED, not scraped:
-      //   max = expeditionSlots(astro) + classBonus  (Discoverer +2)
-      //   used = mission=15 count in fleets_outbound
-      // No regex, no /movement HTML slot-indicator scrape. Formula = single
-      // source of truth (matches ogame UI bonuses we know about).
-      const baseMax = expeditionSlots(store.state.research?.levels?.astrophysics ?? 0);
-      const classBonus = playerClass === "discoverer" ? 2 : 0;
-      const expMax = baseMax + classBonus;
-      const expUsed = (syntheticFleets as Array<{ mission?: number }>).filter((f) => f.mission === 15).length;
-      const partial: { fleets_outbound: typeof syntheticFleets; server?: typeof store.state.server } = {
-        fleets_outbound: syntheticFleets,
-      };
-      if (expMax > 0) {
-        const curServer = store.state.server ?? {};
-        partial.server = {
-          ...curServer,
-          max_expedition_slots: expMax,
-          used_expedition_slots: expUsed,
-        } as typeof store.state.server;
-      }
-      const dumpKey = "__ogamexExpSlotsLogged";
-      const w = env.win as Window & Record<string, boolean>;
-      if (!w[dumpKey]) {
-        w[dumpKey] = true;
-        console.info(`[OgameX/exp-slots] computed ${expUsed}/${expMax} (astro=${store.state.research?.levels?.astrophysics ?? 0} class=${playerClass} base=${baseMax} bonus=+${classBonus})`);
-      }
-      store.setPartial(partial);
+      // v0.0.715 — operator 2026-06-03 "顶层方案 (改 2 处)". The /movement
+      // harvest now writes ONLY fleets_outbound (per memory rule
+      // [[feedback_single_source_slot_data]] "harvestMovement 只写
+      // fleets_outbound"). All slot fields — including expedition — moved
+      // to refreshSlotsViaApi (galaxy JSON path, with cap to usedFleetSlots
+      // so a phantom mission=15 in this cache can't lock out new launches).
+      store.setPartial({ fleets_outbound: syntheticFleets });
     } catch (e) {
       void e;
     }
@@ -1721,14 +1700,29 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const sys = j.system ?? {};
       if (typeof sys.usedFleetSlots !== "number" || typeof sys.maximumFleetSlots !== "number") return;
       const curServer = store.state.server ?? {};
+      // v0.0.715 — operator 2026-06-03 "顶层方案". Expedition slot fields
+      // now ALSO owned by refreshSlotsViaApi (single source per memory
+      // [[feedback_single_source_slot_data]]). The cap to usedFleetSlots
+      // prevents a phantom /movement entry (survived past ogame's deletion)
+      // from inflating the expedition tally and locking out new launches —
+      // the 2026-06-03 "远征有空槽不飞" incident root cause: 6 mission=15
+      // entries in fleets_outbound vs galaxy's authoritative 5 fleets total.
+      // max = floor(sqrt(astro)) + classBonus (Discoverer +2).
+      const mission15Count = (store.state.fleets_outbound ?? [])
+        .filter((f) => (f as { mission?: number }).mission === 15).length;
+      const expUsed = Math.min(mission15Count, sys.usedFleetSlots);
+      const baseMax = expeditionSlots(store.state.research?.levels?.astrophysics ?? 0);
+      const classBonus = playerClass === "discoverer" ? 2 : 0;
+      const expMax = baseMax + classBonus;
       store.setPartial({
         server: {
           ...curServer,
           used_fleet_slots: sys.usedFleetSlots,
           max_fleet_slots: sys.maximumFleetSlots,
+          ...(expMax > 0 ? { used_expedition_slots: expUsed, max_expedition_slots: expMax } : {}),
         } as typeof store.state.server,
       });
-      console.info(`[OgameX/slots-api] fleet slots from galaxy JSON: ${sys.usedFleetSlots}/${sys.maximumFleetSlots}`);
+      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} exp ${expUsed}/${expMax} (raw mission15=${mission15Count}, capped by usedFleetSlots)`);
     } catch (e) {
       console.warn("[OgameX/slots-api] failed:", e);
     }
