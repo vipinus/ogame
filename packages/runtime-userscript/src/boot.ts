@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.702";
+  const USERSCRIPT_VERSION = "0.0.712";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1630,6 +1630,54 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       void e;
     }
   }
+  // v0.0.712 — operator 2026-06-03 "EN 服跑出来全是中文+西班牙文". 上版
+  // dumpTechLabelsFn 读 store.tech_labels (被动累积字段, 旧 session 脏数据).
+  // 改成主动 fetch 5 个 ogame chunk 页, 当场 extractTechLabels, 不污染 store.
+  // 1 个命令 = 1 个 locale 的完整 corpus.
+  const dumpTechLabelsFn = async (): Promise<void> => {
+    const PAGES = ["supplies", "research", "facilities", "shipyard", "lfbuildings", "lfresearch"];
+    const merged: Record<string, string> = {};
+    const buildingsModule = await import("./probes/extractors/buildings.js");
+    const locale = (env.doc.documentElement.getAttribute("lang") ?? "?");
+    console.info(`[OgameX/dump-tech-labels] START locale=${locale}, fetching ${PAGES.length} pages...`);
+    for (const page of PAGES) {
+      try {
+        const resp = await env.win.fetch(`/game/index.php?page=ingame&component=${page}`, {
+          credentials: "same-origin",
+        });
+        if (!resp.ok) {
+          console.warn(`[OgameX/dump-tech-labels] ${page} HTTP ${resp.status} skip`);
+          continue;
+        }
+        const html = await resp.text();
+        const parser = new (env.win as unknown as { DOMParser: typeof DOMParser }).DOMParser();
+        const parsedDoc = parser.parseFromString(html, "text/html");
+        const labels = buildingsModule.extractTechLabels(parsedDoc);
+        let added = 0;
+        for (const [k, v] of Object.entries(labels)) {
+          if (!(k in merged)) { merged[k] = v; added += 1; }
+        }
+        console.info(`[OgameX/dump-tech-labels] ${page}: +${added} labels (total ${Object.keys(merged).length})`);
+      } catch (e) {
+        console.warn(`[OgameX/dump-tech-labels] ${page} error:`, e);
+      }
+    }
+    const sorted: Record<string, string> = {};
+    for (const k of Object.keys(merged).sort()) sorted[k] = merged[k]!;
+    console.info(`[OgameX/dump-tech-labels] DONE locale=${locale} keys=${Object.keys(sorted).length}`);
+    console.info(JSON.stringify(sorted, null, 2));
+  };
+  (env.win as Window & { __ogamexDumpTechLabels?: () => Promise<void> }).__ogamexDumpTechLabels = dumpTechLabelsFn;
+  try {
+    if (typeof (globalThis as { unsafeWindow?: Window }).unsafeWindow !== "undefined") {
+      ((globalThis as { unsafeWindow: Window }).unsafeWindow as Window & { __ogamexDumpTechLabels?: () => Promise<void> }).__ogamexDumpTechLabels = dumpTechLabelsFn;
+    }
+  } catch { /* */ }
+
+  // v0.0.704-710 auto-walk attempt removed (POST settings 表单切语言永远不
+  // 真正生效; 7 sprint 全失败). 真实有效方法 = manual: operator 在
+  // account.gameforge.com 切 UI 语言 → F5 ogame → run __ogamexDumpTechLabels()
+  // → paste 输出。每 locale ~2 min, 22 langs ≈ 45 min。
   scheduleBurst(() => { void harvestSlotsFromMovement(); }, 2000);
   // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed the 10s
   // setInterval. Triggers that refresh /movement now:

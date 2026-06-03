@@ -126,14 +126,127 @@ const CAMEL_TO_EN: Record<string, string> = {
   "explorer": "Pathfinder"
 };
 
+// v0.0.711 — operator 2026-06-03: harvested from operator's ogame ES session
+// via __ogamexDumpTechLabels(). 46 entries cover regular + lifeform tech.
+// Source: ogame.gameforge.com Español 官方渲染 DOM. 不自译。
+const CAMEL_TO_ES: Record<string, string> = {
+  metalMine: "Mina de metal",
+  crystalMine: "Mina de cristal",
+  deuteriumSynth: "Sintetizador de deuterio",
+  solarPlant: "Planta de energía solar",
+  fusionReactor: "Planta de fusión",
+  metalStorage: "Almacén de metal",
+  crystalStorage: "Almacén de cristal",
+  deuteriumTank: "Contenedor de deuterio",
+  energyTech: "Tecnología de energía",
+  laserTech: "Tecnología láser",
+  ionTech: "Tecnología iónica",
+  hyperspaceTech: "Tecnología de hiperespacio",
+  plasmaTech: "Tecnología de plasma",
+  combustion: "Motor de combustión",
+  impulseDrive: "Motor de impulso",
+  hyperspaceDrive: "Propulsor hiperespacial",
+  espionageTech: "Tecnología de espionaje",
+  computerTech: "Tecnología de computación",
+  astrophysics: "Astrofísica",
+  intergalactic: "Red de investigación intergaláctica",
+  gravitonTech: "Tecnología de gravitón",
+  weapons: "Tecnología militar",
+  shielding: "Tecnología de defensa",
+  armor: "Tecnología de blindaje",
+  sanctuary: "Refugio",
+  antimatterCondenser: "Condensador de antimateria",
+  vortexChamber: "Cámara de Vórtice",
+  hallsOfRealisation: "Salones de la Cognición",
+  forumOfTranscendence: "Foro de la Trascendencia",
+  antimatterConvector: "Convector de antimateria",
+  cloningLaboratory: "Laboratorio de clonación",
+  chrysalisAccelerator: "Acelerador de crisálidas",
+  bioModifier: "Biomodificador",
+  heatRecovery: "Reconversor de calor",
+  sulphideProcess: "Técnica de procesamiento sulfúrico",
+  psionicNetwork: "Red psiónica",
+  telekineticTractorBeam: "Rayo tractor telequinético",
+  enhancedSensorTechnology: "Tecnología de sensores mejorada",
+  neuromodalCompressor: "Compresor neuromodal",
+  neuroInterface: "Neurointerfaz",
+  interplanetaryAnalysisNetwork: "Red analítica superglobal",
+  overclockingHeavyFighter: "Overclock (Cazador pesado)",
+  telekineticDrive: "Sistema de impulso telequinético",
+  sixthSense: "Sexto sentido",
+  psychoharmoniser: "Psicoarmonizador",
+  efficientSwarmIntelligence: "Inteligencia eficiente de enjambre",
+};
+
+// v0.0.712 — operator 2026-06-03: harvested from operator's ogame DE session
+// via __ogamexDumpTechLabels() on s274-en (account UI lang = DE). 52 entries
+// covering regular + lifeform tech. Skipped: intergalacticEnvoys (residual
+// TW dirty data from previous session, would-be value "星際使者").
+// Source: ogame.gameforge.com Deutsch 官方渲染 DOM. 不自译。
+const CAMEL_TO_DE: Record<string, string> = {
+  allianceDepot: "Allianzdepot",
+  antimatterCondenser: "Antimaterie-Kondensator",
+  antimatterConvector: "Antimaterie-Konvektor",
+  armor: "Raumschiffpanzerung",
+  astrophysics: "Astrophysik",
+  bioModifier: "Bio-Modifikator",
+  chrysalisAccelerator: "Chrysalis-Akzelerator",
+  cloningLaboratory: "Klonlabor",
+  combustion: "Verbrennungstriebwerk",
+  computerTech: "Computertechnik",
+  crystalMine: "Kristallmine",
+  crystalStorage: "Kristallspeicher",
+  deuteriumSynth: "Deuterium-Synthetisierer",
+  deuteriumTank: "Deuteriumtank",
+  efficientSwarmIntelligence: "Effiziente Schwarmintelligenz",
+  energyTech: "Energietechnik",
+  enhancedSensorTechnology: "Verbesserte Sensortechnik",
+  espionageTech: "Spionagetechnik",
+  forumOfTranscendence: "Forum der Transzendenz",
+  fusionReactor: "Fusionskraftwerk",
+  gravitonTech: "Gravitonforschung",
+  hallsOfRealisation: "Hallen der Erkenntnis",
+  heatRecovery: "Wärme-Rückgewinnung",
+  hyperspaceDrive: "Hyperraumantrieb",
+  hyperspaceTech: "Hyperraumtechnik",
+  impulseDrive: "Impulstriebwerk",
+  intergalactic: "Intergalaktisches Forschungsnetzwerk",
+  interplanetaryAnalysisNetwork: "Superglobales Analysenetzwerk",
+  ionTech: "Ionentechnik",
+  laserTech: "Lasertechnik",
+  metalMine: "Metallmine",
+  metalStorage: "Metallspeicher",
+  missileSilo: "Raketensilo",
+  naniteFactory: "Nanitenfabrik",
+  neuroInterface: "Neuro-Interface",
+  neuromodalCompressor: "Neuromodaler Komprimator",
+  overclockingHeavyFighter: "Übertaktung (Schwerer Jäger)",
+  plasmaTech: "Plasmatechnik",
+  psionicNetwork: "Psionisches Netzwerk",
+  psychoharmoniser: "Psycho-Harmonisierer",
+  researchLab: "Forschungslabor",
+  roboticsFactory: "Roboterfabrik",
+  sanctuary: "Refugium",
+  shielding: "Schildtechnik",
+  shipyard: "Raumschiffswerft",
+  sixthSense: "Sechster Sinn",
+  solarPlant: "Solarkraftwerk",
+  sulphideProcess: "Sulfid-Prozesstechnik",
+  telekineticDrive: "Telekinetisches Schubsystem",
+  telekineticTractorBeam: "Telekinese-Traktorstrahl",
+  terraformer: "Terraformer",
+  vortexChamber: "Vortexkammer",
+  weapons: "Waffentechnik",
+};
+
 /** Translate a camelCase tech identifier to the current locale's display name.
  *  Falls back to the raw camelCase identifier when no mapping is found
  *  (lifeform tech, custom strings, unknown ids).
  */
 export function techName(camelCaseId: string): string {
   const locale = getOgameLocaleWithOverride();
-  if (locale === "tw") {
-    return CAMEL_TO_TW[camelCaseId] ?? camelCaseId;
-  }
+  if (locale === "tw") return CAMEL_TO_TW[camelCaseId] ?? camelCaseId;
+  if (locale === "es") return CAMEL_TO_ES[camelCaseId] ?? camelCaseId;
+  if (locale === "de") return CAMEL_TO_DE[camelCaseId] ?? camelCaseId;
   return CAMEL_TO_EN[camelCaseId] ?? camelCaseId;
 }
