@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.735";
+  const USERSCRIPT_VERSION = "0.0.736";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1703,36 +1703,32 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const baseMax = expeditionSlots(store.state.research?.levels?.astrophysics ?? 0);
       const classBonus = playerClass === "discoverer" ? 2 : 0;
       const expMax = baseMax + classBonus;
-      // v0.0.735 — operator 2026-06-03 "不能用api获取吗 不要扫网页". API-only.
-      // Probe galaxy JSON for native expedition slot fields. ogame v12
-      // fetchGalaxyContent system object may carry usedExpeditionSlots /
-      // maximumExpeditionSlots — log all sys.* keys so we know what's
-      // available. Until field confirmed, use synthetic mission=15 count
-      // capped at expMax + usedFleetSlots (api-derived, no DOM).
-      const sysKeys = Object.keys(sys).filter((k) => typeof sys[k] === "number" || typeof sys[k] === "string").map((k) => `${k}=${sys[k]}`).join(",");
-      const sysExpUsed = typeof sys.usedExpeditionSlots === "number" ? sys.usedExpeditionSlots
-        : typeof sys.used_expedition_slots === "number" ? sys.used_expedition_slots : undefined;
-      const sysExpMax = typeof sys.maximumExpeditionSlots === "number" ? sys.maximumExpeditionSlots
-        : typeof sys.max_expedition_slots === "number" ? sys.max_expedition_slots : undefined;
+      // v0.0.736 — operator 2026-06-03 "不能用api获取吗 不要扫网页" +
+      //   "boot.ts:2076 '真的沒有 api 直接拿 slot 位嗎?' Yes — /movement
+      //    chunk ajax".
+      // galaxy JSON 验证后 NOT contain expedition fields (sys keys log
+      // confirmed v0.0.735: only usedFleetSlots / maximumFleetSlots).
+      // Authoritative expedition count = /movement chunk (ajax endpoint,
+      // returns each fleet as unique timer_NNNNNNN row, no overcount).
+      // Call harvestSlotsFromMovement INLINE (replaces fleets_outbound
+      // with truth from /movement). Then count mission=15 entries.
+      // Per memory [[feedback_single_source_slot_data]]: /movement owns
+      // fleets_outbound, refreshSlotsViaApi owns slot count fields.
+      await harvestSlotsFromMovement();
       const mission15Count = (store.state.fleets_outbound ?? [])
         .filter((f) => (f as { mission?: number }).mission === 15).length;
-      // Priority: galaxy JSON native expedition fields > synthetic count
-      const expUsedSrc = sysExpUsed !== undefined ? "galaxy-api" : "synthetic";
-      const expUsed = sysExpUsed !== undefined
-        ? Math.min(sysExpUsed, expMax)
-        : Math.min(mission15Count, sys.usedFleetSlots, expMax);
-      const expMaxFinal = sysExpMax !== undefined ? Math.min(sysExpMax, expMax) : expMax;
+      const expUsed = Math.min(mission15Count, sys.usedFleetSlots, expMax);
       const serverPatch: Record<string, unknown> = {
         ...curServer,
         used_fleet_slots: sys.usedFleetSlots,
         max_fleet_slots: sys.maximumFleetSlots,
       };
-      if (expMaxFinal > 0) {
-        serverPatch.max_expedition_slots = expMaxFinal;
+      if (expMax > 0) {
+        serverPatch.max_expedition_slots = expMax;
         serverPatch.used_expedition_slots = expUsed;
       }
       store.setPartial({ server: serverPatch as typeof store.state.server });
-      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} | exp ${expUsed}/${expMaxFinal} src=${expUsedSrc} (synth_m15=${mission15Count}, sys keys: ${sysKeys.slice(0, 240)})`);
+      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} | exp ${expUsed}/${expMax} (mission15 from /movement ajax = ${mission15Count})`);
     } catch (e) {
       console.warn("[OgameX/slots-api] failed:", e);
     }
