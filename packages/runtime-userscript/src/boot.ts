@@ -1699,39 +1699,29 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const j = await r.json() as { system?: { usedFleetSlots?: number; maximumFleetSlots?: number } };
       const sys = j.system ?? {};
       if (typeof sys.usedFleetSlots !== "number" || typeof sys.maximumFleetSlots !== "number") return;
-      const curServer = (store.state.server ?? {}) as { used_expedition_slots?: number };
-      // v0.0.729 — operator 2026-06-03 "后台没有拿到数据 远征没飞". Use the
-      // eventbox-row mission-type count as authoritative source for live
-      // expedition fleet count. Synthetic tracking was the old source but
-      // synthetics expire via stale ttl estimate, leaving the count stuck
-      // at 0 even when ogame's eventbox still shows the fleets. Eventbox
-      // is ogame ground truth — rows exist iff fleet is in flight.
-      //
-      // Rule (drops v0.0.724 writeExpedition preserve guard):
-      //   • eventbox poll ran at least once (__ogamexLiveExpeditionCount
-      //     defined) → write min(liveExp, usedFleetSlots) ALWAYS
-      //   • else (very early boot before first poll) → preserve PG value
-      const liveCount = (env.win as Window & { __ogamexLiveExpeditionCount?: number }).__ogamexLiveExpeditionCount;
-      const haveLiveCount = typeof liveCount === "number";
-      const mission15Count = haveLiveCount ? liveCount! : 0;
+      const curServer = (store.state.server ?? {}) as { used_expedition_slots?: number; max_expedition_slots?: number };
+      // v0.0.734 — operator 2026-06-03 "艦隊:8/17 遠征艦隊: 5/6 后台是 6/6"
+      // (actually 8 in PG, > max=6 because eventbox overcounted during
+      // phase transitions). Removed the liveCount-based write to
+      // used_expedition_slots — refreshSlotsViaApi NOW writes ONLY fleet
+      // slots (galaxy JSON is authoritative for those). used_expedition_
+      // slots is owned by harvestSlots() which reads ogame's #slots DOM
+      // bar — that's the visible-to-operator "5/6" value, immune to
+      // eventbox phase-transition overcounting. Single source.
       const baseMax = expeditionSlots(store.state.research?.levels?.astrophysics ?? 0);
       const classBonus = playerClass === "discoverer" ? 2 : 0;
       const expMax = baseMax + classBonus;
-      const expUsed = Math.min(mission15Count, sys.usedFleetSlots);
       const serverPatch: Record<string, unknown> = {
         ...curServer,
         used_fleet_slots: sys.usedFleetSlots,
         max_fleet_slots: sys.maximumFleetSlots,
       };
-      if (expMax > 0) {
-        serverPatch.max_expedition_slots = expMax;
-        if (haveLiveCount) serverPatch.used_expedition_slots = expUsed;
-      }
+      // Still maintain expMax (research-derived) since DOM bar may carry
+      // stale max if astro level recently changed — research-formula max
+      // wins. used_expedition_slots NOT touched here (DOM owns).
+      if (expMax > 0) serverPatch.max_expedition_slots = expMax;
       store.setPartial({ server: serverPatch as typeof store.state.server });
-      const expTag = haveLiveCount
-        ? `exp ${expUsed}/${expMax} (eventbox mission15=${mission15Count})`
-        : `exp PRESERVED(${curServer.used_expedition_slots ?? "?"})/${expMax} — eventbox poll not yet observed`;
-      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} ${expTag}`);
+      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} | exp_max=${expMax} (used_expedition_slots owned by harvestSlots/DOM, not touched here)`);
     } catch (e) {
       console.warn("[OgameX/slots-api] failed:", e);
     }
