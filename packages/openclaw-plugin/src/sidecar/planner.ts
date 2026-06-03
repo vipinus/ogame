@@ -1248,13 +1248,28 @@ function planJumpgateGoal(goal: Goal, state: WorldState): PlanResult {
   if (tgtMoon === undefined) return { blocked: `jumpgate: target_moon ${targetMoonId} not in state` };
   // Cooldown check — frontend captures jumpgate_cooldown_sec on each click;
   // we treat absence as "ready" (operator's overlay GET will refresh).
+  // v0.0.720 — operator 2026-06-03 "JG 没有跳" 真因: ogame v12 JG lock 是
+  // bilateral — A→B 完成后 A 跟 B 都进 cd, 期间任何方向 JG 都拒。Planner
+  // 之前只查 source moon cd, target 还在 cd 时 dispatch → ogame 空 error 拒。
+  // Evidence: 3:279:7 月球 cd=1596 (paired with 2:279:8 19:38 UTC JG), 1:486:7
+  // → 3:279:7 dispatch 5 次, ogame 全 reject 空 error。Fix: 同样 cd 检查 also
+  // 跑 target moon。Block reason 区分 src vs tgt 便于 operator 看 panel。
   const cdSec = (srcMoon as { jumpgate_cooldown_sec?: number | null }).jumpgate_cooldown_sec;
   const harvestedAt = (srcMoon as { jumpgate_harvested_at?: number | null }).jumpgate_harvested_at;
   if (typeof cdSec === "number" && cdSec > 0 && typeof harvestedAt === "number") {
     const elapsedSec = Math.floor((Date.now() - harvestedAt) / 1000);
     const remaining = cdSec - elapsedSec;
     if (remaining > 0) {
-      return { blocked: `jumpgate: cooldown ${remaining}s remaining on ${sourceMoonId}` };
+      return { blocked: `jumpgate: source_moon ${sourceMoonId} cooldown ${remaining}s remaining` };
+    }
+  }
+  const tgtCdSec = (tgtMoon as { jumpgate_cooldown_sec?: number | null } | undefined)?.jumpgate_cooldown_sec;
+  const tgtHarvestedAt = (tgtMoon as { jumpgate_harvested_at?: number | null } | undefined)?.jumpgate_harvested_at;
+  if (typeof tgtCdSec === "number" && tgtCdSec > 0 && typeof tgtHarvestedAt === "number") {
+    const tgtElapsedSec = Math.floor((Date.now() - tgtHarvestedAt) / 1000);
+    const tgtRemaining = tgtCdSec - tgtElapsedSec;
+    if (tgtRemaining > 0) {
+      return { blocked: `jumpgate: target_moon ${targetMoonId} cooldown ${tgtRemaining}s remaining (ogame v12 bilateral lock — both moons must be ready)` };
     }
   }
   // v0.0.469: take-all-ships mode (operator 2026-05-30 "用跳跃门往回走的
