@@ -4139,24 +4139,33 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const rows = chainBlocks.join("") + singletonRows;
     // v0.0.529 — operator 2026-05-31 "把運輸任務從 goals 移到這裏 (cargo 位置)".
     // 拆 rows: 運輸系 (deploy/transport/jumpgate, 含 chain) 單獨到 cargoSection,
-    // 其它 (build/research/expedition 等) 留在 goalsSection.
+    // 其它 (build/research 等) 留在 goalsSection (常規任務).
+    // v0.0.723 — operator 2026-06-03 "遠征還有問題" (panel 截圖: 5 個
+    // 遠征 goal 跑到常規任務). expedition 类型也独立分流到 expeditionSection
+    // (live fleet 列表下追加), 不再跟 build/research 混。
     const isTransportType = (t: string): boolean => t === "deploy" || t === "transport" || t === "jumpgate";
+    const isExpeditionType = (t: string): boolean => t === "expedition";
     const transportChainBlocks_v529: string[] = [];
+    const expeditionChainBlocks_v723: string[] = [];
     const restChainBlocks_v529: string[] = [];
     for (const [cid, members] of chainGroups) {
       const isTransport = members.some(g => isTransportType(g.type));
-      const bucket = isTransport ? transportChainBlocks_v529 : restChainBlocks_v529;
+      const isExpChain = !isTransport && members.some(g => isExpeditionType(g.type));
+      const bucket = isTransport ? transportChainBlocks_v529 : (isExpChain ? expeditionChainBlocks_v723 : restChainBlocks_v529);
       bucket.push(renderChainParent(cid, members));
       members.forEach((g, idx) => {
         bucket.push(renderChainChildRow(g, idx, members[idx - 1]?.type ?? null, isPaused(g)));
       });
     }
     const transportSingletonsHtml_v529 = singletonsTopLevel.filter(g => isTransportType(g.type)).map(g => renderWithChildren(g, 0)).join("");
-    const restSingletonsHtml_v529 = singletonsTopLevel.filter(g => !isTransportType(g.type)).map(g => renderWithChildren(g, 0)).join("");
+    const expeditionSingletonsHtml_v723 = singletonsTopLevel.filter(g => isExpeditionType(g.type)).map(g => renderWithChildren(g, 0)).join("");
+    const restSingletonsHtml_v529 = singletonsTopLevel.filter(g => !isTransportType(g.type) && !isExpeditionType(g.type)).map(g => renderWithChildren(g, 0)).join("");
     const transportRowsHtml_v529 = transportChainBlocks_v529.join("") + transportSingletonsHtml_v529;
+    const expeditionRowsHtml_v723 = expeditionChainBlocks_v723.join("") + expeditionSingletonsHtml_v723;
     const restRowsHtml_v529 = restChainBlocks_v529.join("") + restSingletonsHtml_v529;
     const transportGoalCount_v529 = filtered.filter(g => isTransportType(g.type)).length;
-    const restGoalCount_v529 = filtered.length - transportGoalCount_v529;
+    const expeditionGoalCount_v723 = filtered.filter(g => isExpeditionType(g.type)).length;
+    const restGoalCount_v529 = filtered.length - transportGoalCount_v529 - expeditionGoalCount_v723;
     // Header is the drag handle (cursor:move). Collapse button toggles the
     // body. Close removes the panel entirely.
     // Operator 2026-05-29 "panel 名稱改成 oGame+版本號 添加按鈕更新版本":
@@ -4272,7 +4281,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       : "";
     // M2 — expedition section ⚙ button → openExpeditionSettings modal.
     const exSettingsBtn = t("auto.099");
-    const expeditionSection = `${sectionHeader("expedition", exLabel, ex?.active.length ?? 0, "#8a8aff", exSettingsBtn)}<div style="display:${exCollapsed ? "none" : "block"};">${exRows}</div>`;
+    // v0.0.723 — operator 2026-06-03: expedition goals rendered alongside the
+    // live fleet list (was混入 常規任務). Header count = live fleets +
+    // queued goals so panel reads "N active + M queued" at a glance.
+    const exTotalCount = (ex?.active.length ?? 0) + expeditionGoalCount_v723;
+    const expeditionSection = `${sectionHeader("expedition", exLabel, exTotalCount, "#8a8aff", exSettingsBtn)}<div style="display:${exCollapsed ? "none" : "block"};">${exRows}${expeditionRowsHtml_v723}</div>`;
 
     // Goals section — wraps existing goal rows with a collapsible header.
     const goalsCollapsed = sectionCollapsed.goals;
