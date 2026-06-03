@@ -859,13 +859,33 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
       const pickFusion = fusionViable && fusionTotal < solarTotal;
       const pickBuilding = pickFusion ? "fusionReactor" : "solarPlant";
       const pickLevel = pickFusion ? fusion + 1 : solar + 1;
-      const bumped = Math.min(10, ctx.rootGoal.priority + 5);
-      const elevCtx: PlanCtx = {
-        ...ctx,
-        depth: ctx.depth + 1,
-        rootGoal: { ...ctx.rootGoal, priority: bumped },
-      };
-      return planBuild(pickBuilding, pickLevel, planetId, elevCtx);
+      const pickCost = pickFusion ? fusionCost : solarCost;
+      // v0.0.676 — break the deuteriumSynth → solar → metalMine → solar
+      // infinite-recursion cycle observed in production (planet 33639762
+      // deuteriumSynth L32 blocked with "recursion depth exceeded while
+      // planning build solarPlant"). When the chosen power plant is
+      // itself unaffordable, pickResourceStrategy in the next planBuild
+      // recurses into a mine upgrade — but that mine re-triggers the
+      // energy gate, loops back to the power plant, hits the recursion
+      // ceiling. Bail out of the gate when the power plant is
+      // unaffordable so the original mine's cost check below returns
+      // the clearer "waiting Xs for resources" message.
+      const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
+      const pickAffordable =
+        r.m >= pickCost.m &&
+        r.c >= pickCost.c &&
+        r.d >= (pickCost.d ?? 0);
+      if (pickAffordable) {
+        const bumped = Math.min(10, ctx.rootGoal.priority + 5);
+        const elevCtx: PlanCtx = {
+          ...ctx,
+          depth: ctx.depth + 1,
+          rootGoal: { ...ctx.rootGoal, priority: bumped },
+        };
+        return planBuild(pickBuilding, pickLevel, planetId, elevCtx);
+      }
+      // else: fall through; original mine cost check will block with a
+      // resource-wait reason that names the deficit.
     }
   }
 
