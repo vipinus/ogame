@@ -1334,21 +1334,25 @@ export async function startSidecar(
         paused = parsed["paused"] === true;
       } catch { /* missing or malformed — treat as not paused */ }
       if (!ready) return { state_ready: false, used: -1, max: -1, paused, active: [] };
-      // v0.0.720 — operator 2026-06-03 "远征任务现在显示 525/6". Math.max(
-      // fleets15, srv.used_expedition_slots) would amplify a stale/buggy
-      // userscript push (operator saw 525 from somewhere — likely pre-v0.0.715
-      // DOM scrape misparsed a number — and Math.max stuck it permanently).
-      // Switch to authoritative live count: fleets15 = mission=15 entries in
-      // fleets_outbound. This matches the same `active` array rendered below
-      // row-by-row, so numerator and denominator stay consistent.
-      const srv = (stateRef.current?.server ?? {}) as { max_expedition_slots?: number; player_class?: string };
+      // v0.0.720 (rev v0.0.724) — operator 2026-06-03 "重启才会变成0，前台
+      // 传回的数据都要持久化". Pure-fleets15 broke the post-restart case:
+      // hydrate loads persisted server.used_expedition_slots = 6 但 fleets_
+      // outbound 可能空 (synthetic prune 后没 fresh push), 直接 fleets15=0
+      // → 显示 0/6. Fix: use max(fleets15, srv.used_exp) for the both-aware
+      // value, then CAP to max_expedition_slots so a stale srv=525 collapses
+      // to 6/6 instead of 525/6 (the 525 bug that v0.0.720 was solving).
+      const srv = (stateRef.current?.server ?? {}) as {
+        used_expedition_slots?: number; max_expedition_slots?: number; player_class?: string;
+      };
       const astro = stateRef.current?.research?.levels?.["astrophysics"] ?? 0;
       const fleets15 = (stateRef.current?.fleets_outbound ?? []).filter((f) => f.mission === 15).length;
       const classBonus = (srv.player_class ?? process.env["OGAMEX_DEFAULT_CLASS"] ?? "") === "discoverer" ? 2 : 0;
       const computedMax = Math.floor(Math.sqrt(astro)) + classBonus;
+      const maxSlots = srv.max_expedition_slots && srv.max_expedition_slots > 0 ? srv.max_expedition_slots : computedMax;
+      const rawUsed = Math.max(fleets15, srv.used_expedition_slots ?? 0);
       const slots = {
-        used: fleets15,
-        max: srv.max_expedition_slots && srv.max_expedition_slots > 0 ? srv.max_expedition_slots : computedMax,
+        used: Math.min(rawUsed, maxSlots),  // cap defangs stale-srv amplification
+        max: maxSlots,
       };
       const fleets = stateRef.current?.fleets_outbound ?? [];
       const now = Date.now();
