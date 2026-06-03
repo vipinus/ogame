@@ -245,28 +245,14 @@ export async function wireBridge(
       }
     }
     if (!g || !s || !origin) return;
-    // v0.0.567 — defense-in-depth dedup. Skip if we dispatched for the same
-    // (origin → G:S) tuple within HARVEST_DEDUP_TTL_MS.
+    // v0.0.671 — operator 2026-06-03 "T+30s 单信号就好": main-path dedup
+    // removed. Sidecar now fires exactly ONE debris-check per fleet
+    // (Signal B, delayed 30s after fleet truly leaves outbound), so
+    // there is no second event for this map to dedup against. The
+    // home-planet fallback (~L525) still uses recentHarvestDispatch +
+    // HARVEST_DEDUP_TTL_MS for its own scan source so the map + constant
+    // stay defined.
     const dedupKey = `${origin}→${g}:${s}`;
-    const lastTs = recentHarvestDispatch.get(dedupKey) ?? 0;
-    const nowMs = Date.now();
-    if (lastTs > 0 && (nowMs - lastTs) < HARVEST_DEDUP_TTL_MS) {
-      const ageS = Math.floor((nowMs - lastTs) / 1000);
-      const dupMsg = `dedup SKIP ${dedupKey} (last dispatch ${ageS}s ago, TTL ${HARVEST_DEDUP_TTL_MS / 1000}s)`;
-      console.info(`[debris] ${dupMsg}`);
-      try {
-        void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
-          method: "POST", credentials: "omit",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tag: "debris-dedup", text: dupMsg }),
-        }).catch(() => { /* */ });
-      } catch { /* */ }
-      return;
-    }
-    // GC stale entries (>TTL old) opportunistically.
-    for (const [k, ts] of Array.from(recentHarvestDispatch.entries())) {
-      if (nowMs - ts > HARVEST_DEDUP_TTL_MS) recentHarvestDispatch.delete(k);
-    }
     // v0.0.570 — ship type selection per position. expedition slot (16)
     // requires pathfinder/explorer (id=219); regular battle debris at any
     // position 1-15 uses recycler (id=209, ogame's standard collector).
