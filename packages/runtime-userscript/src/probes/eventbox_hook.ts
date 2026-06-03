@@ -432,6 +432,14 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     const seen: string[] = [];
     const seenOwnIds = new Set<string>();  // v0.0.728 — for prune of firedArrivalRefreshes
     const nowSec = Math.floor(Date.now() / 1000);
+    // v0.0.729 — operator 2026-06-03 "回港时没有更新slots 是不是也没有更新
+    // 星球资源？" + "后台没有拿到数据 远征没飞". eventbox row data-mission-type
+    // is the ogame ground truth for live in-flight fleet mission distribution.
+    // Count mission=15 (expedition) own-fleet rows here so refreshSlotsViaApi
+    // can stop relying on the synthetic-fleet count (which expires via stale
+    // ttl estimate, leaving used_expedition_slots stuck at last value =
+    // root cause of 6/6 phantom block this session).
+    let liveOwnMission15 = 0;
     for (const tr of rows) {
       const mt = parseInt(tr.getAttribute("data-mission-type") ?? "0", 10);
       const evId = tr.getAttribute("id")?.replace(/^eventRow-/, "") ?? "";
@@ -439,6 +447,7 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       const cls = (cd?.className ?? "").toLowerCase();
       const isHostile = /\bhostile\b/.test(cls);
       seen.push(`${evId}:${mt}:${cls.slice(0, 16)}`);
+      if (!isHostile && mt === 15) liveOwnMission15++;
       // v0.0.728 — operator "全事件驱动 为什么要有评估？". Own-fleet rows
       // (countdown not hostile) carry data-arrival-time. When that ticks
       // past 'now' we know the fleet arrived at dest. Fire dest planet
@@ -531,6 +540,20 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     // re-fire if the id ever reappears for a new launch).
     for (const id of [...firedArrivalRefreshes]) {
       if (!seenOwnIds.has(id)) firedArrivalRefreshes.delete(id);
+    }
+    // v0.0.729 — publish live eventbox-derived expedition count + trigger
+    // slot refresh whenever it changes. This is the AUTHORITATIVE source
+    // for used_expedition_slots — synthetic-fleet count is only a UI
+    // hint, not ground truth (synthetics expire via stale ttl estimate).
+    const prevLiveExp = (win as Window & { __ogamexLiveExpeditionCount?: number }).__ogamexLiveExpeditionCount;
+    (win as Window & { __ogamexLiveExpeditionCount?: number }).__ogamexLiveExpeditionCount = liveOwnMission15;
+    if (prevLiveExp !== liveOwnMission15) {
+      const refreshSlots = (win as Window & { __ogamexRefreshSlots?: () => Promise<void> }).__ogamexRefreshSlots;
+      const pushNow = (win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+      if (typeof refreshSlots === "function") {
+        void refreshSlots().finally(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
+      }
+      console.info(`[OgameX/eventbox-hook] live mission15 count ${prevLiveExp ?? "?"}→${liveOwnMission15} → refreshSlots`);
     }
     const sig = seen.sort().join("|");
     if (sig === lastApiEventSig) return;

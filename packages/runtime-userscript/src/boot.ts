@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.728";
+  const USERSCRIPT_VERSION = "0.0.729";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1700,23 +1700,24 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const sys = j.system ?? {};
       if (typeof sys.usedFleetSlots !== "number" || typeof sys.maximumFleetSlots !== "number") return;
       const curServer = (store.state.server ?? {}) as { used_expedition_slots?: number };
-      // v0.0.724 — operator 2026-06-03 "前台传回的数据都要持久化". Don't
-      // clobber `used_expedition_slots` with a confidently-wrong 0 when
-      // mission15Count is 0 because synthetic prune ran or boot-burst
-      // /movement hasn't repopulated yet. Sidecar persists what we push;
-      // pushing 0 ruins post-restart hydration. New rule:
-      //   • mission15Count > 0   → write min(mission15, usedFleetSlots) (cap)
-      //   • usedFleetSlots == 0  → write 0 (galaxy says truly no fleets out)
-      //   • else                 → SKIP write, preserve previous value
-      //     (galaxy says fleets are out but our tracking lost them — we
-      //     don't know mission breakdown, don't overwrite with a fake 0)
-      const mission15Count = (store.state.fleets_outbound ?? [])
-        .filter((f) => (f as { mission?: number }).mission === 15).length;
+      // v0.0.729 — operator 2026-06-03 "后台没有拿到数据 远征没飞". Use the
+      // eventbox-row mission-type count as authoritative source for live
+      // expedition fleet count. Synthetic tracking was the old source but
+      // synthetics expire via stale ttl estimate, leaving the count stuck
+      // at 0 even when ogame's eventbox still shows the fleets. Eventbox
+      // is ogame ground truth — rows exist iff fleet is in flight.
+      //
+      // Rule (drops v0.0.724 writeExpedition preserve guard):
+      //   • eventbox poll ran at least once (__ogamexLiveExpeditionCount
+      //     defined) → write min(liveExp, usedFleetSlots) ALWAYS
+      //   • else (very early boot before first poll) → preserve PG value
+      const liveCount = (env.win as Window & { __ogamexLiveExpeditionCount?: number }).__ogamexLiveExpeditionCount;
+      const haveLiveCount = typeof liveCount === "number";
+      const mission15Count = haveLiveCount ? liveCount! : 0;
       const baseMax = expeditionSlots(store.state.research?.levels?.astrophysics ?? 0);
       const classBonus = playerClass === "discoverer" ? 2 : 0;
       const expMax = baseMax + classBonus;
-      const writeExpedition = mission15Count > 0 || sys.usedFleetSlots === 0;
-      const expUsed = writeExpedition ? Math.min(mission15Count, sys.usedFleetSlots) : (curServer.used_expedition_slots ?? 0);
+      const expUsed = Math.min(mission15Count, sys.usedFleetSlots);
       const serverPatch: Record<string, unknown> = {
         ...curServer,
         used_fleet_slots: sys.usedFleetSlots,
@@ -1724,13 +1725,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       };
       if (expMax > 0) {
         serverPatch.max_expedition_slots = expMax;
-        if (writeExpedition) serverPatch.used_expedition_slots = expUsed;
+        if (haveLiveCount) serverPatch.used_expedition_slots = expUsed;
       }
       store.setPartial({ server: serverPatch as typeof store.state.server });
-      const expTag = writeExpedition
-        ? `exp ${expUsed}/${expMax}`
-        : `exp PRESERVED(${curServer.used_expedition_slots ?? "?"})/${expMax} — mission15=0 but ${sys.usedFleetSlots} fleets out, breakdown unknown`;
-      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} ${expTag} (raw mission15=${mission15Count})`);
+      const expTag = haveLiveCount
+        ? `exp ${expUsed}/${expMax} (eventbox mission15=${mission15Count})`
+        : `exp PRESERVED(${curServer.used_expedition_slots ?? "?"})/${expMax} — eventbox poll not yet observed`;
+      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} ${expTag}`);
     } catch (e) {
       console.warn("[OgameX/slots-api] failed:", e);
     }
