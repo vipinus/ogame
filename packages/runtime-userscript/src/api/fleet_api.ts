@@ -459,6 +459,7 @@ async function sendFleetInner(
         const win = (typeof window !== "undefined" ? window : globalThis) as unknown as Window & {
           __ogamexRecordFleetLaunch?: (params: {
             mission: number;
+            sourcePlanetId?: string;
             origin: readonly number[];
             originType?: "planet" | "moon";
             dest: readonly number[];
@@ -468,6 +469,7 @@ async function sendFleetInner(
         if (typeof win.__ogamexRecordFleetLaunch === "function") {
           win.__ogamexRecordFleetLaunch({
             mission: p.mission,
+            sourcePlanetId: p.sourcePlanetId,
             origin: [0, 0, 0],
             dest: p.coords,
             destType: p.destType === 2 ? "moon" : "planet",

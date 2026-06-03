@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.717";
+  const USERSCRIPT_VERSION = "0.0.718";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1738,8 +1738,51 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // default otherwise). Periodic prune (every 60s) drops expired entries —
   // local in-memory timer, not network polling.
   type FleetLike = (typeof store.state.fleets_outbound)[number];
+  // v0.0.718 — operator 2026-06-03 "我们不是有保护cp和token的api吗".
+  // Replace pollEmpire (全帝国一刷) with targeted fetchResources(cp=source)
+  // via safe_fetch's fetchWithCp. Per-planet payload, cp shift + restore +
+  // busy-defer + token rotation handled by the unified wrapper. BusyDeferred
+  // is OK — sidecar replans on next event.
+  const refreshSourcePlanetResources = async (sourcePlanetId: string): Promise<void> => {
+    try {
+      const existing = store.state.planets[sourcePlanetId];
+      if (!existing) return;
+      const resp = await fetchWithCp(
+        `/game/index.php?page=fetchResources&ajax=1`,
+        { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+        sourcePlanetId,
+        { bypassBusy: false, skipRestore: false },
+      );
+      if (!resp.ok) return;
+      const j = await resp.json() as {
+        resources?: {
+          metal?: { amount?: number }; crystal?: { amount?: number };
+          deuterium?: { amount?: number }; energy?: { amount?: number };
+        };
+      };
+      if (!j.resources) return;
+      const m = j.resources.metal?.amount ?? existing.resources?.m ?? 0;
+      const c = j.resources.crystal?.amount ?? existing.resources?.c ?? 0;
+      const d = j.resources.deuterium?.amount ?? existing.resources?.d ?? 0;
+      const e = j.resources.energy?.amount ?? existing.resources?.e ?? 0;
+      store.setPartial({
+        planets: {
+          ...store.state.planets,
+          [sourcePlanetId]: { ...existing, resources: { m, c, d, e } },
+        } as typeof store.state.planets,
+      });
+      console.info(`[fleet-launch-record] refreshed source ${sourcePlanetId} resources (m=${m} c=${c} d=${d} e=${e}) via cp-protected fetchResources`);
+    } catch (e) {
+      if (e instanceof BusyDeferredError) {
+        console.info(`[fleet-launch-record] refresh deferred — operator busy; sidecar will re-plan on next event`);
+        return;
+      }
+      console.warn("[fleet-launch-record] refreshSourcePlanetResources threw:", e);
+    }
+  };
   const recordFleetLaunch = (params: {
     mission: number;
+    sourcePlanetId?: string;
     origin: readonly number[];
     originType?: "planet" | "moon";
     dest: readonly number[];
@@ -1764,19 +1807,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       store.setPartial({ fleets_outbound: [...cur, synthetic] as typeof store.state.fleets_outbound });
       const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
       if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
-      // v0.0.716 — operator 2026-06-03 "起飞的时候可能带走资源，也应该刷新
-      // 资源". sendFleet drains m/c/d cargo + ships from source planet;
-      // pollEmpire forces fresh resources/ships fetch and chains another
-      // pushNow after, so sidecar planner doesn't run on stale balances.
-      const pollEmp = (env.win as Window & {
-        __ogamexPollEmpire?: (opts?: { force?: boolean }) => Promise<void>;
-      }).__ogamexPollEmpire;
-      if (typeof pollEmp === "function") {
-        void pollEmp({ force: true })
-          .then(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } })
-          .catch(() => { /* */ });
+      if (params.sourcePlanetId) {
+        void refreshSourcePlanetResources(params.sourcePlanetId)
+          .then(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
       }
-      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min, fired pollEmpire+push`);
+      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min, fetchResources(cp=${params.sourcePlanetId ?? "?"}) scheduled`);
     } catch (e) { console.warn("[fleet-launch-record] threw:", e); }
   };
   (env.win as Window & { __ogamexRecordFleetLaunch?: typeof recordFleetLaunch }).__ogamexRecordFleetLaunch = recordFleetLaunch;
