@@ -805,10 +805,17 @@ export async function startSidecar(
           c: planet?.resources?.c ?? 0,
           d: planet?.resources?.d ?? 0,
         };
+        // v0.0.730 — operator 2026-06-03 "按照服务器倍速计算就好了". Base
+        // production.m_h is the UN-SPEED-ADJUSTED hourly rate (ogame's API
+        // returns base rate; universe speed multiplier applies separately).
+        // Without this, sM/(prod/3600) overestimates wait by `universeSpeed`x —
+        // on Scorpius (speed=8), planner showed 8311d for a 1037-day reality
+        // (and a properly-mined planet, ~130 days). v0.0.726 fixed
+        // planner.ts wait formulas but missed this *primary* simulate loop.
         const prodPerSec = {
-          m: (planet?.production?.m_h ?? 0) / 3600,
-          c: (planet?.production?.c_h ?? 0) / 3600,
-          d: (planet?.production?.d_h ?? 0) / 3600,
+          m: (planet?.production?.m_h ?? 0) * universeSpeed / 3600,
+          c: (planet?.production?.c_h ?? 0) * universeSpeed / 3600,
+          d: (planet?.production?.d_h ?? 0) * universeSpeed / 3600,
         };
         // Storage caps (ogame v12 approximate; conservative — caps growth)
         const caps = {
