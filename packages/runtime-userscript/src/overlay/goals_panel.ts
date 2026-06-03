@@ -2742,13 +2742,20 @@ function openTransportSettings(
       const cap = ship === "smallCargo" ? stCap : ltCap;
       const needed = total > 0 ? Math.ceil(total / cap) : 0;
       const countInput = m.querySelector<HTMLInputElement>("[data-tr-ship-count]");
-      if (countInput) countInput.value = String(needed);
-      // v0.0.530 — operator 2026-05-31 "船不夠顯示紅色". 比對 ① 艦船星球 的
-      // 真實船數 (LC 或 SC) vs needed, 不夠 → 數量輸入框 + 旁邊提示 紅字。
+      // v0.0.671 — operator 2026-06-03 "运输舰的数量是舰船星球的值":
+      // default Quantity to the ship-source planet's actual LC/SC count
+      // (read live from store via planetsMap), NOT the needed-from-cargo
+      // computation. needed feeds the [data-tr-ship-need] info span only.
+      // Operator can still override manually; updateShipCount overwrites
+      // on the next radio change, same eviction rule as the prior
+      // needed-based behaviour.
       const sourceVal = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
       const sourceP = sourceVal ? planetsMap[sourceVal] : null;
       const shipKey = ship === "smallCargo" ? "smallCargo" : "largeCargo";
       const haveShips = (sourceP?.ships as Record<string, number | undefined> | undefined)?.[shipKey] ?? 0;
+      if (countInput) countInput.value = String(haveShips);
+      // v0.0.530 — operator 2026-05-31 "船不夠顯示紅色". 比對 ① 艦船星球 的
+      // 真實船數 (LC 或 SC) vs needed, 不夠 → 數量輸入框 + 旁邊提示 紅字。
       const isShort = needed > haveShips;
       if (countInput) {
         countInput.style.color = isShort ? "#ff6b6b" : "#e0e8f0";
