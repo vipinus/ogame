@@ -1334,16 +1334,20 @@ export async function startSidecar(
         paused = parsed["paused"] === true;
       } catch { /* missing or malformed — treat as not paused */ }
       if (!ready) return { state_ready: false, used: -1, max: -1, paused, active: [] };
-      // Slot source: max from scraped (if available) else derive from astro
-      // level (floor(sqrt(astro)) + class bonus). Used: fleets_outbound m=15
-      // count is most accurate (real-time), fall back to scraped server.*.
-      const srv = (stateRef.current?.server ?? {}) as { used_expedition_slots?: number; max_expedition_slots?: number; player_class?: string };
+      // v0.0.720 — operator 2026-06-03 "远征任务现在显示 525/6". Math.max(
+      // fleets15, srv.used_expedition_slots) would amplify a stale/buggy
+      // userscript push (operator saw 525 from somewhere — likely pre-v0.0.715
+      // DOM scrape misparsed a number — and Math.max stuck it permanently).
+      // Switch to authoritative live count: fleets15 = mission=15 entries in
+      // fleets_outbound. This matches the same `active` array rendered below
+      // row-by-row, so numerator and denominator stay consistent.
+      const srv = (stateRef.current?.server ?? {}) as { max_expedition_slots?: number; player_class?: string };
       const astro = stateRef.current?.research?.levels?.["astrophysics"] ?? 0;
       const fleets15 = (stateRef.current?.fleets_outbound ?? []).filter((f) => f.mission === 15).length;
       const classBonus = (srv.player_class ?? process.env["OGAMEX_DEFAULT_CLASS"] ?? "") === "discoverer" ? 2 : 0;
       const computedMax = Math.floor(Math.sqrt(astro)) + classBonus;
       const slots = {
-        used: Math.max(fleets15, srv.used_expedition_slots ?? 0),
+        used: fleets15,
         max: srv.max_expedition_slots && srv.max_expedition_slots > 0 ? srv.max_expedition_slots : computedMax,
       };
       const fleets = stateRef.current?.fleets_outbound ?? [];
