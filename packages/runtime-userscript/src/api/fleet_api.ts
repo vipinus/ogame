@@ -575,6 +575,14 @@ export async function recallFleet(fleetId: number, ctx: SendFleetCtx): Promise<v
 }
 
 async function recallFleetInner(fleetId: number, ctx: SendFleetCtx): Promise<void> {
+  // v0.0.721 — operator 2026-06-03 "保护cp的API 有没有保护token" / "A".
+  // recallFleet POST uses recallFleetAjax endpoint (no cp= shift) but shares
+  // the same GLOBAL token as every cp= POST. Without joining the mutex, a
+  // concurrent cp= POST that rotates newAjaxToken would invalidate recall's
+  // in-flight token, burning one of the 4 retry attempts on TOKEN_INVALID.
+  // Acquire cpFetchChain slot around the POST + token-rotation processing
+  // (release before backoff so cp= POSTs don't block during sleep windows).
+  const { acquireCpMutexSlot } = await import("./safe_fetch.js");
   let token = ctx.token.getFreshToken();
   // Operator 2026-05-28 evidence: recall POST returned success:false (no
   // errors, no message — just {success:false, components:[], newAjaxToken})
@@ -582,6 +590,10 @@ async function recallFleetInner(fleetId: number, ctx: SendFleetCtx): Promise<voi
   // got same response. ogame transient — single retry with fresh token
   // recovered in similar cases (sendFleet 140043 pattern). Bumped 2→4.
   for (let attempt = 1; attempt <= 4; attempt++) {
+    const release = await acquireCpMutexSlot();
+    let unreleased = true;
+    const releaseOnce = (): void => { if (unreleased) { unreleased = false; try { release(); } catch { /* */ } } };
+    try {
     const body = new URLSearchParams();
     body.set("fleetId", String(fleetId));
     body.set("token", token);
@@ -607,6 +619,7 @@ async function recallFleetInner(fleetId: number, ctx: SendFleetCtx): Promise<voi
       const errName = (e as { name?: string }).name;
       if (errName === "AbortError") {
         if (attempt < 4) {
+          releaseOnce();  // release BEFORE backoff sleep, don't starve other cp= POSTs
           const backoffMs = 250 * attempt;
           console.warn(`[fleet_api/recallFleet] attempt=${attempt} FETCH TIMEOUT (30s) — backoff ${backoffMs}ms then retry`);
           await new Promise((resolve) => setTimeout(resolve, backoffMs));
@@ -650,6 +663,7 @@ async function recallFleetInner(fleetId: number, ctx: SendFleetCtx): Promise<voi
     // by the outer loop bound.
     const bareFailure = !json.message && (!Array.isArray(errsField) || errsField.length === 0);
     if (bareFailure && attempt < 4) {
+      releaseOnce();  // release BEFORE backoff sleep so cp= POSTs don't starve
       const backoffMs = 250 * attempt;
       console.warn(`[fleet_api/recallFleet] attempt=${attempt} bare success=false — backoff ${backoffMs}ms then retry`);
       if (json.newAjaxToken) {
@@ -660,5 +674,8 @@ async function recallFleetInner(fleetId: number, ctx: SendFleetCtx): Promise<voi
       continue;
     }
     throw new FleetApiError(errMsg, json);
+    } finally {
+      releaseOnce();
+    }
   }
 }

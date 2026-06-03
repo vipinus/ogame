@@ -281,6 +281,19 @@ async function acquireCpSlot(): Promise<() => void> {
   return release;
 }
 
+/**
+ * v0.0.721 — operator 2026-06-03 "保护cp的API 有没有保护token" / "A".
+ * Public hook for non-cp= callers (recallFleet — uses recallFleetAjax which
+ * doesn't carry cp= but DOES use the same global token as cp= POSTs). Join
+ * the cpFetchChain mutex so the recall POST serializes against any cp= POST
+ * already holding a token, preventing newAjaxToken rotation races that would
+ * otherwise burn one of recallFleet's 4 retry attempts on TOKEN_INVALID.
+ * Caller MUST invoke the returned release fn in finally{}.
+ */
+export async function acquireCpMutexSlot(): Promise<() => void> {
+  return acquireCpSlot();
+}
+
 /** Convenience: emergency.* path (FS save, recall) — always fire, no busy gate. */
 export function fetchWithCpBypassBusy(
   baseUrl: string,
