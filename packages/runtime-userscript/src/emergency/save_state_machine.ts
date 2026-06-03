@@ -177,4 +177,19 @@ export class SaveStateMachine {
     this.clearedAt = null;
     this.lastError = null;
   }
+
+  /** Restore FSM internal state from a previously-persisted snapshot.
+   *  Used by orchestrator to rehydrate FSMs after page reload — without
+   *  it, FSMs are in-memory only and an F5 mid-flight loses the ability
+   *  to fire auto-recall (v0.0.714 fix). Caller must ensure ctx + actions
+   *  are wired identically to the original construction; only mutable
+   *  state is restored. */
+  restoreFromSnapshot(snap: SaveSnapshot): void {
+    this.state = snap.state;
+    this.fleetId = snap.fleetId;
+    this.decision = snap.decision;
+    this.pending = new Set(snap.pendingThreats);
+    this.clearedAt = snap.clearedAt;
+    this.lastError = snap.lastError;
+  }
 }

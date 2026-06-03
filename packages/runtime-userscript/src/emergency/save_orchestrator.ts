@@ -39,6 +39,32 @@ export function startEmergencySave(
   // Fix: snapshot existing fleet ids BEFORE handleThreat fires sendFleet;
   // patcher then accepts only ids NOT in baseline = guaranteed new fleet.
   const baseFleetIds = new Map<string, Set<string>>();
+
+  // v0.0.714 — operator 2026-06-03: "FSM 没 localStorage persistence
+  // 这个很有可能". Root cause of "auto-FS launched but no recall": userscript
+  // FSM is in-memory only, F5 / page reload wipes it; backend never gets the
+  // hostile-clear → recall transition because nobody is watching events_incoming
+  // for that fleet anymore. Fix: persist each FSM snapshot to localStorage on
+  // every transition, restore on boot. 24h TTL guards against zombie FSMs.
+  const FSM_STORAGE_PREFIX = "ogamex.save.fsm.";
+  const FSM_STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
+  const persistFsm = (planetId: string, fsm: SaveStateMachine): void => {
+    try {
+      const snap = fsm.snapshot();
+      // Terminal / idle states — drop from storage so we don't replay.
+      if (snap.state === "WATCHING" || snap.state === "RETURNED") {
+        window.localStorage.removeItem(FSM_STORAGE_PREFIX + planetId);
+        return;
+      }
+      window.localStorage.setItem(
+        FSM_STORAGE_PREFIX + planetId,
+        JSON.stringify({ snap, ts: Date.now() }),
+      );
+    } catch { /* localStorage full / private mode — silent */ }
+  };
+  const persistAll = (): void => {
+    for (const [planetId, fsm] of fsmByPlanet) persistFsm(planetId, fsm);
+  };
   const getOrCreateFsm = (planetId: string): SaveStateMachine => {
     let fsm = fsmByPlanet.get(planetId);
     if (!fsm) {
@@ -66,6 +92,41 @@ export function startEmergencySave(
     }
     return fsm;
   };
+
+  // v0.0.714 — restore any FSMs persisted by a previous userscript session.
+  // Each restored FSM resumes in its prior state (IN_FLIGHT / RECALLING / etc.)
+  // and starts receiving state.updated again — so when events_incoming clears,
+  // it fires recall like the original would have. baseFleetIds is left empty
+  // for restored FSMs; the patcher will match by mission+origin+origin_type
+  // against the current /movement harvest (real fleet still in flight, will
+  // be found). 24h TTL drops zombie snapshots from abandoned sessions.
+  try {
+    const now = Date.now();
+    const keysToRestore: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(FSM_STORAGE_PREFIX)) keysToRestore.push(k);
+    }
+    for (const k of keysToRestore) {
+      const planetId = k.slice(FSM_STORAGE_PREFIX.length);
+      const raw = window.localStorage.getItem(k);
+      if (!raw) continue;
+      try {
+        const data = JSON.parse(raw) as { snap: SaveSnapshot; ts: number };
+        if (now - data.ts > FSM_STORAGE_TTL_MS) {
+          console.warn(`[orchestrator] discarding stale FSM snapshot ${planetId} (age ${Math.round((now - data.ts)/60000)}m > 24h)`);
+          window.localStorage.removeItem(k);
+          continue;
+        }
+        const fsm = getOrCreateFsm(planetId);
+        fsm.restoreFromSnapshot(data.snap);
+        console.warn(`[orchestrator] restored FSM ${planetId} state=${data.snap.state} fleetId=${data.snap.fleetId} pending=[${data.snap.pendingThreats.join(",")}]`);
+      } catch (e) {
+        console.warn(`[orchestrator] failed to restore FSM ${planetId}, removing snapshot:`, e);
+        try { window.localStorage.removeItem(k); } catch { /* */ }
+      }
+    }
+  } catch { /* */ }
 
   const stopDetector = startAttackDetector(bus, stateRef, { saveWindowMinutes: opts.saveWindowMinutes });
 
@@ -184,7 +245,7 @@ export function startEmergencySave(
         .filter((id): id is string => typeof id === "string"),
     ));
     void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at })
-      .then(() => reportLaunchToBackend(sourceId, fsm));
+      .then(() => { persistFsm(sourceId, fsm); return reportLaunchToBackend(sourceId, fsm); });
   });
 
   // Spy-as-threat trigger. Operator 2026-05-23: "把偵察也當作威脅測試緊急起飛,
@@ -242,7 +303,7 @@ export function startEmergencySave(
     const baseSnapshot = baseFleetIds.get(sourceId)!;
     console.warn(`[orchestrator] pre-launch baseline fleets=[${[...baseSnapshot].join(",") || "(empty)"}] → patcher will skip these`);
     void fsm.handleThreat({ eventId: p.event_id, sourcePlanetId: sourceId, arrivesAt: p.arrives_at })
-      .then(() => reportLaunchToBackend(sourceId, fsm));
+      .then(() => { persistFsm(sourceId, fsm); return reportLaunchToBackend(sourceId, fsm); });
   });
 
   // when state updates, check per-planet hostile clearance. Each FSM
@@ -316,6 +377,10 @@ export function startEmergencySave(
         if (!stillIncoming.has(pendingId)) fsm.notifyHostileClear(pendingId);
       }
     }
+    // v0.0.714 — catch-all persist after every tick. Cheap (1 setItem per
+    // active FSM), idempotent, covers patchFleetId / notifyHostileClear /
+    // async recall .then state mutations.
+    persistAll();
   });
 
   // Operator 2026-05-26: "威脅解除立即召回，不要計時，改成事件驅動".
