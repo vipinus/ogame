@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.734";
+  const USERSCRIPT_VERSION = "0.0.735";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1697,31 +1697,42 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       });
       if (!r.ok) return;
       const j = await r.json() as { system?: { usedFleetSlots?: number; maximumFleetSlots?: number } };
-      const sys = j.system ?? {};
+      const sys = (j.system ?? {}) as Record<string, unknown>;
       if (typeof sys.usedFleetSlots !== "number" || typeof sys.maximumFleetSlots !== "number") return;
       const curServer = (store.state.server ?? {}) as { used_expedition_slots?: number; max_expedition_slots?: number };
-      // v0.0.734 — operator 2026-06-03 "艦隊:8/17 遠征艦隊: 5/6 后台是 6/6"
-      // (actually 8 in PG, > max=6 because eventbox overcounted during
-      // phase transitions). Removed the liveCount-based write to
-      // used_expedition_slots — refreshSlotsViaApi NOW writes ONLY fleet
-      // slots (galaxy JSON is authoritative for those). used_expedition_
-      // slots is owned by harvestSlots() which reads ogame's #slots DOM
-      // bar — that's the visible-to-operator "5/6" value, immune to
-      // eventbox phase-transition overcounting. Single source.
       const baseMax = expeditionSlots(store.state.research?.levels?.astrophysics ?? 0);
       const classBonus = playerClass === "discoverer" ? 2 : 0;
       const expMax = baseMax + classBonus;
+      // v0.0.735 — operator 2026-06-03 "不能用api获取吗 不要扫网页". API-only.
+      // Probe galaxy JSON for native expedition slot fields. ogame v12
+      // fetchGalaxyContent system object may carry usedExpeditionSlots /
+      // maximumExpeditionSlots — log all sys.* keys so we know what's
+      // available. Until field confirmed, use synthetic mission=15 count
+      // capped at expMax + usedFleetSlots (api-derived, no DOM).
+      const sysKeys = Object.keys(sys).filter((k) => typeof sys[k] === "number" || typeof sys[k] === "string").map((k) => `${k}=${sys[k]}`).join(",");
+      const sysExpUsed = typeof sys.usedExpeditionSlots === "number" ? sys.usedExpeditionSlots
+        : typeof sys.used_expedition_slots === "number" ? sys.used_expedition_slots : undefined;
+      const sysExpMax = typeof sys.maximumExpeditionSlots === "number" ? sys.maximumExpeditionSlots
+        : typeof sys.max_expedition_slots === "number" ? sys.max_expedition_slots : undefined;
+      const mission15Count = (store.state.fleets_outbound ?? [])
+        .filter((f) => (f as { mission?: number }).mission === 15).length;
+      // Priority: galaxy JSON native expedition fields > synthetic count
+      const expUsedSrc = sysExpUsed !== undefined ? "galaxy-api" : "synthetic";
+      const expUsed = sysExpUsed !== undefined
+        ? Math.min(sysExpUsed, expMax)
+        : Math.min(mission15Count, sys.usedFleetSlots, expMax);
+      const expMaxFinal = sysExpMax !== undefined ? Math.min(sysExpMax, expMax) : expMax;
       const serverPatch: Record<string, unknown> = {
         ...curServer,
         used_fleet_slots: sys.usedFleetSlots,
         max_fleet_slots: sys.maximumFleetSlots,
       };
-      // Still maintain expMax (research-derived) since DOM bar may carry
-      // stale max if astro level recently changed — research-formula max
-      // wins. used_expedition_slots NOT touched here (DOM owns).
-      if (expMax > 0) serverPatch.max_expedition_slots = expMax;
+      if (expMaxFinal > 0) {
+        serverPatch.max_expedition_slots = expMaxFinal;
+        serverPatch.used_expedition_slots = expUsed;
+      }
       store.setPartial({ server: serverPatch as typeof store.state.server });
-      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} | exp_max=${expMax} (used_expedition_slots owned by harvestSlots/DOM, not touched here)`);
+      console.info(`[OgameX/slots-api] fleet ${sys.usedFleetSlots}/${sys.maximumFleetSlots} | exp ${expUsed}/${expMaxFinal} src=${expUsedSrc} (synth_m15=${mission15Count}, sys keys: ${sysKeys.slice(0, 240)})`);
     } catch (e) {
       console.warn("[OgameX/slots-api] failed:", e);
     }
@@ -2104,7 +2115,6 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const txt = slotsEl.textContent ?? "";
       // Look for two "N/M" pairs in order.
       const pairs = Array.from(txt.matchAll(/(\d+)\s*\/\s*(\d+)/g)).map((m) => [parseInt(m[1]!, 10), parseInt(m[2]!, 10)] as const);
-      // (slots-container diagnostic silenced — extractor stable)
       if (pairs.length >= 1) { used_fleet = pairs[0]![0]; max_fleet = pairs[0]![1]; }
       if (pairs.length >= 2) { used_expedition = pairs[1]![0]; max_expedition = pairs[1]![1]; }
     }
@@ -2131,15 +2141,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Removed continuous 30s setInterval — slot caps change rarely and
   // pollEmpire / harvestSlotsFromMovement events catch slot changes.
   [800, 2400, 4800, 10_000, 20_000].forEach((ms) => scheduleBurst(harvestSlots, ms));
-  // v0.0.734 — operator 2026-06-03 "舰队到港没有刷新slots 导致后台和前台
-  // 不同步 让远征飞不起来" + "艦隊:8/17遠征艦隊: 5/6 后台是 6/6". eventbox
-  // mission=15 row counting was OVERCOUNTING (returning + outbound rows
-  // for same fleet during phase transitions → liveCount=8 written to
-  // used_expedition_slots). ogame's `#slots` DOM bar IS the authoritative
-  // visible-to-operator value (5/6). Expose harvestSlots so eventbox_hook
-  // can trigger DOM scrape on any count change — DOM bar is sync-updated
-  // by ogame's own JS in real-time.
-  (env.win as Window & { __ogamexHarvestSlots?: () => void }).__ogamexHarvestSlots = harvestSlots;
+  // v0.0.735 — operator 2026-06-03 "不能用api获取吗 不要扫网页". DOM
+  // scrape RETIRED per [[feedback_ajax_not_html_scrape]]. used_expedition_
+  // slots must come from ogame ajax endpoint. Probing galaxy JSON for
+  // expedition fields in refreshSlotsViaApi (see logged sys.* keys);
+  // until confirmed, fall back to synthetic mission=15 count + max cap.
 
   function harvestQueues(): void {
     const actives = env.doc.querySelectorAll<HTMLElement>('li.technology[data-status="active"]');
