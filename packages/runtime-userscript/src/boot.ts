@@ -266,6 +266,35 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // (architecture enforcement, see scripts/check-no-raw-cp.sh).
   initSafeFetch({ store, win: env.win, doc: env.doc });
 
+  // v0.0.675 — operator 2026-06-03 "全部 boot burst 都加 once-per-session
+  // guard, 如果前端 idle 超过 30 分钟可以再次运行一次": every ogame SPA
+  // page navigation triggers a full Tampermonkey re-inject → boot() runs
+  // again → all the harvestX / pollY / LF-prereq setTimeout bursts re-fire.
+  // Persist a last-burst timestamp in localStorage so the bursts only run
+  // ONCE per 30-min idle window. Event-driven sniffer signals still flow,
+  // covering anything the bursts would have re-harvested.
+  const BURST_LASTRUN_KEY = "ogamex_boot_burst_lastrun_v1";
+  const BURST_IDLE_THRESHOLD_MS = 30 * 60 * 1000;
+  const shouldRunBurst = (() => {
+    try {
+      const lsRaw = env.win.localStorage?.getItem(BURST_LASTRUN_KEY);
+      const lastRun = lsRaw ? parseInt(lsRaw, 10) : 0;
+      return Date.now() - lastRun > BURST_IDLE_THRESHOLD_MS;
+    } catch { return true; }
+  })();
+  if (shouldRunBurst) {
+    try { env.win.localStorage?.setItem(BURST_LASTRUN_KEY, String(Date.now())); } catch { /* */ }
+    console.info(`[OgameX/boot-burst] running burst (last >${BURST_IDLE_THRESHOLD_MS / 60_000}min ago)`);
+  } else {
+    const lsRaw = env.win.localStorage?.getItem(BURST_LASTRUN_KEY) ?? "0";
+    const ageMin = Math.round((Date.now() - parseInt(lsRaw, 10)) / 60_000);
+    console.info(`[OgameX/boot-burst] SKIPPED — last burst ${ageMin}min ago (< ${BURST_IDLE_THRESHOLD_MS / 60_000}min)`);
+  }
+  const scheduleBurst = (fn: () => void | Promise<void>, ms: number): ReturnType<typeof setTimeout> | null => {
+    if (!shouldRunBurst) return null;
+    return setTimeout(fn, ms);
+  };
+
   // i18n: pin t()'s locale detection to the REAL page-world doc/win.
   // Without this it falls back to the TM sandbox `document` which has
   // no `#menuTable` → locale always lands on "en" → curated keys show
@@ -1253,7 +1282,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.674";
+  const USERSCRIPT_VERSION = "0.0.675";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1394,7 +1423,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Try immediately + at the same checkpoints the planet extractor uses.
   if (!harvestProduction()) {
     const harvestRetries = [200, 700, 2100, 4500].map((ms) =>
-      setTimeout(() => { harvestProduction(); }, ms),
+      scheduleBurst(() => harvestProduction(), ms),
     );
     void harvestRetries; // keep handles alive — cleared at stop()
   }
@@ -1451,7 +1480,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     store.setPlanetsPatch({ [activeIdRaw]: { ships: { ...(target.ships ?? {}), ...out } } });
   }
   // Run on boot + retries (shipyard page DOM mounts late).
-  [600, 2200, 4600].forEach((ms) => setTimeout(harvestShips, ms));
+  [600, 2200, 4600].forEach((ms) => scheduleBurst(harvestShips, ms));
 
   // PRIMARY: fetch ogame's movement page → count real fleet entries by
   // mission_type. Server-side truth, no DOM scraping ambiguity.
@@ -1615,7 +1644,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       void e;
     }
   }
-  setTimeout(() => { void harvestSlotsFromMovement(); }, 2000);
+  scheduleBurst(() => { void harvestSlotsFromMovement(); }, 2000);
   // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed the 10s
   // setInterval. Triggers that refresh /movement now:
   //   1. eventbox_hook friendly-fleet-count delta (launch OR return)
@@ -1806,7 +1835,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     // truth for slot harvest + drops the heavy /fleetdispatch HTML fetch.
     return harvestSlotsFromMovement();
   }
-  setTimeout(() => { void harvestSlotsFromFleetdispatch(); }, 3500);
+  scheduleBurst(() => { void harvestSlotsFromFleetdispatch(); }, 3500);
   // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed 30s setInterval;
   // slot caps from /fleetdispatch are now refreshed by ApiExec when it
   // touches that endpoint as part of its expedition/save flows.
@@ -1868,7 +1897,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // hydrates. Operator 2026-05-25: "不要用倒計時，都用事件驅動".
   // Removed continuous 30s setInterval — slot caps change rarely and
   // pollEmpire / harvestSlotsFromMovement events catch slot changes.
-  [800, 2400, 4800, 10_000, 20_000].forEach((ms) => setTimeout(harvestSlots, ms));
+  [800, 2400, 4800, 10_000, 20_000].forEach((ms) => scheduleBurst(harvestSlots, ms));
 
   function harvestQueues(): void {
     const actives = env.doc.querySelectorAll<HTMLElement>('li.technology[data-status="active"]');
@@ -1937,7 +1966,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     }
   }
   // Run at +500ms (after planets settle) + retry windows.
-  [600, 2200, 4600].forEach((ms) => setTimeout(harvestQueues, ms));
+  [600, 2200, 4600].forEach((ms) => scheduleBurst(harvestQueues, ms));
   // Also re-run on any DOM mutation in research/supplies areas.
   bus.on("dom.changed", (payload: unknown) => {
     const p = payload as { targetId?: string } | undefined;
@@ -2085,7 +2114,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // directive "改成事件觸發": event-driven via DOM mutation observers
   // already updates resources when user navigates; this 30s is just for
   // background-tab cases where mutations don't fire.
-  setTimeout(() => { void pollFetchResources(); }, 1500);
+  scheduleBurst(() => { void pollFetchResources(); }, 1500);
   // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed 30s
   // setInterval. Resources accumulate predictably (production rates +
   // delta T), DOM mutation observers update on navigation. Background-
@@ -2392,7 +2421,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // First refresh after 8s, then every 10s. Respects the global userBusy
   // guard (60s window after any user click/key) so background refresh
   // doesn't compete with operator's own ogame POSTs.
-  setTimeout(refreshOnePage, 8000);
+  scheduleBurst(refreshOnePage, 8000);
 
   // v0.0.635 — owner 2026-06-01 "要持久化 ogame 裏面的所有資料". Sidecar
   // now owns WorldState persistence (better-sqlite3 ogamex-world.db). The
@@ -2875,7 +2904,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Build/research level updates rely on events 2-5 organically (fleet
   // launches happen daily, builds complete around them). If state ever
   // drifts, daemon's data.refresh enqueues a force pull.
-  setTimeout(pollEmpire, 12_000);
+  scheduleBurst(pollEmpire, 12_000);
   // Expose globally so ApiExec can request a refresh on demand.
   (env.win as Window & { __ogamexPollEmpire?: () => Promise<void> }).__ogamexPollEmpire = pollEmpire;
   // v0.0.606 — expose forced refreshOnePage for event-driven sniffer signals.
@@ -3137,7 +3166,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // missed it because cp was in body, not URL). cp now goes in URL via
   // safe_fetch; bypassBusy + skipRestore keeps the 12-shot loop from
   // shifting the operator's session-cp view for each request.
-  setTimeout(async () => {
+  scheduleBurst(async () => {
     const LF_IDS = [11101, 11102, 11103, 11104, 11105, 11106, 11107, 11108, 11109, 11110, 11111, 11112];
     const planetId = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content;
     if (!planetId) {
