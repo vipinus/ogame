@@ -464,7 +464,7 @@ export const STRINGS: StringRegistry = {
     "panel.action.retry": "重試",
 
     "section.emergency": "🚨 緊急任務",
-    "section.goals": "🪐 一般任務",
+    "section.goals": "🪐 常規任務",
     "section.discovery": "🧬 發現任務",
     "section.moons": "🌙 月球 / 跳躍門",
     "section.cargo": "🚚 運輸任務",
@@ -543,7 +543,7 @@ export const STRINGS: StringRegistry = {
     "modal.emergency.spy_trigger": "偵察觸發 FS",
     "modal.emergency.spy_trigger_hint": "ON = 偵察事件也走 FS 鏈路（預設開）；OFF = 僅攻擊觸發",
 
-    "modal.goals.title": "🪐 一般任務設定",
+    "modal.goals.title": "🪐 常規任務設定",
 
     "modal.expedition.title": "🚀 遠征探險設定",
     "modal.expedition.tab_planets": "發船星球",
