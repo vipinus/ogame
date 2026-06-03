@@ -635,12 +635,15 @@ export async function startSidecar(
   // v0.0.500 — track fleet IDs we've already fired debris-check for, so each
   // expedition triggers at most one explorer dispatch even if /movement
   // scrape flaps (fleet appears, disappears, reappears across snapshots).
-  // v0.0.674 — operator 2026-06-03 "T+30s 单信号就好": back to a simple
-  // per-fleet Set (was Map<fleetId, Set<signal>> in v0.0.672 when we had
-  // three signals A/B/C). Only Signal B remains, fired once per fleet,
-  // 30s after the fleet truly disappears from outbound — galaxy view has
-  // settled by then so the userscript's first scan sees real debris.
-  const firedDebrisCheckFor = new Set<string>();
+  // v0.0.677 — operator 2026-06-03 实测: sidecar 8.5h 0 FIRED. Root cause:
+  // v0.0.674 single-Signal-B design required `return_at !== null` but ogame
+  // v12 on this server frequently leaves return_at NULL for expeditions even
+  // when fleet is truly returning. Result: Signal B never crossed the gate.
+  // Restored Signal C (arrival_at past→future phase jump) as fallback so the
+  // path no longer depends solely on return_at populating. Per-signal dedup
+  // (was per-fleet) so B and C each fire once independently — avoids the
+  // v0.0.574 holding-entry false-fire dedup-then-block scenario.
+  const firedDebrisCheckFor = new Map<string, Set<"B" | "C">>();
   // v0.0.501 — fallback signal: track last-seen origin/dest per expedition
   // fleet so we can fire debris-check when fleet disappears from outbound.
   // v0.0.502 — also track last arrival_at so we can detect phase transition
@@ -2190,8 +2193,9 @@ export async function startSidecar(
           return Object.values(msg.snapshot.planets ?? {})
             .find((p) => Array.isArray(p.coords) && p.coords.join(":") === origCoord && p.type === "planet");
         };
-        const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string): void => {
-          if (firedDebrisCheckFor.has(fleetId)) return;
+        const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string, signal: "B" | "C"): void => {
+          const firedSignals = firedDebrisCheckFor.get(fleetId) ?? new Set<"B" | "C">();
+          if (firedSignals.has(signal)) return;
           if (!Array.isArray(origin) || origin.length !== 3 || !Array.isArray(dest)) return;
           const originPlanet = findOriginPlanet(origin.join(":"));
           if (!originPlanet) {
@@ -2200,27 +2204,35 @@ export async function startSidecar(
           }
           const g = dest[0], s = dest[1];
           if (typeof g !== "number" || typeof s !== "number") return;
-          firedDebrisCheckFor.add(fleetId);
+          firedSignals.add(signal);
+          firedDebrisCheckFor.set(fleetId, firedSignals);
           const dbgMsg = { type: "expedition.debris_check" as const, galaxy: g, system: s, origin_planet_id: originPlanet.id, reason };
           ws.send(dbgMsg);
           http.queueDownstream(dbgMsg);
-          console.log(`[debris-check] FIRED fleet ${fleetId} ${reason}: G:S=${g}:${s} origin=${originPlanet.id}`);
+          console.log(`[debris-check] FIRED fleet ${fleetId} signal=${signal} ${reason}: G:S=${g}:${s} origin=${originPlanet.id}`);
         };
-        // v0.0.674 — operator 2026-06-03 "不要这种机制 T+30s 单信号就好":
-        // Removed Signal A (return_at appeared mid-trip) and Signal C
-        // (arrival_at phase jump). Both were premature — fired before
-        // debris had fully materialized in the galaxy view, so the
-        // userscript's first scan came back empty and the harvest was
-        // skipped. ONE canonical signal now: B (fleet truly home),
-        // delayed 30s so ogame's galaxy view has settled. Bookkeeping
-        // pass remains so expLastSeen tracks each mission=15 fleet's
-        // return_at state for the Signal B disappearance check below.
+        // v0.0.677 — restored Signal C alongside Signal B because return_at
+        // is unreliable on this server. Signal C: arrival_at past→future
+        // jump (fleet entered return phase from holding). Per-signal dedup
+        // means B and C each fire once independently — operator's 30s
+        // settle delay applied to BOTH so debris has time to materialize
+        // before the userscript scans.
+        const nowMs = Date.now();
         const currentExpIds = new Set<string>();
         for (const f of msg.snapshot.fleets_outbound ?? []) {
           if (typeof f.id !== "string") continue;
           if (f.mission !== 15) continue;
           currentExpIds.add(f.id);
+          const prev = expLastSeen.get(f.id);
+          const prevArrival = prev?.arrival_at ?? null;
           expLastSeen.set(f.id, { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null, return_at: f.return_at ?? null });
+          // Signal C — arrival_at jumped past → future = fleet just left
+          // holding phase, debris is being generated now. 30s settle.
+          if (prevArrival !== null && prevArrival < nowMs && (f.arrival_at ?? 0) > nowMs) {
+            const fidCap = f.id, originCap = f.origin, destCap = f.dest;
+            const reason = `arrival_at past→future (${prevArrival}→${f.arrival_at}) — phase transition (+30s)`;
+            setTimeout(() => fireFor(fidCap, originCap, destCap, reason, "C"), 30_000).unref();
+          }
         }
         // Signal B: fleet disappeared from outbound. ogame removes mission=15
         // fleet from /movement when it's HOLDING at :16 (60min) — same
@@ -2251,7 +2263,7 @@ export async function startSidecar(
           // still gets through.
           const fidCapture = fid, originCapture = info.origin, destCapture = info.dest;
           setTimeout(
-            () => fireFor(fidCapture, originCapture, destCapture, "fleet returned home (+30s settle delay)"),
+            () => fireFor(fidCapture, originCapture, destCapture, "fleet returned home (+30s settle delay)", "B"),
             30_000,
           ).unref();
           expLastSeen.delete(fid);
