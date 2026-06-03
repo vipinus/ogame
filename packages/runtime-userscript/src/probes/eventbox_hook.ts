@@ -154,7 +154,7 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       const before = isFirstSeed ? n : lastOwnFleetCount;
       lastOwnFleetCount = n;
       {
-        console.info(`[OgameX/eventbox-hook] friendly fleet count ${isFirstSeed ? "(boot seed)" : before}→${n}, firing official-API slot refresh + /movement scrape${n < before ? " + empire pollEmpire + state push (fleet finished)" : ""}`);
+        console.info(`[OgameX/eventbox-hook] friendly fleet count ${isFirstSeed ? "(boot seed)" : before}→${n}, firing galaxy-JSON slot refresh + state push${n < before ? " + pruneFleets (returner → cp-protected fetchResources)" : ""}`);
         // v0.0.716 — operator 2026-06-03 "没必要一直在跑 /movement". /movement
         // chunk harvest REMOVED from this trigger. Slot count truth chain:
         //   • used_fleet_slots / max_fleet_slots ← refreshSlotsViaApi (galaxy)
@@ -173,11 +173,20 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
         } else {
           triggerImmediatePush();
         }
-        // Operator 2026-05-25: "有船到達事件發生，就刷新艦隊庫存".
+        // v0.0.719 — operator 2026-06-03 "到港也改一下". On friendly fleet
+        // count drop, also fire prune immediately — that path refreshes the
+        // returning fleet's source planet via the same cp-protected helper
+        // as launch, replacing the broad pollEmpire fall-through (which the
+        // count-drop path used to fire). Net: per-planet payload for the
+        // returner, same UX protection as any cp= POST.
         if (n < before) {
-          const pollEmp = (win as Window & { __ogamexPollEmpire?: (opts?: { force?: boolean }) => Promise<void> }).__ogamexPollEmpire;
-          if (typeof pollEmp === "function") void pollEmp({ force: true }).then(triggerImmediatePush).catch(() => { /* */ });
+          const prune = (win as Window & { __ogamexPruneFleets?: () => void }).__ogamexPruneFleets;
+          if (typeof prune === "function") { try { prune(); } catch { /* */ } }
         }
+        // v0.0.719 — pollEmpire fall-through on count drop REMOVED.
+        // __ogamexPruneFleets above already refreshes the returning fleet's
+        // source planet via cp-protected fetchResources. Operator 2026-06-03
+        // "到港也改一下" — symmetric with launch path.
       }
     } catch { /* HTML response — skip */ }
   }

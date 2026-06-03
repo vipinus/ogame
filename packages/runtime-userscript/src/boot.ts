@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.718";
+  const USERSCRIPT_VERSION = "0.0.719";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1794,6 +1794,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const expectedReturnAt = launchedAt + ttlMin * 60 * 1000;
       const synthetic = {
         id: `syn-${launchedAt}`,
+        source_planet_id: params.sourcePlanetId,  // v0.0.719 — return path reuse
         mission: params.mission,
         origin: params.origin as unknown,
         origin_type: params.originType ?? "planet",
@@ -1819,16 +1820,36 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     try {
       const now = Date.now();
       const cur = store.state.fleets_outbound ?? [];
+      const expired: Array<{ source_planet_id?: string }> = [];
       const fresh = cur.filter((f) => {
         const r = (f as { return_at?: number | null }).return_at;
-        return r === null || r === undefined || r === 0 || r > now;
+        const keep = r === null || r === undefined || r === 0 || r > now;
+        if (!keep) expired.push(f as unknown as { source_planet_id?: string });
+        return keep;
       });
       if (fresh.length !== cur.length) {
         store.setPartial({ fleets_outbound: fresh as typeof store.state.fleets_outbound });
-        console.info(`[fleet-prune] removed ${cur.length - fresh.length} expired synthetic fleets`);
+        // v0.0.719 — operator 2026-06-03 "到港也改一下". On expiry of a
+        // synthetic fleet (= fleet returned home), refresh its source
+        // planet's resources/ships using the same cp-protected helper as
+        // the launch path. Origins are read from the synthetic's
+        // source_planet_id stamped at launch time. Unique IDs only — same
+        // planet only refreshed once per prune tick.
+        const ids = new Set(expired.map((e) => e.source_planet_id).filter((x): x is string => typeof x === "string"));
+        const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+        for (const pid of ids) {
+          void refreshSourcePlanetResources(pid).then(() => {
+            if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
+          });
+        }
+        console.info(`[fleet-prune] removed ${cur.length - fresh.length} expired synthetic fleets, refreshed ${ids.size} unique source planet(s)`);
       }
     } catch { /* */ }
   };
+  // Expose prune so eventbox-hook can fire it immediately on friendly fleet
+  // count drop (real fleet returned before estimated return_at), not just
+  // wait for the 60s timer.
+  (env.win as Window & { __ogamexPruneFleets?: () => void }).__ogamexPruneFleets = pruneExpiredFleets;
   setInterval(pruneExpiredFleets, 60_000);
 
   // Jumpgate cooldown harvester — DELETED 2026-05-27 (architecture migration).
