@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.727";
+  const USERSCRIPT_VERSION = "0.0.728";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1842,36 +1842,19 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         void refreshSourcePlanetResources(params.sourcePlanetId)
           .then(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
       }
-      // v0.0.727 — operator 2026-06-03 "出发和到达全有bug" / "舰队到达月球
-      // 也应该触发更新啊". Round-trip mission (3 transport / 8 recycle /
-      // 15 expedition) 中途到达 dest, friendly count 不变 → eventbox-hook
-      // 不触发 → 目的星球资源/船只不刷新。Schedule cp-protected refresh
-      // 在估算 arrival_at, 对称 source-side launch refresh。
-      // Rough estimate: 同 system = 5 min; 同 galaxy = 15 min; 跨 galaxy = 30 min.
-      // 估晚于真实 arrival 无害 — 拿到的资源更新更准。
-      const destCoords = params.dest;
-      const srcCoords = effectiveOrigin;
-      const destPlanet = Object.values(store.state.planets).find((p) => {
-        const c = (p as { coords?: readonly number[] }).coords;
-        if (!Array.isArray(c) || c.length !== 3) return false;
-        return c[0] === destCoords[0] && c[1] === destCoords[1] && c[2] === destCoords[2]
-          && ((p as { type?: string }).type ?? "planet") === (params.destType ?? "planet");
-      });
-      const destPlanetId = (destPlanet as { id?: string } | undefined)?.id;
-      if (destPlanetId && destPlanetId !== params.sourcePlanetId) {
-        const sameSys = srcCoords[0] === destCoords[0] && srcCoords[1] === destCoords[1];
-        const sameGal = srcCoords[0] === destCoords[0];
-        const arrivalEtaMs = sameSys ? 5 * 60 * 1000 : (sameGal ? 15 * 60 * 1000 : 30 * 60 * 1000);
-        setTimeout(() => {
-          void refreshSourcePlanetResources(destPlanetId)
-            .then(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
-          console.info(`[fleet-arrival-refresh] dest planet ${destPlanetId} refreshed (${arrivalEtaMs / 60000}min after launch)`);
-        }, arrivalEtaMs);
-      }
-      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min, refreshSlots + fetchResources(cp=${params.sourcePlanetId ?? "?"}) scheduled${destPlanetId ? `, arrival refresh dest=${destPlanetId} in est ETA` : ""}`);
+      // v0.0.728 — operator 2026-06-03 "不用任何评估，舰队到达都会触发事件，
+      // 全事件驱动 为什么要有评估？". v0.0.727 setTimeout(arrivalEtaMs) 拆掉。
+      // Arrival 改走 eventbox_hook own-fleet row 的 data-arrival-time:
+      // poll 检测 arrival_at ≤ now AND 未 fired → 调 __ogamexRefreshPlanetResources
+      // (window export 见下方)。零评估, 纯事件驱动。
+      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min, refreshSlots + fetchResources(cp=${params.sourcePlanetId ?? "?"}) scheduled`);
     } catch (e) { console.warn("[fleet-launch-record] threw:", e); }
   };
   (env.win as Window & { __ogamexRecordFleetLaunch?: typeof recordFleetLaunch }).__ogamexRecordFleetLaunch = recordFleetLaunch;
+  // v0.0.728 — expose the same cp-protected per-planet refresh helper so
+  // eventbox_hook can call it on own-fleet arrival events. Returns a
+  // Promise so caller can chain pushNow on resolve.
+  (env.win as Window & { __ogamexRefreshPlanetResources?: (pid: string) => Promise<void> }).__ogamexRefreshPlanetResources = refreshSourcePlanetResources;
   const pruneExpiredFleets = (): void => {
     try {
       const now = Date.now();

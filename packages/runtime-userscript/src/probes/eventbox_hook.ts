@@ -417,6 +417,12 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
   // every event regardless of UI state. 3s active poll catches in-progress
   // probes reliably.
   let lastApiEventSig = "";
+  // v0.0.728 — operator 2026-06-03 "不用任何评估，舰队到达都会触发事件，全
+  // 事件驱动 为什么要有评估？". Track own-fleet event ids that we've already
+  // fired arrival-refresh for, so each arrival fires exactly once per event
+  // lifecycle. Cleared when the event id stops appearing in poll results
+  // (= ogame's eventbox no longer tracking that leg).
+  const firedArrivalRefreshes = new Set<string>();
   function parseEventListHTMLAndInject(html: string): void {
     // Parse via DOMParser into detached doc so we don't perturb the page.
     const parser = new (win as Window & { DOMParser: typeof DOMParser }).DOMParser();
@@ -424,6 +430,7 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     const rows = Array.from(doc.querySelectorAll<HTMLElement>("tr.eventFleet"));
     const hostileEntries: IncomingEvent[] = [];
     const seen: string[] = [];
+    const seenOwnIds = new Set<string>();  // v0.0.728 — for prune of firedArrivalRefreshes
     const nowSec = Math.floor(Date.now() / 1000);
     for (const tr of rows) {
       const mt = parseInt(tr.getAttribute("data-mission-type") ?? "0", 10);
@@ -432,6 +439,58 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       const cls = (cd?.className ?? "").toLowerCase();
       const isHostile = /\bhostile\b/.test(cls);
       seen.push(`${evId}:${mt}:${cls.slice(0, 16)}`);
+      // v0.0.728 — operator "全事件驱动 为什么要有评估？". Own-fleet rows
+      // (countdown not hostile) carry data-arrival-time. When that ticks
+      // past 'now' we know the fleet arrived at dest. Fire dest planet
+      // refresh exactly once per event lifecycle (firedArrivalRefreshes
+      // dedup). Replaces the v0.0.727 setTimeout(arrivalEtaMs) heuristic.
+      if (!isHostile && evId) {
+        seenOwnIds.add(evId);
+        const arrAt = parseInt(tr.getAttribute("data-arrival-time") ?? "0", 10);
+        if (arrAt > 0 && arrAt <= nowSec && !firedArrivalRefreshes.has(evId)) {
+          firedArrivalRefreshes.add(evId);
+          const dsTxt = tr.querySelector(".destCoords")?.textContent?.trim() ?? "";
+          const dsM = dsTxt.match(/\[(\d+):(\d+):(\d+)\]/);
+          if (dsM) {
+            const dCoords: [number, number, number] = [parseInt(dsM[1]!, 10), parseInt(dsM[2]!, 10), parseInt(dsM[3]!, 10)];
+            const destFleetEl = tr.querySelector(".destFleet, td.destFleet");
+            const destFigureClass = destFleetEl?.querySelector("figure")?.className ?? "";
+            const destHtml = destFleetEl?.innerHTML ?? "";
+            const isMoonDest = /\bmoon\b/i.test(destFigureClass) || /planetIcon[^"]*\bmoon\b/i.test(destHtml);
+            const dType: "planet" | "moon" = isMoonDest ? "moon" : "planet";
+            // Look up planet id in store by coord + type; if found, fire its refresh.
+            const planets = (store.state.planets ?? {}) as Record<string, { id?: string; coords?: readonly number[]; type?: string }>;
+            const destPlanet = Object.values(planets).find((p) => {
+              const c = p.coords;
+              if (!Array.isArray(c) || c.length !== 3) return false;
+              return c[0] === dCoords[0] && c[1] === dCoords[1] && c[2] === dCoords[2] && (p.type ?? "planet") === dType;
+            });
+            const destPlanetId = destPlanet?.id;
+            if (destPlanetId) {
+              const pushNow = (win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+              const refreshPlanet = (win as Window & {
+                __ogamexRefreshPlanetResources?: (pid: string) => Promise<void>;
+              }).__ogamexRefreshPlanetResources;
+              // v0.0.728 — operator "舰队到达也要刷新 slots". 抵达事件触发
+              // dest planet 资源刷新 + galaxy JSON slot 刷新, 跟出发对称。
+              const refreshSlots = (win as Window & {
+                __ogamexRefreshSlots?: () => Promise<void>;
+              }).__ogamexRefreshSlots;
+              if (typeof refreshPlanet === "function") {
+                console.info(`[OgameX/eventbox-hook] own fleet arrival evId=${evId} → dest planet ${destPlanetId} (${dCoords.join(":")}/${dType}) → firing cp-protected resource + slot refresh`);
+                void refreshPlanet(destPlanetId)
+                  .then(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
+              } else {
+                console.warn(`[OgameX/eventbox-hook] own arrival ${evId} dest ${destPlanetId} — refreshPlanet hook absent`);
+              }
+              if (typeof refreshSlots === "function") {
+                void refreshSlots()
+                  .then(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
+              }
+            }
+          }
+        }
+      }
       if (!isHostile) continue;
       const isThreat = mt === 1 || mt === 2 || mt === 9 || mt === 10;
       const isSpy = mt === 6;
@@ -466,6 +525,12 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
         arrives_at: arr,
         ships_count: "?",
       });
+    }
+    // v0.0.728 — prune firedArrivalRefreshes: drop ids no longer in poll
+    // (ogame deleted that leg from its eventbox → cycle complete, safe to
+    // re-fire if the id ever reappears for a new launch).
+    for (const id of [...firedArrivalRefreshes]) {
+      if (!seenOwnIds.has(id)) firedArrivalRefreshes.delete(id);
     }
     const sig = seen.sort().join("|");
     if (sig === lastApiEventSig) return;
