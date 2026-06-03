@@ -70,6 +70,30 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
   const pending: Directive[] = [];
   let stopped = false;
 
+  // v0.0.673 — operator 2026-06-03 "等我恢复操作的时候才发出去": fleetdispatch
+  // page defer used to wait INDEFINITELY for navigation away. Operator
+  // could leave the tab on fleetdispatch page (foreground or background),
+  // walk away, and directives queued for hours. Detect operator inactivity
+  // — no click/keydown/focus events + tab hidden → drain anyway, the
+  // token-race risk only exists when operator is actively interacting
+  // with ogame's UI.
+  const IDLE_THRESHOLD_MS = 30_000;
+  let lastUserInteractionAt = Date.now();
+  if (typeof window !== "undefined") {
+    const markInteraction = (): void => { lastUserInteractionAt = Date.now(); };
+    for (const evt of ["click", "keydown", "mousedown", "focus"] as const) {
+      try { window.addEventListener(evt, markInteraction, { passive: true, capture: true }); }
+      catch { /* */ }
+    }
+  }
+  const isOperatorIdle = (): boolean => {
+    if (typeof window === "undefined") return true;
+    // Tab hidden = ogame UI definitely not under operator's cursor.
+    const doc = window.document as Document | undefined;
+    if (doc?.visibilityState === "hidden") return true;
+    return Date.now() - lastUserInteractionAt > IDLE_THRESHOLD_MS;
+  };
+
   function ack(directiveId: string, result: AckResult): void {
     if (stopped) return;
     const msg = {
@@ -192,7 +216,10 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       const params = directive.params as { source_planet?: string; planet_id?: string } | undefined;
       const dirCp = (params?.source_planet ?? params?.planet_id ?? "").toString();
       const samePlanet = !urlCp || !dirCp || urlCp === dirCp;
-      if (samePlanet) {
+      // v0.0.673 — operator inactive (no input in 30s OR tab hidden) means
+      // ogame's fleetdispatch UI isn't firing token-rotating fetches, so
+      // there's no real race to worry about. Skip the defer in that case.
+      if (samePlanet && !isOperatorIdle()) {
         const now = Date.now();
         if (now - lastDeferLogAt > 60_000) {
           console.info(`[GoalRunner] on fleetdispatch page (cp=${urlCp}) — deferring same-cp ${directive.action} & all queued (log throttled 60s)`);
@@ -275,14 +302,17 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
     pollIdleTimer = setTimeout(() => {
       pollIdleTimer = null;
       if (stopped) return;
-      // Still on fleetdispatch page? wait again.
+      // v0.0.673 — drain when EITHER operator left fleetdispatch OR
+      // operator went inactive (no input 30s+ / tab hidden). The page-
+      // only check used to block indefinitely whenever the tab idled
+      // on fleetdispatch.
       const onFleetDispatchPage = typeof window !== "undefined" && window.location?.search?.includes("component=fleetdispatch");
-      if (onFleetDispatchPage) {
+      if (onFleetDispatchPage && !isOperatorIdle()) {
         schedulePollIdle();
         return;
       }
-      // Idle now — drain deferredQueue into execQueue (preserving FIFO),
-      // pumpQueue serializes execution.
+      // Idle (or off the page) — drain deferredQueue into execQueue
+      // (preserving FIFO), pumpQueue serializes execution.
       while (deferredQueue.length > 0) execQueue.push(deferredQueue.shift()!);
       void pumpQueue();
     }, 5_000);
