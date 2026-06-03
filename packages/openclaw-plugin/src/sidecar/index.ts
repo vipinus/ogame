@@ -606,8 +606,10 @@ export async function startSidecar(
       worldStateWriteTimer = null;
       const snap = stateRef.current;
       if (snap === null) return;
-      try { worldStateStore.upsert(snap); }
-      catch (e) { console.error("[ogamex/sidecar] WorldState upsert failed:", e); }
+      // v0.0.725 — Phase 6b (task #163, operator 2026-06-03 "sqlite 马上要
+      // 放弃了 用PG"): PG-only primary write for world_state. SQLite write
+      // dropped — fallback hydrate path (worldStateStore.hydrate) still kept
+      // for crash safety until Phase 7 deletes SQLite entirely.
       shadowFire("upsertWorldState", (uid) => pgStore!.upsertWorldState(uid, snap));
     }, WORLD_STATE_DEBOUNCE_MS);
   };
@@ -618,8 +620,7 @@ export async function startSidecar(
     }
     const snap = stateRef.current;
     if (snap === null) return;
-    try { worldStateStore.upsert(snap); }
-    catch (e) { console.error("[ogamex/sidecar] WorldState flush failed:", e); }
+    // v0.0.725 — Phase 6b: PG-only primary, no SQLite duplicate write.
     shadowFire("flushWorldState", (uid) => pgStore!.upsertWorldState(uid, snap));
   };
 
