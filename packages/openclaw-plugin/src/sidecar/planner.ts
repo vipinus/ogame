@@ -414,9 +414,17 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
       }
       // Else: production-rate wait ETA in reason
       const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
-      const tM = (prod.m_h ?? 0) > 0 ? sM / (prod.m_h ?? 1) * 3600 : (sM > 0 ? 999999 : 0);
-      const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
-      const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
+      // v0.0.726 — operator 2026-06-03 "建造 重氫合成器 32 时间评估错误 实际
+      // 时间是27分钟" (panel showed 11h12m ≈ 24× over). Root cause: 服务器
+      // 经济倍率没乘进 wait formula. ogame's prod field is base per-second
+      // before universe economy speed (server.speed, typically 1-10). Real
+      // hourly rate = prod * 3600 * server.speed. Skipping server.speed
+      // makes wait ETA scale with reciprocal of speed (speed=8 → wait 8×
+      // too high; combined with bonus drift → operator's observed 24×).
+      const econSpeed = state.server?.speed ?? 1;
+      const tM = (prod.m_h ?? 0) > 0 ? sM / ((prod.m_h ?? 1) * econSpeed) * 3600 : (sM > 0 ? 999999 : 0);
+      const tC = (prod.c_h ?? 0) > 0 ? sC / ((prod.c_h ?? 1) * econSpeed) * 3600 : (sC > 0 ? 999999 : 0);
+      const tD = (prod.d_h ?? 0) > 0 ? sD / ((prod.d_h ?? 1) * econSpeed) * 3600 : (sD > 0 ? 999999 : 0);
       const wait = Math.round(Math.max(tM, tC, tD));
       return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
     }
@@ -865,9 +873,17 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
         return planBuild(storUp, curLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
       }
       const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
-      const tM = (prod.m_h ?? 0) > 0 ? sM / (prod.m_h ?? 1) * 3600 : (sM > 0 ? 999999 : 0);
-      const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
-      const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
+      // v0.0.726 — operator 2026-06-03 "建造 重氫合成器 32 时间评估错误 实际
+      // 时间是27分钟" (panel showed 11h12m ≈ 24× over). Root cause: 服务器
+      // 经济倍率没乘进 wait formula. ogame's prod field is base per-second
+      // before universe economy speed (server.speed, typically 1-10). Real
+      // hourly rate = prod * 3600 * server.speed. Skipping server.speed
+      // makes wait ETA scale with reciprocal of speed (speed=8 → wait 8×
+      // too high; combined with bonus drift → operator's observed 24×).
+      const econSpeed = ctx.state.server?.speed ?? 1;
+      const tM = (prod.m_h ?? 0) > 0 ? sM / ((prod.m_h ?? 1) * econSpeed) * 3600 : (sM > 0 ? 999999 : 0);
+      const tC = (prod.c_h ?? 0) > 0 ? sC / ((prod.c_h ?? 1) * econSpeed) * 3600 : (sC > 0 ? 999999 : 0);
+      const tD = (prod.d_h ?? 0) > 0 ? sD / ((prod.d_h ?? 1) * econSpeed) * 3600 : (sD > 0 ? 999999 : 0);
       const wait = Math.round(Math.max(tM, tC, tD));
       return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
     }
@@ -943,9 +959,17 @@ function planBuildShipsGoal(goal: Goal, state: WorldState): PlanResult {
         return planBuild(storUp, curLvl + 1, planet.id, ctx);
       }
       const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
-      const tM = (prod.m_h ?? 0) > 0 ? sM / (prod.m_h ?? 1) * 3600 : (sM > 0 ? 999999 : 0);
-      const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
-      const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
+      // v0.0.726 — operator 2026-06-03 "建造 重氫合成器 32 时间评估错误 实际
+      // 时间是27分钟" (panel showed 11h12m ≈ 24× over). Root cause: 服务器
+      // 经济倍率没乘进 wait formula. ogame's prod field is base per-second
+      // before universe economy speed (server.speed, typically 1-10). Real
+      // hourly rate = prod * 3600 * server.speed. Skipping server.speed
+      // makes wait ETA scale with reciprocal of speed (speed=8 → wait 8×
+      // too high; combined with bonus drift → operator's observed 24×).
+      const econSpeed = state.server?.speed ?? 1;
+      const tM = (prod.m_h ?? 0) > 0 ? sM / ((prod.m_h ?? 1) * econSpeed) * 3600 : (sM > 0 ? 999999 : 0);
+      const tC = (prod.c_h ?? 0) > 0 ? sC / ((prod.c_h ?? 1) * econSpeed) * 3600 : (sC > 0 ? 999999 : 0);
+      const tD = (prod.d_h ?? 0) > 0 ? sD / ((prod.d_h ?? 1) * econSpeed) * 3600 : (sD > 0 ? 999999 : 0);
       const wait = Math.round(Math.max(tM, tC, tD));
       return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
     }
