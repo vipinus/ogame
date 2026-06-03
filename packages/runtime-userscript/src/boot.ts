@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.724";
+  const USERSCRIPT_VERSION = "0.0.726";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1831,11 +1831,18 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       store.setPartial({ fleets_outbound: [...cur, synthetic] as typeof store.state.fleets_outbound });
       const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
       if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
+      // v0.0.726 — operator 2026-06-03 "我发了舰队去月球 usedFleetSlots = 0
+      // 为什么没有更新". recordFleetLaunch 之前只刷源星球资源, galaxy slot
+      // 数 (used_fleet_slots / max_fleet_slots) 要等 eventbox-hook 5s 后才
+      // refresh, panel 滞后看到旧值。Galaxy JSON 跟资源 fetch 并行触发,
+      // sidecar 立刻拿到新 slot 数字, 0-5s 滞后消除。
+      void refreshSlotsViaApi()
+        .then(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
       if (params.sourcePlanetId) {
         void refreshSourcePlanetResources(params.sourcePlanetId)
           .then(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
       }
-      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min, fetchResources(cp=${params.sourcePlanetId ?? "?"}) scheduled`);
+      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min, refreshSlots + fetchResources(cp=${params.sourcePlanetId ?? "?"}) scheduled`);
     } catch (e) { console.warn("[fleet-launch-record] threw:", e); }
   };
   (env.win as Window & { __ogamexRecordFleetLaunch?: typeof recordFleetLaunch }).__ogamexRecordFleetLaunch = recordFleetLaunch;
