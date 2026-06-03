@@ -2406,6 +2406,16 @@ function openTransportSettings(
   openSettingsModal(doc, "transport", t("modal.transport.title"), placeholder, async (m) => {
     const body = m.querySelector<HTMLElement>("div[role='dialog'] > div:nth-of-type(2)");
     if (!body) return;
+    // v0.0.676 — operator 2026-06-03: shortage-fill entry path (operator
+    // clicked "→ 運輸" on a goal row) gets the OLD behaviour back:
+    //   1. ship type renders as radio (mutually exclusive, no JS mutex)
+    //   2. Quantity = ceil(cargoTotal / cap) (the needed count)
+    // Manual entry path (no prefill cargo) keeps v0.0.669/672 behaviour:
+    //   1. checkbox + JS mutex
+    //   2. Quantity = source planet's actual LC/SC count
+    // Discriminated by whether prefill.cargo is present.
+    const isShortageFill = !!prefill?.cargo;
+    const shipInputType = isShortageFill ? "radio" : "checkbox";
     interface StorePlanet { id: string; type?: string; coords?: number[]; name?: string; resources?: { m?: number; c?: number; d?: number }; ships?: Record<string, number> }
     const storeRef = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, StorePlanet>; server?: { ship_cargo_capacity?: Record<string, number> } } } }).__ogamexStore;
     const planetsMap = storeRef?.state?.planets ?? {};
@@ -2515,8 +2525,8 @@ function openTransportSettings(
         <div data-tr-stopover-picker-wrap style="display:none; max-height:140px; overflow-y:auto; background:#06090f; border-radius:3px;">${planetSelectHtml("tr-stopover-radio", true)}</div>`)}
       ${sectionCard(t("auto.148"),
         `<div style="display:flex; gap:12px; padding-bottom:6px;">
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="checkbox" name="tr-ship" value="largeCargo" checked data-tr-ship/> ${escapeHtml(techName('largeCargo'))} (cap ${fmt(ltCap)})</label>
-          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="checkbox" name="tr-ship" value="smallCargo" data-tr-ship/> ${escapeHtml(techName('smallCargo'))} (cap ${fmt(stCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="${shipInputType}" name="tr-ship" value="largeCargo" checked data-tr-ship/> ${escapeHtml(techName('largeCargo'))} (cap ${fmt(ltCap)})</label>
+          <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="${shipInputType}" name="tr-ship" value="smallCargo" data-tr-ship/> ${escapeHtml(techName('smallCargo'))} (cap ${fmt(stCap)})</label>
         </div>
         <div style="display:flex; gap:10px; padding:4px 0; align-items:center; font-size:11px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
@@ -2742,18 +2752,15 @@ function openTransportSettings(
       const cap = ship === "smallCargo" ? stCap : ltCap;
       const needed = total > 0 ? Math.ceil(total / cap) : 0;
       const countInput = m.querySelector<HTMLInputElement>("[data-tr-ship-count]");
-      // v0.0.671 — operator 2026-06-03 "运输舰的数量是舰船星球的值":
-      // default Quantity to the ship-source planet's actual LC/SC count
-      // (read live from store via planetsMap), NOT the needed-from-cargo
-      // computation. needed feeds the [data-tr-ship-need] info span only.
-      // Operator can still override manually; updateShipCount overwrites
-      // on the next radio change, same eviction rule as the prior
-      // needed-based behaviour.
+      // v0.0.676 — shortage-fill path uses needed (auto-compute by cargo),
+      // manual path uses haveShips (v0.0.671 behaviour); see isShortageFill
+      // discriminator at modal-open. needed still feeds the info span +
+      // isShort red highlight regardless of which value lands in the input.
       const sourceVal = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
       const sourceP = sourceVal ? planetsMap[sourceVal] : null;
       const shipKey = ship === "smallCargo" ? "smallCargo" : "largeCargo";
       const haveShips = (sourceP?.ships as Record<string, number | undefined> | undefined)?.[shipKey] ?? 0;
-      if (countInput) countInput.value = String(haveShips);
+      if (countInput) countInput.value = String(isShortageFill ? needed : haveShips);
       // v0.0.530 — operator 2026-05-31 "船不夠顯示紅色". 比對 ① 艦船星球 的
       // 真實船數 (LC 或 SC) vs needed, 不夠 → 數量輸入框 + 旁邊提示 紅字。
       const isShort = needed > haveShips;
@@ -2863,13 +2870,12 @@ function openTransportSettings(
     for (const rr of m.querySelectorAll<HTMLInputElement>('input[name="tr-resource-radio"]')) {
       rr.addEventListener("change", refreshCargoOverflowColors);
     }
-    // v0.0.669 — operator 2026-06-02 "radio 改 checkbox 默認大運, 小運不選".
-    // checkbox 之間互斥（点一个 → uncheck 另一个）保留"一次一种船"语义；
-    // 顶层逻辑（updateShipCount / submit）仍读 first :checked，跟 radio 行为
-    // 一致。允许两个都 uncheck — fallback "largeCargo" 在 query 那侧。
+    // v0.0.669/676 — shortage-fill mode renders radios (browser-native
+    // mutex). Manual mode renders checkboxes + JS mutex (this loop). Both
+    // paths still trigger updateShipCount on change.
     for (const sr of m.querySelectorAll<HTMLInputElement>('input[name="tr-ship"]')) {
       sr.addEventListener("change", () => {
-        if (sr.checked) {
+        if (!isShortageFill && sr.checked) {
           for (const other of m.querySelectorAll<HTMLInputElement>('input[name="tr-ship"]')) {
             if (other !== sr) other.checked = false;
           }
