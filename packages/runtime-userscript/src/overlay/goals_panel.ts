@@ -2140,7 +2140,7 @@ function openGoalsSettings(
             const entry = lookupLfResearch(k) ?? {};
             const name = pickLfName(entry, k, techLabels);
             currentLrLabels.set(k, name);
-            return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="當前 L${lvl}"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)} <span style="color:#7080a0;">L${lvl}</span></span></label>`;
+            return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="${escapeHtml(t('auto.288'))} L${lvl}"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)} <span style="color:#7080a0;">L${lvl}</span></span></label>`;
           }).join("");
         lrResearchList.innerHTML = html;
         for (const r of lrTechRadios()) r.addEventListener("change", refreshLrDesc);
@@ -3881,7 +3881,13 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const derived = deriveDisplayStatus(g, goals);
       const displayStatus = derived.label;
       const color = derived.color;
-      const reasonLine = g.reason ? `<div style="color:#a0a0a0; font-size:10px; margin-top:2px;">↳ ${escapeHtml(g.reason)}</div>` : "";
+      // v0.0.702 — operator 2026-06-03 "还是描述了两次缺多少资源，删掉灰色的那个".
+      // resource-wait 类 reason 被 csLine 详细 shortage 重复, 直接抑制灰色 raw reason.
+      // 非 resource-wait reason (slot busy / moon full / 100001 etc) 仍正常显示。
+      const _reasonIsResWait = g.reason && /waiting for resources|waiting \d+s for resources|awaiting transport/i.test(g.reason);
+      const reasonLine = (g.reason && !(_reasonIsResWait && g.current_step))
+        ? `<div style="color:#a0a0a0; font-size:10px; margin-top:2px;">↳ ${escapeHtml(g.reason)}</div>`
+        : "";
       const canAct = g.status === "pending" || g.status === "active" || g.status === "blocked";
       // v0.0.460: awaiting-event chip + Retry button. Only show on blocked
       // goals that have a non-empty awaiting set (the new pure event-driven
@@ -3931,9 +3937,28 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
               return String(Math.round(n));
             };
             const sh = g.resource_shortage;
-            const shortageChip = sh && (sh.m + sh.c + sh.d) > 0
-              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title=t("auto.152")>缺 ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span><button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`
+            // v0.0.701 — operator 2026-06-03 "当前任务就是最终任务时, 不用比较资源".
+            // identity 判定取代浮点比较: current_step.tech+level 等同 goal.target →
+            // 没有 prereq 横在中间, 主行 shortage 与 step shortage 必然同一笔账,
+            // 只保留主行 Transport 按钮 + step 行 shortage 数字。
+            const csForCmp = g.current_step;
+            const goalTarget = g.target as { building?: unknown; tech?: unknown; level?: unknown } | undefined;
+            const goalTechName = typeof goalTarget?.building === "string" ? goalTarget.building
+              : typeof goalTarget?.tech === "string" ? goalTarget.tech
               : "";
+            const goalTargetLevel = typeof goalTarget?.level === "number" ? goalTarget.level : -1;
+            const samePrereqShortage = !!(csForCmp
+              && goalTechName && goalTechName === csForCmp.tech
+              && goalTargetLevel >= 0 && goalTargetLevel === csForCmp.level);
+            const shortageNumbersHtml = sh && (sh.m + sh.c + sh.d) > 0
+              ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title=t("auto.152")>${escapeHtml(t('auto.289'))} ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span>`
+              : "";
+            const shortageBtnHtml = sh && (sh.m + sh.c + sh.d) > 0
+              ? `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`
+              : "";
+            const shortageChip = samePrereqShortage
+              ? shortageBtnHtml   // 只保留按钮, 数字让 csLine 显示
+              : `${shortageNumbersHtml}${shortageBtnHtml}`;
             // v0.0.456: decouple shortageChip from totalEta — moons return
             // ETA=∞ (no local production for deuterium etc.), JSON serializes
             // to null, ?? 0 collapses to 0, fallback path was hiding the
@@ -3975,18 +4000,21 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                 && g.body_build_q.ends_at > Date.now();
               if (bqMatchesCS) {
                 const etaMin = Math.max(0, Math.round((g.body_build_q!.ends_at - Date.now()) / 60_000));
-                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ 當前: ${escapeHtml(stepLabel)} · 🏗 在造中 (~${etaMin}m 完工)</div>`;
+                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ ${escapeHtml(t('auto.288'))}: ${escapeHtml(stepLabel)} ${escapeHtml(t('auto.290', { eta: etaMin }))}</div>`;
               }
               if (csTotal === 0) {
-                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ 當前: ${escapeHtml(stepLabel)} · ✅ 資源夠, 立即可派</div>`;
+                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ ${escapeHtml(t('auto.288'))}: ${escapeHtml(stepLabel)} ${escapeHtml(t('auto.291'))}</div>`;
               }
               const shortageBits = [
                 csh.m > 0 ? `${fmtRes(csh.m)} m` : "",
                 csh.c > 0 ? `${fmtRes(csh.c)} c` : "",
                 csh.d > 0 ? `${fmtRes(csh.d)} d` : "",
               ].filter(Boolean).join(" · ");
-              const stepFillBtn = `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.154'))}">${escapeHtml(t('auto.274'))}</button>`;
-              return `<div style="font-size:10px; color:#ffaa55; margin-bottom:2px;">↳ 當前: ${escapeHtml(stepLabel)} 缺 ${shortageBits}${stepFillBtn}</div>`;
+              // v0.0.700 — 重复时, 主行已经显示按钮, 此处省略 stepFillBtn
+              const stepFillBtn = samePrereqShortage
+                ? ""
+                : `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.154'))}">${escapeHtml(t('auto.274'))}</button>`;
+              return `<div style="font-size:10px; color:#ffaa55; margin-bottom:2px;">↳ ${escapeHtml(t('auto.288'))}: ${escapeHtml(stepLabel)} ${escapeHtml(t('auto.289'))} ${shortageBits}${stepFillBtn}</div>`;
             })() : "";
             // v0.0.527 — operator 2026-05-31 "前置鏈都要歸入主鏈 tree".
             // 去掉獨立 "prereq chain" label, etaHeader 直接掛在 tree 頂部,

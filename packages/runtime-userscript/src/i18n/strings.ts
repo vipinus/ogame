@@ -439,6 +439,10 @@ export const STRINGS: StringRegistry = {
     "auto.285": "Not yet colonized",
     "auto.286": "Start colonize",
     "auto.287": "select target range",
+    "auto.288": "Current",
+    "auto.289": "lacking",
+    "auto.290": "· 🏗 building (~{eta}m to finish)",
+    "auto.291": "· ✅ resources ready, dispatchable",
   },
 
   tw: {
@@ -461,12 +465,12 @@ export const STRINGS: StringRegistry = {
 
     "section.emergency": "🚨 緊急任務",
     "section.goals": "🪐 一般任務",
-    "section.discovery": "🧬 探索",
+    "section.discovery": "🧬 發現任務",
     "section.moons": "🌙 月球 / 跳躍門",
     "section.cargo": "🚚 運輸任務",
-    "section.expedition.loading": "🛸 遠征 —/— （狀態載入中…）",
-    "section.expedition.active": "🛸 遠征 {used}/{max}（天體 {astro}）",
-    "section.expedition.idle": "🛸 遠征",
+    "section.expedition.loading": "🛸 遠征任務 —/— （狀態載入中…）",
+    "section.expedition.active": "🛸 遠征任務 {used}/{max}（天體 {astro}）",
+    "section.expedition.idle": "🛸 遠征任務",
     "section.expedition.no_active": "（無進行中的遠征）",
 
     "goal.state.expedition_flying": "遠征中",
@@ -837,5 +841,9 @@ export const STRINGS: StringRegistry = {
     "auto.285": "尚未殖民",
     "auto.286": "開始殖民",
     "auto.287": "請選擇目標範圍",
+    "auto.288": "當前",
+    "auto.289": "缺",
+    "auto.290": "· 🏗 在造中 (~{eta}m 完工)",
+    "auto.291": "· ✅ 資源夠, 立即可派",
   },
 } as const;
