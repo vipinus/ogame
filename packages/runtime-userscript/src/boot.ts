@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.731";
+  const USERSCRIPT_VERSION = "0.0.732";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1891,6 +1891,32 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // wait for the 60s timer.
   (env.win as Window & { __ogamexPruneFleets?: () => void }).__ogamexPruneFleets = pruneExpiredFleets;
   setInterval(pruneExpiredFleets, 60_000);
+  // v0.0.732 — operator 2026-06-03 "远征回来没有触发回收". Eventbox-driven
+  // synthetic prune for mission=15: when ogame eventbox's own-fleet
+  // mission=15 row count drops by N, force-remove N oldest synthetic
+  // mission=15 entries (FIFO). This is ogame ground truth — rows exist
+  // iff fleet in flight — so the prune is event-correlated, not ttl-
+  // estimated. Bypasses pruneFleets's return_at<now gate (which kept
+  // synthetics for full 90min after launch even though ogame finished
+  // them in 30-60min). Net: synthetic disappears from fleets_outbound
+  // the same poll cycle ogame's eventbox clears the row → sidecar's
+  // Signal B fires +30s → debris-check dispatched.
+  const pruneMission15 = (count: number): void => {
+    try {
+      if (!Number.isFinite(count) || count <= 0) return;
+      const cur = store.state.fleets_outbound ?? [];
+      const m15 = cur.filter((f) => (f as { mission?: number }).mission === 15);
+      const non15 = cur.filter((f) => (f as { mission?: number }).mission !== 15);
+      const keep = m15.slice(count);  // drop the OLDEST `count` mission=15
+      const dropped = m15.slice(0, count);
+      if (dropped.length === 0) return;
+      store.setPartial({ fleets_outbound: [...non15, ...keep] as typeof store.state.fleets_outbound });
+      const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+      if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
+      console.info(`[fleet-prune] dropped ${dropped.length} mission=15 synthetic(s) on eventbox count-drop signal; ids=${dropped.map((f) => (f as { id?: string }).id ?? "?").join(",")}`);
+    } catch (e) { console.warn(`[fleet-prune] mission15 prune threw`, e); }
+  };
+  (env.win as Window & { __ogamexPruneMission15?: (n: number) => void }).__ogamexPruneMission15 = pruneMission15;
 
   // Jumpgate cooldown harvester — DELETED 2026-05-27 (architecture migration).
   // Original purpose: probe each moon's jumpgate overlay every boot+15s + 24h

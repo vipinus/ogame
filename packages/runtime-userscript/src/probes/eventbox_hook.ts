@@ -553,7 +553,21 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       if (typeof refreshSlots === "function") {
         void refreshSlots().finally(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
       }
-      console.info(`[OgameX/eventbox-hook] live mission15 count ${prevLiveExp ?? "?"}→${liveOwnMission15} → refreshSlots`);
+      // v0.0.732 — operator 2026-06-03 "远征回来没有触发回收". eventbox
+      // mission=15 count drop = N expedition fleet(s) just returned home.
+      // Force-prune N matching synthetics (oldest mission=15 first) so
+      // sidecar's Signal B fires immediately instead of waiting for the
+      // synthetic's stale ttl (90min from launch). Synthetic stickiness
+      // was blocking debris harvest dispatch — 2 pirate-battle expeditions
+      // in a row left debris with no recycler chase.
+      if (typeof prevLiveExp === "number" && liveOwnMission15 < prevLiveExp) {
+        const drop = prevLiveExp - liveOwnMission15;
+        const pruneMission15 = (win as Window & { __ogamexPruneMission15?: (n: number) => void }).__ogamexPruneMission15;
+        if (typeof pruneMission15 === "function") {
+          try { pruneMission15(drop); } catch (e) { console.warn(`[OgameX/eventbox-hook] pruneMission15 threw`, e); }
+        }
+      }
+      console.info(`[OgameX/eventbox-hook] live mission15 count ${prevLiveExp ?? "?"}→${liveOwnMission15} → refreshSlots${typeof prevLiveExp === "number" && liveOwnMission15 < prevLiveExp ? ` + prune ${prevLiveExp - liveOwnMission15} synthetic(s)` : ""}`);
     }
     const sig = seen.sort().join("|");
     if (sig === lastApiEventSig) return;
