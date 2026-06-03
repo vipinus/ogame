@@ -173,20 +173,12 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
         } else {
           triggerImmediatePush();
         }
-        // v0.0.719 — operator 2026-06-03 "到港也改一下". On friendly fleet
-        // count drop, also fire prune immediately — that path refreshes the
-        // returning fleet's source planet via the same cp-protected helper
-        // as launch, replacing the broad pollEmpire fall-through (which the
-        // count-drop path used to fire). Net: per-planet payload for the
-        // returner, same UX protection as any cp= POST.
-        if (n < before) {
-          const prune = (win as Window & { __ogamexPruneFleets?: () => void }).__ogamexPruneFleets;
-          if (typeof prune === "function") { try { prune(); } catch { /* */ } }
-        }
-        // v0.0.719 — pollEmpire fall-through on count drop REMOVED.
-        // __ogamexPruneFleets above already refreshes the returning fleet's
-        // source planet via cp-protected fetchResources. Operator 2026-06-03
-        // "到港也改一下" — symmetric with launch path.
+        // v0.0.733 — operator 2026-06-03 "synthetic.return_at = launch+90min
+        // 这个没用就删了吧". __ogamexPruneFleets (ttl-based) retired. Per-
+        // mission prune now driven by liveOwnMissionCounts delta tracking
+        // below — see __ogamexPruneByMission. Source planet refresh happens
+        // inside pruneByMission for each dropped synthetic. Symmetric with
+        // launch path, no ttl estimate involved.
       }
     } catch { /* HTML response — skip */ }
   }
@@ -435,10 +427,10 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     // v0.0.729 — operator 2026-06-03 "回港时没有更新slots 是不是也没有更新
     // 星球资源？" + "后台没有拿到数据 远征没飞". eventbox row data-mission-type
     // is the ogame ground truth for live in-flight fleet mission distribution.
-    // Count mission=15 (expedition) own-fleet rows here so refreshSlotsViaApi
-    // can stop relying on the synthetic-fleet count (which expires via stale
-    // ttl estimate, leaving used_expedition_slots stuck at last value =
-    // root cause of 6/6 phantom block this session).
+    // v0.0.733 — generalized from mission=15-only to per-mission. Drives
+    // both used_expedition_slots refresh (mission=15) AND per-mission
+    // synthetic prune (any mission), replacing the retired ttl-based path.
+    const liveOwnByMission = new Map<number, number>();
     let liveOwnMission15 = 0;
     for (const tr of rows) {
       const mt = parseInt(tr.getAttribute("data-mission-type") ?? "0", 10);
@@ -447,7 +439,10 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       const cls = (cd?.className ?? "").toLowerCase();
       const isHostile = /\bhostile\b/.test(cls);
       seen.push(`${evId}:${mt}:${cls.slice(0, 16)}`);
-      if (!isHostile && mt === 15) liveOwnMission15++;
+      if (!isHostile) {
+        liveOwnByMission.set(mt, (liveOwnByMission.get(mt) ?? 0) + 1);
+        if (mt === 15) liveOwnMission15++;
+      }
       // v0.0.728 — operator "全事件驱动 为什么要有评估？". Own-fleet rows
       // (countdown not hostile) carry data-arrival-time. When that ticks
       // past 'now' we know the fleet arrived at dest. Fire dest planet
@@ -545,29 +540,46 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     // slot refresh whenever it changes. This is the AUTHORITATIVE source
     // for used_expedition_slots — synthetic-fleet count is only a UI
     // hint, not ground truth (synthetics expire via stale ttl estimate).
-    const prevLiveExp = (win as Window & { __ogamexLiveExpeditionCount?: number }).__ogamexLiveExpeditionCount;
-    (win as Window & { __ogamexLiveExpeditionCount?: number }).__ogamexLiveExpeditionCount = liveOwnMission15;
-    if (prevLiveExp !== liveOwnMission15) {
-      const refreshSlots = (win as Window & { __ogamexRefreshSlots?: () => Promise<void> }).__ogamexRefreshSlots;
-      const pushNow = (win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
-      if (typeof refreshSlots === "function") {
-        void refreshSlots().finally(() => { if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } } });
+    // v0.0.733 — operator "synthetic.return_at = launch+90min 这个没用就删了吧":
+    // per-mission count tracking. Compare previous poll's per-mission map to
+    // current. For each mission whose count DROPPED by N, fire
+    // __ogamexPruneByMission(mission, N) to FIFO-remove N oldest synthetics
+    // with that mission. Mission=15 also drives refreshSlots (live expedition
+    // count = authoritative used_expedition_slots).
+    const winT = win as Window & {
+      __ogamexLiveExpeditionCount?: number;
+      __ogamexLiveOwnByMission?: Map<number, number>;
+      __ogamexRefreshSlots?: () => Promise<void>;
+      __ogamexPushNow?: () => void;
+      __ogamexPruneByMission?: (mission: number, n: number) => void;
+    };
+    const prevLiveByMission = winT.__ogamexLiveOwnByMission ?? new Map<number, number>();
+    const prevLiveExp = winT.__ogamexLiveExpeditionCount;
+    winT.__ogamexLiveOwnByMission = liveOwnByMission;
+    winT.__ogamexLiveExpeditionCount = liveOwnMission15;
+    // Per-mission drop detection — only if we've seen at least one prior poll.
+    const drops: Array<{ mission: number; n: number }> = [];
+    if (prevLiveByMission.size > 0) {
+      for (const [mt, prevN] of prevLiveByMission) {
+        const curN = liveOwnByMission.get(mt) ?? 0;
+        if (curN < prevN) drops.push({ mission: mt, n: prevN - curN });
       }
-      // v0.0.732 — operator 2026-06-03 "远征回来没有触发回收". eventbox
-      // mission=15 count drop = N expedition fleet(s) just returned home.
-      // Force-prune N matching synthetics (oldest mission=15 first) so
-      // sidecar's Signal B fires immediately instead of waiting for the
-      // synthetic's stale ttl (90min from launch). Synthetic stickiness
-      // was blocking debris harvest dispatch — 2 pirate-battle expeditions
-      // in a row left debris with no recycler chase.
-      if (typeof prevLiveExp === "number" && liveOwnMission15 < prevLiveExp) {
-        const drop = prevLiveExp - liveOwnMission15;
-        const pruneMission15 = (win as Window & { __ogamexPruneMission15?: (n: number) => void }).__ogamexPruneMission15;
-        if (typeof pruneMission15 === "function") {
-          try { pruneMission15(drop); } catch (e) { console.warn(`[OgameX/eventbox-hook] pruneMission15 threw`, e); }
+    }
+    if (drops.length > 0) {
+      if (typeof winT.__ogamexPruneByMission === "function") {
+        for (const { mission: mt, n } of drops) {
+          try { winT.__ogamexPruneByMission(mt, n); } catch (e) { console.warn(`[OgameX/eventbox-hook] pruneByMission(${mt},${n}) threw`, e); }
         }
       }
-      console.info(`[OgameX/eventbox-hook] live mission15 count ${prevLiveExp ?? "?"}→${liveOwnMission15} → refreshSlots${typeof prevLiveExp === "number" && liveOwnMission15 < prevLiveExp ? ` + prune ${prevLiveExp - liveOwnMission15} synthetic(s)` : ""}`);
+    }
+    // Mission=15 count change → refreshSlots (drives used_expedition_slots).
+    if (prevLiveExp !== liveOwnMission15) {
+      if (typeof winT.__ogamexRefreshSlots === "function") {
+        void winT.__ogamexRefreshSlots().finally(() => { if (typeof winT.__ogamexPushNow === "function") { try { winT.__ogamexPushNow(); } catch { /* */ } } });
+      }
+      console.info(`[OgameX/eventbox-hook] live mission15 ${prevLiveExp ?? "?"}→${liveOwnMission15} → refreshSlots${drops.length > 0 ? ` (per-mission drops: ${drops.map((d) => `m${d.mission}=-${d.n}`).join(",")})` : ""}`);
+    } else if (drops.length > 0) {
+      console.info(`[OgameX/eventbox-hook] per-mission drops without mission15 change: ${drops.map((d) => `m${d.mission}=-${d.n}`).join(",")}`);
     }
     const sig = seen.sort().join("|");
     if (sig === lastApiEventSig) return;

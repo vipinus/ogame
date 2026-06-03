@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.732";
+  const USERSCRIPT_VERSION = "0.0.733";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1799,8 +1799,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   }): void => {
     try {
       const launchedAt = Date.now();
-      const ttlMin = params.mission === 15 ? 90 : 60;
-      const expectedReturnAt = launchedAt + ttlMin * 60 * 1000;
+      // v0.0.733 — operator 2026-06-03 "synthetic.return_at = launch+90min 这个没用就删了吧".
+      // ttl-based prune RETIRED. Synthetic now lives until eventbox poll
+      // detects its mission's count drop (per-mission FIFO prune). Sidecar
+      // Signal B still gates on return_at !== null as "fleet committed to
+      // return path" — set return_at = launchedAt (non-null sentinel,
+      // value itself unused).
       // v0.0.720 — operator 2026-06-03 "运输任务的链式任务竟然可以一起执行".
       // fleet_api.ts 传 origin=[0,0,0] (no coord context at that layer);
       // sidecar chain prereq inTransit check does `f.origin.join(":") ===
@@ -1825,7 +1829,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         dest: params.dest as unknown,
         dest_type: params.destType ?? "planet",
         arrival_at: 0,
-        return_at: expectedReturnAt,
+        return_at: launchedAt,  // v0.0.733 — non-null sentinel; ttl prune retired
         ships: {} as Record<string, number>,
       } as unknown as FleetLike;
       const cur = store.state.fleets_outbound ?? [];
@@ -1848,7 +1852,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // Arrival 改走 eventbox_hook own-fleet row 的 data-arrival-time:
       // poll 检测 arrival_at ≤ now AND 未 fired → 调 __ogamexRefreshPlanetResources
       // (window export 见下方)。零评估, 纯事件驱动。
-      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} → return_at +${ttlMin}min, refreshSlots + fetchResources(cp=${params.sourcePlanetId ?? "?"}) scheduled`);
+      console.info(`[fleet-launch-record] +synthetic ${synthetic.id} mission=${params.mission} (eventbox count-drop will prune), refreshSlots + fetchResources(cp=${params.sourcePlanetId ?? "?"}) scheduled`);
     } catch (e) { console.warn("[fleet-launch-record] threw:", e); }
   };
   (env.win as Window & { __ogamexRecordFleetLaunch?: typeof recordFleetLaunch }).__ogamexRecordFleetLaunch = recordFleetLaunch;
@@ -1856,67 +1860,43 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // eventbox_hook can call it on own-fleet arrival events. Returns a
   // Promise so caller can chain pushNow on resolve.
   (env.win as Window & { __ogamexRefreshPlanetResources?: (pid: string) => Promise<void> }).__ogamexRefreshPlanetResources = refreshSourcePlanetResources;
-  const pruneExpiredFleets = (): void => {
+  // v0.0.733 — operator 2026-06-03 "synthetic.return_at = launch+90min 这个
+  // 没用就删了吧". Pre-v0.0.733 pruneExpiredFleets() + 60s setInterval +
+  // __ogamexPruneFleets export 全部退役. synthetic 现在生命周期完全由
+  // eventbox per-mission count drop 触发: 单一权威源 = ogame eventbox,
+  // 单一抓手 = pruneByMission(mission, N). ttl 估算永远会落后或抢跑,
+  // 不如直接听 ogame 的.
+  //
+  // v0.0.732 pruneMission15 generalized to pruneByMission: eventbox poll
+  // 检测任意 mission 的 own-fleet count 下降 N, FIFO 删 N 个 oldest
+  // synthetic with 该 mission. 同时 refresh 它们的 source_planet (回港
+  // 资源更新, 替代 pruneExpiredFleets 里的 source planet refresh path).
+  const pruneByMission = (mission: number, count: number): void => {
     try {
-      const now = Date.now();
+      if (!Number.isFinite(mission) || !Number.isFinite(count) || count <= 0) return;
       const cur = store.state.fleets_outbound ?? [];
-      const expired: Array<{ source_planet_id?: string }> = [];
-      const fresh = cur.filter((f) => {
-        const r = (f as { return_at?: number | null }).return_at;
-        const keep = r === null || r === undefined || r === 0 || r > now;
-        if (!keep) expired.push(f as unknown as { source_planet_id?: string });
-        return keep;
-      });
-      if (fresh.length !== cur.length) {
-        store.setPartial({ fleets_outbound: fresh as typeof store.state.fleets_outbound });
-        // v0.0.719 — operator 2026-06-03 "到港也改一下". On expiry of a
-        // synthetic fleet (= fleet returned home), refresh its source
-        // planet's resources/ships using the same cp-protected helper as
-        // the launch path. Origins are read from the synthetic's
-        // source_planet_id stamped at launch time. Unique IDs only — same
-        // planet only refreshed once per prune tick.
-        const ids = new Set(expired.map((e) => e.source_planet_id).filter((x): x is string => typeof x === "string"));
-        const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
-        for (const pid of ids) {
-          void refreshSourcePlanetResources(pid).then(() => {
-            if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
-          });
-        }
-        console.info(`[fleet-prune] removed ${cur.length - fresh.length} expired synthetic fleets, refreshed ${ids.size} unique source planet(s)`);
-      }
-    } catch { /* */ }
-  };
-  // Expose prune so eventbox-hook can fire it immediately on friendly fleet
-  // count drop (real fleet returned before estimated return_at), not just
-  // wait for the 60s timer.
-  (env.win as Window & { __ogamexPruneFleets?: () => void }).__ogamexPruneFleets = pruneExpiredFleets;
-  setInterval(pruneExpiredFleets, 60_000);
-  // v0.0.732 — operator 2026-06-03 "远征回来没有触发回收". Eventbox-driven
-  // synthetic prune for mission=15: when ogame eventbox's own-fleet
-  // mission=15 row count drops by N, force-remove N oldest synthetic
-  // mission=15 entries (FIFO). This is ogame ground truth — rows exist
-  // iff fleet in flight — so the prune is event-correlated, not ttl-
-  // estimated. Bypasses pruneFleets's return_at<now gate (which kept
-  // synthetics for full 90min after launch even though ogame finished
-  // them in 30-60min). Net: synthetic disappears from fleets_outbound
-  // the same poll cycle ogame's eventbox clears the row → sidecar's
-  // Signal B fires +30s → debris-check dispatched.
-  const pruneMission15 = (count: number): void => {
-    try {
-      if (!Number.isFinite(count) || count <= 0) return;
-      const cur = store.state.fleets_outbound ?? [];
-      const m15 = cur.filter((f) => (f as { mission?: number }).mission === 15);
-      const non15 = cur.filter((f) => (f as { mission?: number }).mission !== 15);
-      const keep = m15.slice(count);  // drop the OLDEST `count` mission=15
-      const dropped = m15.slice(0, count);
+      const matchingFleets = cur.filter((f) => (f as { mission?: number }).mission === mission);
+      const otherFleets = cur.filter((f) => (f as { mission?: number }).mission !== mission);
+      const keep = matchingFleets.slice(count);
+      const dropped = matchingFleets.slice(0, count);
       if (dropped.length === 0) return;
-      store.setPartial({ fleets_outbound: [...non15, ...keep] as typeof store.state.fleets_outbound });
+      store.setPartial({ fleets_outbound: [...otherFleets, ...keep] as typeof store.state.fleets_outbound });
+      // Source planet refresh for each dropped synthetic (return-home resource update).
+      const ids = new Set(
+        dropped.map((f) => (f as { source_planet_id?: string }).source_planet_id)
+          .filter((x): x is string => typeof x === "string"),
+      );
       const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+      for (const pid of ids) {
+        void refreshSourcePlanetResources(pid).then(() => {
+          if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
+        });
+      }
       if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
-      console.info(`[fleet-prune] dropped ${dropped.length} mission=15 synthetic(s) on eventbox count-drop signal; ids=${dropped.map((f) => (f as { id?: string }).id ?? "?").join(",")}`);
-    } catch (e) { console.warn(`[fleet-prune] mission15 prune threw`, e); }
+      console.info(`[fleet-prune] dropped ${dropped.length} mission=${mission} synthetic(s) on eventbox count-drop; refreshed ${ids.size} source planet(s); ids=${dropped.map((f) => (f as { id?: string }).id ?? "?").join(",")}`);
+    } catch (e) { console.warn(`[fleet-prune] mission=${mission} prune threw`, e); }
   };
-  (env.win as Window & { __ogamexPruneMission15?: (n: number) => void }).__ogamexPruneMission15 = pruneMission15;
+  (env.win as Window & { __ogamexPruneByMission?: (mission: number, n: number) => void }).__ogamexPruneByMission = pruneByMission;
 
   // Jumpgate cooldown harvester — DELETED 2026-05-27 (architecture migration).
   // Original purpose: probe each moon's jumpgate overlay every boot+15s + 24h
