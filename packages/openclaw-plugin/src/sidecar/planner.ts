@@ -132,13 +132,38 @@ function pickResourceStrategy(
     if (mine === "deuteriumSynth") return 10 * lvl * Math.pow(1.1, lvl) * universeSpeed;
     return 0;
   };
+  // v0.0.678 — operator 2026-06-03 two-rule combo:
+  //   1) "ogame 资源不平衡永远都是金属太多，所以我不打算建金属工厂和
+  //      金属存储": metal永远过剩 — UNCONDITIONALLY skip metalMine from
+  //      candidates. metalStorage isn't a candidate here anyway (this
+  //      function only iterates mines, not storage buildings).
+  //   2) "出现这种情况，逻辑改成等资源运输，不要瞎建": for crystalMine /
+  //      deuteriumSynth, still skip when production << theoretical
+  //      (storage capped / energy starved / disabled). Upgrade won't fix.
+  // Threshold: actual < 50% of theoretical at current level = stalled.
+  const STALL_PROD_PCT = 0.5;
+  const actualProdByMine: Record<string, number> = {
+    crystalMine: prod.c_h ?? 0,
+    deuteriumSynth: prod.d_h ?? 0,
+  };
   // (B) For each candidate mine, compute total = upgrade time + remainder wait.
+  // metalMine deliberately omitted per operator policy (永久不自动建金属工厂).
   const candidates: Array<{ mine: string; total: number }> = [];
-  for (const mine of ["metalMine", "crystalMine", "deuteriumSynth"]) {
+  for (const mine of ["crystalMine", "deuteriumSynth"]) {
     // Skip if this mine doesn't fix the bottleneck. Pick by which resource
     // is short relative to cost.
     const currLvl = planet.buildings?.[mine] ?? 0;
     if (currLvl >= 35) continue; // upgrade cost gets pathological at high levels
+    // v0.0.678 — stalled-mine skip: if current production is way below
+    // theoretical for this mine's level (storage cap, energy short,
+    // disabled), upgrading the mine won't fix it. Let the goal wait.
+    if (currLvl > 0) {
+      const theoretical = mineProdAt(mine, currLvl);
+      const actual = actualProdByMine[mine] ?? 0;
+      if (theoretical > 0 && actual < theoretical * STALL_PROD_PCT) {
+        continue;
+      }
+    }
     const tech = TECH_TREE[mine];
     if (!tech || typeof tech.cost_at !== "function") continue;
     const mineCost = tech.cost_at(currLvl + 1);
@@ -931,6 +956,40 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
       const tC = (prod.c_h ?? 0) > 0 ? sC / (prod.c_h ?? 1) * 3600 : (sC > 0 ? 999999 : 0);
       const tD = (prod.d_h ?? 0) > 0 ? sD / (prod.d_h ?? 1) * 3600 : (sD > 0 ? 999999 : 0);
       const wait = Math.round(Math.max(tM, tC, tD));
+      // v0.0.678 — operator 2026-06-03: when a SHORT resource's mine is
+      // stalled (production << theoretical at current level — storage
+      // capped, energy starved, etc.), the wait time blows up to absurd
+      // figures (12383d on planet 2:279:8 metalStorage L4 overflow).
+      // Flag the reason as "awaiting transport" so the panel and operator
+      // can recognize this isn't an organic resource wait and act
+      // accordingly (manual transport / fix the underlying stall).
+      const stalledShort: string[] = [];
+      const mineExpAtLevel = (mine: string, lvl: number, speed: number): number => {
+        if (lvl <= 0) return 0;
+        if (mine === "metalMine") return 30 * lvl * Math.pow(1.1, lvl) * speed;
+        if (mine === "crystalMine") return 20 * lvl * Math.pow(1.1, lvl) * speed;
+        if (mine === "deuteriumSynth") return 10 * lvl * Math.pow(1.1, lvl) * speed;
+        return 0;
+      };
+      const checkStall = (
+        resKey: "m" | "c" | "d",
+        mine: "metalMine" | "crystalMine" | "deuteriumSynth",
+        shortAmt: number,
+        actual: number,
+      ): void => {
+        if (shortAmt <= 0) return;
+        const mineLvl = planet.buildings?.[mine] ?? 0;
+        const theoretical = mineExpAtLevel(mine, mineLvl, universeSpeed);
+        if (theoretical > 0 && actual < theoretical * 0.5) {
+          stalledShort.push(`${resKey} (m_h ≈ ${Math.round(actual)} vs theoretical ${Math.round(theoretical)} at L${mineLvl})`);
+        }
+      };
+      checkStall("m", "metalMine", sM, prod.m_h ?? 0);
+      checkStall("c", "crystalMine", sC, prod.c_h ?? 0);
+      checkStall("d", "deuteriumSynth", sD, prod.d_h ?? 0);
+      if (stalledShort.length > 0) {
+        return { blocked: `awaiting transport — production stalled: ${stalledShort.join(", ")} (m=${sM} c=${sC} d=${sD} short)` };
+      }
       return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
     }
   }
