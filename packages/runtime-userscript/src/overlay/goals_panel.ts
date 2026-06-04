@@ -1573,8 +1573,20 @@ function openGoalsSettings(
       }
       pbDescEl.style.color = "#7cfc00";
     };
-    for (const r of pbPlanetRadios()) r.addEventListener("change", refreshPbDesc);
-    for (const r of pbBuildingRadios()) r.addEventListener("change", refreshPbDesc);
+    // v0.0.767 — operator 2026-06-04: 选好 planet+building 自动填 current+1.
+    // 仅 specific planet 触发 (all/idle 多选无单一 currentLevel).
+    const prefillPbLevel = (): void => {
+      if (!pbLevelInput) return;
+      const planetRadio = pbPlanetRadios().find((r) => r.checked);
+      const buildingRadio = pbBuildingRadios().find((r) => r.checked);
+      if (!planetRadio || !buildingRadio) return;
+      if (planetRadio.value === "all-planets" || planetRadio.value === "idle-planets") return;
+      const planetState = (storeRef?.state?.planets?.[planetRadio.value] ?? {}) as { buildings?: Record<string, number> };
+      const cur = planetState.buildings?.[buildingRadio.value] ?? 0;
+      pbLevelInput.value = String(cur + 1);
+    };
+    for (const r of pbPlanetRadios()) r.addEventListener("change", () => { prefillPbLevel(); refreshPbDesc(); });
+    for (const r of pbBuildingRadios()) r.addEventListener("change", () => { prefillPbLevel(); refreshPbDesc(); });
     pbLevelInput?.addEventListener("input", refreshPbDesc);
     refreshPbDesc();
     pbCreateBtn?.addEventListener("click", async () => {
@@ -1683,8 +1695,19 @@ function openGoalsSettings(
       }
       mbDescEl.style.color = "#7cfc00";
     };
-    for (const r of mbMoonRadios()) r.addEventListener("change", refreshMbDesc);
-    for (const r of mbBuildingRadios()) r.addEventListener("change", refreshMbDesc);
+    // v0.0.767 — operator 2026-06-04: 选好 moon+building 自动填 current+1.
+    const prefillMbLevel = (): void => {
+      if (!mbLevelInput) return;
+      const moonRadio = mbMoonRadios().find((r) => r.checked);
+      const buildingRadio = mbBuildingRadios().find((r) => r.checked);
+      if (!moonRadio || !buildingRadio) return;
+      if (moonRadio.value === "all-moons" || moonRadio.value === "idle-moons") return;
+      const moonState = (storeRef?.state?.planets?.[moonRadio.value] ?? {}) as { buildings?: Record<string, number> };
+      const cur = moonState.buildings?.[buildingRadio.value] ?? 0;
+      mbLevelInput.value = String(cur + 1);
+    };
+    for (const r of mbMoonRadios()) r.addEventListener("change", () => { prefillMbLevel(); refreshMbDesc(); });
+    for (const r of mbBuildingRadios()) r.addEventListener("change", () => { prefillMbLevel(); refreshMbDesc(); });
     mbLevelInput?.addEventListener("input", refreshMbDesc);
     refreshMbDesc();
     mbCreateBtn?.addEventListener("click", async () => {
@@ -1771,7 +1794,18 @@ function openGoalsSettings(
           const name = pickLfName(v, k, techLabels);
           return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="radio" name="lf-building-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)}</span></label>`;
         }).join("");
-        for (const r of lfBuildingRadios()) r.addEventListener("change", refreshLfDesc);
+        for (const r of lfBuildingRadios()) r.addEventListener("change", () => { prefillLfLevel(); refreshLfDesc(); });
+      };
+      // v0.0.767 — operator 2026-06-04: 选好 planet+building 自动填 current+1.
+      const prefillLfLevel = (): void => {
+        if (!lfLevelInput) return;
+        const planetRadio = lfPlanetRadios().find((r) => r.checked);
+        const buildingRadio = lfBuildingRadios().find((r) => r.checked);
+        if (!planetRadio || !buildingRadio) return;
+        if (planetRadio.value === "all-planets" || planetRadio.value === "idle-planets") return;
+        const planetState = (storeRef?.state?.planets?.[planetRadio.value] ?? {}) as { lifeform_buildings?: Record<string, number> };
+        const cur = planetState.lifeform_buildings?.[buildingRadio.value] ?? 0;
+        lfLevelInput.value = String(cur + 1);
       };
       const refreshLfDesc = (): void => {
         if (!lfDescEl) return;
@@ -1888,7 +1922,7 @@ function openGoalsSettings(
         applyLfSpeciesFilter(r.value);
         refreshLfDesc();
       });
-      for (const r of lfPlanetRadios()) r.addEventListener("change", refreshLfDesc);
+      for (const r of lfPlanetRadios()) r.addEventListener("change", () => { prefillLfLevel(); refreshLfDesc(); });
       lfLevelInput?.addEventListener("input", refreshLfDesc);
       // anyOccupied / anyIdle for lf-build (use lf_build_q for occupancy).
       let anyLfOccupied = false, anyLfIdle = false;
@@ -2022,7 +2056,16 @@ function openGoalsSettings(
         rsDescEl.textContent = t("auto.174", { cur: curPart, lvl });
         rsDescEl.style.color = "#7cfc00";
       };
-      for (const r of rsTechRadios()) r.addEventListener("change", refreshRsDesc);
+      // v0.0.767 — operator 2026-06-04: 选 tech 后自动填 current+1.
+      const prefillRsLevel = (): void => {
+        if (!rsLevelInput) return;
+        const techRadio = rsTechRadios().find((r) => r.checked);
+        if (!techRadio) return;
+        const levels = (storeRef?.state as { research?: { levels?: Record<string, number> } } | undefined)?.research?.levels ?? {};
+        const cur = levels[techRadio.value] ?? 0;
+        rsLevelInput.value = String(cur + 1);
+      };
+      for (const r of rsTechRadios()) r.addEventListener("change", () => { prefillRsLevel(); refreshRsDesc(); });
       rsLevelInput?.addEventListener("input", refreshRsDesc);
       refreshRsDesc();
       const rsPlanetRadios = (): HTMLInputElement[] => Array.from(
@@ -2181,7 +2224,17 @@ function openGoalsSettings(
             return `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="${escapeHtml(t('auto.288'))} L${lvl}"><input type="radio" name="lr-tech-radio" value="${escapeHtml(k)}" style="vertical-align:middle;"/><span>${escapeHtml(name)} <span style="color:#7080a0;">L${lvl}</span></span></label>`;
           }).join("");
         lrResearchList.innerHTML = html;
-        for (const r of lrTechRadios()) r.addEventListener("change", refreshLrDesc);
+        for (const r of lrTechRadios()) r.addEventListener("change", () => { prefillLrLevel(); refreshLrDesc(); });
+      };
+      // v0.0.767 — operator 2026-06-04: 选 planet+tech 后自动填 current+1.
+      const prefillLrLevel = (): void => {
+        if (!lrLevelInput) return;
+        const planetRadio = lrPlanetRadios().find((r) => r.checked);
+        const techRadio = lrTechRadios().find((r) => r.checked);
+        if (!planetRadio || !techRadio) return;
+        const planetState = (storeRef?.state?.planets?.[planetRadio.value] ?? {}) as { lifeform_research?: Record<string, number> };
+        const cur = planetState.lifeform_research?.[techRadio.value] ?? 0;
+        lrLevelInput.value = String(cur + 1);
       };
       const speciesLabelMapLr: Record<string, string> = { humans: t("auto.056"), rocktal: t("auto.057"), mechas: t("auto.058"), kaelesh: t("auto.059") };
       // v0.0.603 — per-planet current level display. lifeform_research is
@@ -2333,6 +2386,7 @@ function openGoalsSettings(
           if (target) target.checked = true;
         }
         renderLrResearch(sp ?? "kaelesh");
+        prefillLrLevel();  // v0.0.767 — planet 换了 → 新 planet 的 current+1
         refreshLrDesc();
         // v0.0.608 fire-and-forget auto-fetch.
         void fetchLfResearchForPlanet(r.value);
