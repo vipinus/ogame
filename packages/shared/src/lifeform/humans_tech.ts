@@ -118,7 +118,9 @@ const buildings: Record<string, LifeformBuildingEntry> = {
     id: "plantationOfMostBenevolentBeing",
     display_name_zh: "至善種植園",
     display_name_en: "Plantation of the Most Benevolent Being",
-    requires: { foodSilo: 5 },
+    // v0.0.742 — operator "其他种族一样的依赖关系". Final-tier mirror of
+    // kaelesh supraRefractor pattern: 4 tier-2 buildings at L5.
+    requires: { fusionPoweredProduction: 5, neuroCalibrationCentre: 5, biotechLab: 5, metropolis: 5 },
     cost_at: pow(250_000, 1.5),
     verified_against_live: false,
   },

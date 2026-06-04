@@ -111,7 +111,9 @@ const buildings: Record<string, LifeformBuildingEntry> = {
     id: "advancedRecyclingPlant",
     display_name_zh: "高級回收廠",
     display_name_en: "Advanced Recycling Plant",
-    requires: { mineralResearchCentre: 3 },
+    // v0.0.742 — operator "其他种族一样的依赖关系". Final-tier mirror of
+    // kaelesh supraRefractor pattern: 4 tier-2 buildings at L5.
+    requires: { deuteriumSynthesiser: 5, crystalRefinery: 5, mineralResearchCentre: 5, megalith: 5 },
     cost_at: pow(250_000, 1.5),
     verified_against_live: false,
   },

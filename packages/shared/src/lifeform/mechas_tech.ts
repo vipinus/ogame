@@ -111,7 +111,9 @@ const buildings: Record<string, LifeformBuildingEntry> = {
     id: "nanoRepairBotFactory",
     display_name_zh: "納米修復機器人工廠",
     display_name_en: "Nano Repair Bot Production",
-    requires: { quantumComputerCentre: 3 },
+    // v0.0.742 — operator "其他种族一样的依赖关系". Final-tier mirror of
+    // kaelesh supraRefractor pattern: 4 tier-2 buildings at L5.
+    requires: { highPerformanceSynthesiser: 5, productionAssemblyHall: 5, chipMassProduction: 5, quantumComputerCentre: 5 },
     cost_at: powD(220_000, 1.5),
     verified_against_live: false,
   },
