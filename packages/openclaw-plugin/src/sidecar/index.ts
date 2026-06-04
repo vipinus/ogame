@@ -940,6 +940,10 @@ export async function startSidecar(
             costFn = tech.cost_at as typeof costFn;
           }
           const children: PrereqTreeNode[] = [];
+          // v0.0.739 — local flag, set by energy-gate per-level loop when
+          // it emits interleaved children + does its own self-level work.
+          // Skips the regular self loop below to avoid double-counting.
+          let energyGateHandled = false;
           for (const [req, lvl] of Object.entries(tech?.requires ?? {})) {
             const subKind = useTreeBuilder === "lifeform"
               ? "building"
@@ -986,42 +990,74 @@ export async function startSidecar(
             // start from real planet state.
             let virtualEnergy = (planet.resources as { e?: number } | undefined)?.e ?? 0;
             let virtualPlantLvl = pickFusion ? fusionStart : solarStart;
-            // If start state already has 0 plants, force first bump
-            // (curEnergy < 0 OR no plant condition from helper).
-            if (current < targetLevel) {
+            if (current < targetLevel && typeof costFn === "function") {
               for (let l = current + 1; l <= targetLevel; l++) {
                 const delta = mineEnergyConsumption(techName, l) - mineEnergyConsumption(techName, l - 1);
                 let projected = virtualEnergy - delta;
-                // First time only: also bump if planet starts with 0 plants
                 let firstBumpForced = fusionStart === 0 && solarStart === 0 && l === current + 1 && virtualPlantLvl === 0;
-                // v0.0.738 — operator "应该都列在tree上 树状展开": add ONE
-                // tree child per plant level bump, not a combined multi-
-                // level child. While energy still negative, push another
-                // single-level plant child. Each child = single buildAndSimulate
-                // call (current → current+1), so panel sees sequential ramp.
+                // v0.0.739 — operator 2026-06-04 "fusion 17 以后应该建 重氢 31
+                // 不是把电厂推满在建建筑, 是交替进行". Interleave plant bumps
+                // and parent's per-level self build into children IN ORDER.
+                // Each plant bump and each parent level becomes a separate
+                // child node, sequenced as ogame would actually execute them:
+                //   plant bumps for L31 → parent L31 → plant bumps for L32 →
+                //   parent L32 → ...
+                // The traditional self-loop (line ~1024 below) is suppressed
+                // for energy-gated parents because per-level children carry
+                // the work + ETA.
                 let safetyCap = 25;
                 while ((projected < 0 || firstBumpForced) && safetyCap-- > 0) {
                   const nextPlantLvl = virtualPlantLvl + 1;
                   const baseProd = prodFn(virtualPlantLvl);
                   const newProd = prodFn(nextPlantLvl);
-                  // Add SINGLE-LEVEL child for this plant bump. Override
-                  // current with virtualPlantLvl so the tree node shows
-                  // the actual chain step (e.g. 17→18 second child, not
-                  // 16→18 misread from planet state).
                   const powerNode = buildAndSimulate(plantBuilding, nextPlantLvl, "building", virtualPlantLvl);
                   if (powerNode) children.push(powerNode);
                   virtualEnergy += newProd - baseProd;
                   virtualPlantLvl = nextPlantLvl;
                   projected = virtualEnergy - delta;
-                  firstBumpForced = false;  // single-shot
+                  firstBumpForced = false;
                 }
                 virtualEnergy -= delta;
+                // Emit THIS parent self-level as a child immediately AFTER
+                // its plant prereqs. Inline cost simulation mirrors the
+                // self loop (cost + wait + build + bank pay + currentStep
+                // capture + totalCost accrue), so the suppressed self loop
+                // below sees no double-counting.
+                const cost = costFn(l);
+                if (currentStep === null) {
+                  currentStep = { tech: techName, kind, level: l, cost: { m: cost.m, c: cost.c, d: cost.d ?? 0 } };
+                }
+                totalCost.m += cost.m;
+                totalCost.c += cost.c;
+                totalCost.d += cost.d ?? 0;
+                const wait = timeToAfford(cost);
+                if (!isFinite(wait)) { total = Infinity; break; }
+                accumulate(wait);
+                const build = buildSec(cost, kind);
+                accumulate(build);
+                bank.m = Math.max(0, bank.m - cost.m);
+                bank.c = Math.max(0, bank.c - cost.c);
+                bank.d = Math.max(0, bank.d - (cost.d ?? 0));
+                const step = Math.round(wait + build);
+                total += step;
+                // Push parent's per-level child node into the children array
+                children.push({
+                  tech: techName,
+                  targetLevel: l,
+                  currentLevel: l - 1,
+                  kind: "building",
+                  met: false,
+                  children: [],
+                  eta_seconds: step,
+                  subtree_eta_seconds: step,
+                });
               }
+              energyGateHandled = true;
             }
           }
           // Self: simulate levels current+1..target IN ORDER
           let selfEta = 0;
-          if (current < targetLevel && typeof costFn === "function") {
+          if (!energyGateHandled && current < targetLevel && typeof costFn === "function") {
             for (let l = current + 1; l <= targetLevel; l++) {
               const cost = costFn(l);
               // v0.0.461: first unmet leaf's first level = "current step" —
