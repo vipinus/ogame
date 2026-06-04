@@ -3656,6 +3656,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     if (g.status === "blocked") {
       if (/build slot.*in use|shipyard slot.*in use|research slot.*in use|lf build slot.*in use/i.test(reason)) return { label: t("goal.state.queued_slot_busy"), color: "#bdb76b" };
       if (/moon fields nearly full/i.test(reason)) return { label: t("goal.state.fields_full_lb"), color: "#ff9b6b" };
+      if (/120012|該行星已沒空間了|该行星已没空间/i.test(reason)) return { label: t("goal.state.fields_full_planet"), color: "#ff6b6b" };
       if (/chain prereq.*waiting/i.test(reason)) return { label: t("goal.state.chain_wait"), color: "#bdb76b" };
       if (/has \d+× .*, need \d+|insufficient.*ship|0× .*, need/i.test(reason)) return { label: t("goal.state.ships_short"), color: "#ff9b6b" };
       if (/expedition slots full|fleet slots full|early skip, not queued/i.test(reason)) return { label: t("goal.state.slots_full"), color: "#bdb76b" };

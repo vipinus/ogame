@@ -1732,6 +1732,14 @@ export async function startSidecar(
             // when the slot opens between our usedF check and the POST).
             const TRANSIENT_RE = /140043|140028|140019|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum/i;
             const isTransient = TRANSIENT_RE.test(reason);
+            // v0.0.738 — operator 2026-06-04 "supplies:fusionReactor rejected
+            // 該行星已沒空間了 120012 这个报错". Permanent error: planet's
+            // building fields are exhausted; only operator can demolish or
+            // build terraformer to free space. ogame state won't self-resolve.
+            // Use long backoff (24h) instead of 60s so auto-retry doesn't
+            // burn token / spam logs every minute.
+            const HARD_BLOCK_RE = /120012|該行星已沒空間了|该行星已没空间|no space left|fields full|no field/i;
+            const isHardBlock = HARD_BLOCK_RE.test(reason);
             const row = goalsStore.list().find((r) => r.goal.id === goalId);
             const type = row?.goal.type;
             if (!isTransient && (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport")) {
@@ -1764,10 +1772,17 @@ export async function startSidecar(
                // pause+resume to avoid race-prone re-fire. With dispatch dedup
                // (wire harvest 10min + sendFleet payload 60s + sidecar firedDebrisCheckFor)
                // + stuck-recovery 60s, race risk is acceptable for auto-recovery.
-              priorityMergerRef?.markAwaiting(goalId, ["empire_poll", "backoff_60s"]);
+              // v0.0.738 — hard-block errors (120012 fields full) use 24h
+              // backoff: needs operator demolish/terraformer, won't self-resolve.
+              const backoffLabel = isHardBlock ? "backoff_24h_hardblock" : "backoff_60s";
+              const backoffMs = isHardBlock ? 24 * 3600 * 1000 : 60_000;
+              priorityMergerRef?.markAwaiting(goalId, ["empire_poll", backoffLabel]);
               setTimeout(() => {
-                priorityMergerRef?.clearAwaiting(goalId, "backoff_60s");
-              }, 60_000);
+                priorityMergerRef?.clearAwaiting(goalId, backoffLabel);
+              }, backoffMs).unref();
+              if (isHardBlock) {
+                console.log(`[hard-block] goal ${goalId.slice(0, 12)} ${reason.slice(0, 80)} — 24h backoff, operator action required`);
+              }
               void isFleetPost; // kept for log/diag; treatment unified now
               // v0.0.478: also clear dispatch stamp — directive completed
               // (with failure), so stuck-recovery's "in-flight" gate releases.
