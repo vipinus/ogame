@@ -834,6 +834,26 @@ export async function startSidecar(
           },
         }
       : {}),
+    // Operator 2026-06-04 "flagship 信号灯" — surface ws-connected-by-uid to
+    // HTTP layer so /v1/me/bridge-status can answer per-user.
+    wsHasUidConnected: (uid: string): boolean => ws.hasUidConnected(uid),
+    // Operator 2026-06-04 "红灯 = TM 离线" — derive last_push_ago from PG
+    // ogame_world_state.updated_at. sidecar upserts that column on every
+    // state.snapshot push (any transport). null when row missing.
+    userLastSeenAgoSec: async (uid: string): Promise<number | null> => {
+      if (!pgStore) return null;
+      try {
+        const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+        const rows = await sql`SELECT updated_at FROM ogame_world_state WHERE user_id = ${uid} LIMIT 1`;
+        const row = rows[0] as { updated_at?: Date | string } | undefined;
+        if (!row?.updated_at) return null;
+        const ms = row.updated_at instanceof Date ? row.updated_at.getTime() : new Date(row.updated_at).getTime();
+        return Math.max(0, Math.floor((Date.now() - ms) / 1000));
+      } catch (e) {
+        console.warn("[ogamex] userLastSeenAgoSec threw", e);
+        return null;
+      }
+    },
     // Operator API providers — surface state/goals/expedition over HTTP.
     stateProvider: () => stateRef.current ?? { ok: false, reason: "no snapshot yet" },
     listGoals: (explicitUid?: string) => {

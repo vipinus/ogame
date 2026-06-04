@@ -30,10 +30,11 @@ import { TokenManager } from "./api/token_manager.js";
 import { extractToken, type OgameWindow } from "./probes/extractors/token.js";
 import type { StateRef } from "./emergency/attack_detector.js";
 import { startGoalsPanel, type GoalsPanelHandle } from "./overlay/goals_panel.js";
+import type { BridgeClient as WsBridgeClient } from "./bridge/ws_client.js";
 
 export interface RuntimeWireOptions {
-  /** HttpBridgeClient to bind GoalRunner. Optional — if absent, GoalRunner is not started. */
-  bridge?: HttpBridgeClient;
+  /** HttpBridgeClient or WsBridgeClient to bind GoalRunner. Optional — if absent, GoalRunner is not started. */
+  bridge?: HttpBridgeClient | WsBridgeClient;
   /** Window for DOM clicks (browser injects window; tests inject jsdom). */
   win: Window;
   doc: Document;

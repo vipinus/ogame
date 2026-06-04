@@ -258,6 +258,17 @@ export class WsServer {
     return this.socketUid.get(ws) ?? null;
   }
 
+  /** Operator 2026-06-04 "flagship 信号灯" — true if any open ws client is
+   *  uid-tagged with the given user_id. Used by /ogamex/v1/me/bridge-status
+   *  to surface WS vs HTTP transport in the web dashboard dot. */
+  hasUidConnected(uid: string): boolean {
+    if (!uid) return false;
+    for (const ws of this.clients) {
+      if (this.socketUid.get(ws) === uid) return true;
+    }
+    return false;
+  }
+
   private async checkAuthAsync(req: IncomingMessage): Promise<{ ok: boolean; uid?: string }> {
     // 1) Global token via header or subprotocol
     const local = this.checkAuth(req);

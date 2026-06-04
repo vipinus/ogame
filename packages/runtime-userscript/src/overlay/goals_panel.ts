@@ -13,6 +13,7 @@
  */
 import { LIFEFORM_TECH } from "@ogamex/shared";
 import { TECH_ID_BY_NAME } from "@ogamex/shared";
+import { planTransportChain, makeTransportChainId, type PlannerPlanet } from "@ogamex/shared";
 import { t } from "../i18n/t.js";
 import { techName } from "../i18n/tech_name.js";
 import { getOgameLocaleWithOverride } from "../i18n/locale.js";
@@ -2955,15 +2956,14 @@ function openTransportSettings(
       const cap = ship === "smallCargo" ? stCap : ltCap;
       const needed = total > 0 ? Math.ceil(total / cap) : 0;
       const countInput = m.querySelector<HTMLInputElement>("[data-tr-ship-count]");
-      // v0.0.676 — shortage-fill path uses needed (auto-compute by cargo),
-      // manual path uses haveShips (v0.0.671 behaviour); see isShortageFill
-      // discriminator at modal-open. needed still feeds the info span +
-      // isShort red highlight regardless of which value lands in the input.
+      // v0.0.762 — operator 2026-06-04 "船数输入框要同步算出来的值, 不是最大值".
+      // 拉平: shortage prefill 和手动模式都跟 needed (按 cargo 反推). haveShips
+      // 仍用来做 isShort 红字高亮判定; 不再写进输入框. (推翻 v0.0.671/676 分支.)
       const sourceVal = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
       const sourceP = sourceVal ? planetsMap[sourceVal] : null;
       const shipKey = ship === "smallCargo" ? "smallCargo" : "largeCargo";
       const haveShips = (sourceP?.ships as Record<string, number | undefined> | undefined)?.[shipKey] ?? 0;
-      if (countInput) countInput.value = String(isShortageFill ? needed : haveShips);
+      if (countInput) countInput.value = String(needed);
       // v0.0.530 — operator 2026-05-31 "船不夠顯示紅色". 比對 ① 艦船星球 的
       // 真實船數 (LC 或 SC) vs needed, 不夠 → 數量輸入框 + 旁邊提示 紅字。
       const isShort = needed > haveShips;
@@ -3117,135 +3117,48 @@ function openTransportSettings(
       // Build the chain: depending on (source vs resource) and (JG) we emit
       // 1-3 goals with a shared chain id + priority ladder so the planner
       // dispatches them in order as ships arrive at each waypoint.
-      const chainId = `txc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      // v0.0.763 — operator 2026-06-04 "完全克隆 flagship":
+      // chain planning lifted to @ogamex/shared/transport_planner so the
+      // web dashboard (/api/me/goals/transport) reuses the EXACT same rules
+      // (same-coord shortcut, JG-only-empty, moon buffers, 3 segments).
+      const chainId = makeTransportChainId(Date.now());
       const ships = { [ship]: shipCount };
-      // v0.0.466: moon-source deuterium reserve (operator 2026-05-29 "從月球
-      // 裝載資源的時候留500000重氫在月球上"). When the resource source body
-      // is a moon, automatically cap deuterium cargo to leave 500k on the
-      // moon — moons don't produce, those 500k are the recall-fuel +
-      // JG-cooldown safety reserve. Doesn't touch planet-sourced d.
-      const resourceSourceId = resourceSrc ?? source;
-      const resourceSourceP = planetsMap[resourceSourceId];
-      const MOON_SOURCE_D_RESERVE = 500_000;   // 月球出發, 留 500K 應急 (operator 2026-05-29 拍板, 不變)
-      const MOON_TARGET_D_BUFFER = 50_000;     // v0.0.505 — operator 2026-05-30: 500K 太多, 改 50K
-      // v0.0.494 — TARGET 月球時加 buffer 給到貨後做 build 留底。
-      let cargoDFinal = cargoD;
-      if (targetPlanet?.type === "moon") {
-        cargoDFinal += MOON_TARGET_D_BUFFER;
-      }
-      if (resourceSourceP?.type === "moon") {
-        const sourceD = (resourceSourceP as { resources?: { d?: number } }).resources?.d ?? 0;
-        const sourceDMax = Math.max(0, sourceD - MOON_SOURCE_D_RESERVE);
-        cargoDFinal = Math.min(cargoDFinal, sourceDMax);
-      }
-      const cargo = { m: cargoM, c: cargoC, d: cargoDFinal };
-      // Find moon siblings (operator 2026-05-29 spec uses JG between sibling moons).
-      const findSiblingMoon = (planetId: string): StorePlanet | undefined => {
-        const p = planetsMap[planetId];
-        if (!p?.coords) return undefined;
-        const key = p.coords.join(":");
-        return Object.values(planetsMap).find((q): q is StorePlanet => q?.type === "moon" && Array.isArray(q.coords) && q.coords.join(":") === key);
+      const stopoverIdRaw = m.querySelector<HTMLInputElement>('input[name="tr-stopover-radio"]:checked')?.value ?? "";
+      const toPlannerPlanet = (p: StorePlanet | undefined): PlannerPlanet | null => {
+        if (!p?.coords || p.coords.length < 3) return null;
+        const base: PlannerPlanet = {
+          id: p.id,
+          type: (p.type === "moon" ? "moon" : "planet"),
+          coords: [p.coords[0]!, p.coords[1]!, p.coords[2]!],
+        };
+        const res = (p as { resources?: { m?: number; c?: number; d?: number } }).resources;
+        if (res) base.resources = res;
+        return base;
       };
-      const sourceP = planetsMap[source];
-      const resourceP = resourceSrc ? planetsMap[resourceSrc] : sourceP;
-      const goalBodies: Array<{ type: string; target: Record<string, unknown>; planet?: string; priority?: number }> = [];
-      // v0.0.425: factor the chain into a `genFerry` helper so every leg of
-      // movement (source→resource, resource→target, target→stopover) uses
-      // the same JG-aware decision: when JG is enabled AND both endpoints
-      // have a sibling moon at their own coords, emit a 3-leg ferry
-      // (planet→moon local deploy, moon→moon jumpgate, moon→planet local
-      // deploy). Otherwise emit a single direct hop. Fixes operator's
-      // 2026-05-29 report where Leg 1 was a sublight cross-system deploy.
-      const genFerry = (
-        fromId: string,
-        toId: string,
-        carryCargo: boolean,
-        finalLegType: "deploy" | "transport",
-        phasePrefix: string,
-        basePriority: number,
-      ): typeof goalBodies => {
-        const fromP = planetsMap[fromId];
-        const toP = planetsMap[toId];
-        if (!fromP || !toP || fromP.id === toP.id) return [];
-        const fromCoords = (fromP.coords ?? []).join(":");
-        const toCoords = (toP.coords ?? []).join(":");
-        // v0.0.462: same-coord shortcut (operator 2026-05-29 "運到本星球的
-        // 月球 任務規劃的不對"). When fromCoords === toCoords (planet↔moon
-        // at same G:S:P), there's no long-distance to bridge — JG hop would
-        // be moon→itself (nonsense). Emit ONE direct deploy and bail out
-        // before the JG-vs-direct decision.
-        if (fromCoords && fromCoords === toCoords) {
-          return [{
-            type: finalLegType,
-            target: { target_coords: toCoords, target_type: toP.type ?? "planet", ships, cargo: carryCargo ? cargo : undefined, source_planet: fromP.id, chain_id: chainId, chain_phase: `${phasePrefix}_local` },
-            planet: fromP.id, priority: basePriority,
-          }];
-        }
-        const fromMoon = findSiblingMoon(fromP.id);
-        const toMoon = findSiblingMoon(toP.id);
-        // Operator 2026-05-29 rule: JG can only carry EMPTY ships. When this
-        // segment is hauling cargo, force the direct sublight hop regardless
-        // of whether both endpoints have moons.
-        const useJgHere = jgEnabled && !!fromMoon && !!toMoon && !carryCargo;
-        const cargoArg = carryCargo ? cargo : undefined;
-        if (useJgHere && fromMoon && toMoon) {
-          const fromMoonCoords = (fromMoon.coords ?? []).join(":");
-          // Leg A: planet → own moon (local micro-deploy, same coord). When
-          // fromP IS ALREADY a moon (Seg 3 target→stopover where target=moon),
-          // ships are already on the moon — Leg A would emit moon→itself
-          // which sendFleet either rejects or fallback-rewrites to planet,
-          // causing a duplicate of the Seg 2 cargo fleet. Skip Leg A in this
-          // case. (operator 2026-05-30 — saw 2 fleets 殖民 3:260:9 → 月球
-          // 1:486:7 24s apart; Seg 3 leg A was the second fleet.)
-          const legs: typeof goalBodies = [];
-          if (fromP.type !== "moon") {
-            legs.push({ type: "deploy",
-              target: { target_coords: fromMoonCoords, target_type: "moon", ships, cargo: cargoArg, source_planet: fromP.id, chain_id: chainId, chain_phase: `${phasePrefix}_load` },
-              planet: fromP.id, priority: basePriority });
-          }
-          // Leg B: moon → moon (jumpgate hop).
-          legs.push({ type: "jumpgate",
-            // v0.0.468: take_all is now per-chain (modal checkbox). When
-            // true, planner reads source moon's current ships at dispatch
-            // time and sweeps EVERYTHING. When false, only the configured
-            // ships count flies through JG.
-            target: { source_moon: fromMoon.id, target_moon: toMoon.id, ships, take_all: jgTakeAll, chain_id: chainId, chain_phase: `${phasePrefix}_hop` },
-            planet: fromMoon.id, priority: basePriority - 1 });
-          // Leg C: moon → planet at destination (local micro-deploy). Skip
-          // symmetrically when toP IS already a moon (ships stay on moon).
-          if (toP.type !== "moon") {
-            legs.push({ type: "deploy",
-              target: { target_coords: toCoords, target_type: toP.type ?? "planet", ships, cargo: cargoArg, source_planet: toMoon.id, chain_id: chainId, chain_phase: `${phasePrefix}_unload` },
-              planet: toMoon.id, priority: basePriority - 2 });
-          }
-          return legs;
-        }
-        // Direct sublight hop — single goal. fromCoords is for debug only
-        // (target stores planet-id refs that resolveCoord can pretty-print).
-        void fromCoords;
-        return [
-          { type: finalLegType,
-            target: { target_coords: toCoords, target_type: toP.type ?? "planet", ships, cargo: cargoArg, source_planet: fromP.id, chain_id: chainId, chain_phase: `${phasePrefix}_direct` },
-            planet: fromP.id, priority: basePriority },
-        ];
-      };
-      // Segment 1: source → resource (ferry empty ships into position).
-      // Skipped when source == resource (ships already at resource).
-      if (resourceP && sourceP && resourceP.id !== sourceP.id) {
-        goalBodies.push(...genFerry(sourceP.id, resourceP.id, false, "deploy", "ferry_to_res", 12));
+      const ppSource = toPlannerPlanet(planetsMap[source]);
+      const ppResource = resourceSrc ? toPlannerPlanet(planetsMap[resourceSrc]) : ppSource;
+      const ppTarget = toPlannerPlanet(planetsMap[target]);
+      const ppStopover = stopoverIdRaw && stopoverIdRaw !== target ? toPlannerPlanet(planetsMap[stopoverIdRaw]) : null;
+      if (!ppSource || !ppTarget) {
+        if (status) { status.textContent = "missing source/target planet metadata"; status.style.color = "#ff6b6b"; }
+        return;
       }
-      // Segment 2: resource → target (carries cargo). Always fires.
-      // v0.0.465: operator 2026-05-29 rule "運輸裏面不要有運輸 全部都用部署".
-      // Changed from "transport" (mission=3, ships return) to "deploy"
-      // (mission=4, ships stay). Whole chain now uses deploy consistently —
-      // ships propagate along the path, no return leg. cargo still goes.
-      const launchPlanetId = resourceP?.id ?? source;
-      goalBodies.push(...genFerry(launchPlanetId, target, true, "deploy", "to_target", 9));
-      // Segment 3: target → stopover (empty ferry post-unload), optional.
-      const stopover = m.querySelector<HTMLInputElement>('input[name="tr-stopover-radio"]:checked')?.value ?? "";
-      if (stopover && stopover !== target) {
-        goalBodies.push(...genFerry(target, stopover, false, "deploy", "to_stop", 6));
-      }
+      const ppAll = Object.values(planetsMap)
+        .map(toPlannerPlanet)
+        .filter((p): p is PlannerPlanet => p !== null);
+      const { goals: plannedGoals } = planTransportChain({
+        source: ppSource,
+        resource: ppResource,
+        target: ppTarget,
+        stopover: ppStopover,
+        ships,
+        cargo: { m: cargoM, c: cargoC, d: cargoD },
+        jgEnabled,
+        jgTakeAll,
+        allPlanets: ppAll,
+        chainId,
+      });
+      const goalBodies: Array<{ type: string; target: Record<string, unknown>; planet?: string; priority?: number }> = plannedGoals;
       if (status) { status.textContent = `creating ${goalBodies.length} goal(s)…`; status.style.color = "#7080a0"; }
       try {
         const ids: string[] = [];
@@ -4571,10 +4484,15 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       } else if (bs2 && (bs2.status === "connecting" || bs2.status === "reconnecting")) {
         c = "#e0c020"; title = `Bridge: ${bs2.transport} ${bs2.status}`;
       }
+      // Operator 2026-06-04 "红灯闪烁" — 500ms 切换 opacity
+      const isRed = c === "#c43d3d";
+      const blinkOn = Math.floor(Date.now() / 500) % 2 === 0;
       dot.style.background = c;
-      dot.style.boxShadow = `0 0 6px ${c}`;
+      dot.style.boxShadow = isRed ? `0 0 10px ${c}, 0 0 16px ${c}` : `0 0 6px ${c}`;
+      dot.style.opacity = isRed && !blinkOn ? "0.25" : "1";
+      dot.style.transition = "opacity 0.3s ease-in-out";
       dot.title = title;
-    }, 1000);
+    }, 500);
     // Wire discovery Start button.
     const startBtn = panel.querySelector<HTMLElement>("[data-action=\"discovery-start\"]");
     if (startBtn) {

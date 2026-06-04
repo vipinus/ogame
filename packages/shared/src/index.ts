@@ -7,3 +7,5 @@ export { expeditionSlots, TECH_TREE, prerequisitesFor, costFor, OGAME_DATA_TECHN
 export type { TechKind, TechEntry } from "./tech_tree.js";
 export { buildingSec, researchSec, techSec } from "./build_time.js";
 export type { BuildTimeAccel } from "./build_time.js";
+export { planTransportChain, makeTransportChainId } from "./transport_planner.js";
+export type { PlannerPlanet, PlanTransportInput, PlanTransportOutput, TransportGoalBody } from "./transport_planner.js";

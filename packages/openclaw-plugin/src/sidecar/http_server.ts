@@ -98,6 +98,12 @@ export interface HttpServerOptions {
    *  flags (mirrors user_settings.section_settings jsonb). */
   sectionSettingsRead?: (uid: string) => Promise<Record<string, unknown>>;
   sectionSettingsWrite?: (uid: string, patch: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  /** Operator 2026-06-04 "flagship 信号灯" — true if WsServer has an open ws
+   *  socket tagged with uid. Used by /v1/me/bridge-status. */
+  wsHasUidConnected?: (uid: string) => boolean;
+  /** Operator 2026-06-04 "红灯 = TM 离线" — seconds since this uid last pushed
+   *  state.snapshot (PG ogame_world_state.updated_at). null = never pushed. */
+  userLastSeenAgoSec?: (uid: string) => Promise<number | null>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -165,6 +171,12 @@ interface ResolvedHttpServerOptions {
    *  flags (mirrors user_settings.section_settings jsonb). */
   sectionSettingsRead?: (uid: string) => Promise<Record<string, unknown>>;
   sectionSettingsWrite?: (uid: string, patch: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  /** Operator 2026-06-04 "flagship 信号灯" — true if WsServer has an open ws
+   *  socket tagged with uid. Used by /v1/me/bridge-status. */
+  wsHasUidConnected?: (uid: string) => boolean;
+  /** Operator 2026-06-04 "红灯 = TM 离线" — seconds since this uid last pushed
+   *  state.snapshot (PG ogame_world_state.updated_at). null = never pushed. */
+  userLastSeenAgoSec?: (uid: string) => Promise<number | null>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -230,6 +242,8 @@ export class HttpServer {
       ...(opts.resolveUserToken !== undefined ? { resolveUserToken: opts.resolveUserToken } : {}),
       ...(opts.sectionSettingsRead !== undefined ? { sectionSettingsRead: opts.sectionSettingsRead } : {}),
       ...(opts.sectionSettingsWrite !== undefined ? { sectionSettingsWrite: opts.sectionSettingsWrite } : {}),
+      ...(opts.wsHasUidConnected !== undefined ? { wsHasUidConnected: opts.wsHasUidConnected } : {}),
+      ...(opts.userLastSeenAgoSec !== undefined ? { userLastSeenAgoSec: opts.userLastSeenAgoSec } : {}),
       ...(opts.cancelGoal !== undefined ? { cancelGoal: opts.cancelGoal } : {}),
       ...(opts.pauseGoal !== undefined ? { pauseGoal: opts.pauseGoal } : {}),
       ...(opts.resumeGoal !== undefined ? { resumeGoal: opts.resumeGoal } : {}),
@@ -524,6 +538,11 @@ export class HttpServer {
     // section-settings — operator "全做" bidir sync.
     if ((method === "GET" || method === "POST") && url === "/ogamex/v1/section-settings") {
       void this.dispatchSectionSettings(req, res, method);
+      return;
+    }
+    // Operator "flagship 信号灯" — per-user bridge transport status for web dot.
+    if (method === "GET" && url === "/ogamex/v1/me/bridge-status") {
+      void this.dispatchBridgeStatus(req, res);
       return;
     }
     if (method === "GET" && url === EXPEDITION_TRIGGER_PATH) {
@@ -1053,6 +1072,37 @@ export class HttpServer {
       res.statusCode = 500;
       res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
     }
+  }
+
+  /** Operator 2026-06-04 "flagship 信号灯" — per-user bridge transport status.
+   *  Returns:
+   *    { ws_connected: bool, http_last_seen_ago_sec: number|null }
+   *  ws_connected: true when WsServer has an open socket tagged with this uid.
+   *  http_last_seen_ago_sec: derived from HttpServer's bucket last activity
+   *    (best-effort). Caller renders dot per:
+   *    ws_connected → 绿; http_last_seen < 60s → 黄; else 红. */
+  private async dispatchBridgeStatus(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const r = await this.resolveBearer(req);
+    if (r.kind === "forbidden") { this.writeCorsHeaders(res); res.statusCode = 401; res.end(); return; }
+    if (r.kind === "legacy") { this.writeCorsHeaders(res); res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, error: "user_token_required" })); return; }
+    const uid = r.uid;
+    let wsConnected = false;
+    try {
+      const hook = this.opts.wsHasUidConnected;
+      if (hook) wsConnected = hook(uid);
+    } catch (e) { console.warn("[http] wsHasUidConnected threw", e); }
+    // Operator 2026-06-04 "红灯 = TM 离线" — derive last-push-ago from PG
+    // ogame_world_state.updated_at for this uid (sidecar upserts that row
+    // on every state.snapshot push, transport-agnostic). null → never pushed.
+    let lastPushAgoSec: number | null = null;
+    try {
+      const hook = this.opts.userLastSeenAgoSec;
+      if (hook) lastPushAgoSec = await hook(uid);
+    } catch (e) { console.warn("[http] userLastSeenAgoSec threw", e); }
+    this.writeCorsHeaders(res); res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ ws_connected: wsConnected, last_push_ago_sec: lastPushAgoSec, ts: Date.now() }));
   }
 
   /** S4 — section-settings GET/POST. Bearer-scoped; uses provided callbacks
