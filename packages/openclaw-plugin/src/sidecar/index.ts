@@ -854,18 +854,40 @@ export async function startSidecar(
         return null;
       }
     },
-    // v0.0.766 — S14 切服检测 cancel goals: bulk update 该 user 全部非
-    // 终态 goals → status=cancelled. 切服后 planet field 指向旧 universe
-    // planet_id, 自动 cancel 防 planner 反复试 dispatch 报 planet not found.
+    // v0.0.766 — S14b 切服 stash 模式: 不是销毁 goal, 而是 stash 等切回来 restore.
+    // reason 格式: 'server-switch-stash:<oldUniverse>'. status='cancelled' 但
+    // reason 含 universe 标识, 切回该 universe 时自动 restore. operator:
+    // "切回来的时候可以把持久化的数据拿回来复原现场吧?".
     serverSwitchCancelGoals: async (uid: string, reason: string): Promise<number> => {
       if (!pgStore) return 0;
       try {
         const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
-        const rows = await sql`UPDATE ogame_goals SET status = 'cancelled', reason = ${reason}, updated_at = NOW()
-          WHERE user_id = ${uid} AND status NOT IN ('cancelled', 'completed') RETURNING id`;
+        // reason 实际是 "server switched: oldUniverse → newUniverse" 我们解析 oldUniverse
+        const m = reason.match(/server switched:\s*([^→\s]+)/);
+        const oldUniverse = m?.[1] ?? "?";
+        const stashReason = `server-switch-stash:${oldUniverse}`;
+        const rows = await sql`UPDATE ogame_goals SET status = 'cancelled', reason = ${stashReason}, updated_at = NOW()
+          WHERE user_id = ${uid} AND status NOT IN ('cancelled', 'completed') AND (reason IS NULL OR reason NOT LIKE 'server-switch-stash:%')
+          RETURNING id`;
         return rows.length;
       } catch (e) {
-        console.warn("[server-switch] cancel goals SQL threw", e);
+        console.warn("[server-switch] stash goals SQL threw", e);
+        return 0;
+      }
+    },
+    // v0.0.766b — 切到新 universe 时, 查 cancelled goals 中 reason 匹配
+    // 该 universe 的 stash, 全部 status='pending' reason=NULL 复原.
+    serverSwitchRestoreGoals: async (uid: string, newUniverse: string): Promise<number> => {
+      if (!pgStore) return 0;
+      try {
+        const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+        const stashReason = `server-switch-stash:${newUniverse}`;
+        const rows = await sql`UPDATE ogame_goals SET status = 'pending', reason = NULL, updated_at = NOW()
+          WHERE user_id = ${uid} AND status = 'cancelled' AND reason = ${stashReason}
+          RETURNING id`;
+        return rows.length;
+      } catch (e) {
+        console.warn("[server-switch] restore goals SQL threw", e);
         return 0;
       }
     },

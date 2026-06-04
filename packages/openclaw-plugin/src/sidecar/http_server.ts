@@ -104,8 +104,12 @@ export interface HttpServerOptions {
   /** Operator 2026-06-04 "红灯 = TM 离线" — seconds since this uid last pushed
    *  state.snapshot (PG ogame_world_state.updated_at). null = never pushed. */
   userLastSeenAgoSec?: (uid: string) => Promise<number | null>;
-  /** v0.0.766 — S14 切服检测 cancel goals hook */
+  /** v0.0.766 — S14 切服检测 stash goals hook (status=cancelled,
+   *  reason='server-switch-stash:<oldUniverse>') */
   serverSwitchCancelGoals?: (uid: string, reason: string) => Promise<number>;
+  /** v0.0.766b — S14b 切服切回 restore hook: 找 cancelled+reason 匹配
+   *  this universe → set status='pending'. */
+  serverSwitchRestoreGoals?: (uid: string, newUniverse: string) => Promise<number>;
   /** v0.0.766 — S14 切服 audit log hook */
   serverSwitchAppendEvent?: (uid: string, payload: Record<string, unknown>) => Promise<void>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
@@ -181,8 +185,12 @@ interface ResolvedHttpServerOptions {
   /** Operator 2026-06-04 "红灯 = TM 离线" — seconds since this uid last pushed
    *  state.snapshot (PG ogame_world_state.updated_at). null = never pushed. */
   userLastSeenAgoSec?: (uid: string) => Promise<number | null>;
-  /** v0.0.766 — S14 切服检测 cancel goals hook */
+  /** v0.0.766 — S14 切服检测 stash goals hook (status=cancelled,
+   *  reason='server-switch-stash:<oldUniverse>') */
   serverSwitchCancelGoals?: (uid: string, reason: string) => Promise<number>;
+  /** v0.0.766b — S14b 切服切回 restore hook: 找 cancelled+reason 匹配
+   *  this universe → set status='pending'. */
+  serverSwitchRestoreGoals?: (uid: string, newUniverse: string) => Promise<number>;
   /** v0.0.766 — S14 切服 audit log hook */
   serverSwitchAppendEvent?: (uid: string, payload: Record<string, unknown>) => Promise<void>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
@@ -253,6 +261,7 @@ export class HttpServer {
       ...(opts.wsHasUidConnected !== undefined ? { wsHasUidConnected: opts.wsHasUidConnected } : {}),
       ...(opts.userLastSeenAgoSec !== undefined ? { userLastSeenAgoSec: opts.userLastSeenAgoSec } : {}),
       ...(opts.serverSwitchCancelGoals !== undefined ? { serverSwitchCancelGoals: opts.serverSwitchCancelGoals } : {}),
+      ...(opts.serverSwitchRestoreGoals !== undefined ? { serverSwitchRestoreGoals: opts.serverSwitchRestoreGoals } : {}),
       ...(opts.serverSwitchAppendEvent !== undefined ? { serverSwitchAppendEvent: opts.serverSwitchAppendEvent } : {}),
       ...(opts.cancelGoal !== undefined ? { cancelGoal: opts.cancelGoal } : {}),
       ...(opts.pauseGoal !== undefined ? { pauseGoal: opts.pauseGoal } : {}),
@@ -1155,26 +1164,33 @@ export class HttpServer {
     try { parsed = JSON.parse(body); } catch { /* */ }
     const newUniverse = parsed.new_universe ?? parsed.hostname ?? "?";
     const oldUniverse = parsed.old_universe ?? "?";
-    // ① cancel goals
-    let cancelledCount = 0;
+    // ① stash 当前 active goals (status=cancelled, reason='server-switch-
+    //    stash:<oldUniverse>') 防 planner 试旧 planet_id
+    let stashedCount = 0;
     try {
       const hook = this.opts.serverSwitchCancelGoals;
-      if (hook) cancelledCount = await hook(uid, `server switched: ${oldUniverse} → ${newUniverse}`);
-    } catch (e) { console.warn("[server-switch] cancelGoals threw", e); }
-    // ② clear fields_full cache
+      if (hook) stashedCount = await hook(uid, `server switched: ${oldUniverse} → ${newUniverse}`);
+    } catch (e) { console.warn("[server-switch] stash threw", e); }
+    // ② restore: 看是否有 newUniverse 历史 stash, 切回则复原现场
+    let restoredCount = 0;
+    try {
+      const hook = this.opts.serverSwitchRestoreGoals;
+      if (hook) restoredCount = await hook(uid, newUniverse);
+    } catch (e) { console.warn("[server-switch] restore threw", e); }
+    // ③ clear fields_full cache (24h TTL 内残留)
     let clearedFieldsFull = 0;
     try {
       const planner = await import("./planner.js");
       clearedFieldsFull = planner.clearAllFieldsFull();
     } catch (e) { console.warn("[server-switch] clearAllFieldsFull threw", e); }
-    // ③ persist event
+    // ④ persist event
     try {
       const hook = this.opts.serverSwitchAppendEvent;
-      if (hook) await hook(uid, { old_universe: oldUniverse, new_universe: newUniverse, ts: Date.now(), cancelled_goals: cancelledCount, cleared_fields_full: clearedFieldsFull });
+      if (hook) await hook(uid, { old_universe: oldUniverse, new_universe: newUniverse, ts: Date.now(), stashed_goals: stashedCount, restored_goals: restoredCount, cleared_fields_full: clearedFieldsFull });
     } catch (e) { console.warn("[server-switch] appendEvent threw", e); }
-    console.log(`[server-switch] uid=${uid.slice(0, 8)} ${oldUniverse} → ${newUniverse} cancelled=${cancelledCount} fields_full=${clearedFieldsFull}`);
+    console.log(`[server-switch] uid=${uid.slice(0, 8)} ${oldUniverse} → ${newUniverse} stashed=${stashedCount} restored=${restoredCount} fields_full=${clearedFieldsFull}`);
     this.writeCorsHeaders(res); res.setHeader("Content-Type", "application/json"); res.statusCode = 200;
-    res.end(JSON.stringify({ ok: true, cancelled_goals_count: cancelledCount, cleared_fields_full_count: clearedFieldsFull }));
+    res.end(JSON.stringify({ ok: true, stashed_goals_count: stashedCount, restored_goals_count: restoredCount, cleared_fields_full_count: clearedFieldsFull }));
   }
 
   private async dispatchFieldsFull(
