@@ -3701,7 +3701,10 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const indent = depth * 14;
     const hasChildren = n.children.length > 0;
     const key = treeKey(n);
-    const collapsed = !treeExpanded.has(key); // v0.0.526 預設折疊
+    // v0.0.526 預設折疊; v0.0.738 — operator 2026-06-04 "树状展开 应该都
+    // 列在 tree 上". Root (depth=0) 默认展开, 让 children (energy prereq
+    // 类) 一进面板就可见; 深层 (depth ≥ 1) 保持 v0.0.526 折叠语义.
+    const collapsed = depth > 0 && !treeExpanded.has(key);
     const chev = hasChildren
       ? `<span data-tree-toggle="${escapeHtml(key)}" style="display:inline-block; width:12px; cursor:pointer; color:#8090a8; user-select:none;">${collapsed ? "▸" : "▾"}</span>`
       : `<span style="display:inline-block; width:12px;"></span>`;
