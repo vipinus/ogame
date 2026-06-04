@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.771";
+  const USERSCRIPT_VERSION = "0.0.772";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -3738,6 +3738,31 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   const tsMetaPerfMs = performance.now(); // baseline at boot
   if (Number.isFinite(tsMeta) && tsMeta > 0) {
     let tzOffsetHours = 1; // fixed CET (gameforge default)
+    // v0.0.772 — operator 2026-06-04 "别的服务器可能时间不同 试试TM拿服务器时区":
+    // auto-detect TZ from ogame's displayed clock vs ogame-timestamp meta.
+    // Tries common ogame clock selectors. Diff = offset, persist to store
+    // for sidecar / flagship 用. localStorage override 仍 takes precedence.
+    try {
+      const clockEl = env.doc.querySelector<HTMLElement>("#serverTime, #serverDate, .serverTime, .OGameClock");
+      const txt = clockEl?.textContent?.trim() ?? "";
+      const m = txt.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+      if (m && m[1] && m[2]) {
+        const serverHH = parseInt(m[1], 10);
+        const serverMM = parseInt(m[2], 10);
+        const serverSS = m[3] ? parseInt(m[3], 10) : 0;
+        const serverSod = serverHH * 3600 + serverMM * 60 + serverSS;  // seconds-of-day
+        const utcSod = tsMeta % 86400;
+        // 取最近的 offset (modulo 24h, allow negative)
+        let diff = serverSod - utcSod;
+        if (diff > 43200) diff -= 86400;
+        if (diff < -43200) diff += 86400;
+        const detectedHours = Math.round(diff / 3600);
+        if (detectedHours >= -12 && detectedHours <= 14) {
+          tzOffsetHours = detectedHours;
+          console.info(`[ogamex/tz] auto-detected server offset from DOM clock '${txt}' vs UTC ts=${tsMeta} → UTC${detectedHours >= 0 ? "+" : ""}${detectedHours}h`);
+        }
+      }
+    } catch (e) { console.warn("[ogamex/tz] DOM clock auto-detect failed, using default UTC+1", e); }
     try {
       const override = env.win.localStorage.getItem("ogamex.server.tz_offset_hours");
       if (override !== null) {
@@ -3745,6 +3770,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (Number.isFinite(parsed)) tzOffsetHours = parsed;
       }
     } catch { /* localStorage blocked = use default */ }
+    // v0.0.772 — push detected offset into store so flagship / sidecar 读取
+    try {
+      const cur = (store.state as { server?: { tz_offset_hours?: number } | null }).server ?? {};
+      store.setPartial({ server: { ...(cur as object), tz_offset_hours: tzOffsetHours } as typeof cur });
+    } catch (e) { console.warn("[ogamex/tz] store push failed", e); }
     const tzOffsetSec = Math.floor(tzOffsetHours * 3600);
     env.win.setInterval(() => {
       try {
