@@ -545,6 +545,12 @@ export class HttpServer {
       void this.dispatchBridgeStatus(req, res);
       return;
     }
+    // v0.0.764 — operator-owned fields_full cache control endpoint.
+    // GET: list current entries. DELETE: clear all OR specific planet/building.
+    if ((method === "GET" || method === "DELETE") && url === "/ogamex/v1/fields-full") {
+      void this.dispatchFieldsFull(req, res, method);
+      return;
+    }
     if (method === "GET" && url === EXPEDITION_TRIGGER_PATH) {
       // Tiny endpoint — daemon polls this every 1s instead of running
       // a 10s setInterval expeditionTick. Body is ~30 bytes.
@@ -1103,6 +1109,52 @@ export class HttpServer {
     this.writeCorsHeaders(res); res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ ws_connected: wsConnected, last_push_ago_sec: lastPushAgoSec, ts: Date.now() }));
+  }
+
+  /** v0.0.764 — operator-owned fields_full cache control.
+   *  GET → list current cache entries (one per planet:building).
+   *  DELETE → body { planet_id?, building? }; 全空 = 清全部; only planet_id =
+   *  清该 planet 全部 buildings; both = 单条精确清.
+   *  Use case: operator 拆建筑 / 建 terraformer 后, 调这里清除让 planner
+   *  能再次试 fusion/solar 升级。Bearer required. */
+  private async dispatchFieldsFull(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    method: string,
+  ): Promise<void> {
+    const r = await this.resolveBearer(req);
+    if (r.kind === "forbidden") { this.writeCorsHeaders(res); res.statusCode = 401; res.end(); return; }
+    // Lazy import to avoid circular dep at module init.
+    const planner = await import("./planner.js");
+    this.writeCorsHeaders(res); res.setHeader("Content-Type", "application/json");
+    if (method === "GET") {
+      const list = planner.listFieldsFull();
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, count: list.length, entries: list }));
+      return;
+    }
+    // DELETE
+    let body = "";
+    await new Promise<void>((resolve) => { req.on("data", (c) => { body += c; }); req.on("end", () => resolve()); });
+    let parsed: { planet_id?: string; building?: string } = {};
+    if (body.trim()) {
+      try { parsed = JSON.parse(body); } catch { /* empty body = clear all */ }
+    }
+    if (parsed.planet_id && parsed.building) {
+      planner.clearFieldsFull(parsed.planet_id, parsed.building);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, action: "clear_single", planet_id: parsed.planet_id, building: parsed.building }));
+      return;
+    }
+    if (parsed.planet_id) {
+      const n = planner.clearFieldsFullByPlanet(parsed.planet_id);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, action: "clear_planet", planet_id: parsed.planet_id, cleared: n }));
+      return;
+    }
+    const n = planner.clearAllFieldsFull();
+    res.statusCode = 200;
+    res.end(JSON.stringify({ ok: true, action: "clear_all", cleared: n }));
   }
 
   /** S4 — section-settings GET/POST. Bearer-scoped; uses provided callbacks

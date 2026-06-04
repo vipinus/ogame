@@ -133,6 +133,31 @@ export function isFieldsFull(planetId: string, building: string): boolean {
 export function clearFieldsFull(planetId: string, building: string): void {
   fieldsFullCache.delete(fieldsFullKey(planetId, building));
 }
+/** Owner endpoint helpers — list all entries, optionally clear by (planet, building). */
+export interface FieldsFullEntry { planet_id: string; building: string; until_ms: number; remaining_ms: number; }
+export function listFieldsFull(): FieldsFullEntry[] {
+  const out: FieldsFullEntry[] = [];
+  const now = Date.now();
+  for (const [k, v] of fieldsFullCache.entries()) {
+    if (v.until < now) { fieldsFullCache.delete(k); continue; }
+    const [planet_id, building] = k.split(":");
+    if (planet_id && building) out.push({ planet_id, building, until_ms: v.until, remaining_ms: v.until - now });
+  }
+  return out;
+}
+export function clearAllFieldsFull(): number {
+  const n = fieldsFullCache.size;
+  fieldsFullCache.clear();
+  return n;
+}
+/** Clear by planet only (all buildings) — common after operator builds terraformer. */
+export function clearFieldsFullByPlanet(planetId: string): number {
+  let n = 0;
+  for (const k of [...fieldsFullCache.keys()]) {
+    if (k.startsWith(planetId + ":")) { fieldsFullCache.delete(k); n++; }
+  }
+  return n;
+}
 
 export function pickEnergyPrereqBuilding(
   building: string,
