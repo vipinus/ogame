@@ -182,6 +182,24 @@ export async function wireBridge(
   // origin→G:S）。6min 仍宽于一次 explorer 单程往返时间，不会触发
   // 同一残骸场双发；同时让 sidecar 改进后的 A/B/C 三信号每个有
   // 独立扫描窗口，被前一发挡住的概率降到极低。
+  // Operator 2026-06-04 "全做" → true bidir section_settings sync. Sidecar
+  // pushes this whenever PG user_settings.section_settings changes (website
+  // modal or another userscript instance). Apply to localStorage immediately
+  // so in-game panel reflects without F5.
+  const offSectionSettings = client.on("section_settings.update", (msg) => {
+    const m = msg as { settings?: Record<string, string | boolean>; reason?: string };
+    const settings = m.settings ?? {};
+    let applied = 0;
+    for (const [k, v] of Object.entries(settings)) {
+      if (typeof v !== "string" && typeof v !== "boolean") continue;
+      try {
+        window.localStorage.setItem(k, typeof v === "boolean" ? String(v) : v);
+        applied++;
+      } catch { /* */ }
+    }
+    console.info(`[wireBridge] section_settings.update applied ${applied} key(s) reason=${m.reason ?? "?"}`);
+  });
+
   const HARVEST_DEDUP_TTL_MS = 6 * 60 * 1000;
   const offDebrisCheck = client.on("expedition.debris_check", (msg) => {
     const m = msg as { galaxy?: number; system?: number; position?: number; origin_planet_id?: string; reason?: string };
@@ -739,6 +757,7 @@ export async function wireBridge(
       offSpy();
       offRefresh();
       offRecallNow();
+      offSectionSettings();
     },
   };
 }

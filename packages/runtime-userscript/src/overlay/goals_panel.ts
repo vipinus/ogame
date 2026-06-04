@@ -259,15 +259,33 @@ function openEmergencySettings(doc: Document): void {
         ? "background:#205a20; color:#fff; border:1px solid #408a40;"
         : "background:#5a2020; color:#fff; border:1px solid #8a4040;"}`);
     };
+    // S4 — operator 2026-06-04 "全做" — POST toggle to PG for cross-device sync.
+    const syncToPg = (key: string, value: string): void => {
+      try {
+        const baseUrl = (window as Window & { __OGAMEX_BRIDGE_URL_RUNTIME?: string }).__OGAMEX_BRIDGE_URL_RUNTIME
+          ?? "https://ogame.anyfq.com";
+        const tok = lsGet("OGAMEX_BRIDGE_TOKEN") ?? "";
+        if (!tok) return;
+        void fetch(`${baseUrl}/ogamex/v1/section-settings`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "authorization": `Bearer ${tok}` },
+          body: JSON.stringify({ [key]: value }),
+        }).catch(() => { /* sync best-effort */ });
+      } catch { /* */ }
+    };
     m.querySelector<HTMLElement>("[data-em-paused]")?.addEventListener("click", () => {
       const next = !(lsGet("ogamex.emergency.paused") === "true");  // toggle the paused-flag → enabled-flag
-      lsSet("ogamex.emergency.paused", next ? "false" : "true");
+      const v = next ? "false" : "true";
+      lsSet("ogamex.emergency.paused", v);
+      syncToPg("ogamex.emergency.paused", v);
       reflect("[data-em-paused]", next);
     });
     m.querySelector<HTMLElement>("[data-em-spy]")?.addEventListener("click", () => {
       const cur = lsGet("OGAMEX_SPY_TRIGGERS_SAVE") !== "off";
       const next = !cur;
-      lsSet("OGAMEX_SPY_TRIGGERS_SAVE", next ? "on" : "off");
+      const v = next ? "on" : "off";
+      lsSet("OGAMEX_SPY_TRIGGERS_SAVE", v);
+      syncToPg("OGAMEX_SPY_TRIGGERS_SAVE", v);
       (window as Window & { __ogamexSpyTriggersSave?: boolean }).__ogamexSpyTriggersSave = next;
       reflect("[data-em-spy]", next);
     });

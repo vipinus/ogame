@@ -641,14 +641,32 @@ export async function startSidecar(
   // `http.queueDownstream(...)` already — HTTP path is the single source of
   // delivery. `ws.on = wrapOn` mutation below still works (assigns to stub
   // method, harmless).
-  const ws = {
-    on: () => { /* */ },
-    send: () => { /* */ },
-    start: async () => { /* */ },
-    stop: async () => { /* */ },
-    port: () => 0,
-    clients: new Set<unknown>(),
-  } as unknown as WsServer;
+  // Operator 2026-06-04 — un-stub WsServer; CF tunnel will route /ws via
+  // same-port Upgrade (attachToHttpServer below after http.start()). The
+  // original stub from v0.0.638 was because WsServer self-spawned a port
+  // and caused false-positive "connected=false" health reports; new attach
+  // mode reuses HttpServer's port + ping sweep keeps liveness honest.
+  // resolveUserToken: per-user Bearer support so non-global tokens
+  // (operator's PG bridge_token) can connect WS and be uid-tagged for
+  // per-user broadcast routing.
+  const ws = new WsServer({
+    port: config.wsPort,
+    token: config.bridgeToken,
+    ...(pgStore ? {
+      resolveUserToken: async (bearer: string): Promise<string | null> => {
+        if (!bearer) return null;
+        try {
+          const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+          const rows = await sql`SELECT user_id FROM user_settings WHERE bridge_token = ${bearer} LIMIT 1`;
+          const row = rows[0] as { user_id?: string } | undefined;
+          return row?.user_id ?? null;
+        } catch (e) {
+          console.warn("[ws] resolveUserToken threw", e);
+          return null;
+        }
+      },
+    } : {}),
+  });
   // v0.0.459 forward-decl: priorityMerger is constructed later (after planner
   // + saveCoordinator wiring) but HttpServer's CRUD endpoints (cancelGoal,
   // resumeGoal, etc.) close over it for event-triggered dispatch. Holds the
@@ -700,6 +718,13 @@ export async function startSidecar(
       console.error("[merger] triggerDispatch threw", e),
     );
   };
+  // Operator 2026-06-04 "全做" — section_settings push forwarder. Sidecar's
+  // sectionSettingsWrite callback (defined inside this httpServerCtor opts
+  // block) needs to broadcast to userscript so in-game panel reflects
+  // without F5. http itself is constructed AFTER this block, so we hold a
+  // mutable forwarder; reassigned at line ~1801 after `const http = ...`.
+  let broadcastSectionUpdate: (uid: string, settings: Record<string, string | boolean>) => void
+    = () => { /* no-op until http is wired */ };
   // The HttpServer's /v1/health route delegates to buildHealthReport via a
   // thunk closure — needs `stateRef`, `lastSeen`, and the `ws.clients` set,
   // all of which exist before this point. The thunk is invoked per-request.
@@ -772,6 +797,40 @@ export async function startSidecar(
               console.warn("[ogamex/sidecar] resolveUserToken threw", e);
               return null;
             }
+          },
+          // S4 — operator "全做" bidir section_settings.
+          sectionSettingsRead: async (uid: string): Promise<Record<string, unknown>> => {
+            try {
+              const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+              const rows = await sql`SELECT section_settings FROM user_settings WHERE user_id = ${uid} LIMIT 1`;
+              const row = rows[0] as { section_settings?: Record<string, unknown> } | undefined;
+              return row?.section_settings ?? {};
+            } catch (e) {
+              console.warn("[ogamex/sidecar] sectionSettingsRead threw", e);
+              return {};
+            }
+          },
+          sectionSettingsWrite: async (uid: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> => {
+            const ALLOWED = new Set(["ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE", "ogamex.expedition.paused"]);
+            const filtered: Record<string, string | boolean> = {};
+            for (const [k, v] of Object.entries(patch)) {
+              if (!ALLOWED.has(k)) continue;
+              if (typeof v === "string" || typeof v === "boolean") filtered[k] = v;
+            }
+            const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+            const existing = await sql`SELECT section_settings FROM user_settings WHERE user_id = ${uid} LIMIT 1`;
+            const cur = (existing[0] as { section_settings?: Record<string, unknown> } | undefined)?.section_settings ?? {};
+            const merged = { ...cur, ...filtered };
+            const mergedJson = sql.json(merged as unknown as import("postgres").JSONValue);
+            await sql`
+              INSERT INTO user_settings (user_id, section_settings, updated_at)
+              VALUES (${uid}, ${mergedJson}, NOW())
+              ON CONFLICT (user_id) DO UPDATE SET section_settings = ${mergedJson}, updated_at = NOW()
+            `;
+            // Operator 2026-06-04 "全做" — push to userscript so in-game panel
+            // 即时 reflect, not "next F5". Forwarder set after http construction.
+            try { broadcastSectionUpdate(uid, merged as Record<string, string | boolean>); } catch (e) { console.warn("[ogamex] broadcastSectionUpdate threw", e); }
+            return merged;
           },
         }
       : {}),
@@ -1768,7 +1827,31 @@ export async function startSidecar(
     },
   });
   const http = httpServerCtor();
-  await Promise.all([ws.start(), http.start()]);
+  // Operator 2026-06-04 — start ONLY http; attach ws to its raw server.
+  // Reusing same port avoids cf-router routing + extra-port bookkeeping.
+  await http.start();
+  const rawHttp = http.getRawServer();
+  if (rawHttp) {
+    ws.attachToHttpServer(rawHttp);
+  } else {
+    console.warn("[ogamex] http server raw handle null after start — falling back to ws.start()");
+    await ws.start();
+  }
+
+  // Operator 2026-06-04 "全做" — wire the section_settings push forwarder
+  // now that http exists. Per [v0.0.638] ws.send is stub; http.queueDownstream
+  // is the real delivery (long-poll). Passing uid lets HTTP downstream queue
+  // route per-user when multi-tenant queues are active; broadcast otherwise.
+  broadcastSectionUpdate = (uid, settings): void => {
+    const msg = { type: "section_settings.update" as const, settings, reason: "user_write" };
+    try { ws.send(msg); } catch (e) { console.warn("[ogamex] ws.send section_settings.update threw", e); }
+    try {
+      const hh = http as unknown as { queueDownstream: (m: typeof msg, u?: string) => void };
+      hh.queueDownstream(msg, uid);
+    } catch (e) {
+      console.warn("[ogamex] http.queueDownstream section_settings.update threw", e);
+    }
+  };
 
   // --- Cross-transport relay ------------------------------------------------
   // Shared registry of consumer-supplied handlers per UpstreamMsg type. The

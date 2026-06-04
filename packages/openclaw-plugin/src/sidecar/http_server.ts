@@ -94,6 +94,10 @@ export interface HttpServerOptions {
    *  When `type` is supplied, filters server-side; absent ⇒ all types. */
   listEvents?: (limit: number, type?: string) => Array<unknown>;
   resolveUserToken?: (bearer: string) => Promise<string | null>;
+  /** Operator 2026-06-04 "全做" — read/write per-user in-game panel toggle
+   *  flags (mirrors user_settings.section_settings jsonb). */
+  sectionSettingsRead?: (uid: string) => Promise<Record<string, unknown>>;
+  sectionSettingsWrite?: (uid: string, patch: Record<string, unknown>) => Promise<Record<string, unknown>>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -157,6 +161,10 @@ interface ResolvedHttpServerOptions {
   emergencyProvider?: () => unknown;
   listEvents?: (limit: number, type?: string) => Array<unknown>;
   resolveUserToken?: (bearer: string) => Promise<string | null>;
+  /** Operator 2026-06-04 "全做" — read/write per-user in-game panel toggle
+   *  flags (mirrors user_settings.section_settings jsonb). */
+  sectionSettingsRead?: (uid: string) => Promise<Record<string, unknown>>;
+  sectionSettingsWrite?: (uid: string, patch: Record<string, unknown>) => Promise<Record<string, unknown>>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -220,6 +228,8 @@ export class HttpServer {
       ...(opts.emergencyProvider !== undefined ? { emergencyProvider: opts.emergencyProvider } : {}),
       ...(opts.listEvents !== undefined ? { listEvents: opts.listEvents } : {}),
       ...(opts.resolveUserToken !== undefined ? { resolveUserToken: opts.resolveUserToken } : {}),
+      ...(opts.sectionSettingsRead !== undefined ? { sectionSettingsRead: opts.sectionSettingsRead } : {}),
+      ...(opts.sectionSettingsWrite !== undefined ? { sectionSettingsWrite: opts.sectionSettingsWrite } : {}),
       ...(opts.cancelGoal !== undefined ? { cancelGoal: opts.cancelGoal } : {}),
       ...(opts.pauseGoal !== undefined ? { pauseGoal: opts.pauseGoal } : {}),
       ...(opts.resumeGoal !== undefined ? { resumeGoal: opts.resumeGoal } : {}),
@@ -244,6 +254,15 @@ export class HttpServer {
         resolve();
       });
     });
+  }
+
+  /** Operator 2026-06-04 — return raw node http server for WS upgrade attach.
+   *  Lets WsServer.attachToHttpServer(httpServer.getRawServer()) reuse same
+   *  port via Upgrade handling; CF tunnel transparently forwards Upgrade
+   *  headers to HTTP origins so no separate WS port / cf-router routing
+   *  needed. Returns null before start() resolves. */
+  getRawServer(): http.Server | null {
+    return this.server;
   }
 
   stop(): Promise<void> {
@@ -500,6 +519,11 @@ export class HttpServer {
     }
     if (method === "GET" && url === "/ogamex/v1/emergency") {
       this.handleProviderGet(res, this.opts.emergencyProvider);
+      return;
+    }
+    // section-settings — operator "全做" bidir sync.
+    if ((method === "GET" || method === "POST") && url === "/ogamex/v1/section-settings") {
+      void this.dispatchSectionSettings(req, res, method);
       return;
     }
     if (method === "GET" && url === EXPEDITION_TRIGGER_PATH) {
@@ -1027,6 +1051,67 @@ export class HttpServer {
     } catch (e) {
       this.writeCorsHeaders(res);
       res.statusCode = 500;
+      res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+    }
+  }
+
+  /** S4 — section-settings GET/POST. Bearer-scoped; uses provided callbacks
+   *  (sectionSettingsRead/Write) which talk to user_settings.section_settings
+   *  jsonb. Operator 2026-06-04 "全做". */
+  private async dispatchSectionSettings(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    method: string,
+  ): Promise<void> {
+    const r = await this.resolveBearer(req);
+    if (r.kind === "forbidden") {
+      this.writeCorsHeaders(res); res.statusCode = 401; res.end(); return;
+    }
+    if (r.kind === "legacy") {
+      // No multi-tenant uid → cannot scope; refuse.
+      this.writeCorsHeaders(res); res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, error: "user_token_required" })); return;
+    }
+    const uid = r.uid;
+    if (method === "GET") {
+      if (!this.opts.sectionSettingsRead) {
+        this.writeCorsHeaders(res); res.statusCode = 503;
+        res.end(JSON.stringify({ ok: false, error: "section_settings_unavailable" })); return;
+      }
+      try {
+        const settings = await this.opts.sectionSettingsRead(uid);
+        this.writeCorsHeaders(res); res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ settings }));
+      } catch (e) {
+        this.writeCorsHeaders(res); res.statusCode = 500;
+        res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+      }
+      return;
+    }
+    // POST — patch + merge + return
+    if (!this.opts.sectionSettingsWrite) {
+      this.writeCorsHeaders(res); res.statusCode = 503;
+      res.end(JSON.stringify({ ok: false, error: "section_settings_write_unavailable" })); return;
+    }
+    let bodyStr = "";
+    try { for await (const c of req) bodyStr += String(c); }
+    catch { this.writeCorsHeaders(res); res.statusCode = 400; res.end("body read failed"); return; }
+    let patch: Record<string, unknown>;
+    try {
+      patch = JSON.parse(bodyStr || "{}") as Record<string, unknown>;
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("not an object");
+    } catch (e) {
+      this.writeCorsHeaders(res); res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, error: (e as Error).message })); return;
+    }
+    try {
+      const merged = await this.opts.sectionSettingsWrite(uid, patch);
+      this.writeCorsHeaders(res); res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: true, settings: merged }));
+    } catch (e) {
+      this.writeCorsHeaders(res); res.statusCode = 500;
       res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
     }
   }

@@ -380,6 +380,11 @@ export type DownstreamMsg =
    *  Operator 2026-05-30 "有舰队开始返回，检查该银河系16号位置外太空是否有
    *  残骸，如果有就派探路者去回收". */
   | { type: "expedition.debris_check"; galaxy: number; system: number; origin_planet_id: string; reason?: string }
+  /** Operator 2026-06-04 "全做" → true bidirectional sync. Sent when
+   *  user_settings.section_settings changes (website modal OR another
+   *  device). Userscript applies each entry to localStorage immediately,
+   *  so in-game panel reflects without F5. */
+  | { type: "section_settings.update"; settings: Record<string, string | boolean>; reason?: string }
   | { type: "ping"; ts: number };
 
 export type BridgeMsg = UpstreamMsg | DownstreamMsg;

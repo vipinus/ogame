@@ -7,6 +7,11 @@ import type { UpstreamMsg, DownstreamMsg } from "@ogamex/shared";
 export interface WsServerOptions {
   port: number;
   token: string;
+  /** Operator 2026-06-04 — per-user Bearer token resolver. WS clients
+   *  authenticated via per-user bridge_token (not the global one) get their
+   *  user_id tagged on the socket so downstream broadcasts can route per
+   *  user. Returns null for unknown tokens. */
+  resolveUserToken?: (bearer: string) => Promise<string | null>;
 }
 
 type Handler<T extends UpstreamMsg["type"]> = (msg: Extract<UpstreamMsg, { type: T }>) => void;
@@ -36,16 +41,78 @@ export class WsServer {
     this.options = options;
   }
 
+  /** Operator 2026-06-04 — attach WS upgrade handler to an EXISTING http
+   *  server (e.g. sidecar's HttpServer on :28791). Same-port WS; CF tunnel
+   *  auto-forwards Upgrade for HTTP origins → no separate :28790 / cf-router
+   *  routing needed. `start()` (which spawns its own port) is the legacy
+   *  path; new code should call attachToHttpServer(rawHttpServer) instead. */
+  attachToHttpServer(rawHttp: HttpServer): void {
+    if (this.wss) return;
+    // Operator 2026-06-04 — accept ANY bearer.<X> protocol; auth is validated
+    // in checkAuthAsync (global token OR per-user bridge_token). Echoing the
+    // matching protocol back is required for browsers to keep the socket open.
+    const globalProto = `bearer.${this.options.token}`;
+    const wss = new WebSocketServer({
+      noServer: true,
+      handleProtocols: (protocols) => {
+        if (protocols.has(globalProto)) return globalProto;
+        for (const p of protocols) {
+          if (typeof p === "string" && p.startsWith("bearer.") && p.length > "bearer.".length) return p;
+        }
+        return false;
+      },
+    });
+    rawHttp.on("upgrade", (req, socket, head) => {
+      console.info(`[ws] upgrade event fired url=${req.url} proto=${req.headers["sec-websocket-protocol"]}`);
+      // Only handle /ws — any other path is delegated to the http server's
+      // own logic (which will close socket if not handled).
+      if (req.url !== "/ws") return;
+      this.onUpgrade(req, socket as unknown as Duplex, head, wss);
+    });
+    console.info(`[ws] post-attach listenerCount(upgrade)=${rawHttp.listenerCount("upgrade")}`);
+    wss.on("connection", (ws) => {
+      this.clients.add(ws);
+      this.aliveFlags.set(ws, true);
+      ws.on("pong", () => { this.aliveFlags.set(ws, true); });
+      ws.on("close", () => { this.clients.delete(ws); this.aliveFlags.delete(ws); });
+      ws.on("error", () => { /* swallow; close will follow */ });
+      ws.on("message", (data) => this.onMessage(data));
+    });
+    this.wss = wss;
+    // Ping sweep for liveness — same as legacy start().
+    this.pingTimer = setInterval(() => {
+      for (const ws of this.clients) {
+        if (this.aliveFlags.get(ws) === false) {
+          console.warn(`[ws] terminating zombie socket (no pong in ${WsServer.PING_INTERVAL_MS / 1000}s)`);
+          try { ws.terminate(); } catch { /* */ }
+          continue;
+        }
+        this.aliveFlags.set(ws, false);
+        try { ws.ping(); } catch { /* */ }
+      }
+    }, WsServer.PING_INTERVAL_MS);
+    console.info(`[ws] attached to existing http server (same port, no separate :${this.options.port})`);
+  }
+
   async start(): Promise<void> {
     if (this.http) return;
 
     const http = createServer((req, res) => this.onHttpRequest(req, res));
     // handleProtocols: echo back the bearer subprotocol that auth accepted, so
     // browser DOM WebSocket sees its requested protocol acknowledged and stays open.
-    const expectedProto = `bearer.${this.options.token}`;
+    // Operator 2026-06-04 — accept ANY bearer.<X> protocol; auth is validated
+    // in checkAuthAsync (global token OR per-user bridge_token). Echoing the
+    // matching protocol back is required for browsers to keep the socket open.
+    const globalProto = `bearer.${this.options.token}`;
     const wss = new WebSocketServer({
       noServer: true,
-      handleProtocols: (protocols) => (protocols.has(expectedProto) ? expectedProto : false),
+      handleProtocols: (protocols) => {
+        if (protocols.has(globalProto)) return globalProto;
+        for (const p of protocols) {
+          if (typeof p === "string" && p.startsWith("bearer.") && p.length > "bearer.".length) return p;
+        }
+        return false;
+      },
     });
 
     http.on("upgrade", (req, socket, head) => this.onUpgrade(req, socket, head, wss));
@@ -157,25 +224,67 @@ export class WsServer {
   }
 
   private onUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, wss: WebSocketServer): void {
-    const authResult = this.checkAuth(req);
-    if (!authResult.ok) {
-      // Bare HTTP 401 — ws's client will emit 'unexpected-response'.
-      socket.write(
-        "HTTP/1.1 401 Unauthorized\r\n" +
-        'WWW-Authenticate: Bearer realm="ogamex"\r\n' +
-        "Connection: close\r\n" +
-        "Content-Length: 0\r\n" +
-        "\r\n"
-      );
-      socket.destroy();
-      return;
+    // Async wrapper — checkAuth may need to call resolveUserToken (DB lookup).
+    void (async (): Promise<void> => {
+      const authResult = await this.checkAuthAsync(req);
+      if (!authResult.ok) {
+        socket.write(
+          "HTTP/1.1 401 Unauthorized\r\n" +
+          'WWW-Authenticate: Bearer realm="ogamex"\r\n' +
+          "Connection: close\r\n" +
+          "Content-Length: 0\r\n" +
+          "\r\n"
+        );
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        // Tag socket with resolved uid so downstream broadcasts can route per-user.
+        if (authResult.uid) {
+          this.socketUid.set(ws, authResult.uid);
+        }
+        wss.emit("connection", ws, req);
+      });
+    })();
+  }
+
+  /** WeakMap of socket → resolved uid (only set for per-user Bearer; legacy
+   *  global token clients are untagged). Set in onUpgrade after authentication. */
+  private readonly socketUid = new WeakMap<WebSocket, string>();
+
+  /** Operator 2026-06-04 — return uid for a connected socket (null if global
+   *  token or unknown). Lets broadcastSectionUpdate filter clients by user_id. */
+  uidFor(ws: WebSocket): string | null {
+    return this.socketUid.get(ws) ?? null;
+  }
+
+  private async checkAuthAsync(req: IncomingMessage): Promise<{ ok: boolean; uid?: string }> {
+    // 1) Global token via header or subprotocol
+    const local = this.checkAuth(req);
+    if (local.ok) return { ok: true };
+    // 2) Per-user resolver (extracts bearer from header or subprotocol)
+    if (!this.options.resolveUserToken) return { ok: false };
+    let bearer = "";
+    const auth = req.headers["authorization"];
+    if (typeof auth === "string") {
+      const m = /^Bearer\s+(.+)$/i.exec(auth);
+      if (m && m[1]) bearer = m[1].trim();
     }
-    // Subprotocol selection is handled by the WebSocketServer's handleProtocols
-    // option (configured in start()), which ensures the upgrade response echoes
-    // the bearer.<token> protocol so browser clients stay open.
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit("connection", ws, req);
-    });
+    if (!bearer) {
+      const proto = req.headers["sec-websocket-protocol"];
+      if (typeof proto === "string") {
+        for (const c of proto.split(",")) {
+          const t = c.trim();
+          if (t.startsWith("bearer.")) { bearer = t.slice("bearer.".length); break; }
+        }
+      }
+    }
+    if (!bearer) return { ok: false };
+    try {
+      const uid = await this.options.resolveUserToken(bearer);
+      if (uid) return { ok: true, uid };
+    } catch (e) { console.warn("[ws] resolveUserToken threw", e); }
+    return { ok: false };
   }
 
   /**

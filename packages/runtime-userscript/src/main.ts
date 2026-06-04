@@ -118,6 +118,35 @@ if (_inIframe) {
       } catch (e) {
         console.warn("[OgameX] bridge wire failed (continuing without bridge)", e);
       }
+      // S4 — operator 2026-06-04 "全做" — pull section_settings from PG on
+      // boot, apply to localStorage. Direction: website modal write → PG →
+      // userscript boot → localStorage. (Reverse direction handled in panel
+      // toggle handlers below, fetching POST to /ogamex/v1/section-settings.)
+      try {
+        const baseUrl = readConfig("OGAMEX_GOALS_PANEL_URL", "https://ogame.anyfq.com");
+        const r = await fetch(`${baseUrl}/ogamex/v1/section-settings`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${bridgeToken}` },
+        });
+        if (r.ok) {
+          const j = await r.json() as { settings?: Record<string, unknown> };
+          const remote = j.settings ?? {};
+          let applied = 0;
+          for (const [k, v] of Object.entries(remote)) {
+            if (typeof v === "string" || typeof v === "boolean") {
+              try {
+                window.localStorage.setItem(k, typeof v === "boolean" ? String(v) : v);
+                applied++;
+              } catch { /* */ }
+            }
+          }
+          console.info(`[OgameX/section-sync] hydrated ${applied} key(s) from PG into localStorage`);
+        } else if (r.status !== 401) {
+          console.warn(`[OgameX/section-sync] GET failed HTTP ${r.status}`);
+        }
+      } catch (e) {
+        console.warn("[OgameX/section-sync] PG → localStorage sync failed", e);
+      }
     } else {
       console.info("[OgameX] bridge token not configured — running offline");
     }
