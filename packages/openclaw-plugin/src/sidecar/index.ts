@@ -42,7 +42,7 @@ import { getCurrentUserId } from "./user_context.js";
 import { GeminiClient } from "./gemini_client.js";
 import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
-import { planGoal, pickEnergyPrereqBuilding } from "./planner.js";
+import { planGoal, pickEnergyPrereqBuilding, solarProduction, fusionProduction, mineEnergyConsumption, ENERGY_GATED_BUILDINGS } from "./planner.js";
 import { buildHealthReport } from "./health.js";
 import { DebugBuffer } from "./debug_buffer.js";
 import {
@@ -882,7 +882,7 @@ export async function startSidecar(
         // Walk and build the tree node objects. Each node gets eta_seconds
         // = its contribution (wait + build for its own levels), and
         // subtree_eta_seconds = total time from start through this node.
-        function buildAndSimulate(techName: string, targetLevel: number, kind: "research" | "building"): PrereqTreeNode | null {
+        function buildAndSimulate(techName: string, targetLevel: number, kind: "research" | "building", currentOverride?: number): PrereqTreeNode | null {
           let tech: { kind?: string; requires?: Record<string, number>; cost_at?: (l: number) => { m: number; c: number; d?: number; e?: number } } | undefined;
           let current = 0;
           let costFn: ((l: number) => { m: number; c: number; d?: number; e?: number }) | undefined;
@@ -933,7 +933,8 @@ export async function startSidecar(
               }
               return best;
             };
-            current = kind === "research" ? (research[techName] ?? 0)
+            current = currentOverride !== undefined ? currentOverride
+                    : kind === "research" ? (research[techName] ?? 0)
                     : techKind === "ship" || techKind === "defense" ? ((planet?.ships as Record<string, number> | undefined)?.[techName] ?? 0)
                     : lookupBuildingLevel(techName);
             costFn = tech.cost_at as typeof costFn;
@@ -952,23 +953,70 @@ export async function startSidecar(
           // the power plant for actual dispatch, simulate() shows it as a
           // tree child for panel visualization — both call the same fn so
           // the algorithms can never diverge.
-          if (useTreeBuilder === "regular" && kind === "building" && planet) {
-            const energyPick = pickEnergyPrereqBuilding(
-              techName,
-              current,
-              targetLevel,
-              planet,
-              stateRef.current?.research?.levels?.["energyTech"] ?? 0,
-            );
-            if (energyPick) {
-              // v0.0.738 — use targetLevel (min level to cover energy deficit)
-              // for tree depth, not just next level. Single fusion bump
-              // (e.g. L14→L15) often doesn't cover deutSynth L32's +1466
-              // energy delta. simulate's tree should show fusion 14→19 or
-              // wherever the math says enough. planner still dispatches
-              // one level per tick (uses .level field).
-              const powerNode = buildAndSimulate(energyPick.building, energyPick.targetLevel, "building");
-              if (powerNode) children.push(powerNode);
+          // v0.0.738 — operator 2026-06-04 "应该 fusion 17 完了 应该是 重氢
+          // 工厂 31 然后 再建 fusion 18 最后才是 重氢32 树状展开". per-level
+          // energy gate: iterate parent's self levels, for EACH level check
+          // if energy goes negative; if so, add a plant child sized to cover
+          // THIS level's incremental energy. Multiple plant children = the
+          // full sequence visible in tree (fusion 17, fusion 18, ...).
+          if (useTreeBuilder === "regular" && kind === "building" && planet &&
+              ENERGY_GATED_BUILDINGS.has(techName) &&
+              techName !== "solarPlant" && techName !== "fusionReactor") {
+            const energyTechL = stateRef.current?.research?.levels?.["energyTech"] ?? 0;
+            const fusionStart = planet.buildings?.["fusionReactor"] ?? 0;
+            const solarStart = planet.buildings?.["solarPlant"] ?? 0;
+            const dSynth = planet.buildings?.["deuteriumSynth"] ?? 0;
+            const planetD = (planet.resources as { d?: number } | undefined)?.d ?? 0;
+            // Pick fusion vs solar ONCE (same algorithm as helper): based on
+            // start-state cost compare + fusion viability. Then use that
+            // type for all per-level bumps.
+            const fusionPickCostFn = (TECH_TREE as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)["fusionReactor"]?.cost_at;
+            const solarPickCostFn = (TECH_TREE as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)["solarPlant"]?.cost_at;
+            const fusionCost0 = fusionPickCostFn ? fusionPickCostFn(fusionStart + 1) : { m: 0, c: 0, d: 0 };
+            const solarCost0 = solarPickCostFn ? solarPickCostFn(solarStart + 1) : { m: 0, c: 0, d: 0 };
+            const fusionPrereqsMet = dSynth >= 5 && energyTechL >= 3;
+            const fusionAffordable = planetD >= (fusionCost0.d ?? 0);
+            const fusionViable = fusionPrereqsMet && fusionAffordable;
+            const fusionTotal = fusionCost0.m + fusionCost0.c + (fusionCost0.d ?? 0);
+            const solarTotal = solarCost0.m + solarCost0.c + (solarCost0.d ?? 0);
+            const pickFusion = fusionViable && fusionTotal < solarTotal;
+            const plantBuilding: "fusionReactor" | "solarPlant" = pickFusion ? "fusionReactor" : "solarPlant";
+            const prodFn = (lvl: number): number => pickFusion ? fusionProduction(lvl, energyTechL) : solarProduction(lvl);
+            // Per-level iteration: virtual energy + virtual plant level
+            // start from real planet state.
+            let virtualEnergy = (planet.resources as { e?: number } | undefined)?.e ?? 0;
+            let virtualPlantLvl = pickFusion ? fusionStart : solarStart;
+            // If start state already has 0 plants, force first bump
+            // (curEnergy < 0 OR no plant condition from helper).
+            if (current < targetLevel) {
+              for (let l = current + 1; l <= targetLevel; l++) {
+                const delta = mineEnergyConsumption(techName, l) - mineEnergyConsumption(techName, l - 1);
+                let projected = virtualEnergy - delta;
+                // First time only: also bump if planet starts with 0 plants
+                let firstBumpForced = fusionStart === 0 && solarStart === 0 && l === current + 1 && virtualPlantLvl === 0;
+                // v0.0.738 — operator "应该都列在tree上 树状展开": add ONE
+                // tree child per plant level bump, not a combined multi-
+                // level child. While energy still negative, push another
+                // single-level plant child. Each child = single buildAndSimulate
+                // call (current → current+1), so panel sees sequential ramp.
+                let safetyCap = 25;
+                while ((projected < 0 || firstBumpForced) && safetyCap-- > 0) {
+                  const nextPlantLvl = virtualPlantLvl + 1;
+                  const baseProd = prodFn(virtualPlantLvl);
+                  const newProd = prodFn(nextPlantLvl);
+                  // Add SINGLE-LEVEL child for this plant bump. Override
+                  // current with virtualPlantLvl so the tree node shows
+                  // the actual chain step (e.g. 17→18 second child, not
+                  // 16→18 misread from planet state).
+                  const powerNode = buildAndSimulate(plantBuilding, nextPlantLvl, "building", virtualPlantLvl);
+                  if (powerNode) children.push(powerNode);
+                  virtualEnergy += newProd - baseProd;
+                  virtualPlantLvl = nextPlantLvl;
+                  projected = virtualEnergy - delta;
+                  firstBumpForced = false;  // single-shot
+                }
+                virtualEnergy -= delta;
+              }
             }
           }
           // Self: simulate levels current+1..target IN ORDER

@@ -83,11 +83,11 @@ export function mineEnergyConsumption(building: string, level: number): number {
 // in delta comparisons). Mirrors daemon's solarProduction / fusionProduction.
 //   solarPlant:    base 20 * L * 1.1^L
 //   fusionReactor: base 50 * L * 1.1^L * (1 + 0.02 * energyTech)
-function solarProduction(level: number): number {
+export function solarProduction(level: number): number {
   if (level <= 0) return 0;
   return 20 * level * Math.pow(1.1, level);
 }
-function fusionProduction(level: number, energyTech: number): number {
+export function fusionProduction(level: number, energyTech: number): number {
   if (level <= 0) return 0;
   return 50 * level * Math.pow(1.1, level) * (1 + 0.02 * energyTech);
 }
