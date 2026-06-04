@@ -1492,7 +1492,10 @@ export async function startSidecar(
       const ready = stateRef.current !== null;
       let paused = false;
       try {
-        const fp = path.join(os.tmpdir(), "ogamex-expedition.json");
+        // operator 2026-06-04 "远征设置里面的舰队配置不生效了" — must match
+        // http_server.ts EXPEDITION_STATE_FILE (workspace, not /tmp).
+        const fp = process.env.OGAMEX_EXPEDITION_STATE_FILE
+          ?? path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime/ogamex-expedition.json");
         const raw = fs.readFileSync(fp, "utf8");
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         paused = parsed["paused"] === true;
@@ -1555,6 +1558,11 @@ export async function startSidecar(
         eta_in_seconds: Math.max(0, (e.arrives_at ?? 0) - nowSec),
         from: Array.isArray(e.from) ? e.from.join(":") : null,
         to: Array.isArray(e.to) ? e.to.join(":") : null,
+        // operator 2026-06-04 "紧急任务区分是星球还是月球" — propagate to_type
+        // from IncomingEvent so panel + flagship can render 🌑 vs 🪐. Falls
+        // back to "planet" when probe didn't carry the field (treats as
+        // planet target; same default the eventbox_hook uses).
+        to_type: (e as { to_type?: "planet" | "moon" }).to_type === "moon" ? "moon" : "planet",
         ships_count: typeof e.ships_count === "number" ? e.ships_count : "?",
       }));
       return {
@@ -2727,7 +2735,8 @@ export async function startSidecar(
  */
 function readExpeditionPaused(): boolean {
   try {
-    const expeditionStateFile = path.join(os.tmpdir(), "ogamex-expedition.json");
+    const expeditionStateFile = process.env.OGAMEX_EXPEDITION_STATE_FILE
+      ?? path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime/ogamex-expedition.json");
     const raw = fs.readFileSync(expeditionStateFile, "utf8");
     const parsed = JSON.parse(raw);
     return !!(parsed && typeof parsed === "object" && (parsed as { paused?: unknown }).paused === true);

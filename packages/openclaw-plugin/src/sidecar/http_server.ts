@@ -37,8 +37,17 @@ import type {
 } from "./debug_buffer.js";
 
 /** Where the expedition pause/resume flag is persisted. Single shared file so
- *  the daily-task runner and the operator can both observe the same state. */
-const EXPEDITION_STATE_FILE = path.join(os.tmpdir(), "ogamex-expedition.json");
+ *  the daily-task runner and the operator can both observe the same state.
+ *
+ *  operator 2026-06-04 "远征设置里面的舰队配置不生效了" — root cause: sidecar
+ *  wrote /tmp/ogamex-expedition.json but daemon (discord_bridge.mjs:1396)
+ *  reads ~/.openclaw/workspace/ogamex/runtime/ogamex-expedition.json.
+ *  Migration v0.0.635 [[reference_sidecar_deploy]] moved dbs out of /tmp,
+ *  this file path was missed. Realign to daemon's canonical location so
+ *  panel template edits propagate to next expedition tick. Env override
+ *  OGAMEX_EXPEDITION_STATE_FILE for non-default deploys (CI/tests). */
+const EXPEDITION_STATE_FILE = process.env.OGAMEX_EXPEDITION_STATE_FILE
+  ?? path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime/ogamex-expedition.json");
 
 function readExpeditionState(): Record<string, unknown> {
   try {

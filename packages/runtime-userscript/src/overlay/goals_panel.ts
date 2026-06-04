@@ -3487,7 +3487,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   }
 
   interface EmergencyPayload {
-    hostile: Array<{ id: string; type: string; arrives_at: number; eta_in_seconds: number; from: string | null; to: string | null; ships_count: number | "?"; }>;
+    hostile: Array<{ id: string; type: string; arrives_at: number; eta_in_seconds: number; from: string | null; to: string | null; to_type?: "planet" | "moon"; ships_count: number | "?"; }>;
     count: number;
     snapshot_age_ms: number | null;
   }
@@ -4272,14 +4272,20 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const emRows = !emCollapsed && lastEmergency
       ? (emCount === 0
           ? `<div style="color:#666; font-size:10px; padding:2px 0;">(no hostile incoming)</div>${spyToggleRow}`
-          : lastEmergency.hostile.map((h) => `
+          : lastEmergency.hostile.map((h) => {
+              // operator 2026-06-04 "紧急任务区分是星球还是月球" — render
+              // 🌑 for moon target, 🪐 for planet, so operator can tell at
+              // a glance which body the threat is heading to.
+              const dstIcon = h.to_type === "moon" ? "🌑" : "🪐";
+              return `
               <div style="font-size:11px; padding:3px 0; border-top:1px solid #2a2a3a;">
                 <div style="display:flex; gap:6px; justify-content:space-between;">
                   <span style="color:#ff6b6b; font-weight:bold;">${escapeHtml(h.type)}</span>
                   <span style="color:#ff9b9b;">${fmtEta(h.eta_in_seconds)}</span>
                 </div>
-                <div style="color:#a0a8b8; font-size:10px;">${escapeHtml(h.from ?? "?")} → ${escapeHtml(h.to ?? "?")} · ships=${escapeHtml(String(h.ships_count))}</div>
-              </div>`).join("") + spyToggleRow)
+                <div style="color:#a0a8b8; font-size:10px;">${escapeHtml(h.from ?? "?")} → ${dstIcon} ${escapeHtml(h.to ?? "?")} · ships=${escapeHtml(String(h.ships_count))}</div>
+              </div>`;
+            }).join("") + spyToggleRow)
       : "";
     // Operator 2026-05-29: ⚙️ button opens emergency-specific settings modal.
     // Per "每個功能用自己的設定頁面" — section header gets a per-feature
