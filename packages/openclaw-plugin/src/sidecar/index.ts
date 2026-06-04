@@ -42,7 +42,7 @@ import { getCurrentUserId } from "./user_context.js";
 import { GeminiClient } from "./gemini_client.js";
 import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
-import { planGoal, pickEnergyPrereqBuilding, solarProduction, fusionProduction, mineEnergyConsumption, ENERGY_GATED_BUILDINGS } from "./planner.js";
+import { planGoal, pickEnergyPrereqBuilding, solarProduction, fusionProduction, mineEnergyConsumption, ENERGY_GATED_BUILDINGS, markFieldsFull } from "./planner.js";
 import { buildHealthReport } from "./health.js";
 import { DebugBuffer } from "./debug_buffer.js";
 import {
@@ -2008,7 +2008,18 @@ export async function startSidecar(
               }, backoffMs).unref();
               if (isHardBlock) {
                 console.log(`[hard-block] goal ${goalId.slice(0, 12)} ${reason.slice(0, 80)} — 24h backoff, operator action required`);
+                // v0.0.764 — operator 2026-06-04 "船运资源到 4:299:8 就会触
+                // 发升级一次核电站, 能量已经足够". 120012 fields_full hits
+                // 锁 PARENT goal 24h 但 planner 每次 trigger 仍递归选 fusion
+                // → 派 directive → 120012 → loop. 修: 同时 mark planet×
+                // building 24h, planner.pickEnergyPrereqBuilding 看到则跳过.
+                const params = directiveToParams.get(m.directive_id);
+                if (params?.planet_id && params?.building) {
+                  markFieldsFull(params.planet_id, params.building);
+                  console.log(`[hard-block] markFieldsFull ${params.planet_id}:${params.building} for 24h`);
+                }
               }
+              directiveToParams.delete(m.directive_id);
               void isFleetPost; // kept for log/diag; treatment unified now
               // v0.0.478: also clear dispatch stamp — directive completed
               // (with failure), so stuck-recovery's "in-flight" gate releases.
@@ -2201,8 +2212,15 @@ export async function startSidecar(
         // when the ack returns with success:false. Without this, ApiExec
         // failures (e.g., expedition 140054) leave the goal "active"
         // forever and merger keeps re-dispatching every cooldown cycle.
-        const d = msg.directive as { id: string; goal_id?: string; action?: string; params?: { galaxy?: number; system?: number; position?: number } };
+        const d = msg.directive as { id: string; goal_id?: string; action?: string; params?: { galaxy?: number; system?: number; position?: number; building?: string; planet_id?: string } };
         if (d.id && d.goal_id) directiveToGoal.set(d.id, d.goal_id);
+        // v0.0.764 — also stash params for 120012 fields_full retro-mark.
+        if (d.id && d.params) {
+          const entry: { building?: string; planet_id?: string } = {};
+          if (d.params.building !== undefined) entry.building = d.params.building;
+          if (d.params.planet_id !== undefined) entry.planet_id = d.params.planet_id;
+          directiveToParams.set(d.id, entry);
+        }
         // species_discovery: stash dispatched coord by directive_id (NOT on
         // the goal row — goalsStore.list returns SQL copies, mutations
         // wouldn't persist). directive_completed handler reads from this map.
@@ -2270,6 +2288,10 @@ export async function startSidecar(
   priorityMergerRef = priorityMerger;
   // Directive → goal mapping (in-memory). Trimmed when ack arrives.
   const directiveToGoal = new Map<string, string>();
+  // v0.0.764 — directive → params snapshot so 120012 hard-block can call
+  // markFieldsFull(planet_id, building) when the ack lands. operator
+  // 2026-06-04 "船运资源到 4:299:8 就会触发升级一次核电站" loop fix.
+  const directiveToParams = new Map<string, { building?: string; planet_id?: string }>();
   // species_discovery: stamp dispatched coord per directive_id (NOT on row,
   // because goalsStore.list() returns SQL copies — mutating one is discarded).
   const directiveToDiscoverCoord = new Map<string, string>();

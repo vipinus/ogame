@@ -106,6 +106,34 @@ export function fusionProduction(level: number, energyTech: number): number {
 // simulate 都用同一个 minLevel: 前者递归 planBuild 一级一级 dispatch (loop
 // 在外层 tick 上), 后者一次性 buildAndSimulate(target=minLevel) 把整段累计
 // 进 tree ETA.
+// v0.0.764 — operator 2026-06-04 "船运资源到 4:299:8 就会触发升级一次核电站,
+// 能量已经足够". Root cause: 4:299:8 fields 已满, fusion L17 dispatch 反复被
+// ogame 拒 120012, 24h backoff 锁 PARENT goal 但 planner 每次 trigger 仍
+// 递归选 fusion. 修复 — 缓存"该 planet 上该 building 最近 120012 fields_full"
+// 24h, planner 看到则跳过 (选另一种 plant or 干脆 return null 让 parent
+// blocked with "fields full")。Module-level cache 跨 dispatch tick 持久.
+interface FieldsFullCache { until: number; }
+const fieldsFullCache = new Map<string, FieldsFullCache>();
+const FIELDS_FULL_TTL_MS = 24 * 3600 * 1000;
+function fieldsFullKey(planetId: string, building: string): string {
+  return `${planetId}:${building}`;
+}
+export function markFieldsFull(planetId: string, building: string): void {
+  fieldsFullCache.set(fieldsFullKey(planetId, building), { until: Date.now() + FIELDS_FULL_TTL_MS });
+}
+export function isFieldsFull(planetId: string, building: string): boolean {
+  const entry = fieldsFullCache.get(fieldsFullKey(planetId, building));
+  if (!entry) return false;
+  if (entry.until < Date.now()) {
+    fieldsFullCache.delete(fieldsFullKey(planetId, building));
+    return false;
+  }
+  return true;
+}
+export function clearFieldsFull(planetId: string, building: string): void {
+  fieldsFullCache.delete(fieldsFullKey(planetId, building));
+}
+
 export function pickEnergyPrereqBuilding(
   building: string,
   current: number,
@@ -134,7 +162,17 @@ export function pickEnergyPrereqBuilding(
   const fusionViable = fusionPrereqsMet && fusionAffordable;
   const solarTotal = solarCost.m + solarCost.c + (solarCost.d ?? 0);
   const fusionTotal = fusionCost.m + fusionCost.c + (fusionCost.d ?? 0);
-  const pickFusion = fusionViable && fusionTotal < solarTotal;
+  let pickFusion = fusionViable && fusionTotal < solarTotal;
+  // v0.0.764 — fields_full short-circuit: 如果当前选择的 plant 在 24h 内
+  // 在该 planet 上失败过 120012, 切到另一种; 都不行 → return null 让
+  // parent goal 走 fields_full blocked 路径 (operator 拆建筑或建 terraformer).
+  if (pickFusion && isFieldsFull(planet.id, "fusionReactor")) {
+    if (!isFieldsFull(planet.id, "solarPlant")) pickFusion = false;
+    else return null;
+  } else if (!pickFusion && isFieldsFull(planet.id, "solarPlant")) {
+    if (!isFieldsFull(planet.id, "fusionReactor") && fusionPrereqsMet) pickFusion = true;
+    else return null;
+  }
   // v0.0.738 — solve for min plant level that covers the deficit. Deficit =
   // |projectedEnergy| when projectedEnergy < 0, OR current shortfall when
   // curEnergy already negative. Plant production at picked level must be
