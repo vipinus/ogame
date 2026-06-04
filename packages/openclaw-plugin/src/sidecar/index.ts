@@ -923,6 +923,12 @@ export async function startSidecar(
       // levels' waits already accumulated future needs.
       const universeSpeed = stateRef.current?.server?.speed ?? 1;
       const researchSpeed = stateRef.current?.server?.research_speed ?? universeSpeed;
+      // v0.0.773 — operator 2026-06-04 "昨天说好的 天体物理大于4以后就不
+      // 考虑矿了 直接等待资源". Daemon v0.0.739 已加同款 gate (skip 优化器);
+      // sidecar simulate 也同步: post-expedition phase (astro >= 4) 时 wait
+      // 视为 0, 只计 build_sec — 不再按 production rate 推 21d/346d 等离谱
+      // 数字, owner 用 transport 自己掌控资源 supply.
+      const postExpeditionPhase = (stateRef.current?.research?.levels?.astrophysics ?? 0) >= 4;
       function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number }; currentStep: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null } {
         const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
         // Initial bank — REAL planet resources at this moment.
@@ -1142,9 +1148,10 @@ export async function startSidecar(
                     totalCost.m += pCost3.m;
                     totalCost.c += pCost3.c;
                     totalCost.d += pCost3.d;
-                    const pWait = timeToAfford(pCost3);
+                    // v0.0.773 — astro >= 4 跳 production-wait (同上面 self-loop)
+                    const pWait = postExpeditionPhase ? 0 : timeToAfford(pCost3);
                     if (isFinite(pWait)) {
-                      accumulate(pWait);
+                      if (!postExpeditionPhase) accumulate(pWait);
                       const pBuild = buildSec(pCost3, "building");
                       accumulate(pBuild);
                       bank.m = Math.max(0, bank.m - pCost3.m);
@@ -1170,9 +1177,10 @@ export async function startSidecar(
                 totalCost.m += cost.m;
                 totalCost.c += cost.c;
                 totalCost.d += cost.d ?? 0;
-                const wait = timeToAfford(cost);
+                // v0.0.773 — astro >= 4 跳 wait (同 outer loop)
+                const wait = postExpeditionPhase ? 0 : timeToAfford(cost);
                 if (!isFinite(wait)) { total = Infinity; break; }
-                accumulate(wait);
+                if (!postExpeditionPhase) accumulate(wait);
                 const build = buildSec(cost, kind);
                 accumulate(build);
                 bank.m = Math.max(0, bank.m - cost.m);
@@ -1229,15 +1237,47 @@ export async function startSidecar(
               totalCost.m += cost.m;
               totalCost.c += cost.c;
               totalCost.d += cost.d ?? 0;
-              const wait = timeToAfford(cost);
-              if (!isFinite(wait)) { total = Infinity; break; }
-              accumulate(wait);
-              const build = buildSec(cost, kind);
-              accumulate(build);
-              // Pay cost (subtract; cap-clamped on accumulate)
-              bank.m = Math.max(0, bank.m - cost.m);
-              bank.c = Math.max(0, bank.c - cost.c);
-              bank.d = Math.max(0, bank.d - (cost.d ?? 0));
+              // v0.0.773 — operator 2026-06-04 "糊涂了吧 已经运资源开始建设
+              // 了 你还关注矿干嘛": 这一级如果正在 ogame build_q 里 (已扣
+              // 资源, ogame countdown 是 ground truth), 用 endsAt 短路;
+              // 不再叠 sidecar 悲观 wait (基于 production 算出来的 346d
+              // 跟实际无关, 因为 operator 通过 transport 调资源).
+              let stepOverride: number | null = null;
+              if (kind === "building" && planet) {
+                const bq = (planet as { build_q?: { building?: string; level?: number; ends_at?: number } | null }).build_q;
+                if (bq && bq.building === techName && bq.level === l && typeof bq.ends_at === "number") {
+                  const remaining = Math.max(0, Math.floor((bq.ends_at - Date.now()) / 1000));
+                  stepOverride = remaining;
+                }
+              } else if (kind === "research" && stateRef.current?.research) {
+                const rq = (stateRef.current.research as { queue?: { tech?: string; level?: number; ends_at?: number } | null }).queue;
+                if (rq && rq.tech === techName && rq.level === l && typeof rq.ends_at === "number") {
+                  stepOverride = Math.max(0, Math.floor((rq.ends_at - Date.now()) / 1000));
+                }
+              }
+              let wait: number; let build: number;
+              if (stepOverride !== null) {
+                wait = 0;
+                build = stepOverride;
+                // 资源已扣过, 不动 bank
+              } else if (postExpeditionPhase) {
+                // astro >= 4: 只算 build_sec, wait 由 owner transport 调
+                wait = 0;
+                build = buildSec(cost, kind);
+                accumulate(build);
+                bank.m = Math.max(0, bank.m - cost.m);
+                bank.c = Math.max(0, bank.c - cost.c);
+                bank.d = Math.max(0, bank.d - (cost.d ?? 0));
+              } else {
+                wait = timeToAfford(cost);
+                if (!isFinite(wait)) { total = Infinity; break; }
+                accumulate(wait);
+                build = buildSec(cost, kind);
+                accumulate(build);
+                bank.m = Math.max(0, bank.m - cost.m);
+                bank.c = Math.max(0, bank.c - cost.c);
+                bank.d = Math.max(0, bank.d - (cost.d ?? 0));
+              }
               const step = wait + build;
               selfEta += step;
               total += step;
