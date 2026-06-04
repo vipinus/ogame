@@ -854,6 +854,31 @@ export async function startSidecar(
         return null;
       }
     },
+    // v0.0.766 — S14 切服检测 cancel goals: bulk update 该 user 全部非
+    // 终态 goals → status=cancelled. 切服后 planet field 指向旧 universe
+    // planet_id, 自动 cancel 防 planner 反复试 dispatch 报 planet not found.
+    serverSwitchCancelGoals: async (uid: string, reason: string): Promise<number> => {
+      if (!pgStore) return 0;
+      try {
+        const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+        const rows = await sql`UPDATE ogame_goals SET status = 'cancelled', reason = ${reason}, updated_at = NOW()
+          WHERE user_id = ${uid} AND status NOT IN ('cancelled', 'completed') RETURNING id`;
+        return rows.length;
+      } catch (e) {
+        console.warn("[server-switch] cancel goals SQL threw", e);
+        return 0;
+      }
+    },
+    // v0.0.766 — S14 audit log: 写 ogame_events.type='event.server_switch'
+    // 让 flagship ThreatListCard 旁边的 chip 显示历史.
+    serverSwitchAppendEvent: async (uid: string, payload: Record<string, unknown>): Promise<void> => {
+      if (!pgStore) return;
+      try {
+        await pgStore.appendEvent(uid, "event.server_switch", payload);
+      } catch (e) {
+        console.warn("[server-switch] appendEvent threw", e);
+      }
+    },
     // Operator API providers — surface state/goals/expedition over HTTP.
     stateProvider: () => stateRef.current ?? { ok: false, reason: "no snapshot yet" },
     listGoals: (explicitUid?: string) => {

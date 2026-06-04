@@ -104,6 +104,10 @@ export interface HttpServerOptions {
   /** Operator 2026-06-04 "红灯 = TM 离线" — seconds since this uid last pushed
    *  state.snapshot (PG ogame_world_state.updated_at). null = never pushed. */
   userLastSeenAgoSec?: (uid: string) => Promise<number | null>;
+  /** v0.0.766 — S14 切服检测 cancel goals hook */
+  serverSwitchCancelGoals?: (uid: string, reason: string) => Promise<number>;
+  /** v0.0.766 — S14 切服 audit log hook */
+  serverSwitchAppendEvent?: (uid: string, payload: Record<string, unknown>) => Promise<void>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -177,6 +181,10 @@ interface ResolvedHttpServerOptions {
   /** Operator 2026-06-04 "红灯 = TM 离线" — seconds since this uid last pushed
    *  state.snapshot (PG ogame_world_state.updated_at). null = never pushed. */
   userLastSeenAgoSec?: (uid: string) => Promise<number | null>;
+  /** v0.0.766 — S14 切服检测 cancel goals hook */
+  serverSwitchCancelGoals?: (uid: string, reason: string) => Promise<number>;
+  /** v0.0.766 — S14 切服 audit log hook */
+  serverSwitchAppendEvent?: (uid: string, payload: Record<string, unknown>) => Promise<void>;
   /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
   cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
   pauseGoal?: (id: string) => { ok: boolean; reason?: string };
@@ -244,6 +252,8 @@ export class HttpServer {
       ...(opts.sectionSettingsWrite !== undefined ? { sectionSettingsWrite: opts.sectionSettingsWrite } : {}),
       ...(opts.wsHasUidConnected !== undefined ? { wsHasUidConnected: opts.wsHasUidConnected } : {}),
       ...(opts.userLastSeenAgoSec !== undefined ? { userLastSeenAgoSec: opts.userLastSeenAgoSec } : {}),
+      ...(opts.serverSwitchCancelGoals !== undefined ? { serverSwitchCancelGoals: opts.serverSwitchCancelGoals } : {}),
+      ...(opts.serverSwitchAppendEvent !== undefined ? { serverSwitchAppendEvent: opts.serverSwitchAppendEvent } : {}),
       ...(opts.cancelGoal !== undefined ? { cancelGoal: opts.cancelGoal } : {}),
       ...(opts.pauseGoal !== undefined ? { pauseGoal: opts.pauseGoal } : {}),
       ...(opts.resumeGoal !== undefined ? { resumeGoal: opts.resumeGoal } : {}),
@@ -549,6 +559,12 @@ export class HttpServer {
     // GET: list current entries. DELETE: clear all OR specific planet/building.
     if ((method === "GET" || method === "DELETE") && url === "/ogamex/v1/fields-full") {
       void this.dispatchFieldsFull(req, res, method);
+      return;
+    }
+    // v0.0.766 — S14 切服检测. TM userscript boot 时 hostname 跟上次推
+    // PG 的 server.universe 不匹配 → POST 这里, sidecar 清理 chain.
+    if (method === "POST" && url === "/ogamex/v1/server-switch") {
+      void this.dispatchServerSwitch(req, res);
       return;
     }
     if (method === "GET" && url === EXPEDITION_TRIGGER_PATH) {
@@ -1117,6 +1133,50 @@ export class HttpServer {
    *  清该 planet 全部 buildings; both = 单条精确清.
    *  Use case: operator 拆建筑 / 建 terraformer 后, 调这里清除让 planner
    *  能再次试 fusion/solar 升级。Bearer required. */
+  /** v0.0.766 — S14 切服检测清理 chain.
+   *  body: {old_universe?: string, new_universe: string, hostname?: string}
+   *  操作:
+   *    ① cancel 该 user 全部 active/pending/blocked/paused goals (planet
+   *       field 指向旧 universe id, 切服后 planet not found 永远 blocked)
+   *    ② planner.clearAllFieldsFull() (planet_id 全宇宙唯一不冲突, 但清掉
+   *       旧 universe 残留 24h cache)
+   *    ③ ogame_events 记一条 type='event.server_switch' 供 flagship 显
+   *    ④ 返 {ok, cancelled_goals_count, cleared_fields_full_count}
+   */
+  private async dispatchServerSwitch(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const auth = await this.resolveBearer(req);
+    if (auth.kind === "forbidden") { this.writeCorsHeaders(res); res.statusCode = 401; res.end(); return; }
+    if (auth.kind === "legacy") { this.writeCorsHeaders(res); res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, error: "user_token_required" })); return; }
+    const uid = auth.uid;
+    let body = "";
+    await new Promise<void>(resolve => { req.on("data", c => { body += c; }); req.on("end", () => resolve()); });
+    let parsed: { old_universe?: string; new_universe?: string; hostname?: string } = {};
+    try { parsed = JSON.parse(body); } catch { /* */ }
+    const newUniverse = parsed.new_universe ?? parsed.hostname ?? "?";
+    const oldUniverse = parsed.old_universe ?? "?";
+    // ① cancel goals
+    let cancelledCount = 0;
+    try {
+      const hook = this.opts.serverSwitchCancelGoals;
+      if (hook) cancelledCount = await hook(uid, `server switched: ${oldUniverse} → ${newUniverse}`);
+    } catch (e) { console.warn("[server-switch] cancelGoals threw", e); }
+    // ② clear fields_full cache
+    let clearedFieldsFull = 0;
+    try {
+      const planner = await import("./planner.js");
+      clearedFieldsFull = planner.clearAllFieldsFull();
+    } catch (e) { console.warn("[server-switch] clearAllFieldsFull threw", e); }
+    // ③ persist event
+    try {
+      const hook = this.opts.serverSwitchAppendEvent;
+      if (hook) await hook(uid, { old_universe: oldUniverse, new_universe: newUniverse, ts: Date.now(), cancelled_goals: cancelledCount, cleared_fields_full: clearedFieldsFull });
+    } catch (e) { console.warn("[server-switch] appendEvent threw", e); }
+    console.log(`[server-switch] uid=${uid.slice(0, 8)} ${oldUniverse} → ${newUniverse} cancelled=${cancelledCount} fields_full=${clearedFieldsFull}`);
+    this.writeCorsHeaders(res); res.setHeader("Content-Type", "application/json"); res.statusCode = 200;
+    res.end(JSON.stringify({ ok: true, cancelled_goals_count: cancelledCount, cleared_fields_full_count: clearedFieldsFull }));
+  }
+
   private async dispatchFieldsFull(
     req: http.IncomingMessage,
     res: http.ServerResponse,

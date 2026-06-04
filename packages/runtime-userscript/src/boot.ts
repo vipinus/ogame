@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.765";
+  const USERSCRIPT_VERSION = "0.0.766";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1316,6 +1316,41 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     events_incoming: events,
     fleets_outbound: fleets,
   });
+
+  // v0.0.766 — S14 切服检测. 比对当前 hostname 跟 PG 上次 push 的
+  // server.universe; 不一致 → POST sidecar /v1/server-switch, 清理 chain
+  // (cancel orphan goals + clear fields_full + audit log). 防 planner 反复
+  // 试 dispatch 旧 universe 残留 goal 报 planet not found.
+  try {
+    const currentHostname = location.hostname;  // e.g. s274-en.ogame.gameforge.com
+    const cachedServer = (store.state.server ?? {}) as { last_seen_hostname?: string };
+    const lastSeen = cachedServer.last_seen_hostname;
+    if (lastSeen && lastSeen !== currentHostname && /\.ogame\.gameforge\.com$/.test(currentHostname)) {
+      const bridgeUrl = (env.win as Window & { __OGAMEX_BRIDGE_URL_RUNTIME?: string }).__OGAMEX_BRIDGE_URL_RUNTIME
+        ?? "https://ogame.anyfq.com";
+      const tok = ((): string => {
+        try { return env.win.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") ?? ""; }
+        catch { return ""; }
+      })();
+      if (tok) {
+        console.log(`[OgameX/server-switch] detected ${lastSeen} → ${currentHostname}; notifying sidecar`);
+        void fetch(`${bridgeUrl}/ogamex/v1/server-switch`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "authorization": `Bearer ${tok}` },
+          body: JSON.stringify({ old_universe: lastSeen, new_universe: currentHostname, hostname: currentHostname }),
+        }).then(r => r.json()).then((j: { ok?: boolean; cancelled_goals_count?: number; cleared_fields_full_count?: number }) => {
+          console.log(`[OgameX/server-switch] sidecar cleaned: cancelled_goals=${j.cancelled_goals_count ?? 0} fields_full=${j.cleared_fields_full_count ?? 0}`);
+        }).catch(e => console.warn("[OgameX/server-switch] POST failed:", e));
+      }
+    }
+    // 总是 stash 当前 hostname, 下次比对.
+    store.setPartial({
+      server: {
+        ...(store.state.server ?? {}),
+        last_seen_hostname: currentHostname,
+      } as any,
+    });
+  } catch (e) { console.warn("[OgameX/server-switch] detect threw", e); }
 
   // 6. Wire dom.changed → re-extract on the affected target
   const offDomChanged = bus.on("dom.changed", (payload: unknown) => {
