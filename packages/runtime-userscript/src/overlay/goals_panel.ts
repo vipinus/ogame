@@ -3680,6 +3680,10 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   // tree node 預設全部折疊, 點選 chevron 才展開 (而不是預設全展開)。
   // treeExpanded Set 裝當前展開的 node key, 沒在 set 裏的就是折疊。
   const treeExpanded = new Set<string>();
+  // v0.0.740 — operator "tree 不要一个一个点 一键展开和收回". 全局 toggle:
+  //   true  → 所有节点展开 (无视 treeExpanded set)
+  //   false → 默认 (v0.0.526 折叠语义 + v0.0.739 root depth=0 强制展开)
+  let treeExpandAll = false;
   function treeKey(n: PrereqTreeNode): string { return `${n.tech}:${n.targetLevel}`; }
 
   /**
@@ -3701,10 +3705,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const indent = depth * 14;
     const hasChildren = n.children.length > 0;
     const key = treeKey(n);
-    // v0.0.526 預設折疊; v0.0.738 — operator 2026-06-04 "树状展开 应该都
-    // 列在 tree 上". Root (depth=0) 默认展开, 让 children (energy prereq
-    // 类) 一进面板就可见; 深层 (depth ≥ 1) 保持 v0.0.526 折叠语义.
-    const collapsed = depth > 0 && !treeExpanded.has(key);
+    // v0.0.526 預設折疊; v0.0.738 root 强制展开; v0.0.740 全局 treeExpandAll
+    // toggle 覆盖所有判断 (一键展开 / 一键收回).
+    const collapsed = !treeExpandAll && depth > 0 && !treeExpanded.has(key);
     const chev = hasChildren
       ? `<span data-tree-toggle="${escapeHtml(key)}" style="display:inline-block; width:12px; cursor:pointer; color:#8090a8; user-select:none;">${collapsed ? "▸" : "▾"}</span>`
       : `<span style="display:inline-block; width:12px;"></span>`;
@@ -4199,6 +4202,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         <strong style="color:#e0e8f0;">${escapeHtml(t("panel.title_prefix"))} ${escapeHtml(serverSlug)} v${escapeHtml(currentVersion)}</strong>
         <span style="display:flex; gap:4px; align-items:center;">
           ${updateBtn}
+          <button data-action="tree-toggle-all" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="${escapeHtml(treeExpandAll ? "tree: collapse all" : "tree: expand all")}">${treeExpandAll ? "📚" : "📖"}</button>
           <button data-action="open-audit" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="${escapeHtml(t("panel.btn.audit"))}">📋</button>
           <button data-action="collapse" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${escapeHtml(collapsed ? t("panel.btn.collapse_expand") : t("panel.btn.collapse_collapse"))}">${collapsed ? "▸" : "▾"}</button>
           <button data-action="close" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${escapeHtml(t("panel.btn.close"))}">×</button>
@@ -4780,6 +4784,16 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     auditBtn?.addEventListener("click", (e) => {
       e.stopPropagation();
       openAuditModal(doc, baseUrl, fetchFn);
+    });
+
+    // v0.0.740 — operator "tree 不要一个一个点 一键展开和收回". Global
+    // toggle for tree expand/collapse-all. Flips treeExpandAll flag and
+    // forces a panel re-render using the last cached goals payload.
+    const treeToggleAllBtn = panel.querySelector<HTMLElement>("[data-action=\"tree-toggle-all\"]");
+    treeToggleAllBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      treeExpandAll = !treeExpandAll;
+      if (lastGoals) render(lastGoals);
     });
 
     // Operator 2026-05-29: Update runtime button. Hidden by default; the
