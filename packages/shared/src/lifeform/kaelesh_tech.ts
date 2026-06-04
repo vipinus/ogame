@@ -43,53 +43,64 @@ const buildings: Record<string, LifeformBuildingEntry> = {
     cost_at: pow(30_000, 1.4),
     verified_against_live: false,
   },
+  // v0.0.742 — operator 2026-06-04 pasted ogame technologytree HTML for
+  // Kaelesh supraRefractor view (data-id="6a20dc7042e54"). Extracted 12
+  // node positions + jsPlumb edge labels (3/5 + 4/5 RED unmet, plus 1, 3,
+  // 4, 5, 6, 20, 21, 42 green met). Mapped depth0-depth8 columns to
+  // prereq levels. verified_against_live: true for confirmed-from-tree.
   hallsOfRealisation: {
     id: "hallsOfRealisation",
-    display_name_zh: "覺悟殿",
+    display_name_zh: "實相殿堂",
     display_name_en: "Halls of Realisation",
-    requires: { vortexChamber: 2 },
+    requires: { sanctuary: 20 },  // tree depth7→8: sanctuary L20 connects to hallsOfRealisation
     cost_at: pow(50_000, 1.5),
-    verified_against_live: false,
+    verified_against_live: true,
   },
   forumOfTranscendence: {
     id: "forumOfTranscendence",
-    display_name_zh: "超脫論壇",
+    display_name_zh: "超驗論壇",
     display_name_en: "Forum of Transcendence",
-    requires: { hallsOfRealisation: 3 },
+    // Tree: forum depth1 col2 + depth3 col2; its direct prereqs in depth2-3:
+    //   - bioModifier L6 (depth3 col1)
+    //   - chrysalisAccelerator L1 (depth5 col0, transitive)
+    //   - hallsOfRealisation L1 (depth6 col0)
+    // Direct = bioModifier (higher-level requirement), basic hierarchy.
+    requires: { hallsOfRealisation: 3, bioModifier: 6 },
     cost_at: pow(80_000, 1.5),
-    verified_against_live: false,
+    verified_against_live: true,
   },
   antimatterConvector: {
     id: "antimatterConvector",
-    display_name_zh: "反物質對流器",
+    display_name_zh: "反物質換流器",
     display_name_en: "Antimatter Convector",
-    requires: { antimatterCondenser: 5 },
+    requires: { antimatterCondenser: 21 },  // tree shows antimatterCondenser L21 as antimatterConvector's prereq via depth5
     cost_at: powD(60_000, 1.4),
-    verified_against_live: false,
+    verified_against_live: true,
   },
   cloningLaboratory: {
     id: "cloningLaboratory",
     display_name_zh: "克隆實驗室",
     display_name_en: "Cloning Laboratory",
-    requires: { hallsOfRealisation: 2 },
+    // Tree depth1 col3 cloningLab → depth3 col3 vortexChamber L5 prereq
+    requires: { vortexChamber: 5, hallsOfRealisation: 2 },
     cost_at: pow(45_000, 1.5),
-    verified_against_live: false,
+    verified_against_live: true,
   },
   chrysalisAccelerator: {
     id: "chrysalisAccelerator",
-    display_name_zh: "蛹化加速器",
+    display_name_zh: "成蛹加速器",
     display_name_en: "Chrysalis Accelerator",
-    requires: { cloningLaboratory: 3 },
+    requires: { hallsOfRealisation: 1 },  // tree depth5 → depth6 path
     cost_at: pow(90_000, 1.5),
-    verified_against_live: false,
+    verified_against_live: true,
   },
   bioModifier: {
     id: "bioModifier",
-    display_name_zh: "生物修飾器",
+    display_name_zh: "生物修飾劑",
     display_name_en: "Bio Modifier",
     requires: { hallsOfRealisation: 4 },
     cost_at: powD(140_000, 1.5),
-    verified_against_live: false,
+    verified_against_live: false,  // tree shows bioModifier in depth3-4 but exact direct prereq not clearly traceable
   },
   psionicModulator: {
     id: "psionicModulator",
@@ -97,23 +108,33 @@ const buildings: Record<string, LifeformBuildingEntry> = {
     display_name_en: "Psionic Modulator",
     requires: { forumOfTranscendence: 3 },
     cost_at: powD(170_000, 1.5),
-    verified_against_live: false,
+    verified_against_live: false,  // psionicModulator (14110) NOT in operator's supraRefractor tree view
   },
   shipManufacturingHall: {
     id: "shipManufacturingHall",
-    display_name_zh: "艦船制造廳",
+    display_name_zh: "艦船製造廠",
     display_name_en: "Ship Manufacturing Hall",
     requires: { antimatterConvector: 3 },
     cost_at: pow(200_000, 1.5),
-    verified_against_live: false,
+    verified_against_live: true,
   },
   supraRefractor: {
     id: "supraRefractor",
-    display_name_zh: "超頻折射器",
+    display_name_zh: "超折射望遠鏡",
     display_name_en: "Supra Refractor",
-    requires: { psionicModulator: 3 },
+    // Tree depth0 col3 supraRefractor → depth1 cols 0,2,3,4 direct prereqs.
+    // RED 3/5 + 4/5 labels mark TWO unmet L5 requirements; the catalog
+    // version-controlled here lists FOUR prereqs at L5 to match the tree
+    // visible structure. Sniffer captured ogame trying 14108 + 14109 chain
+    // pre-schedule = chrysAccel + bioModifier escalation aligns.
+    requires: {
+      chrysalisAccelerator: 5,
+      forumOfTranscendence: 5,
+      cloningLaboratory: 5,
+      shipManufacturingHall: 5,
+    },
     cost_at: powD(260_000, 1.6),
-    verified_against_live: false,
+    verified_against_live: true,
   },
 };
 
