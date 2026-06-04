@@ -67,7 +67,7 @@ import type {
   UpstreamMsg,
   WorldState,
 } from "@ogamex/shared";
-import { TECH_TREE, LIFEFORM_TECH } from "@ogamex/shared";
+import { TECH_TREE, LIFEFORM_TECH, techSec } from "@ogamex/shared";
 
 interface PrereqTreeNode {
   tech: string;
@@ -836,14 +836,12 @@ export async function startSidecar(
           nanite:   planet?.buildings?.["naniteFactory"]   ?? 0,
           lab:      planet?.buildings?.["researchLab"]     ?? 0,
         };
-        const buildSec = (cost: { m: number; c: number }, nodeKind: string): number => {
-          if (nodeKind === "research") {
-            const denom = 1000 * (1 + levels.lab) * Math.max(1, researchSpeed);
-            return denom > 0 ? ((cost.m + cost.c) / denom) * 3600 : 3600;
-          }
-          const denom = 2500 * (1 + levels.robotics) * Math.pow(2, levels.nanite) * Math.max(1, universeSpeed);
-          return denom > 0 ? ((cost.m + cost.c) / denom) * 3600 : 3600;
-        };
+        // v0.0.756 — operator "为什么有两套算法 统一一下". Unified ogame build
+        // time formula extracted to @ogamex/shared/build_time. Daemon
+        // (discord_bridge.mjs buildSecondsForRange) imports compiled JS from
+        // the same module — single source of truth.
+        const buildSec = (cost: { m: number; c: number }, nodeKind: string): number =>
+          techSec(cost, nodeKind, levels, universeSpeed, researchSpeed);
         const accumulate = (sec: number) => {
           // Operator 2026-05-29: pre-existing stockpile MAY exceed storage
           // cap (transport from other planets, expedition haul, lifeform

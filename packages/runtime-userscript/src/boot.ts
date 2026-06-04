@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.749";
+  const USERSCRIPT_VERSION = "0.0.755";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1846,15 +1846,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (typeof fetchShips === "function") {
         try { freshShips = await fetchShips(sourcePlanetId); } catch (e) { console.warn(`[fleet-launch-record] fetchPlanetShips threw`, e); }
       }
-      store.setPartial({
-        planets: {
-          ...store.state.planets,
-          [sourcePlanetId]: {
-            ...existing,
-            resources: { m, c, d, e },
-            ...(freshShips ? { ships: freshShips } : {}),
-          },
-        } as typeof store.state.planets,
+      // v0.0.755 — operator "事件驱动 不要扫网页". 改 setPlanetsPatch (merge
+       // 不 spread) 避免 race: 之前用 {...store.state.planets, [pid]: {...existing,
+       // resources, ships}} 用 stale `existing` snapshot 覆盖中间 commitCooldown
+       // 写入的 jumpgate_cooldown_sec/pair_with → JG 双边 cd 单边丢失 bug.
+      store.setPlanetsPatch({
+        [sourcePlanetId]: {
+          resources: { m, c, d, e },
+          ...(freshShips ? { ships: freshShips } : {}),
+        },
       });
       const shipsTag = freshShips ? ` + ships (${Object.entries(freshShips).filter(([_, n]) => n > 0).map(([k, n]) => `${k}=${n}`).slice(0, 5).join(",")}...)` : " (ships fetch unavailable)";
       console.info(`[fleet-launch-record] refreshed source ${sourcePlanetId} resources (m=${m} c=${c} d=${d} e=${e})${shipsTag}`);
@@ -1937,6 +1937,32 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // eventbox_hook can call it on own-fleet arrival events. Returns a
   // Promise so caller can chain pushNow on resolve.
   (env.win as Window & { __ogamexRefreshPlanetResources?: (pid: string) => Promise<void> }).__ogamexRefreshPlanetResources = refreshSourcePlanetResources;
+
+  // v0.0.755 — operator "用 api / 事件驱动 不要扫网页". executeJump response
+  // 自身返回 cd field (resp.cooldown / nextActionAt), api_executor 已捕获.
+  // 旧路径走 sniffer-postMessage-CASE-B-HTML-overlay-regex, 改一刀直写双边
+  // store. 0 网页扫描, 0 race window (atomic setPlanetsPatch).
+  (env.win as Window & { __ogamexCommitJgCd?: (src: string, tgt: string, cdSec: number) => void }).__ogamexCommitJgCd =
+    (src: string, tgt: string, cdSec: number): void => {
+      if (!src || !tgt || !Number.isFinite(cdSec) || cdSec <= 0) return;
+      const now = Date.now();
+      const patch: Record<string, Partial<typeof store.state.planets[string]>> = {};
+      if (store.state.planets[src]) {
+        patch[src] = { jumpgate_cooldown_sec: cdSec, jumpgate_harvested_at: now, jumpgate_pair_with: tgt };
+      }
+      if (store.state.planets[tgt]) {
+        patch[tgt] = { jumpgate_cooldown_sec: cdSec, jumpgate_harvested_at: now, jumpgate_pair_with: src };
+      }
+      if (Object.keys(patch).length > 0) {
+        store.setPlanetsPatch(patch);
+        try { window.localStorage.setItem("ogamex.panel.section.moons", "false"); } catch { /* */ }
+        const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+        if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
+        console.info(`[OgameX/jg-commit] api-driven cd=${cdSec}s src=${src} tgt=${tgt} (${Object.keys(patch).length} sides written)`);
+      } else {
+        console.warn(`[OgameX/jg-commit] both moons missing in store: src=${src} tgt=${tgt}`);
+      }
+    };
   // v0.0.748 — operator 2026-06-04 "sandbox" 一字诊断: TM sandbox 隔离下
   // 单挂 env.win 不够, devtools console (page world) 拿不到. dual-expose
   // 到 unsafeWindow 让 operator 能 console 直接救现状 (例如历史死锁未被
@@ -3665,6 +3691,40 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     const pw = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & { __ogamexStore?: typeof store };
     pw.__ogamexStore = store;
   } catch { /* unsafeWindow may be undefined in non-Tampermonkey contexts (tests) */ }
+
+  // v0.0.754 — operator "ogame 服务器时间还是不对". evidence-driven:
+  // sidecar fleet arrival_at=1780562066000 ms (UTC 08:34:26) vs ogame UI
+  // 显示 "09:34:26 小時" → 服务器实际 UTC+1 (CET) 全年, **不应用 DST**.
+  // v0.0.752 用 Europe/Berlin IANA 在夏天自动 CEST=UTC+2, panel 比 ogame
+  // 快 1h. 改 fixed UTC+1 offset (匹配 gameforge .org/.gameforge.com 服务器).
+  // localStorage `ogamex.server.tz_offset_hours` 可 override (其他时区 universe).
+  const tsMetaStr = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-timestamp"]')?.content ?? "";
+  const tsMeta = parseInt(tsMetaStr, 10);
+  const tsMetaPerfMs = performance.now(); // baseline at boot
+  if (Number.isFinite(tsMeta) && tsMeta > 0) {
+    let tzOffsetHours = 1; // fixed CET (gameforge default)
+    try {
+      const override = env.win.localStorage.getItem("ogamex.server.tz_offset_hours");
+      if (override !== null) {
+        const parsed = parseFloat(override);
+        if (Number.isFinite(parsed)) tzOffsetHours = parsed;
+      }
+    } catch { /* localStorage blocked = use default */ }
+    const tzOffsetSec = Math.floor(tzOffsetHours * 3600);
+    env.win.setInterval(() => {
+      try {
+        const tgt = env.doc.querySelector("#ogamex-server-time");
+        if (!tgt) return;
+        const elapsedSec = Math.floor((performance.now() - tsMetaPerfMs) / 1000);
+        const serverNow = tsMeta + elapsedSec + tzOffsetSec;
+        const d = new Date(serverNow * 1000);
+        const hh = String(d.getUTCHours()).padStart(2, "0");
+        const mm = String(d.getUTCMinutes()).padStart(2, "0");
+        const ss = String(d.getUTCSeconds()).padStart(2, "0");
+        tgt.textContent = `${hh}:${mm}:${ss}`;
+      } catch { /* tick failure non-fatal */ }
+    }, 1000);
+  }
 
   // Cargo Calc pending-fill — operator 2026-05-26: "從本星球準備多少船去拉資源".
   // Panel "📤 Fill" navigates to CURRENT planet's fleetdispatch (source = current

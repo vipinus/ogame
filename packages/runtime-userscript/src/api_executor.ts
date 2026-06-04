@@ -675,6 +675,23 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       throw new Error(`jumpgate ghost-ack: success flag set but errors=${JSON.stringify(errsArr).slice(0, 200)}`);
     }
     console.info(`[ApiExec/jumpgate] OK src=${sourceMoonId} → tgt=${targetMoonId} cooldown=${resp.cooldown ?? resp.nextActionAt ?? "?"}s`);
+    // v0.0.755 — operator "用 api / 事件驱动 不要扫网页". executeJump JSON
+    // 自带 cooldown (or nextActionAt). 直接调 __ogamexCommitJgCd 写双边 store,
+    // 0 HTML 扫描 0 race. 取代 v0.0.753 postMessage→CASE B 重抓 overlay regex
+    // 死路 + 双边单边写失败 race (v0.0.744 ships refresh stale spread 覆盖).
+    const cdFromResp = (resp.cooldown ?? resp.nextActionAt ?? null) as number | null;
+    if (cdFromResp !== null && Number.isFinite(cdFromResp) && cdFromResp > 0) {
+      try {
+        const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, c: number) => void }).__ogamexCommitJgCd;
+        if (typeof commit === "function") {
+          commit(sourceMoonId, targetMoonId, cdFromResp);
+        } else {
+          console.warn(`[ApiExec/jumpgate] __ogamexCommitJgCd helper absent — JG cd not written to store`);
+        }
+      } catch (e) { console.warn(`[ApiExec/jumpgate] commit threw:`, e); }
+    } else {
+      console.warn(`[ApiExec/jumpgate] response had no cooldown/nextActionAt — JG cd not committed`);
+    }
     // v0.0.546 — operator 2026-05-31 "跳躍以後要立刻刷新艦隊數量". Old code
     // fired one pollEmpire force, but ogame's empire endpoint can return
     // pre-JG ship counts if the server-side state hasn't committed yet

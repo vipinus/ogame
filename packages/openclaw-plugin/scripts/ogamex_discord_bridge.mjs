@@ -700,6 +700,15 @@ function mineEnergyDelta(building, L_cur, L_new) {
   return -(mineEnergyConsumption(building, L_new) - mineEnergyConsumption(building, L_cur));
 }
 
+// v0.0.756 — operator "为什么有两套算法 统一一下". Single-level build time
+// delegated to @ogamex/shared/build_time (compiled JS). This per-range helper
+// keeps the v0.0.470 accelerator self-acceleration loop but uses the unified
+// formula for each per-level calculation.
+// Path: deployed daemon lives at ~/.openclaw/extensions/ogamex/runtime/, shared
+// at ~/.openclaw/extensions/ogamex/node_modules/@ogamex/shared/dist/, so
+// "../node_modules/@ogamex/shared/dist/build_time.js" resolves correctly.
+import { buildingSec as sharedBuildingSec } from "../node_modules/@ogamex/shared/dist/build_time.js";
+
 function buildSecondsForRange(building, fromLvl, toLvl, robo, nano, speed = 1) {
   // v0.0.470: accelerator self-acceleration (operator 2026-05-30 "优化错了
   // 就修改优化算法"). When iterating through levels of an accelerator
@@ -713,7 +722,7 @@ function buildSecondsForRange(building, fromLvl, toLvl, robo, nano, speed = 1) {
   for (let L = fromLvl + 1; L <= toLvl; L++) {
     const c = mineCostAtLevel(building, L);
     if (!c) return null;
-    total += ((c.m + c.c) * 3600) / (2500 * (1 + curRobo) * Math.pow(2, curNano) * speed);
+    total += sharedBuildingSec(c, { robotics: curRobo, nanite: curNano }, speed);
     if (building === "roboticsFactory") curRobo = L;
     else if (building === "naniteFactory") curNano = L;
   }

@@ -4228,7 +4228,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           <button data-action="close" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${escapeHtml(t("panel.btn.close"))}">×</button>
         </span>
       </div>
-      <div style="color:#8090a8; font-size:10px;">${escapeHtml(t("panel.counter.active", { n: filtered.length }))}${err ? ` — ${escapeHtml(err)}` : ""}</div>`;
+      <div style="color:#8090a8; font-size:10px;">${escapeHtml(t("panel.counter.active", { n: filtered.length }))}${err ? ` — ${escapeHtml(err)}` : ""} · <span id="ogamex-server-time" style="color:#6080a8;">--:--:--</span></div>`;
     const empty = filtered.length === 0 && !err
       ? `<div style="color:#666; text-align:center; padding:12px;">(no active goals)</div>`
       : "";

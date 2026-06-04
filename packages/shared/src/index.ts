@@ -5,3 +5,5 @@ export * from "./lifeform/index.js";
 export * from "./schemas.js";
 export { expeditionSlots, TECH_TREE, prerequisitesFor, costFor, OGAME_DATA_TECHNOLOGY, OGAME_DATA_TECHNOLOGY_REVERSE } from "./tech_tree.js";
 export type { TechKind, TechEntry } from "./tech_tree.js";
+export { buildingSec, researchSec, techSec } from "./build_time.js";
+export type { BuildTimeAccel } from "./build_time.js";
