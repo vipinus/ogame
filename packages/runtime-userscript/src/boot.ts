@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.742";
+  const USERSCRIPT_VERSION = "0.0.743";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1834,13 +1834,30 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const c = j.resources.crystal?.amount ?? existing.resources?.c ?? 0;
       const d = j.resources.deuterium?.amount ?? existing.resources?.d ?? 0;
       const e = j.resources.energy?.amount ?? existing.resources?.e ?? 0;
+      // v0.0.743 — operator 2026-06-04 "Leg 1 ... 已经跳过了怎么卡在这里
+      // chain prereq: source 6354 ship inventory not yet synced". JG 到港
+      // 后 dest planet 的 ships changed (received cargo) 但 fetchResources
+      // JSON 只返资源不返 ships → priority_merger ship-inventory check 用
+      // stale planet.ships[largeCargo]=0 死锁下一 leg dispatch. 同步刷
+      // ships via __ogamexFetchPlanetShips (fleetdispatch chunk inline
+      // shipsOnPlanet data block) 才算完整 arrival sync.
+      const fetchShips = (env.win as Window & { __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>> }).__ogamexFetchPlanetShips;
+      let freshShips: Record<string, number> | null = null;
+      if (typeof fetchShips === "function") {
+        try { freshShips = await fetchShips(sourcePlanetId); } catch (e) { console.warn(`[fleet-launch-record] fetchPlanetShips threw`, e); }
+      }
       store.setPartial({
         planets: {
           ...store.state.planets,
-          [sourcePlanetId]: { ...existing, resources: { m, c, d, e } },
+          [sourcePlanetId]: {
+            ...existing,
+            resources: { m, c, d, e },
+            ...(freshShips ? { ships: freshShips } : {}),
+          },
         } as typeof store.state.planets,
       });
-      console.info(`[fleet-launch-record] refreshed source ${sourcePlanetId} resources (m=${m} c=${c} d=${d} e=${e}) via cp-protected fetchResources`);
+      const shipsTag = freshShips ? ` + ships (${Object.entries(freshShips).filter(([_, n]) => n > 0).map(([k, n]) => `${k}=${n}`).slice(0, 5).join(",")}...)` : " (ships fetch unavailable)";
+      console.info(`[fleet-launch-record] refreshed source ${sourcePlanetId} resources (m=${m} c=${c} d=${d} e=${e})${shipsTag}`);
     } catch (e) {
       if (e instanceof BusyDeferredError) {
         console.info(`[fleet-launch-record] refresh deferred — operator busy; sidecar will re-plan on next event`);

@@ -36,11 +36,11 @@ src/boot.ts:992
 src/boot.ts:1010
 src/boot.ts:1154
 src/boot.ts:1819
-src/boot.ts:2047
-src/boot.ts:2309
-src/boot.ts:2469
-src/boot.ts:3343
-src/boot.ts:3550
+src/boot.ts:2064
+src/boot.ts:2326
+src/boot.ts:2486
+src/boot.ts:3360
+src/boot.ts:3567
 EOF
 )
 
