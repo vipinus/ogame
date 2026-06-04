@@ -432,6 +432,16 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     // synthetic prune (any mission), replacing the retired ttl-based path.
     const liveOwnByMission = new Map<number, number>();
     let liveOwnMission15 = 0;
+    // v0.0.747 — operator 2026-06-04 "派了一队船上月球还是没有更新库存".
+    // 前 4 轮 fix (v0.0.743-746) 全在 fleets_outbound 反查路径里挣扎,
+    // 但 operator 手动 UI 派 fleet 完全绕过 recordFleetLaunch, fleets_outbound
+    // 里根本没那条 row, pruneByMission 找不到 dest, ships 永远不刷.
+    // FUNDAMENTAL FIX: eventbox row 本身就是 dest 的 ground truth (data-coords
+    // & destFleet figure). 每次 poll snapshot {evId: dest meta}, drop 发生时
+    // 反查上次还在但这次没的 evId, 用 prev meta 里的 dest 直接 refresh.
+    // 完全不依赖 fleets_outbound (它的 dual-source / wipe-replace pathology
+    // 都被旁路).
+    const currOwnFleetMeta = new Map<string, { destCoords: [number, number, number]; destType: "planet" | "moon" }>();
     for (const tr of rows) {
       const mt = parseInt(tr.getAttribute("data-mission-type") ?? "0", 10);
       const evId = tr.getAttribute("id")?.replace(/^eventRow-/, "") ?? "";
@@ -442,6 +452,19 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       if (!isHostile) {
         liveOwnByMission.set(mt, (liveOwnByMission.get(mt) ?? 0) + 1);
         if (mt === 15) liveOwnMission15++;
+        // v0.0.747 snapshot own-fleet row dest meta for arrival-by-disappearance.
+        if (evId) {
+          const dsTxt = tr.querySelector(".destCoords")?.textContent?.trim() ?? "";
+          const dsM = dsTxt.match(/\[(\d+):(\d+):(\d+)\]/);
+          if (dsM) {
+            const dCoords: [number, number, number] = [parseInt(dsM[1]!, 10), parseInt(dsM[2]!, 10), parseInt(dsM[3]!, 10)];
+            const destFleetEl = tr.querySelector(".destFleet, td.destFleet");
+            const destFigureClass = destFleetEl?.querySelector("figure")?.className ?? "";
+            const destHtml = destFleetEl?.innerHTML ?? "";
+            const isMoonDest = /\bmoon\b/i.test(destFigureClass) || /planetIcon[^"]*\bmoon\b/i.test(destHtml);
+            currOwnFleetMeta.set(evId, { destCoords: dCoords, destType: isMoonDest ? "moon" : "planet" });
+          }
+        }
       }
       // v0.0.728 — operator "全事件驱动 为什么要有评估？". Own-fleet rows
       // (countdown not hostile) carry data-arrival-time. When that ticks
@@ -549,14 +572,18 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
     const winT = win as Window & {
       __ogamexLiveExpeditionCount?: number;
       __ogamexLiveOwnByMission?: Map<number, number>;
+      __ogamexLiveOwnFleetMeta?: Map<string, { destCoords: [number, number, number]; destType: "planet" | "moon" }>;
       __ogamexRefreshSlots?: () => Promise<void>;
       __ogamexPushNow?: () => void;
       __ogamexPruneByMission?: (mission: number, n: number) => void;
+      __ogamexRefreshPlanetResources?: (pid: string) => Promise<void>;
     };
     const prevLiveByMission = winT.__ogamexLiveOwnByMission ?? new Map<number, number>();
     const prevLiveExp = winT.__ogamexLiveExpeditionCount;
+    const prevOwnFleetMeta = winT.__ogamexLiveOwnFleetMeta ?? new Map<string, { destCoords: [number, number, number]; destType: "planet" | "moon" }>();
     winT.__ogamexLiveOwnByMission = liveOwnByMission;
     winT.__ogamexLiveExpeditionCount = liveOwnMission15;
+    winT.__ogamexLiveOwnFleetMeta = currOwnFleetMeta;
     // Per-mission drop detection — only if we've seen at least one prior poll.
     const drops: Array<{ mission: number; n: number }> = [];
     if (prevLiveByMission.size > 0) {
@@ -569,6 +596,36 @@ export function installEventBoxHook(opts: EventBoxHookOptions): EventBoxHookHand
       if (typeof winT.__ogamexPruneByMission === "function") {
         for (const { mission: mt, n } of drops) {
           try { winT.__ogamexPruneByMission(mt, n); } catch (e) { console.warn(`[OgameX/eventbox-hook] pruneByMission(${mt},${n}) threw`, e); }
+        }
+      }
+    }
+    // v0.0.747 — arrival-by-disappearance: fleet row 在 ogame eventbox 消失
+    // = 抵达目的地. prev poll 见过该 evId, 当前 poll 没见到 → fire dest
+    // refresh from prev meta. 不依赖 fleets_outbound, 不依赖 recordFleetLaunch.
+    // Handles BOTH: chain dispatch (走 sendFleet) + operator 手动 UI 派 fleet.
+    if (prevOwnFleetMeta.size > 0) {
+      const disappeared: Array<{ evId: string; destCoords: [number, number, number]; destType: "planet" | "moon" }> = [];
+      for (const [evId, meta] of prevOwnFleetMeta) {
+        if (!currOwnFleetMeta.has(evId)) disappeared.push({ evId, ...meta });
+      }
+      if (disappeared.length > 0 && typeof winT.__ogamexRefreshPlanetResources === "function") {
+        const planetsMap = (store.state.planets ?? {}) as Record<string, { id?: string; coords?: readonly number[]; type?: string }>;
+        const refreshedDestIds = new Set<string>();
+        for (const { evId, destCoords, destType } of disappeared) {
+          const dest = Object.values(planetsMap).find((p) => {
+            const c = p.coords;
+            if (!Array.isArray(c) || c.length !== 3) return false;
+            return c[0] === destCoords[0] && c[1] === destCoords[1] && c[2] === destCoords[2] && (p.type ?? "planet") === destType;
+          });
+          if (dest?.id && !refreshedDestIds.has(dest.id)) {
+            refreshedDestIds.add(dest.id);
+            console.info(`[OgameX/eventbox-hook] arrival-by-disappearance evId=${evId} → dest ${dest.id} (${destCoords.join(":")}/${destType}) → refresh`);
+            void winT.__ogamexRefreshPlanetResources(dest.id).then(() => {
+              if (typeof winT.__ogamexPushNow === "function") { try { winT.__ogamexPushNow(); } catch { /* */ } }
+            });
+          } else if (!dest?.id) {
+            console.warn(`[OgameX/eventbox-hook] arrival-by-disappearance evId=${evId} dest ${destCoords.join(":")}/${destType} — no planet match in store.planets`);
+          }
         }
       }
     }
