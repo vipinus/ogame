@@ -811,7 +811,7 @@ export async function startSidecar(
             }
           },
           sectionSettingsWrite: async (uid: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> => {
-            const ALLOWED = new Set(["ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE", "ogamex.expedition.paused"]);
+            const ALLOWED = new Set(["ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE", "ogamex.expedition.paused", "OGAMEX_EMERGENCY_SOUND_ALARM"]);
             const filtered: Record<string, string | boolean> = {};
             for (const [k, v] of Object.entries(patch)) {
               if (!ALLOWED.has(k)) continue;

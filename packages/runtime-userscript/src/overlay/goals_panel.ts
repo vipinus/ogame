@@ -245,10 +245,13 @@ function openEmergencySettings(doc: Document): void {
   // Read current values.
   const paused = lsGet("ogamex.emergency.paused") === "true";
   const spyOn = lsGet("OGAMEX_SPY_TRIGGERS_SAVE") !== "off";  // default ON
+  // v0.0.764 — operator 2026-06-04 "两边紧急任务里面都添加声音警报开关".
+  const soundOn = lsGet("OGAMEX_EMERGENCY_SOUND_ALARM") !== "off"; // default ON
   const bodyHTML = `
     <div style="color:#7080a0; font-size:11px; padding-bottom:6px;">${escapeHtml(t('auto.181'))}</div>
     ${renderToggleRow(t("auto.103"), !paused, "em-paused", t("auto.104"))}
     ${renderToggleRow(t("auto.105"), spyOn, "em-spy", t("auto.106"))}
+    ${renderToggleRow("🔔 声音警报", soundOn, "em-sound", "hostile incoming 检测到时播放警报声 (跟 flagship 网页同步)")}
     <div style="color:#5a7090; font-size:10px; padding-top:10px;">${escapeHtml(t('auto.182'))}</div>
   `;
   openSettingsModal(doc, "emergency", t("modal.emergency.title"), bodyHTML, (m) => {
@@ -289,6 +292,22 @@ function openEmergencySettings(doc: Document): void {
       syncToPg("OGAMEX_SPY_TRIGGERS_SAVE", v);
       (window as Window & { __ogamexSpyTriggersSave?: boolean }).__ogamexSpyTriggersSave = next;
       reflect("[data-em-spy]", next);
+    });
+    m.querySelector<HTMLElement>("[data-em-sound]")?.addEventListener("click", () => {
+      const cur = lsGet("OGAMEX_EMERGENCY_SOUND_ALARM") !== "off";
+      const next = !cur;
+      const v = next ? "on" : "off";
+      lsSet("OGAMEX_EMERGENCY_SOUND_ALARM", v);
+      syncToPg("OGAMEX_EMERGENCY_SOUND_ALARM", v);
+      reflect("[data-em-sound]", next);
+      // 试听一次反馈
+      if (next) {
+        try {
+          const audio = new Audio("data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQA=");
+          audio.volume = 0.4;
+          void audio.play().catch(() => { /* */ });
+        } catch { /* */ }
+      }
     });
   });
 }
