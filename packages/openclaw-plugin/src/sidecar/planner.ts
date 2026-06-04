@@ -79,6 +79,19 @@ export function mineEnergyConsumption(building: string, level: number): number {
   return base * level * Math.pow(1.1, level);
 }
 
+// ogame v12 vanilla — power plant production (per hour, universe speed cancels
+// in delta comparisons). Mirrors daemon's solarProduction / fusionProduction.
+//   solarPlant:    base 20 * L * 1.1^L
+//   fusionReactor: base 50 * L * 1.1^L * (1 + 0.02 * energyTech)
+function solarProduction(level: number): number {
+  if (level <= 0) return 0;
+  return 20 * level * Math.pow(1.1, level);
+}
+function fusionProduction(level: number, energyTech: number): number {
+  if (level <= 0) return 0;
+  return 50 * level * Math.pow(1.1, level) * (1 + 0.02 * energyTech);
+}
+
 // v0.0.737 — operator 2026-06-04 "补电厂的逻辑是有的, 不要重复写代码, 复用".
 // Shared energy-gate decision: returns the recommended power plant + level
 // when `building` upgrade would drain energy below 0, or null otherwise.
@@ -86,13 +99,20 @@ export function mineEnergyConsumption(building: string, level: number): number {
 // simulate() prereq-tree builder (adds the pick as a tree child).
 // Single source of truth for the solar-vs-fusion choice + needsPowerPlant
 // gate — algorithm parity guaranteed between planning and visualization.
+//
+// v0.0.738 — operator 2026-06-04 "tree 显示的还是不对吧". `level: current+1`
+// 只够升一级, deutSynth L32 缺 ~1466 能源, fusion L14→L15 只多产 ~475 — 不
+// 够. 改成 minLevel = 把 deficit 全部抹平所需的最小电厂级数. planner 跟
+// simulate 都用同一个 minLevel: 前者递归 planBuild 一级一级 dispatch (loop
+// 在外层 tick 上), 后者一次性 buildAndSimulate(target=minLevel) 把整段累计
+// 进 tree ETA.
 export function pickEnergyPrereqBuilding(
   building: string,
   current: number,
   nextLevel: number,
   planet: Planet,
   energyTech: number,
-): { building: "fusionReactor" | "solarPlant"; level: number } | null {
+): { building: "fusionReactor" | "solarPlant"; level: number; targetLevel: number } | null {
   if (!ENERGY_GATED_BUILDINGS.has(building)) return null;
   if (building === "solarPlant" || building === "fusionReactor") return null;
   const curEnergy = (planet.resources as { e?: number } | undefined)?.e ?? 0;
@@ -115,9 +135,26 @@ export function pickEnergyPrereqBuilding(
   const solarTotal = solarCost.m + solarCost.c + (solarCost.d ?? 0);
   const fusionTotal = fusionCost.m + fusionCost.c + (fusionCost.d ?? 0);
   const pickFusion = fusionViable && fusionTotal < solarTotal;
+  // v0.0.738 — solve for min plant level that covers the deficit. Deficit =
+  // |projectedEnergy| when projectedEnergy < 0, OR current shortfall when
+  // curEnergy already negative. Plant production at picked level must be
+  // (current plant prod) + deficit. Cap search at +20 levels to bound.
+  const deficit = Math.max(0, -projectedEnergy, -curEnergy);
+  const baseProd = pickFusion ? fusionProduction(fusion, energyTech) : solarProduction(solar);
+  const startLvl = pickFusion ? fusion + 1 : solar + 1;
+  let chosenLvl = startLvl;
+  for (let l = startLvl; l <= startLvl + 20; l++) {
+    const prod = pickFusion ? fusionProduction(l, energyTech) : solarProduction(l);
+    if (prod - baseProd >= deficit) {
+      chosenLvl = l;
+      break;
+    }
+    chosenLvl = l;  // record latest in case loop exits without satisfaction
+  }
   return {
     building: pickFusion ? "fusionReactor" : "solarPlant",
-    level: pickFusion ? fusion + 1 : solar + 1,
+    level: startLvl,       // next level to dispatch (planner affordability check)
+    targetLevel: chosenLvl, // min level to fully cover deficit (simulate tree depth)
   };
 }
 

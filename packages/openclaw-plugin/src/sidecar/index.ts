@@ -961,7 +961,13 @@ export async function startSidecar(
               stateRef.current?.research?.levels?.["energyTech"] ?? 0,
             );
             if (energyPick) {
-              const powerNode = buildAndSimulate(energyPick.building, energyPick.level, "building");
+              // v0.0.738 — use targetLevel (min level to cover energy deficit)
+              // for tree depth, not just next level. Single fusion bump
+              // (e.g. L14→L15) often doesn't cover deutSynth L32's +1466
+              // energy delta. simulate's tree should show fusion 14→19 or
+              // wherever the math says enough. planner still dispatches
+              // one level per tick (uses .level field).
+              const powerNode = buildAndSimulate(energyPick.building, energyPick.targetLevel, "building");
               if (powerNode) children.push(powerNode);
             }
           }
