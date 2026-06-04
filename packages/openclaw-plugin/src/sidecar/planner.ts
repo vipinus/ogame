@@ -30,7 +30,7 @@ const MISSION_EXPEDITION = 15;
 
 // Buildings whose construction draws from energy; if energy is negative or the
 // planet has 0 solar plant, recurse into solar plant upgrade first.
-const ENERGY_GATED_BUILDINGS: ReadonlySet<string> = new Set([
+export const ENERGY_GATED_BUILDINGS: ReadonlySet<string> = new Set([
   "metalMine",
   "crystalMine",
   "deuteriumSynth",
@@ -73,7 +73,7 @@ function pickStorageUpgrade(planet: Planet, short: { m: number; c: number; d: nu
 // daemon into a sidecar import. metalMine + crystalMine consume base=10,
 // deuteriumSynth consume base=20, solarPlant produces 20, fusionReactor
 // produces 50*(1+0.02*energyTech).
-function mineEnergyConsumption(building: string, level: number): number {
+export function mineEnergyConsumption(building: string, level: number): number {
   if (level <= 0) return 0;
   const base = building === "deuteriumSynth" ? 20 : 10;
   return base * level * Math.pow(1.1, level);
