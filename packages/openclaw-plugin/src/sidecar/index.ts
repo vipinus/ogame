@@ -42,7 +42,7 @@ import { getCurrentUserId } from "./user_context.js";
 import { GeminiClient } from "./gemini_client.js";
 import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
-import { planGoal, ENERGY_GATED_BUILDINGS, mineEnergyConsumption } from "./planner.js";
+import { planGoal, pickEnergyPrereqBuilding } from "./planner.js";
 import { buildHealthReport } from "./health.js";
 import { DebugBuffer } from "./debug_buffer.js";
 import {
@@ -946,48 +946,22 @@ export async function startSidecar(
             const node = buildAndSimulate(req, lvl, subKind);
             if (node) children.push(node);
           }
-          // v0.0.737 — operator 2026-06-04 "应该是tree不对 没电需要补电厂
-          // 为什么没有表现在tree里面". planner.ts 的 ENERGY_GATED 逻辑
-          // 知道 deuteriumSynth/metalMine/crystalMine 需电要先 build
-          // solarPlant/fusionReactor, 但 simulate() prereq tree 之前只
-          // 走 TECH_TREE.requires 静态依赖, 电厂动态 prereq 没体现。Mirror
-          // 同样的 energy gate 决策到 tree builder, 加 fusionReactor 或
-          // solarPlant 子节点, panel 可视化前置依赖。Skip power plants
-          // themselves to avoid recursion.
-          if (
-            useTreeBuilder === "regular" &&
-            kind === "building" &&
-            ENERGY_GATED_BUILDINGS.has(techName) &&
-            techName !== "solarPlant" &&
-            techName !== "fusionReactor" &&
-            planet
-          ) {
-            const curEnergy = (planet.resources as { e?: number } | undefined)?.e ?? 0;
-            const solar = planet.buildings?.["solarPlant"] ?? 0;
-            const fusion = planet.buildings?.["fusionReactor"] ?? 0;
-            const lastSelfLvl = targetLevel;
-            const extraConsumption =
-              mineEnergyConsumption(techName, lastSelfLvl) - mineEnergyConsumption(techName, current);
-            const projectedEnergy = curEnergy - extraConsumption;
-            const needsPowerPlant = curEnergy < 0 || (solar === 0 && fusion === 0) || projectedEnergy < 0;
-            if (needsPowerPlant) {
-              const fusionCostFn = (TECH_TREE as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)["fusionReactor"]?.cost_at;
-              const solarCostFn = (TECH_TREE as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)["solarPlant"]?.cost_at;
-              const dSynth = planet.buildings?.["deuteriumSynth"] ?? 0;
-              const energyTech = stateRef.current?.research?.levels?.["energyTech"] ?? 0;
-              const planetD = (planet.resources as { d?: number } | undefined)?.d ?? 0;
-              const fusionCost = fusionCostFn ? fusionCostFn(fusion + 1) : { m: 0, c: 0, d: 0 };
-              const solarCost = solarCostFn ? solarCostFn(solar + 1) : { m: 0, c: 0, d: 0 };
-              const fusionPrereqsMet = dSynth >= 5 && energyTech >= 3;
-              const fusionAffordable = planetD >= (fusionCost.d ?? 0);
-              const fusionViable = fusionPrereqsMet && fusionAffordable;
-              const solarTotal = solarCost.m + solarCost.c + (solarCost.d ?? 0);
-              const fusionTotal = fusionCost.m + fusionCost.c + (fusionCost.d ?? 0);
-              const pickFusion = fusionViable && fusionTotal < solarTotal;
-              const pickBuilding = pickFusion ? "fusionReactor" : "solarPlant";
-              const pickCurrent = pickFusion ? fusion : solar;
-              const pickTarget = pickCurrent + 1;
-              const powerNode = buildAndSimulate(pickBuilding, pickTarget, "building");
+          // v0.0.737 — operator 2026-06-04 "补电厂的逻辑是有的, 已经自动建
+          // 电厂了, 不要重复写代码, 复用". Mirror planner.ts's decision by
+          // calling the SAME helper. Single source of truth: planner picks
+          // the power plant for actual dispatch, simulate() shows it as a
+          // tree child for panel visualization — both call the same fn so
+          // the algorithms can never diverge.
+          if (useTreeBuilder === "regular" && kind === "building" && planet) {
+            const energyPick = pickEnergyPrereqBuilding(
+              techName,
+              current,
+              targetLevel,
+              planet,
+              stateRef.current?.research?.levels?.["energyTech"] ?? 0,
+            );
+            if (energyPick) {
+              const powerNode = buildAndSimulate(energyPick.building, energyPick.level, "building");
               if (powerNode) children.push(powerNode);
             }
           }

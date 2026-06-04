@@ -79,6 +79,48 @@ export function mineEnergyConsumption(building: string, level: number): number {
   return base * level * Math.pow(1.1, level);
 }
 
+// v0.0.737 — operator 2026-06-04 "补电厂的逻辑是有的, 不要重复写代码, 复用".
+// Shared energy-gate decision: returns the recommended power plant + level
+// when `building` upgrade would drain energy below 0, or null otherwise.
+// Used by BOTH planBuild (recurses into planBuild for the pick) AND
+// simulate() prereq-tree builder (adds the pick as a tree child).
+// Single source of truth for the solar-vs-fusion choice + needsPowerPlant
+// gate — algorithm parity guaranteed between planning and visualization.
+export function pickEnergyPrereqBuilding(
+  building: string,
+  current: number,
+  nextLevel: number,
+  planet: Planet,
+  energyTech: number,
+): { building: "fusionReactor" | "solarPlant"; level: number } | null {
+  if (!ENERGY_GATED_BUILDINGS.has(building)) return null;
+  if (building === "solarPlant" || building === "fusionReactor") return null;
+  const curEnergy = (planet.resources as { e?: number } | undefined)?.e ?? 0;
+  const solar = planet.buildings?.["solarPlant"] ?? 0;
+  const fusion = planet.buildings?.["fusionReactor"] ?? 0;
+  const extraConsumption =
+    mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, current);
+  const projectedEnergy = curEnergy - extraConsumption;
+  const needsPowerPlant = curEnergy < 0 || (solar === 0 && fusion === 0) || projectedEnergy < 0;
+  if (!needsPowerPlant) return null;
+  const solarCostFn = TECH_TREE.solarPlant?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
+  const fusionCostFn = TECH_TREE.fusionReactor?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
+  const solarCost = solarCostFn ? solarCostFn(solar + 1) : { m: 0, c: 0, d: 0 };
+  const fusionCost = fusionCostFn ? fusionCostFn(fusion + 1) : { m: 0, c: 0, d: 0 };
+  const dSynth = planet.buildings?.["deuteriumSynth"] ?? 0;
+  const planetD = (planet.resources as { d?: number } | undefined)?.d ?? 0;
+  const fusionPrereqsMet = dSynth >= 5 && energyTech >= 3;
+  const fusionAffordable = planetD >= (fusionCost.d ?? 0);
+  const fusionViable = fusionPrereqsMet && fusionAffordable;
+  const solarTotal = solarCost.m + solarCost.c + (solarCost.d ?? 0);
+  const fusionTotal = fusionCost.m + fusionCost.c + (fusionCost.d ?? 0);
+  const pickFusion = fusionViable && fusionTotal < solarTotal;
+  return {
+    building: pickFusion ? "fusionReactor" : "solarPlant",
+    level: pickFusion ? fusion + 1 : solar + 1,
+  };
+}
+
 // Ogame v12 — list of buildings that can physically exist on a moon. Anything
 // not in this set is planet-only (naniteFactory, terraformer, spaceDock, mines,
 // solar/fusion, research lab, allianceDepot, etc.) and must be rejected when a
@@ -758,77 +800,47 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   // Energy gate: mines need positive net energy. v0.0.675 — operator
   // 2026-06-03 拍板两条：
   //   (1) 预判: 当前 energy - 升级后多消耗的 energy < 0 → 先建电厂
-  //   (2) 太阳能 vs 核融合两种电厂二选一：next level cost (m+c+d) 谁低
-  //       建谁。核融合 D 不够买不起 → 退到太阳能（核融合还有 prereqs:
-  //       deuteriumSynth≥5 + energyTech≥3, 不满足也退太阳能）。
-  // Skip the recursion for the power plants themselves so we don't loop.
-  if (
-    ENERGY_GATED_BUILDINGS.has(building) &&
-    building !== "solarPlant" &&
-    building !== "fusionReactor"
-  ) {
-    const curEnergy = planet.resources?.e ?? 0;
-    const solar = planet.buildings?.["solarPlant"] ?? 0;
-    const fusion = planet.buildings?.["fusionReactor"] ?? 0;
-    // Predictive — energy delta from upgrading this mine.
-    const extraConsumption =
-      mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, current);
-    const projectedEnergy = curEnergy - extraConsumption;
-    const needsPowerPlant =
-      curEnergy < 0 ||
-      (solar === 0 && fusion === 0) ||
-      projectedEnergy < 0;
-    if (needsPowerPlant) {
-      // Pick cheaper next-level power plant.
-      const solarCostFn = TECH_TREE.solarPlant?.cost_at as
-        | ((l: number) => { m: number; c: number; d?: number; e?: number })
-        | undefined;
-      const fusionCostFn = TECH_TREE.fusionReactor?.cost_at as
-        | ((l: number) => { m: number; c: number; d?: number; e?: number })
-        | undefined;
-      const solarCost = solarCostFn ? solarCostFn(solar + 1) : { m: 0, c: 0, d: 0 };
-      const fusionCost = fusionCostFn ? fusionCostFn(fusion + 1) : { m: 0, c: 0, d: 0 };
-      // Fusion viability: prereqs (deuteriumSynth≥5, energyTech≥3) AND
-      // planet has enough deuterium in stock to PAY the build cost.
-      const dSynth = planet.buildings?.["deuteriumSynth"] ?? 0;
-      const energyTech = ctx.state.research?.levels?.["energyTech"] ?? 0;
-      const planetD = planet.resources?.d ?? 0;
-      const fusionPrereqsMet = dSynth >= 5 && energyTech >= 3;
-      const fusionAffordable = planetD >= (fusionCost.d ?? 0);
-      const fusionViable = fusionPrereqsMet && fusionAffordable;
-      // Total cost compare (m+c+d). Equal → prefer solar (no D drain).
-      const solarTotal = solarCost.m + solarCost.c + (solarCost.d ?? 0);
-      const fusionTotal = fusionCost.m + fusionCost.c + (fusionCost.d ?? 0);
-      const pickFusion = fusionViable && fusionTotal < solarTotal;
-      const pickBuilding = pickFusion ? "fusionReactor" : "solarPlant";
-      const pickLevel = pickFusion ? fusion + 1 : solar + 1;
-      const pickCost = pickFusion ? fusionCost : solarCost;
-      // v0.0.676 — break the deuteriumSynth → solar → metalMine → solar
-      // infinite-recursion cycle observed in production (planet 33639762
-      // deuteriumSynth L32 blocked with "recursion depth exceeded while
-      // planning build solarPlant"). When the chosen power plant is
-      // itself unaffordable (deleted in v0.0.696: pickResourceStrategy)
-      // we used to recurse into a mine upgrade — that mine re-triggered the
-      // energy gate, looped back to the power plant, hit recursion ceiling.
-      // Bail out when the power plant is unaffordable so the original mine's
-      // cost check below returns the "waiting for resources" message.
-      const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
-      const pickAffordable =
-        r.m >= pickCost.m &&
-        r.c >= pickCost.c &&
-        r.d >= (pickCost.d ?? 0);
-      if (pickAffordable) {
-        const bumped = Math.min(10, ctx.rootGoal.priority + 5);
-        const elevCtx: PlanCtx = {
-          ...ctx,
-          depth: ctx.depth + 1,
-          rootGoal: { ...ctx.rootGoal, priority: bumped },
-        };
-        return planBuild(pickBuilding, pickLevel, planetId, elevCtx);
-      }
-      // else: fall through; original mine cost check will block with a
-      // resource-wait reason that names the deficit.
+  //   (2) 太阳能 vs 核融合二选一: 算法在 pickEnergyPrereqBuilding 共享
+  //       helper, planner 跟 simulate() prereq-tree builder 都复用。
+  // v0.0.737 — operator 2026-06-04 "不要重复写代码, 复用". Algorithm
+  // body lives in pickEnergyPrereqBuilding (above). Affordability check
+  // stays here because planBuild's recursion decision depends on it.
+  const energyPick = pickEnergyPrereqBuilding(
+    building,
+    current,
+    nextLevel,
+    planet,
+    ctx.state.research?.levels?.["energyTech"] ?? 0,
+  );
+  if (energyPick) {
+    const pickCostFn = TECH_TREE[energyPick.building]?.cost_at as
+      | ((l: number) => { m: number; c: number; d?: number })
+      | undefined;
+    const pickCost = pickCostFn ? pickCostFn(energyPick.level) : { m: 0, c: 0, d: 0 };
+    // v0.0.676 — break the deuteriumSynth → solar → metalMine → solar
+    // infinite-recursion cycle observed in production (planet 33639762
+    // deuteriumSynth L32 blocked with "recursion depth exceeded while
+    // planning build solarPlant"). When the chosen power plant is itself
+    // unaffordable, we used to recurse into a mine upgrade — that mine
+    // re-triggered the energy gate, looped back to the power plant, hit
+    // recursion ceiling. Bail out so the original mine's cost check below
+    // returns the "waiting for resources" message.
+    const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
+    const pickAffordable =
+      r.m >= pickCost.m &&
+      r.c >= pickCost.c &&
+      r.d >= (pickCost.d ?? 0);
+    if (pickAffordable) {
+      const bumped = Math.min(10, ctx.rootGoal.priority + 5);
+      const elevCtx: PlanCtx = {
+        ...ctx,
+        depth: ctx.depth + 1,
+        rootGoal: { ...ctx.rootGoal, priority: bumped },
+      };
+      return planBuild(energyPick.building, energyPick.level, planetId, elevCtx);
     }
+    // else: fall through; original mine cost check will block with a
+    // resource-wait reason that names the deficit.
   }
 
   for (const [reqTech, reqLevel] of Object.entries(entry.requires)) {
