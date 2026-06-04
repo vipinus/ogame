@@ -66,29 +66,45 @@ export async function wireBridge(
   // URL normalization — strip trailing /push|/poll|/ws (clients re-add).
   const stripTrailing = (u: string): string => u.replace(/\/(push|poll|ws)\/?$/, "");
   let client: HttpBridgeClient | WsBridgeClient;
+  // Operator 2026-06-04 "添加信号灯" — expose bridge transport+status on
+  // window so panel header can render a colored dot (green/yellow/red).
+  let transport: "ws" | "http" = "http";
+  const publishStatus = (): void => {
+    try {
+      const w = window as Window & { __ogamexBridgeStatus?: { transport: "ws" | "http"; status: string } };
+      w.__ogamexBridgeStatus = { transport, status: client ? client.status() : "disconnected" };
+    } catch { /* */ }
+  };
   if (opts.client) {
     client = opts.client;
     await client.connect(stripTrailing(url), opts.bridgeToken);
+    transport = "client" in opts.client ? "http" : "ws"; // best-effort guess
   } else if (wantsWs) {
-    // WS path — append /ws if not already present so we hit sidecar's
-    // upgrade handler (matches WsServer.attachToHttpServer path filter).
     const wsUrl = stripTrailing(url) + "/ws";
     const ws = new WsBridgeClient();
     try {
       await ws.connect(wsUrl, opts.bridgeToken);
       client = ws;
+      transport = "ws";
       console.info(`[wireBridge] WS connected ${wsUrl}`);
     } catch (e) {
       console.warn(`[wireBridge] WS connect failed (${(e as Error).message}); falling back to HTTP long-poll`);
       try { ws.stop(); } catch { /* */ }
       const httpUrl = stripTrailing(url).replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://");
       client = new HttpBridgeClient();
+      transport = "http";
       await client.connect(httpUrl, opts.bridgeToken);
     }
   } else {
     client = new HttpBridgeClient();
+    transport = "http";
     await client.connect(stripTrailing(url), opts.bridgeToken);
   }
+  publishStatus();
+  // Poll client.status() every 1s — both client types may transition
+  // open→reconnecting→open silently; panel renders the current color.
+  const statusPollTimer = setInterval(publishStatus, 1000);
+  void statusPollTimer;
 
   // Hello — fired immediately after the open event resolves.
   client.send({

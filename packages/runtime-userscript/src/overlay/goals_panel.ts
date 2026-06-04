@@ -4235,9 +4235,22 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const updateBtn = hasUpdate
       ? `<button data-action="update-runtime" style="background:#205a20; color:#fff; border:1px solid #408a40; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:10px;" title="${escapeHtml(t("panel.btn.update_tooltip", { version: latestVersion }))}">${escapeHtml(t("panel.btn.update", { version: latestVersion }))}</button>`
       : "";
+    // Operator 2026-06-04 "添加信号灯" — bridge transport+status dot.
+    //   绿 = WS open · 黄 = HTTP fallback open · 红 = both down
+    // Read from window.__ogamexBridgeStatus (set by wireBridge.publishStatus).
+    // Static initial render — separate setInterval below updates 1s.
+    const bs = (window as Window & { __ogamexBridgeStatus?: { transport: "ws" | "http"; status: string } }).__ogamexBridgeStatus;
+    let lightColor = "#c43d3d", lightTitle = "Bridge: 离线 (both down)";
+    if (bs && bs.status === "open") {
+      if (bs.transport === "ws") { lightColor = "#4ac44a"; lightTitle = "Bridge: WS (real-time push)"; }
+      else { lightColor = "#e0c020"; lightTitle = "Bridge: HTTP long-poll (~30s push latency)"; }
+    } else if (bs && (bs.status === "connecting" || bs.status === "reconnecting")) {
+      lightColor = "#e0c020"; lightTitle = `Bridge: ${bs.transport} ${bs.status}`;
+    }
+    const bridgeLightHtml = `<span data-bridge-light style="display:inline-block; width:10px; height:10px; border-radius:50%; background:${lightColor}; box-shadow:0 0 6px ${lightColor}; margin-right:6px; vertical-align:middle;" title="${escapeHtml(lightTitle)}"></span>`;
     const header = `
       <div data-ogamex-drag="1" style="display:flex; align-items:center; justify-content:space-between; padding-bottom:4px; cursor:move; user-select:none;">
-        <strong style="color:#e0e8f0;">${escapeHtml(t("panel.title_prefix"))} ${escapeHtml(serverSlug)} v${escapeHtml(currentVersion)}</strong>
+        <strong style="color:#e0e8f0;">${bridgeLightHtml}${escapeHtml(t("panel.title_prefix"))} ${escapeHtml(serverSlug)} v${escapeHtml(currentVersion)}</strong>
         <span style="display:flex; gap:4px; align-items:center;">
           ${updateBtn}
           <button data-action="tree-toggle-all" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="${escapeHtml(treeExpandAll ? "tree: collapse all" : "tree: expand all")}">${treeExpandAll ? "📚" : "📖"}</button>
@@ -4539,6 +4552,29 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
 
     const body = `<div data-ogamex-body="1" style="display:${bodyDisplay};">${emergencySection}${expeditionSection}${discSection}${moonsSection}${cargoSection}${goalsSection}</div>`;
     panel.innerHTML = header + body;
+    // Operator 2026-06-04 "添加信号灯" — lightweight 1s tick to recolor the
+    // bridge status dot WITHOUT a full panel re-render. Only mutates the
+    // colored dot element's inline style; idempotent re-attach guarded
+    // by a panel-scoped property to avoid duplicate timers across renders.
+    const panelExt = panel as HTMLElement & { __ogamexBridgeLightTimer?: number };
+    if (panelExt.__ogamexBridgeLightTimer !== undefined) {
+      clearInterval(panelExt.__ogamexBridgeLightTimer);
+    }
+    panelExt.__ogamexBridgeLightTimer = window.setInterval(() => {
+      const dot = panel.querySelector<HTMLElement>("[data-bridge-light]");
+      if (!dot) return;
+      const bs2 = (window as Window & { __ogamexBridgeStatus?: { transport: "ws" | "http"; status: string } }).__ogamexBridgeStatus;
+      let c = "#c43d3d", title = "Bridge: 离线 (both down)";
+      if (bs2 && bs2.status === "open") {
+        if (bs2.transport === "ws") { c = "#4ac44a"; title = "Bridge: WS (real-time push)"; }
+        else { c = "#e0c020"; title = "Bridge: HTTP long-poll (~30s push latency)"; }
+      } else if (bs2 && (bs2.status === "connecting" || bs2.status === "reconnecting")) {
+        c = "#e0c020"; title = `Bridge: ${bs2.transport} ${bs2.status}`;
+      }
+      dot.style.background = c;
+      dot.style.boxShadow = `0 0 6px ${c}`;
+      dot.title = title;
+    }, 1000);
     // Wire discovery Start button.
     const startBtn = panel.querySelector<HTMLElement>("[data-action=\"discovery-start\"]");
     if (startBtn) {
