@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.740";
+  const USERSCRIPT_VERSION = "0.0.741";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1665,7 +1665,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // 区段 + dump 解析后的 requires JSON, 让 operator 拿真数据补 catalog.
   const dumpLfRequiresFn = async (): Promise<void> => {
     const PAGES = ["lfbuildings", "lfresearch"];
-    const out: Record<string, { kind: "building" | "research"; requires_text: string; requires: Record<string, number>; tooltip_html_sample?: string }> = {};
+    const out: Record<string, unknown> = {};
     for (const page of PAGES) {
       try {
         const resp = await env.win.fetch(`/game/index.php?page=ingame&component=${page}`, { credentials: "same-origin" });
@@ -1677,38 +1677,41 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         console.info(`[OgameX/dump-lf-requires] ${page}: scanning ${techNodes.length} tech nodes`);
         techNodes.forEach((li) => {
           const techId = li.getAttribute("data-technology") ?? "";
-          // Resolve tech name via TECH_ID_TO_NAME (same map used elsewhere).
           const techName = (TECH_ID_TO_NAME as Record<string, string>)[techId] ?? `id_${techId}`;
-          // Tooltip text — try multiple selectors per ogame skin variants.
-          const tipNodes = li.querySelectorAll<HTMLElement>(".tooltipHTML, .tooltipContent, .tooltip");
-          let combinedText = "";
-          let sampleHtml = "";
-          tipNodes.forEach((t) => { combinedText += "\n" + (t.textContent ?? "").trim(); if (!sampleHtml) sampleHtml = t.innerHTML.slice(0, 600); });
-          // Also pull li's own text in case tooltip embedded inline.
-          combinedText += "\n" + (li.textContent ?? "").trim();
-          // Extract "requires" section — match Chinese "需要" / "要求" / "需求"
-          // + English "Requires" / "Prerequisite". Capture text after marker.
-          const reqMarker = combinedText.match(/(?:需要|要求|需求|Requires|Prerequisite|Prerequisites)[:：]?\s*([\s\S]{0,400})/i);
-          const reqText = reqMarker ? reqMarker[1]!.replace(/\s+/g, " ").trim() : "";
-          // Try to parse "TechName (level N)" or "TechName 等級 N" / "TechName Lv N" patterns
-          const requires: Record<string, number> = {};
-          if (reqText) {
-            // Pattern: text containing tech names + level number nearby
-            const pairs = Array.from(reqText.matchAll(/([一-鿿]{2,15}|[A-Z][a-zA-Z ]{2,30})[\s\(]*(?:Lv|等級|等级|level|L)\s*(\d+)/gi));
-            pairs.forEach((p) => {
-              const name = (p[1] ?? "").trim();
-              const lvl = parseInt(p[2] ?? "0", 10);
-              if (name && lvl > 0) requires[name] = lvl;
+          // v0.0.741 — dump-v1 全空 (.tooltipHTML 不命中 lfbuildings). Dump
+          // the ENTIRE li.outerHTML + all data-* attributes so operator's
+          // second run reveals the real DOM shape, including any data-tooltip
+          // / data-tipid / data-content / aria-describedby pointers, plus
+          // ogame v12 React/Vue-injected popup containers elsewhere in doc.
+          const attrs: Record<string, string> = {};
+          for (const a of Array.from(li.attributes)) attrs[a.name] = a.value;
+          const allLinks: string[] = [];
+          li.querySelectorAll<HTMLElement>("a[href*='ranking']").forEach((a) => allLinks.push((a.getAttribute("href") ?? "")));
+          const tooltipPopupCandidates: string[] = [];
+          // Look at sibling popup divs ogame v12 lazy-renders (e.g. #planet,
+          // #content, body-level tooltip containers).
+          ["#planet", "#contentWrapper", "body"].forEach((sel) => {
+            const root = parsedDoc.querySelector(sel);
+            if (!root) return;
+            root.querySelectorAll<HTMLElement>("[data-tipid], [id*='tooltip'], [class*='tooltip'], [class*='popup'], [class*='requirements']").forEach((t) => {
+              if (tooltipPopupCandidates.length > 3) return;
+              tooltipPopupCandidates.push(`${t.tagName}#${t.id}.${t.className.slice(0, 40)}: ${(t.textContent ?? "").slice(0, 200).trim()}`);
             });
-          }
+          });
           const kind: "building" | "research" = page === "lfbuildings" ? "building" : "research";
-          out[techName] = { kind, requires_text: reqText.slice(0, 200), requires, tooltip_html_sample: sampleHtml };
+          out[techName] = {
+            kind,
+            tech_id: techId,
+            attrs,
+            li_outerHTML: li.outerHTML.slice(0, 1500),
+            external_tooltip_candidates: tooltipPopupCandidates.slice(0, 4),
+          } as unknown as typeof out[string];
         });
       } catch (e) { console.warn(`[OgameX/dump-lf-requires] ${page} error:`, e); }
     }
-    const sorted: typeof out = {};
+    const sorted: Record<string, unknown> = {};
     for (const k of Object.keys(out).sort()) sorted[k] = out[k]!;
-    console.info(`[OgameX/dump-lf-requires] DONE — ${Object.keys(sorted).length} tech rows. Paste JSON:`);
+    console.info(`[OgameX/dump-lf-requires] DONE — ${Object.keys(sorted).length} tech rows (v2 outerHTML+attrs). Paste JSON:`);
     console.info(JSON.stringify(sorted, null, 2));
   };
   (env.win as Window & { __ogamexDumpLfRequires?: () => Promise<void> }).__ogamexDumpLfRequires = dumpLfRequiresFn;
