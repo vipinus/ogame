@@ -991,38 +991,54 @@ export async function startSidecar(
             let virtualEnergy = (planet.resources as { e?: number } | undefined)?.e ?? 0;
             let virtualPlantLvl = pickFusion ? fusionStart : solarStart;
             if (current < targetLevel && typeof costFn === "function") {
+              // v0.0.740 — operator 2026-06-04 "排个序很难吗？后造的在上面,
+              // 有缩进, 能看出依赖关系". Collect steps in chronological order
+              // first, then assemble as CASCADE nest (latest-built = topmost
+              // child of root, earlier-built = nested deeper). Result: depth
+              // shows dependency direction, top child = goal-final-step,
+              // deepest = first action needed.
+              type Step = { tech: string; current: number; target: number; kind: "building"; eta: number };
+              const steps: Step[] = [];
+              let cumulativeEta = 0;
               for (let l = current + 1; l <= targetLevel; l++) {
                 const delta = mineEnergyConsumption(techName, l) - mineEnergyConsumption(techName, l - 1);
                 let projected = virtualEnergy - delta;
                 let firstBumpForced = fusionStart === 0 && solarStart === 0 && l === current + 1 && virtualPlantLvl === 0;
-                // v0.0.739 — operator 2026-06-04 "fusion 17 以后应该建 重氢 31
-                // 不是把电厂推满在建建筑, 是交替进行". Interleave plant bumps
-                // and parent's per-level self build into children IN ORDER.
-                // Each plant bump and each parent level becomes a separate
-                // child node, sequenced as ogame would actually execute them:
-                //   plant bumps for L31 → parent L31 → plant bumps for L32 →
-                //   parent L32 → ...
-                // The traditional self-loop (line ~1024 below) is suppressed
-                // for energy-gated parents because per-level children carry
-                // the work + ETA.
                 let safetyCap = 25;
                 while ((projected < 0 || firstBumpForced) && safetyCap-- > 0) {
                   const nextPlantLvl = virtualPlantLvl + 1;
                   const baseProd = prodFn(virtualPlantLvl);
                   const newProd = prodFn(nextPlantLvl);
-                  const powerNode = buildAndSimulate(plantBuilding, nextPlantLvl, "building", virtualPlantLvl);
-                  if (powerNode) children.push(powerNode);
+                  // Inline plant cost simulation (same primitives as parent
+                  // self loop) so virtual bank stays consistent.
+                  const plantCostFn = (TECH_TREE as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)[plantBuilding]?.cost_at;
+                  if (typeof plantCostFn === "function") {
+                    const pCost = plantCostFn(nextPlantLvl);
+                    const pCost3 = { m: pCost.m, c: pCost.c, d: pCost.d ?? 0 };
+                    totalCost.m += pCost3.m;
+                    totalCost.c += pCost3.c;
+                    totalCost.d += pCost3.d;
+                    const pWait = timeToAfford(pCost3);
+                    if (isFinite(pWait)) {
+                      accumulate(pWait);
+                      const pBuild = buildSec(pCost3, "building");
+                      accumulate(pBuild);
+                      bank.m = Math.max(0, bank.m - pCost3.m);
+                      bank.c = Math.max(0, bank.c - pCost3.c);
+                      bank.d = Math.max(0, bank.d - pCost3.d);
+                      const pStep = Math.round(pWait + pBuild);
+                      cumulativeEta += pStep;
+                      total += pStep;
+                      steps.push({ tech: plantBuilding, current: virtualPlantLvl, target: nextPlantLvl, kind: "building", eta: pStep });
+                    }
+                  }
                   virtualEnergy += newProd - baseProd;
                   virtualPlantLvl = nextPlantLvl;
                   projected = virtualEnergy - delta;
                   firstBumpForced = false;
                 }
                 virtualEnergy -= delta;
-                // Emit THIS parent self-level as a child immediately AFTER
-                // its plant prereqs. Inline cost simulation mirrors the
-                // self loop (cost + wait + build + bank pay + currentStep
-                // capture + totalCost accrue), so the suppressed self loop
-                // below sees no double-counting.
+                // Parent self-level
                 const cost = costFn(l);
                 if (currentStep === null) {
                   currentStep = { tech: techName, kind, level: l, cost: { m: cost.m, c: cost.c, d: cost.d ?? 0 } };
@@ -1039,19 +1055,30 @@ export async function startSidecar(
                 bank.c = Math.max(0, bank.c - cost.c);
                 bank.d = Math.max(0, bank.d - (cost.d ?? 0));
                 const step = Math.round(wait + build);
+                cumulativeEta += step;
                 total += step;
-                // Push parent's per-level child node into the children array
-                children.push({
-                  tech: techName,
-                  targetLevel: l,
-                  currentLevel: l - 1,
-                  kind: "building",
-                  met: false,
-                  children: [],
-                  eta_seconds: step,
-                  subtree_eta_seconds: step,
-                });
+                steps.push({ tech: techName, current: l - 1, target: l, kind: "building", eta: step });
               }
+              // Now assemble cascade: latest step at top, each earlier step
+              // nested as a child of the later one. subtree_eta = cumulative
+              // from THIS step backwards through deeper nesting → sums correctly.
+              let cascade: PrereqTreeNode | null = null;
+              let runningSubEta = 0;
+              for (const s of steps) {  // chronological order = bottom-up for cascade
+                runningSubEta += s.eta;
+                const node: PrereqTreeNode = {
+                  tech: s.tech,
+                  targetLevel: s.target,
+                  currentLevel: s.current,
+                  kind: s.kind,
+                  met: false,
+                  children: cascade ? [cascade] : [],
+                  eta_seconds: s.eta,
+                  subtree_eta_seconds: runningSubEta,
+                };
+                cascade = node;
+              }
+              if (cascade) children.push(cascade);
               energyGateHandled = true;
             }
           }
