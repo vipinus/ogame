@@ -31,6 +31,12 @@ function pickLfName(
   k: string,
   techLabels?: Record<string, string>,
 ): string {
+  // v0.0.768 — operator 2026-06-04 "TM 中文界面 混排德语": techLabels DOM
+  // scrape 在切服 (DE → TW) 后旧标签残留, 中文 panel 显德语. 让
+  // techName() 27-locale canonical dict 优先, ogameLabel 仅当 canonical
+  // miss 时兜底; 这样 server switch 不再污染显示.
+  const canonical = techName(k);
+  if (canonical && canonical !== k) return canonical;
   const locale = getOgameLocaleWithOverride();
   const ogameLabel = techLabels?.[k];
   if (locale === "tw") {
@@ -4166,6 +4172,49 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       }
       return body + childRows;
     };
+    // v0.0.767 — operator 2026-06-04 "goals 按照坐标排序". 同 flagship
+    // FlagshipPanelV2 行为对齐. Top-level singletons + chain groups 都按
+    // [galaxy, system, position] 升序; 月球次于同坐标星球; coords 缺失
+    // 排末尾 (放底)防止混乱.
+    const storeRefForSort = (window as Window & { __ogamexStore?: { state?: { planets?: Record<string, { coords?: number[]; type?: string }> } } }).__ogamexStore;
+    const goalCoordsKey = (g: GoalRowFromHttp): [number, number, number, number] => {
+      const target = (g.target ?? {}) as Record<string, unknown>;
+      const parseCoords = (s: string | undefined): number[] | null => {
+        if (typeof s !== "string") return null;
+        const m = s.match(/^(\d+):(\d+):(\d+)$/);
+        return m && m[1] && m[2] && m[3] ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : null;
+      };
+      const srcCoordsStr = target["source_coords"] as string | undefined;
+      const tgtCoordsStr = target["coords"] as string | undefined;
+      let coords: number[] | null = parseCoords(srcCoordsStr) ?? parseCoords(tgtCoordsStr);
+      let isMoon = 0;
+      const pid = target["planet_id"] as string | undefined;
+      if (!coords && typeof pid === "string") {
+        const p = storeRefForSort?.state?.planets?.[pid];
+        if (Array.isArray(p?.coords) && p.coords.length === 3) {
+          coords = p.coords as number[];
+          if (p.type === "moon") isMoon = 1;
+        }
+      }
+      if (!coords) return [Number.MAX_SAFE_INTEGER, 0, 0, 0]; // 没坐标 → 排末尾
+      return [coords[0] ?? 0, coords[1] ?? 0, coords[2] ?? 0, isMoon];
+    };
+    // v0.0.769 — operator 2026-06-04 "不要倒序": 维持 asc by
+    // [galaxy:system:position], 月球紧跟同坐标星球; 无 coords 兜底
+    // (MAX_SAFE_INTEGER) 排末尾.
+    const cmpByCoords = (a: GoalRowFromHttp, b: GoalRowFromHttp): number => {
+      const ka = goalCoordsKey(a); const kb = goalCoordsKey(b);
+      for (let i = 0; i < 4; i++) if (ka[i]! !== kb[i]!) return ka[i]! - kb[i]!;
+      return 0;
+    };
+    singletonsTopLevel.sort(cmpByCoords);
+    // chainGroups Map 转 entries 按 chain 首成员的 coords 排序后重 set
+    const sortedChainGroupEntries = [...chainGroups.entries()].sort(
+      (a, b) => cmpByCoords(a[1][0]!, b[1][0]!),
+    );
+    chainGroups.clear();
+    for (const [cid, members] of sortedChainGroupEntries) chainGroups.set(cid, members);
+
     const singletonRows = singletonsTopLevel.map((g) => renderWithChildren(g, 0)).join("");
     const rows = chainBlocks.join("") + singletonRows;
     // v0.0.529 — operator 2026-05-31 "把運輸任務從 goals 移到這裏 (cargo 位置)".

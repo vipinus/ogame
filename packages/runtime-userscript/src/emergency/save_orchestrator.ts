@@ -118,9 +118,23 @@ export function startEmergencySave(
           window.localStorage.removeItem(k);
           continue;
         }
+        // v0.0.769 — operator 2026-06-04 evidence: 4 个 FSM 全卡 RECALLING
+        // state, clearedAt 4h ago, fleet 早回了 patcher 没机会 mark RETURNED
+        // → 所有新 spy/attack threat 命中 save_state_machine:58 DROP.
+        // Sanity gate: RECALLING + clearedAt > 30min 前 = fleet 必定回家,
+        // 直接 drop snapshot, planet 重新 WATCHING 接威胁.
+        const snap = data.snap;
+        if (snap.state === "RECALLING" && typeof snap.clearedAt === "number") {
+          const clearedAgo = Math.floor(Date.now() / 1000) - snap.clearedAt;
+          if (clearedAgo > 30 * 60) {
+            console.warn(`[orchestrator] dropping stuck RECALLING FSM ${planetId} — clearedAt ${Math.round(clearedAgo/60)}m ago, fleet must have returned by now (was DROPPING all new threats)`);
+            window.localStorage.removeItem(k);
+            continue;
+          }
+        }
         const fsm = getOrCreateFsm(planetId);
-        fsm.restoreFromSnapshot(data.snap);
-        console.warn(`[orchestrator] restored FSM ${planetId} state=${data.snap.state} fleetId=${data.snap.fleetId} pending=[${data.snap.pendingThreats.join(",")}]`);
+        fsm.restoreFromSnapshot(snap);
+        console.warn(`[orchestrator] restored FSM ${planetId} state=${snap.state} fleetId=${snap.fleetId} pending=[${snap.pendingThreats.join(",")}]`);
       } catch (e) {
         console.warn(`[orchestrator] failed to restore FSM ${planetId}, removing snapshot:`, e);
         try { window.localStorage.removeItem(k); } catch { /* */ }
