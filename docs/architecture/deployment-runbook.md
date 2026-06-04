@@ -110,7 +110,14 @@ systemctl --user stop ogamex-sidecar ogamex-discord-bridge
 
 ### discord-bridge (老 .mjs daemon)
 
-历史包袱: 单文件 `ogamex_discord_bridge.mjs` 没有 TS source, 也不在本仓库里 (canonical 是远端 `/home/ddxs/.openclaw/extensions/ogamex/runtime/ogamex_discord_bridge.mjs`)。改动靠 ssh `sed`/直接 edit 远端, 或 scp 覆盖。
+历史包袱: 单文件 `ogamex_discord_bridge.mjs` 没有 TS source.
+
+**v0.0.739 后 canonical 改为仓库内** `packages/openclaw-plugin/scripts/ogamex_discord_bridge.mjs` (operator 2026-06-04 拍板). 改动流程:
+1. 编辑仓库内文件
+2. `scp` 推到 europa `/home/ddxs/.openclaw/extensions/ogamex/runtime/ogamex_discord_bridge.mjs`
+3. `kill -TERM <PID>` 重启 (openclaw gateway PPID 6201 自动拉起)
+
+旧路径 ssh sed 直接改远端是 deprecated, 改动会被下次 deploy 覆盖。
 
 ```bash
 # 改完远端文件后
