@@ -3786,6 +3786,26 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           const lvl = target["target_level"] ?? target["level"] ?? "";
           return [tVal, lvl].filter(Boolean).join(" ");
         }
+        // v0.0.742 — operator "修 i18n 所有27种语言". lifeform_building +
+        // lifeform_research 之前掉进 default JSON.stringify, 显示 raw
+        // {"building":"supraRefractor","level":1}. 现在走 techName(),
+        // 27 locale 全覆盖 (TW 中文 / 其他英文兜底 from catalog).
+        case "lifeform_building": {
+          const b = techName(String(target["building"] ?? "?"));
+          const lvl = target["target_level"] ?? target["level"] ?? "";
+          return [planetTag, b, lvl].filter(Boolean).join(" ");
+        }
+        case "lifeform_research": {
+          const tVal = techName(String(target["tech"] ?? target["research"] ?? "?"));
+          const lvl = target["target_level"] ?? target["level"] ?? "";
+          return [planetTag, tVal, lvl].filter(Boolean).join(" ");
+        }
+        case "pick_lifeform":
+        case "lifeform_level_to": {
+          const species = String(target["species"] ?? target["lifeform"] ?? "?");
+          const lvl = target["target_level"] ?? target["level"] ?? "";
+          return [planetTag, species, lvl].filter(Boolean).join(" ");
+        }
         case "build_ships": {
           const s = techName(String(target["ship"] ?? "?"));
           const amt = target["amount"] ?? 1;

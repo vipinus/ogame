@@ -15,6 +15,26 @@
  */
 
 import { getOgameLocaleWithOverride } from "./locale.js";
+import { LIFEFORM_TECH } from "@ogamex/shared";
+
+// v0.0.742 — operator 2026-06-04 "修 i18n 所有27种语言". 36 个 lifeform
+// building + research 跨 4 族, 24 个 locale map = 864 行靠手抄不现实. 改
+// 走 single source: 从 LIFEFORM_TECH catalog 的 display_name_{zh,en} 派
+// 生 fallback. techName() 二级查找: locale map 优先, miss 时 zh-locale
+// 走 catalog.display_name_zh, 其他 locale 走 display_name_en (operator
+// 后续 __ogamexDumpTechLabels per locale 覆盖才升级).
+const LF_FALLBACK_ZH: Record<string, string> = {};
+const LF_FALLBACK_EN: Record<string, string> = {};
+for (const species of Object.values(LIFEFORM_TECH)) {
+  for (const [key, entry] of Object.entries(species.buildings)) {
+    if (!LF_FALLBACK_ZH[key]) LF_FALLBACK_ZH[key] = (entry as { display_name_zh?: string }).display_name_zh ?? key;
+    if (!LF_FALLBACK_EN[key]) LF_FALLBACK_EN[key] = (entry as { display_name_en?: string }).display_name_en ?? key;
+  }
+  for (const [key, entry] of Object.entries(species.research)) {
+    if (!LF_FALLBACK_ZH[key]) LF_FALLBACK_ZH[key] = (entry as { display_name_zh?: string }).display_name_zh ?? key;
+    if (!LF_FALLBACK_EN[key]) LF_FALLBACK_EN[key] = (entry as { display_name_en?: string }).display_name_en ?? key;
+  }
+}
 
 const CAMEL_TO_TW: Record<string, string> = {
   "metalMine": "金屬礦",
@@ -1509,31 +1529,35 @@ const CAMEL_TO_US: Record<string, string> = {
  */
 export function techName(camelCaseId: string): string {
   const locale = getOgameLocaleWithOverride();
-  if (locale === "tw") return CAMEL_TO_TW[camelCaseId] ?? camelCaseId;
-  if (locale === "es" || locale === "ar" || locale === "mx") return CAMEL_TO_ES[camelCaseId] ?? camelCaseId;
-  if (locale === "de") return CAMEL_TO_DE[camelCaseId] ?? camelCaseId;
-  if (locale === "dk") return CAMEL_TO_DK[camelCaseId] ?? camelCaseId;
-  if (locale === "fr") return CAMEL_TO_FR[camelCaseId] ?? camelCaseId;
-  if (locale === "br") return CAMEL_TO_BR[camelCaseId] ?? camelCaseId;
-  if (locale === "pt") return CAMEL_TO_PT[camelCaseId] ?? camelCaseId;
-  if (locale === "us") return CAMEL_TO_US[camelCaseId] ?? camelCaseId;
+  // v0.0.742 — fallback chain: locale map > LF catalog (zh/en) > camelCase.
+  // ZH-family (tw) uses Chinese fallback; everything else (incl. en/fr/de/
+  // jp/ru/etc.) defaults to EN catalog fallback for lifeform techs until
+  // operator dumps per-locale via __ogamexDumpTechLabels.
+  if (locale === "tw") return CAMEL_TO_TW[camelCaseId] ?? LF_FALLBACK_ZH[camelCaseId] ?? camelCaseId;
+  if (locale === "es" || locale === "ar" || locale === "mx") return CAMEL_TO_ES[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "de") return CAMEL_TO_DE[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "dk") return CAMEL_TO_DK[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "fr") return CAMEL_TO_FR[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "br") return CAMEL_TO_BR[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "pt") return CAMEL_TO_PT[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "us") return CAMEL_TO_US[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
   // fi (Suomi): ogame fi server renders tech labels in English, not Finnish
-  if (locale === "fi") return CAMEL_TO_EN[camelCaseId] ?? camelCaseId;
-  if (locale === "cz") return CAMEL_TO_CZ[camelCaseId] ?? camelCaseId;
-  if (locale === "it") return CAMEL_TO_IT[camelCaseId] ?? camelCaseId;
-  if (locale === "jp") return CAMEL_TO_JP[camelCaseId] ?? camelCaseId;
-  if (locale === "gr") return CAMEL_TO_GR[camelCaseId] ?? camelCaseId;
-  if (locale === "hr") return CAMEL_TO_HR[camelCaseId] ?? camelCaseId;
-  if (locale === "hu") return CAMEL_TO_HU[camelCaseId] ?? camelCaseId;
-  if (locale === "nl") return CAMEL_TO_NL[camelCaseId] ?? camelCaseId;
-  if (locale === "pl") return CAMEL_TO_PL[camelCaseId] ?? camelCaseId;
-  if (locale === "ro") return CAMEL_TO_RO[camelCaseId] ?? camelCaseId;
-  if (locale === "ru") return CAMEL_TO_RU[camelCaseId] ?? camelCaseId;
-  if (locale === "ba") return CAMEL_TO_BA[camelCaseId] ?? camelCaseId;
-  if (locale === "tr") return CAMEL_TO_TR[camelCaseId] ?? camelCaseId;
-  if (locale === "sk") return CAMEL_TO_SK[camelCaseId] ?? camelCaseId;
-  if (locale === "si") return CAMEL_TO_SI[camelCaseId] ?? camelCaseId;
-  if (locale === "se") return CAMEL_TO_SE[camelCaseId] ?? camelCaseId;
+  if (locale === "fi") return CAMEL_TO_EN[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "cz") return CAMEL_TO_CZ[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "it") return CAMEL_TO_IT[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "jp") return CAMEL_TO_JP[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "gr") return CAMEL_TO_GR[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "hr") return CAMEL_TO_HR[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "hu") return CAMEL_TO_HU[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "nl") return CAMEL_TO_NL[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "pl") return CAMEL_TO_PL[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "ro") return CAMEL_TO_RO[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "ru") return CAMEL_TO_RU[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "ba") return CAMEL_TO_BA[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "tr") return CAMEL_TO_TR[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "sk") return CAMEL_TO_SK[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "si") return CAMEL_TO_SI[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
+  if (locale === "se") return CAMEL_TO_SE[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
   // us = American English, identical to en for ogame tech corpus
-  return CAMEL_TO_EN[camelCaseId] ?? camelCaseId;
+  return CAMEL_TO_EN[camelCaseId] ?? LF_FALLBACK_EN[camelCaseId] ?? camelCaseId;
 }
