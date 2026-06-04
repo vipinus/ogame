@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.748";
+  const USERSCRIPT_VERSION = "0.0.749";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1967,47 +1967,21 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (dropped.length === 0) return;
       store.setPartial({ fleets_outbound: [...otherFleets, ...keep] as typeof store.state.fleets_outbound });
       // Source planet refresh for each dropped synthetic (return-home resource update).
-      const srcIds = new Set(
+      // (Dest-side arrival refresh lives in eventbox_hook.ts v0.0.747
+      // arrival-by-disappearance, which is the proper architectural fix and
+      // covers cases where fleets_outbound has no matching row.)
+      const ids = new Set(
         dropped.map((f) => (f as { source_planet_id?: string }).source_planet_id)
           .filter((x): x is string => typeof x === "string"),
       );
-      // v0.0.745 — operator 2026-06-04 "到港月球没有刷新月球的舰队库存".
-      // count-drop 是 ogame 唯一稳定的 arrival 信号 (data-arrival-time path
-      // 在 v0.0.728 实测从未 fire — ogame 删 row 比 3s poll 快). 之前 prune
-      // 只刷 source 不刷 dest, chain 下一 leg 用 stale dest planet.ships
-      // 死锁. 把 synthetic.dest (coords + type) lookup 成 dest planet id
-      // 一起刷, sublight arrival sync 闭环 (JG 路径走 v0.0.744 ApiExec).
-      const destIds = new Set<string>();
-      const planetMap = (store.state.planets ?? {}) as Record<string, { id?: string; coords?: readonly number[]; type?: string }>;
-      // v0.0.746 — dest_type unified resolver. movement-harvested row 用
-      // ogame internal number (1=planet, 3=moon — fleet.ts:43 readDestType);
-      // recordFleetLaunch synthetic 用 string ("planet"/"moon" — boot.ts:1907).
-      // v0.0.745 直接 `=== dType` 触发 string-vs-number 永远 false → destIds
-      // 空集, dest 月球永远不刷.
-      const droppedAny = dropped as unknown as Array<{ dest?: readonly number[]; dest_type?: string | number }>;
-      for (const f of droppedAny) {
-        const dest = f.dest;
-        const rawDestType = f.dest_type;
-        const isMoon = rawDestType === "moon" || rawDestType === 3;
-        const dType: "planet" | "moon" = isMoon ? "moon" : "planet";
-        if (!Array.isArray(dest) || dest.length !== 3) continue;
-        if (dest[0] === 0 && dest[1] === 0 && dest[2] === 0) continue;
-        const found = Object.values(planetMap).find((p) => {
-          const c = p.coords;
-          if (!Array.isArray(c) || c.length !== 3) return false;
-          return c[0] === dest[0] && c[1] === dest[1] && c[2] === dest[2] && (p.type ?? "planet") === dType;
-        });
-        if (found?.id) destIds.add(found.id);
-      }
-      const allIds = new Set<string>([...srcIds, ...destIds]);
       const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
-      for (const pid of allIds) {
+      for (const pid of ids) {
         void refreshSourcePlanetResources(pid).then(() => {
           if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
         });
       }
       if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
-      console.info(`[fleet-prune] dropped ${dropped.length} mission=${mission} synthetic(s) on eventbox count-drop; refreshed src=${srcIds.size} dest=${destIds.size} planet(s); ids=${dropped.map((f) => (f as { id?: string }).id ?? "?").join(",")}`);
+      console.info(`[fleet-prune] dropped ${dropped.length} mission=${mission} synthetic(s) on eventbox count-drop; refreshed ${ids.size} source planet(s); ids=${dropped.map((f) => (f as { id?: string }).id ?? "?").join(",")}`);
     } catch (e) { console.warn(`[fleet-prune] mission=${mission} prune threw`, e); }
   };
   (env.win as Window & { __ogamexPruneByMission?: (mission: number, n: number) => void }).__ogamexPruneByMission = pruneByMission;
@@ -3691,32 +3665,6 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     const pw = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & { __ogamexStore?: typeof store };
     pw.__ogamexStore = store;
   } catch { /* unsafeWindow may be undefined in non-Tampermonkey contexts (tests) */ }
-
-  // v0.0.748 — operator 2026-06-04 "派了一队船上月球还是没有更新库存"
-  // 历史死锁救援: v0.0.747 arrival-by-disappearance 只 catch boot 之后的
-  // arrival. 若 fleet 在 page reload 之前已到达, prevOwnFleetMeta 空,
-  // v0.0.747 救不了. 这条 boot-time catch-up 主动扫所有 own moon (用户
-  // 访问少, 最易 stale) 刷一遍 resources + ships, F5 后 8s 内自动闭环
-  // 历史死锁. 平均 10 个 moon × 1-2 cp shift = ~30s 内完成.
-  env.win.setTimeout(() => {
-    try {
-      const allMoons = Object.values(store.state.planets ?? {})
-        .filter((p) => (p as { type?: string }).type === "moon")
-        .map((p) => (p as { id?: string }).id)
-        .filter((id): id is string => typeof id === "string");
-      if (allMoons.length === 0) return;
-      console.info(`[OgameX/boot-catchup] v0.0.748 scanning ${allMoons.length} own moon(s) for ships sync (rescue historical arrivals missed by v0.0.747)`);
-      // Stagger 1.5s apart to avoid cp lock contention.
-      for (let i = 0; i < allMoons.length; i++) {
-        const moonId = allMoons[i]!;
-        env.win.setTimeout(() => {
-          void refreshSourcePlanetResources(moonId);
-        }, i * 1500);
-      }
-    } catch (e) {
-      console.warn("[OgameX/boot-catchup] threw:", e);
-    }
-  }, 8000);
 
   // Cargo Calc pending-fill — operator 2026-05-26: "從本星球準備多少船去拉資源".
   // Panel "📤 Fill" navigates to CURRENT planet's fleetdispatch (source = current
