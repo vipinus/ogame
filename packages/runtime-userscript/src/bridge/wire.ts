@@ -1,5 +1,6 @@
 import type { BootHandle } from "../boot.js";
 import { HttpBridgeClient } from "./http_client.js";
+import { BridgeClient as WsBridgeClient } from "./ws_client.js";
 
 /**
  * M4.7 — wire HttpBridgeClient into the userscript boot lifecycle.
@@ -23,13 +24,15 @@ export interface WireBridgeOptions {
   userscriptVersion?: string;
   /** Strategy version mirror (placeholder until M5). Default 0. */
   strategyVersion?: number;
-  /** Optional: inject a custom HttpBridgeClient (tests). Otherwise constructs a default one. */
-  client?: HttpBridgeClient;
+  /** Optional: inject a custom HTTP or WS client (tests). Otherwise constructs by URL scheme. */
+  client?: HttpBridgeClient | WsBridgeClient;
 }
 
 export interface WireBridgeHandle {
-  /** Reference to the HttpBridgeClient (constructed or injected). */
-  client: HttpBridgeClient;
+  /** Reference to the active client (constructed or injected). May be either
+   *  WS (BridgeClient) or HTTP (HttpBridgeClient) — both expose the same
+   *  `send` / `on` / `stop` shape. */
+  client: HttpBridgeClient | WsBridgeClient;
   /** Stop timers + bus subscriptions; does NOT call client.stop() — caller owns the client lifecycle. */
   stop(): void;
 }
@@ -46,28 +49,46 @@ export async function wireBridge(
   boot: BootHandle,
   opts: WireBridgeOptions,
 ): Promise<WireBridgeHandle> {
-  // v0.0.549 — operator 2026-05-31 "沒用過 ws 就刪了吧". HTTP long-poll only.
-  // WS branch (HttpBridgeClient) retired: 100s CF idle timeout, browser inactive-
-  // tab throttle, and zombie sockets all caused phantom reconnects without
-  // adding any latency benefit for this game-automation workload (planner
-  // ticks every 5s anyway). HttpBridgeClient covers all transport now:
-  // /ogamex/v1/push for upstream, /ogamex/v1/poll for downstream long-poll.
+  // v0.0.549 retired WS (HTTP long-poll only). Operator 2026-06-04 re-enabled
+  // WS now that sidecar uses same-port Upgrade (CF tunnel transparently
+  // forwards). Pick transport by URL scheme:
+  //   wss:// or ws://  → BridgeClient (real WS, instant push)
+  //   https:// http:// → HttpBridgeClient (long-poll fallback)
+  // Operator can override DEFAULT_BRIDGE_URL via localStorage / GM_setValue
+  // (key "OGAMEX_BRIDGE_URL") to flip between the two.
   const url = opts.bridgeUrl;
-  const isHttp = /^https?:\/\//.test(url);
-  void isHttp; // retained for ad-hoc diagnostics; client is always HTTP now
-  const client = opts.client ?? new HttpBridgeClient();
+  const wantsWs = /^wss?:\/\//i.test(url);
   const base = opts.pushIntervalMs ?? DEFAULT_PUSH_INTERVAL_MS;
   const jit = opts.jitterMs ?? DEFAULT_JITTER_MS;
   const userscriptVersion = opts.userscriptVersion ?? DEFAULT_USERSCRIPT_VERSION;
   const strategyVersion = opts.strategyVersion ?? DEFAULT_STRATEGY_VERSION;
 
-  // For HTTP transport, strip any trailing /push or /poll; HttpBridgeClient
-  // appends /ogamex/v1/push and /ogamex/v1/poll automatically. Also coerce
-  // wss:// / ws:// → https:// / http:// (operators with stale localStorage
-  // URLs from the WS era are now silently upgraded to HTTP).
-  const httpUrl = url.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://");
-  const connectUrl = httpUrl.replace(/\/(push|poll|ws)\/?$/, "");
-  await client.connect(connectUrl, opts.bridgeToken);
+  // URL normalization — strip trailing /push|/poll|/ws (clients re-add).
+  const stripTrailing = (u: string): string => u.replace(/\/(push|poll|ws)\/?$/, "");
+  let client: HttpBridgeClient | WsBridgeClient;
+  if (opts.client) {
+    client = opts.client;
+    await client.connect(stripTrailing(url), opts.bridgeToken);
+  } else if (wantsWs) {
+    // WS path — append /ws if not already present so we hit sidecar's
+    // upgrade handler (matches WsServer.attachToHttpServer path filter).
+    const wsUrl = stripTrailing(url) + "/ws";
+    const ws = new WsBridgeClient();
+    try {
+      await ws.connect(wsUrl, opts.bridgeToken);
+      client = ws;
+      console.info(`[wireBridge] WS connected ${wsUrl}`);
+    } catch (e) {
+      console.warn(`[wireBridge] WS connect failed (${(e as Error).message}); falling back to HTTP long-poll`);
+      try { ws.stop(); } catch { /* */ }
+      const httpUrl = stripTrailing(url).replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://");
+      client = new HttpBridgeClient();
+      await client.connect(httpUrl, opts.bridgeToken);
+    }
+  } else {
+    client = new HttpBridgeClient();
+    await client.connect(stripTrailing(url), opts.bridgeToken);
+  }
 
   // Hello — fired immediately after the open event resolves.
   client.send({

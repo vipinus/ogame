@@ -9,7 +9,13 @@ declare const GM_getValue: ((key: string, def?: string) => string) | undefined;
 // HTTPS by default — long-poll bridge works through cloud routers that don't
 // proxy WebSocket. wire.ts auto-detects scheme; flip to ws[s]:// when you have
 // real WS access (e.g. LAN dev, openclaw gateway).
-const DEFAULT_BRIDGE_URL = "https://ogame.anyfq.com";
+// Operator 2026-06-04 — default WS now that same-port Upgrade works through
+// CF tunnel (sidecar/index.ts attachToHttpServer). Real-time DownstreamMsg
+// push (section_settings.update, directive.dispatch, etc.) instead of ≤30s
+// long-poll latency. HTTP fallback baked into wireBridge if WS fails.
+// Operators can pin HTTP by setting OGAMEX_BRIDGE_URL=https://ogame.anyfq.com
+// in localStorage / GM_setValue.
+const DEFAULT_BRIDGE_URL = "wss://ogame.anyfq.com";
 
 // Build-time placeholder constants. The generic dist/ogame-runtime.user.js
 // ships with the bare placeholder literals below. When ogame-next's
