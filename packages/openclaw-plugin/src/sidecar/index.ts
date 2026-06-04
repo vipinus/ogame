@@ -811,7 +811,7 @@ export async function startSidecar(
             }
           },
           sectionSettingsWrite: async (uid: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> => {
-            const ALLOWED = new Set(["ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE", "ogamex.expedition.paused", "OGAMEX_EMERGENCY_SOUND_ALARM"]);
+            const ALLOWED = new Set(["ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE", "ogamex.expedition.paused", "OGAMEX_EMERGENCY_SOUND_ALARM", "ogamex.global.paused"]);
             const filtered: Record<string, string | boolean> = {};
             for (const [k, v] of Object.entries(patch)) {
               if (!ALLOWED.has(k)) continue;
@@ -2286,6 +2286,27 @@ export async function startSidecar(
   // above ws/http setup). Without this assignment, those closures see null
   // and noop on every CRUD call → no dispatch → goal stuck pending forever.
   priorityMergerRef = priorityMerger;
+  // v0.0.765 — operator 2026-06-04 "暂停所有 TM 动作". Inject isGlobalPaused
+  // 让 merger.dispatch 看到 PG ogamex.global.paused=true 时直接 return 空.
+  // Cache 5s 避免每 tick SQL: 切换状态后最多 5s 起效.
+  let globalPauseCache: { value: boolean; ts: number } = { value: false, ts: 0 };
+  priorityMerger.isGlobalPausedFn = (uid?: string): boolean => {
+    if (!pgStore || !uid) return false;
+    const now = Date.now();
+    if (now - globalPauseCache.ts < 5_000) return globalPauseCache.value;
+    try {
+      // sync no go — schedule refresh, return last value
+      void (async () => {
+        try {
+          const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+          const rows = await sql`SELECT section_settings->>'ogamex.global.paused' AS v FROM user_settings WHERE user_id = ${uid} LIMIT 1`;
+          const r = rows[0] as { v?: string } | undefined;
+          globalPauseCache = { value: r?.v === "true", ts: Date.now() };
+        } catch (e) { console.warn("[global-pause] read threw", e); }
+      })();
+    } catch { /* */ }
+    return globalPauseCache.value;
+  };
   // Directive → goal mapping (in-memory). Trimmed when ack arrives.
   const directiveToGoal = new Map<string, string>();
   // v0.0.764 — directive → params snapshot so 120012 hard-block can call

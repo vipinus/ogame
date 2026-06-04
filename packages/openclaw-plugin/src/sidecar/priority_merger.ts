@@ -125,6 +125,9 @@ export class PriorityMerger {
   /** Set at start of dispatch(), threaded through to onStatusChange so
    *  the PG mirror knows which tenant the status mutation belongs to. */
   private currentDispatchUid: string | undefined = undefined;
+  /** v0.0.765 — global pause kill-switch hook. Injected by setupSidecar so
+   *  the merger can short-circuit when ogamex.global.paused=true. */
+  public isGlobalPausedFn?: (userId?: string) => boolean;
 
   constructor(deps: PriorityMergerDeps) {
     this.store = deps.store;
@@ -224,6 +227,13 @@ export class PriorityMerger {
    * 9c.3 lands.
    */
   async dispatch(state: WorldState, userId?: string): Promise<DispatchResult> {
+    // v0.0.765 — operator 2026-06-04 "前后端都加一个暂停恢复按钮 用于暂停
+    // 所有 TM 动作". Master kill-switch: 当 PG section_settings 的
+    // 'ogamex.global.paused' 为 "true" 时, dispatch 全部跳过.
+    // Hook 在 setupSidecar 里通过 isGlobalPaused() callback 注入.
+    if (this.isGlobalPausedFn && this.isGlobalPausedFn(userId)) {
+      return { dispatched: [], blocked: [], skipped_terminal: 0 };
+    }
     // v0.0.669 — Phase 5b: dispatch made async so a future swap of
     // this.store to IGoalsStoreReader (PG/async) requires no further
     // refactor of the merger loop. `await` on the current sync GoalsStore

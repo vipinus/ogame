@@ -134,6 +134,16 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
   }
 
   async execute(directive: Directive): Promise<{ action: string; clicked: boolean }> {
+    // v0.0.765 — operator 2026-06-04 "前后端都加一个暂停恢复按钮 用于暂停
+    // 所有 TM 动作". Master kill-switch: localStorage 'ogamex.global.paused'
+    // = "true" → 任何 directive 一律 skip (含 fleet/build/research/lf).
+    // sidecar 端也拦 (priority_merger.dispatch), 这里是 belt-and-suspenders
+    // 防 race + late-arriving directive 已 dispatch 后 TM 再清.
+    try {
+      if (this.win.localStorage.getItem("ogamex.global.paused") === "true") {
+        return { action: directive.action, clicked: false };
+      }
+    } catch { /* localStorage unavailable */ }
     // expedition uses source_planet (not planet_id) — accept either.
     const planetId =
       (directive.params as { planet_id?: string }).planet_id

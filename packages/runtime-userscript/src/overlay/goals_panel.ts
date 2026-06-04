@@ -4180,10 +4180,17 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       lightColor = "#e0c020"; lightTitle = `Bridge: ${bs.transport} ${bs.status}`;
     }
     const bridgeLightHtml = `<span data-bridge-light style="display:inline-block; width:10px; height:10px; border-radius:50%; background:${lightColor}; box-shadow:0 0 6px ${lightColor}; margin-right:6px; vertical-align:middle;" title="${escapeHtml(lightTitle)}"></span>`;
+    // v0.0.765 — operator "暂停所有 TM 动作" global kill-switch button.
+    const globalPaused = (() => {
+      try { return window.localStorage.getItem("ogamex.global.paused") === "true"; }
+      catch { return false; }
+    })();
+    const globalPauseBtn = `<button data-action="global-pause-toggle" style="background:${globalPaused ? "#5a2020" : "#205a20"}; color:#fff; border:1px solid ${globalPaused ? "#8a4040" : "#408a40"}; cursor:pointer; font-size:11px; padding:2px 8px; border-radius:3px; font-weight:bold;" title="${globalPaused ? "TM 已暂停 — 点击恢复" : "暂停全部 TM 动作 (build/fleet/research/...)"}">${globalPaused ? "⏸ PAUSED" : "▶ RUN"}</button>`;
     const header = `
       <div data-ogamex-drag="1" style="display:flex; align-items:center; justify-content:space-between; padding-bottom:4px; cursor:move; user-select:none;">
         <strong style="color:#e0e8f0;">${bridgeLightHtml}${escapeHtml(t("panel.title_prefix"))} ${escapeHtml(serverSlug)} v${escapeHtml(currentVersion)}</strong>
         <span style="display:flex; gap:4px; align-items:center;">
+          ${globalPauseBtn}
           ${updateBtn}
           <button data-action="tree-toggle-all" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="${escapeHtml(treeExpandAll ? "tree: collapse all" : "tree: expand all")}">${treeExpandAll ? "📚" : "📖"}</button>
           <button data-action="open-audit" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="${escapeHtml(t("panel.btn.audit"))}">📋</button>
@@ -4801,6 +4808,31 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     auditBtn?.addEventListener("click", (e) => {
       e.stopPropagation();
       openAuditModal(doc, baseUrl, fetchFn);
+    });
+
+    // v0.0.765 — operator "暂停所有 TM 动作" global pause toggle.
+    const globalPauseBtnEl = panel.querySelector<HTMLElement>("[data-action=\"global-pause-toggle\"]");
+    globalPauseBtnEl?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const cur = window.localStorage.getItem("ogamex.global.paused") === "true";
+      const next = !cur;
+      const v = next ? "true" : "false";
+      try { window.localStorage.setItem("ogamex.global.paused", v); } catch { /* */ }
+      // sync to PG so flagship/sidecar also see change
+      try {
+        const baseUrl = (window as Window & { __OGAMEX_BRIDGE_URL_RUNTIME?: string }).__OGAMEX_BRIDGE_URL_RUNTIME
+          ?? "https://ogame.anyfq.com";
+        const tok = window.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") ?? "";
+        if (tok) {
+          void fetchFn(`${baseUrl}/ogamex/v1/section-settings`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "authorization": `Bearer ${tok}` },
+            body: JSON.stringify({ "ogamex.global.paused": v }),
+          }).catch(() => { /* */ });
+        }
+      } catch { /* */ }
+      // re-render header
+      if (lastGoals) render(lastGoals);
     });
 
     // v0.0.740 — operator "tree 不要一个一个点 一键展开和收回". Global
