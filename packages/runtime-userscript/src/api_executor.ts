@@ -174,6 +174,24 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         if (typeof tgt === "string" && tgt) {
           restoreTo = tgt;
           console.info(`[ApiExec] JG success → restore cp to target moon ${tgt} (operator-pre-cp was ${operatorCp})`);
+          // v0.0.743 — operator 2026-06-04 "Leg 1 chain prereq: source 6354
+          // ship inventory not yet synced ... 已经跳过了怎么卡在这里". JG
+          // is instant (no in-flight phase, no eventbox arrival event), so
+          // v0.0.728's eventbox arrival hook never fires for JG dest →
+          // sidecar's planet.ships[target_moon] stays at pre-JG value (0)
+          // → priority_merger chain prereq deadlocks next leg waiting for
+          // ship inventory sync. Fix: force-refresh target moon's
+          // resources+ships immediately after JG success.
+          try {
+            const refresh = (window as Window & { __ogamexRefreshPlanetResources?: (pid: string) => Promise<void> }).__ogamexRefreshPlanetResources;
+            const pushNow = (window as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+            if (typeof refresh === "function") {
+              void refresh(tgt).then(() => {
+                if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
+                console.info(`[ApiExec] JG success → ships sync triggered for target moon ${tgt}`);
+              });
+            }
+          } catch (e) { console.warn(`[ApiExec] JG post-success refresh threw:`, e); }
         }
       }
       await this.restoreSessionCp(restoreTo, planetId);
