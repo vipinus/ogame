@@ -4186,11 +4186,22 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       };
       const srcCoordsStr = target["source_coords"] as string | undefined;
       const tgtCoordsStr = target["coords"] as string | undefined;
-      let coords: number[] | null = parseCoords(srcCoordsStr) ?? parseCoords(tgtCoordsStr);
+      const topPlanetStr = (g as { planet?: string }).planet;
+      // v0.0.771 — operator 2026-06-04 evidence: g.planet 在 sidecar HTTP
+      // /v1/goals 里其实是 coord 字符串 "4:299:8" 不是 planet id.
+      // (PG ogame_goals 存 target.planet_id 但 sidecar listGoals 把它
+      // 映射成 coord 字符串放到 top level g.planet).
+      // 直接 parseCoords g.planet 而不是当 pid lookup.
+      let coords: number[] | null = parseCoords(srcCoordsStr)
+        ?? parseCoords(tgtCoordsStr)
+        ?? parseCoords(topPlanetStr);
       let isMoon = 0;
-      const pid = target["planet_id"] as string | undefined;
-      if (!coords && typeof pid === "string") {
-        const p = storeRefForSort?.state?.planets?.[pid];
+      // pid lookup 仍保留作 ULTIMATE 兜底 (deploy/transport 等 source_planet_id 路径)
+      const targetPid = (target["planet_id"] as string | undefined)
+        ?? (target["source_planet"] as string | undefined)
+        ?? (target["source_planet_id"] as string | undefined);
+      if (!coords && typeof targetPid === "string") {
+        const p = storeRefForSort?.state?.planets?.[targetPid];
         if (Array.isArray(p?.coords) && p.coords.length === 3) {
           coords = p.coords as number[];
           if (p.type === "moon") isMoon = 1;
