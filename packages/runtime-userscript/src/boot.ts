@@ -1657,6 +1657,66 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // 真正生效; 7 sprint 全失败). 真实有效方法 = manual: operator 在
   // account.gameforge.com 切 UI 语言 → F5 ogame → run __ogamexDumpTechLabels()
   // → paste 输出。每 locale ~2 min, 22 langs ≈ 45 min。
+
+  // v0.0.740 — operator 2026-06-04 "生命建筑的依赖关系没有, 去建依赖关系".
+  // kaelesh_tech.ts catalog 全 verified_against_live: false, 不全, ogame
+  // 用真规则拒了 forumOfTranscendence 120020. 主动 fetch lfbuildings +
+  // lfresearch chunk, 每个 building/research 找 tooltip 里的"需要/Requires"
+  // 区段 + dump 解析后的 requires JSON, 让 operator 拿真数据补 catalog.
+  const dumpLfRequiresFn = async (): Promise<void> => {
+    const PAGES = ["lfbuildings", "lfresearch"];
+    const out: Record<string, { kind: "building" | "research"; requires_text: string; requires: Record<string, number>; tooltip_html_sample?: string }> = {};
+    for (const page of PAGES) {
+      try {
+        const resp = await env.win.fetch(`/game/index.php?page=ingame&component=${page}`, { credentials: "same-origin" });
+        if (!resp.ok) { console.warn(`[OgameX/dump-lf-requires] ${page} HTTP ${resp.status}`); continue; }
+        const html = await resp.text();
+        const parser = new (env.win as unknown as { DOMParser: typeof DOMParser }).DOMParser();
+        const parsedDoc = parser.parseFromString(html, "text/html");
+        const techNodes = parsedDoc.querySelectorAll<HTMLElement>("li.technology[data-technology], div.technology[data-technology]");
+        console.info(`[OgameX/dump-lf-requires] ${page}: scanning ${techNodes.length} tech nodes`);
+        techNodes.forEach((li) => {
+          const techId = li.getAttribute("data-technology") ?? "";
+          // Resolve tech name via TECH_ID_TO_NAME (same map used elsewhere).
+          const techName = (TECH_ID_TO_NAME as Record<string, string>)[techId] ?? `id_${techId}`;
+          // Tooltip text — try multiple selectors per ogame skin variants.
+          const tipNodes = li.querySelectorAll<HTMLElement>(".tooltipHTML, .tooltipContent, .tooltip");
+          let combinedText = "";
+          let sampleHtml = "";
+          tipNodes.forEach((t) => { combinedText += "\n" + (t.textContent ?? "").trim(); if (!sampleHtml) sampleHtml = t.innerHTML.slice(0, 600); });
+          // Also pull li's own text in case tooltip embedded inline.
+          combinedText += "\n" + (li.textContent ?? "").trim();
+          // Extract "requires" section — match Chinese "需要" / "要求" / "需求"
+          // + English "Requires" / "Prerequisite". Capture text after marker.
+          const reqMarker = combinedText.match(/(?:需要|要求|需求|Requires|Prerequisite|Prerequisites)[:：]?\s*([\s\S]{0,400})/i);
+          const reqText = reqMarker ? reqMarker[1]!.replace(/\s+/g, " ").trim() : "";
+          // Try to parse "TechName (level N)" or "TechName 等級 N" / "TechName Lv N" patterns
+          const requires: Record<string, number> = {};
+          if (reqText) {
+            // Pattern: text containing tech names + level number nearby
+            const pairs = Array.from(reqText.matchAll(/([一-鿿]{2,15}|[A-Z][a-zA-Z ]{2,30})[\s\(]*(?:Lv|等級|等级|level|L)\s*(\d+)/gi));
+            pairs.forEach((p) => {
+              const name = (p[1] ?? "").trim();
+              const lvl = parseInt(p[2] ?? "0", 10);
+              if (name && lvl > 0) requires[name] = lvl;
+            });
+          }
+          const kind: "building" | "research" = page === "lfbuildings" ? "building" : "research";
+          out[techName] = { kind, requires_text: reqText.slice(0, 200), requires, tooltip_html_sample: sampleHtml };
+        });
+      } catch (e) { console.warn(`[OgameX/dump-lf-requires] ${page} error:`, e); }
+    }
+    const sorted: typeof out = {};
+    for (const k of Object.keys(out).sort()) sorted[k] = out[k]!;
+    console.info(`[OgameX/dump-lf-requires] DONE — ${Object.keys(sorted).length} tech rows. Paste JSON:`);
+    console.info(JSON.stringify(sorted, null, 2));
+  };
+  (env.win as Window & { __ogamexDumpLfRequires?: () => Promise<void> }).__ogamexDumpLfRequires = dumpLfRequiresFn;
+  try {
+    if (typeof (globalThis as { unsafeWindow?: Window }).unsafeWindow !== "undefined") {
+      ((globalThis as { unsafeWindow: Window }).unsafeWindow as Window & { __ogamexDumpLfRequires?: () => Promise<void> }).__ogamexDumpLfRequires = dumpLfRequiresFn;
+    }
+  } catch { /* */ }
   scheduleBurst(() => { void harvestSlotsFromMovement(); }, 2000);
   // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed the 10s
   // setInterval. Triggers that refresh /movement now:
