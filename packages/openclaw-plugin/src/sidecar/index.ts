@@ -2767,28 +2767,18 @@ export async function startSidecar(
           http.queueDownstream(dbgMsg);
           console.log(`[debris-check] FIRED fleet ${fleetId} signal=${signal} ${reason}: G:S=${g}:${s} origin=${originPlanet.id}`);
         };
-        // v0.0.677 — restored Signal C alongside Signal B because return_at
-        // is unreliable on this server. Signal C: arrival_at past→future
-        // jump (fleet entered return phase from holding). Per-signal dedup
-        // means B and C each fire once independently — operator's 30s
-        // settle delay applied to BOTH so debris has time to materialize
-        // before the userscript scans.
-        const nowMs = Date.now();
+        // v0.0.783 — Signal C 删除. Operator 2026-06-05 "不要搞 b c 能否一次
+        // 成功" — 接受偶发 Signal B miss (return_at 偶发 null) 换"远征回家恰好
+        // 一次 dispatch"的简洁语义. wire.ts 那侧的 6min dedup 仍兜底防多 fleet
+        // 同 origin 短时间叠加. 单一信号源 = Signal B (fleet 真离开 outbound +
+        // return_at !== null), 30s settle delay 给 ogame galaxy view 时间结算
+        // debris row.
         const currentExpIds = new Set<string>();
         for (const f of msg.snapshot.fleets_outbound ?? []) {
           if (typeof f.id !== "string") continue;
           if (f.mission !== 15) continue;
           currentExpIds.add(f.id);
-          const prev = expLastSeen.get(f.id);
-          const prevArrival = prev?.arrival_at ?? null;
           expLastSeen.set(f.id, { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null, return_at: f.return_at ?? null });
-          // Signal C — arrival_at jumped past → future = fleet just left
-          // holding phase, debris is being generated now. 30s settle.
-          if (prevArrival !== null && prevArrival < nowMs && (f.arrival_at ?? 0) > nowMs) {
-            const fidCap = f.id, originCap = f.origin, destCap = f.dest;
-            const reason = `arrival_at past→future (${prevArrival}→${f.arrival_at}) — phase transition (+30s)`;
-            setTimeout(() => fireFor(fidCap, originCap, destCap, reason, "C"), 30_000).unref();
-          }
         }
         // Signal B: fleet disappeared from outbound. ogame removes mission=15
         // fleet from /movement when it's HOLDING at :16 (60min) — same
