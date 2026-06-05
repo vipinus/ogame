@@ -1519,15 +1519,40 @@ export async function startSidecar(
             captureSim(simulate(shipTarget.ship, shipTarget.amount ?? 1, "building", resolvedPlanetId, "regular"));
           }
         } else if (r.goal.type === "colonize") {
-          // 2026-06-05 — operator: panel 上殖民任务看不到树状推演.
-          // Colonize requires 1 colony ship at source_planet; cascade to
-          // shipyard L4 → roboticsFactory etc. Use source_planet as the
-          // body for simulate, NOT goal.planet (planet field unused for
-          // colonize, target.source_planet is the source body).
+          // 2026-06-05 v0.0.788 — operator "我发的命令是去殖民 只有一个任务,
+          // 你为什么搞两个". 一个 colonize 一棵 tree, 单根. astro 是 owner
+          // 视角的 prereq (max_planet gate), 但 ogame TECH_TREE 没把它列在
+          // colonyShip.requires 里 — 它是 mission-level 约束. 不挂 ghost
+          // root; 直接把 astrophysics 子树 push 进 colonyShip 的 children,
+          // 跟 shipyard/impulseDrive 平级. operator 看一棵 cascade 就完事.
           const cTarget = r.goal.target as { source_planet?: string };
           const colSourceId = cTarget.source_planet ?? resolvedPlanetId;
           if (colSourceId) {
-            captureSim(simulate("colonyShip", 1, "building", colSourceId, "regular"));
+            const ownedPlanets = Object.values(planets)
+              .filter((p) => (p as { type?: string }).type === "planet").length;
+            // v0.0.788 — 必须 per-tenant currentState, 不能 stateRef.current.
+            // 后者会读到上一个 push 的 tenant (daigang astro=18) 让 colonize
+            // 误判 "astro 已够" 不挂 astrophysics 子树.
+            const astroLevel = (currentState?.research?.levels?.["astrophysics"] ?? 0);
+            const astroTarget = ownedPlanets * 2;
+            const colSim = simulate("colonyShip", 1, "building", colSourceId, "regular");
+            let mergedTotalCost = colSim.totalCost;
+            if (astroLevel < astroTarget && colSim.tree) {
+              const astroSim = simulate("astrophysics", astroTarget, "research", colSourceId, "regular");
+              if (astroSim.tree) {
+                const existing = (colSim.tree as unknown as { children?: PrereqTreeNode[] }).children ?? [];
+                (colSim.tree as unknown as { children: PrereqTreeNode[] }).children = [astroSim.tree, ...existing];
+                const baseEta = (colSim.tree as unknown as { subtree_eta_seconds?: number }).subtree_eta_seconds ?? 0;
+                const astroEta = (astroSim.tree as unknown as { subtree_eta_seconds?: number }).subtree_eta_seconds ?? 0;
+                (colSim.tree as unknown as { subtree_eta_seconds?: number }).subtree_eta_seconds = baseEta + astroEta;
+                mergedTotalCost = {
+                  m: colSim.totalCost.m + astroSim.totalCost.m,
+                  c: colSim.totalCost.c + astroSim.totalCost.c,
+                  d: colSim.totalCost.d + astroSim.totalCost.d,
+                };
+              }
+            }
+            captureSim({ tree: colSim.tree, totalCost: mergedTotalCost, bankAtStart: colSim.bankAtStart, currentStep: colSim.currentStep });
           }
         }
         // Operator 2026-05-29: panel renders "缺 X m / Y c / Z d" chip.

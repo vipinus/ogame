@@ -316,9 +316,12 @@ export function computeOptimizationForGoal(state: WorldState, main: OptimizableG
   { candidates: OptimizationCandidate[]; planet: { id?: string; type?: string; coords?: readonly number[] } | null; note?: string } | { error: string } {
   if (!main || !main.prereq_tree) return { error: "no tree" };
   const astro = state.research?.levels?.astrophysics ?? 0;
-  if (astro >= 4) {
-    return { candidates: [], planet: null, note: "post-phase: optimizer skipped (resource-bottlenecked chain)" };
-  }
+  // v0.0.788 — operator "所有任务都要优化". 老 gate (v0.0.697/v0.0.773
+  // post-phase 整段 skip optimizer, 理由"用 transport 掌控资源") 跟新 directive
+  // 冲突. 拉通修法: post-phase 只跳"资源加速器" (mine cascade, 因 transport
+  // 接管资源 supply), 仍算"建造加速器" (robotics/nanite/researchLab/shipyard),
+  // 给 operator 决策颗粒度. mine skip 用 closure 变量, 主循环判断.
+  const postPhaseSkipMine = astro >= 4;
   const planetsMap = state.planets ?? {};
   const MOON_ONLY = new Set(["lunarBase", "sensorPhalanx", "jumpgate"]);
   const findPlanet = (ref: string | undefined): { id?: string; type?: string; coords?: readonly number[]; resources?: { m?: number; c?: number; d?: number; e?: number }; production?: { m_h?: number; c_h?: number; d_h?: number }; buildings?: Record<string, number> } | null => {
@@ -352,6 +355,8 @@ export function computeOptimizationForGoal(state: WorldState, main: OptimizableG
   const totalResourceCost = sumTreeResourceCost(tree);
   for (const accel of ["roboticsFactory", "naniteFactory", "researchLab", "shipyard", "metalMine", "crystalMine", "deuteriumSynth"]) {
     if (!appliesToGoalType(accel, mainGoalType)) continue;
+    // v0.0.788 — post-phase mine skip 在这里收口, 保持 build-accel 候选活着.
+    if (isResourceAccelerator(accel) && postPhaseSkipMine) continue;
     const curLvl = planet.buildings?.[accel] ?? 0;
     // Resource accelerator (mine) — saving 公式: wait_sec(对应资源) 缩短.
     // mineral 没有 minRequired (不是 prereq), baseEffective = curLvl.
