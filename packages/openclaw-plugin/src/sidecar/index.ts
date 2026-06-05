@@ -1856,6 +1856,24 @@ export async function startSidecar(
       if (!pgStore || !createUid) {
         return { ok: false, reason: "pg unavailable or no user context" };
       }
+      // v0.0.782 — colonize/jumpgate idempotent: 同 type+planet 已有未结束
+      // goal 直接 return existing. operator 2026-06-05 "只不停的重复加殖民
+      // 任务" 实证根因 = 操作员看 panel goal 消失就再加 + 旧 goal cascade
+      // 误标 completed (上一 commit 7f2f72d 已修) 同时 2 个 colo goal 同
+      // planet 并发 cascade 互相 race shipyard build → ogame 100001 spam.
+      if ((body.type === "colonize" || body.type === "jumpgate") && goalsStorePg) {
+        const allRows = await goalsStorePg.list(createUid);
+        const targetPlanet = body.planet ?? "";
+        const existing = allRows.find((r) =>
+          r.goal.type === body.type &&
+          !["completed", "cancelled"].includes(r.status) &&
+          ((r.goal.planet ?? "") === targetPlanet),
+        );
+        if (existing) {
+          console.log(`[goal/create] dedup ${body.type} planet=${targetPlanet} → return existing ${existing.goal.id}`);
+          return { ok: true, goal_id: existing.goal.id, reason: `${body.type} already active on planet ${targetPlanet}` };
+        }
+      }
       const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const nowTs = Date.now();
       const addedRow: GoalRow = {
