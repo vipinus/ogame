@@ -852,7 +852,14 @@ export async function startSidecar(
       const pgRows = goalsStorePg && explicitUid
         ? await goalsStorePg.list(explicitUid)
         : null;
-      const planets = stateRef.current?.planets ?? {};
+      // 2026-06-05 — per-user state for simulate(). Without this the panel's
+      // prereq tree was rendering against whichever user most recently pushed
+      // state.snapshot (typically the legacy operator on s274), so daigang's
+      // s275 colonize tree showed shipyard L12 / robotics L15 — operator's
+      // levels, not daigang's. userStates is the per-tenant mirror populated
+      // by the ws.on("state.snapshot") handler.
+      const userState = explicitUid ? userStates.get(explicitUid) : undefined;
+      const planets = (userState?.planets ?? stateRef.current?.planets ?? {});
       const idToCoords = (ref: string | undefined): string | undefined => {
         if (!ref) return undefined;
         if (/^\d+:\d+:\d+$/.test(ref)) return ref;
