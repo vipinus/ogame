@@ -4137,14 +4137,20 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const detailBlock = isExpanded
         ? `${reasonLine}${treeHtml}`
         : "";
+      // v0.0.795 — operator 2026-06-05 "折叠完就只有一行". collapsed 时
+      // 把 target (type + level) 并到 title row, 展开时再单独 row 显示.
+      // 参考 image: "等待资源 · 重氢合成器 L32 @1:97:10  P5  [★Set][Pause][Cancel]" 一行.
+      const inlineTarget = !isExpanded
+        ? `<span style="color:#bcc8d8; margin-left:6px;">· ${escapeHtml(targetStr)}</span>`
+        : "";
       return `
         <div style="${mainBg}border-top: 1px solid #2a3a52; padding: 6px 0;">
           <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? t("auto.257") : t("auto.258")}">
-            <span>${chevron}${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${coordChip}${etaAtBadge}${awaitingChip}</span>
+            <span>${chevron}${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${inlineTarget}${coordChip}${etaAtBadge}${awaitingChip}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
             <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${mainBtn}${pauseOrResume}${cancelBtn}</span>
           </div>
-          <div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</div>
+          ${isExpanded ? `<div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</div>` : ""}
           ${detailBlock}
         </div>`;
     };
