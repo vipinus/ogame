@@ -23,7 +23,7 @@ import path from "node:path";
 
 const OPENCLAW_CONFIG = "/home/ddxs/.openclaw/openclaw.json";
 const PLUGIN_DIST = "/home/ddxs/.openclaw/extensions/ogamex/dist";
-const DB_PATH = "/home/ddxs/.openclaw/workspace/ogamex/goals.db";
+// DB_PATH removed in Phase 7c.4 — daemon no longer opens goals.db.
 const CHANNEL_ID = process.env.OGAMEX_CMD_CHANNEL_ID ?? "1506611423202250762";
 const POLL_MS = 3500;
 const DISCORD_API = "https://discord.com/api/v10";
@@ -48,7 +48,13 @@ if (!NVIDIA_API_KEY) {
 }
 
 const { XaiClient } = await import("/home/ddxs/.openclaw/workspace/ogamex/runtime/ogamex_xai_client.mjs");
-const { GoalsStore } = await import(`${PLUGIN_DIST}/sidecar/goals_store.js`);
+// Phase 7c.4 (2026-06-05) — daemon goes PG-primary. GoalsStore (SQLite)
+// import retired; daemon used to open goals.db directly via better-sqlite3
+// fd 20-22 and drift with sidecar (sidecar PG primary since 7c.2 caused
+// 30s reconciler hack). All 31 store.* sites now route to PG via the
+// goalsPg shim below.
+const { WorldStateStorePg } = await import(`${PLUGIN_DIST}/sidecar/world_state_store_pg.js`);
+const { GoalsStorePg } = await import(`${PLUGIN_DIST}/sidecar/goals_store_pg.js`);
 const { makeAddGoalTool } = await import(`${PLUGIN_DIST}/tools/add_goal.js`);
 
 // Ogame Chinese ↔ canonical-ID glossary. The NL parser sees this every
@@ -155,7 +161,50 @@ class GlossaryClient {
 }
 
 const gemini = new GlossaryClient(new XaiClient({ apiKey: NVIDIA_API_KEY }));
-const store = new GoalsStore({ dbPath: DB_PATH });
+
+// PG primary — same default fallback as run_sidecar.mjs (postgres://ogamex:ogamex
+// @127.0.0.1:5432/ogamex). Override via DATABASE_URL env. Daemon now requires
+// PG (Phase 7c.4) — SQLite goals.db fd retired.
+const DATABASE_URL = process.env.DATABASE_URL
+  ?? config.env?.DATABASE_URL
+  ?? "postgres://ogamex:ogamex@127.0.0.1:5432/ogamex";
+const OPERATOR_UID = (process.env.OGAMEX_LEGACY_USER_ID ?? process.env.OGAMEX_OPERATOR_USER_ID ?? "").trim();
+if (!OPERATOR_UID) {
+  console.error("[daemon] no OGAMEX_LEGACY_USER_ID — operator pg uid required for PG writes");
+  process.exit(2);
+}
+const pgStore = new WorldStateStorePg({ databaseUrl: DATABASE_URL });
+const goalsPg = new GoalsStorePg({ sql: pgStore.sql });
+console.log(`[daemon] PG primary — uid=${OPERATOR_UID.slice(0, 8)}…`);
+
+// store shim — async wrappers preserving the original SQLite call shapes so
+// the 31 daemon call sites only need an `await` prefix.
+const store = {
+  list: async () => goalsPg.list(OPERATOR_UID),
+  get: async (id) => goalsPg.get(OPERATOR_UID, id),
+  getMainGoal: async () => goalsPg.getMainGoal(OPERATOR_UID),
+  setMainGoal: async (id) => pgStore.setMainGoal(OPERATOR_UID, id),
+  updateStatus: async (id, status, reason) =>
+    pgStore.updateGoalStatus(OPERATOR_UID, id, status, reason ?? null),
+  add: async (goal) => {
+    const nowTs = Date.now();
+    const row = {
+      goal: {
+        ...goal,
+        status: goal.status ?? "pending",
+        created_at: goal.created_at ?? nowTs,
+        progress_pct: goal.progress_pct ?? 0,
+        current_step: goal.current_step ?? "queued",
+        eta_at: goal.eta_at ?? null,
+      },
+      status: "pending",
+      created_at: nowTs,
+      updated_at: nowTs,
+    };
+    await pgStore.upsertGoal(OPERATOR_UID, row);
+    return row;
+  },
+};
 
 function listPlanetsFromHealth() {
   // Best-effort: read /v1/health from local sidecar to get planet coords.
@@ -236,8 +285,8 @@ async function fetchNewMessages(after) {
 }
 
 // ─── Command parser + dispatcher ───────────────────────────────────────────
-function resolveByPrefix(idPrefix) {
-  const rows = store.list();
+async function resolveByPrefix(idPrefix) {
+  const rows = await store.list();
   const matches = rows.filter((r) => r.goal.id.startsWith(idPrefix));
   if (matches.length === 0) return { error: `no goal with id starting "${idPrefix}"` };
   if (matches.length > 1) return { error: `ambiguous: ${matches.length} goals start with "${idPrefix}"; try more characters` };
@@ -447,7 +496,7 @@ async function handleAdd(rest) {
   if (validationError) {
     // Roll back — the addGoal tool already persisted the row; cancel it
     // so the planner doesn't leak a permanently-blocked entry.
-    try { store.updateStatus(g.id, "cancelled", `auto-cancelled: ${validationError}`); } catch {}
+    try { await store.updateStatus(g.id, "cancelled", `auto-cancelled: ${validationError}`); } catch {}
     return `❌ LLM returned malformed goal (${validationError}). Original input: \`${nl.slice(0, 80)}\`. Try rephrasing more concretely, e.g. "研究宇航学到 4" or "建金属矿到 18 在 Earth"`;
   }
   const idMap = planetIdToCoords();
@@ -462,7 +511,7 @@ async function handleList(rest) {
   // Only honor `rest` if it's an actual status keyword. Otherwise treat as
   // unfiltered ("list" with trailing noise like 当前任务/all goals/...).
   const filter = VALID.has(raw) ? raw : null;
-  const rows = store.list();
+  const rows = await store.list();
   const filtered = filter
     ? rows.filter((r) => r.status === filter)
     : rows.filter((r) => r.status !== "completed" && r.status !== "cancelled");
@@ -473,28 +522,28 @@ async function handleList(rest) {
   return `**${filtered.length} goals${filter ? ` (${filter})` : ""}**\n${lines.join("\n")}${tail}`;
 }
 
-function handleCancel(rest) {
-  const { error, row } = resolveByPrefix(rest.trim());
+async function handleCancel(rest) {
+  const { error, row } = await resolveByPrefix(rest.trim());
   if (error) return `❌ ${error}`;
   if (row.status === "completed" || row.status === "cancelled") return `goal already ${row.status}`;
-  store.updateStatus(row.goal.id, "cancelled", "cancelled via discord");
+  await store.updateStatus(row.goal.id, "cancelled", "cancelled via discord");
   return `🛑 cancelled \`${row.goal.id.slice(0,12)}\` — ${row.goal.type} ${JSON.stringify(row.goal.target)}`;
 }
 
-function handlePause(rest) {
-  const { error, row } = resolveByPrefix(rest.trim());
+async function handlePause(rest) {
+  const { error, row } = await resolveByPrefix(rest.trim());
   if (error) return `❌ ${error}`;
   if (row.status === "completed" || row.status === "cancelled") return `goal already ${row.status}`;
-  store.updateStatus(row.goal.id, "blocked", "PAUSED: via discord");
+  await store.updateStatus(row.goal.id, "blocked", "PAUSED: via discord");
   return `⏸ paused \`${row.goal.id.slice(0,12)}\``;
 }
 
-function handleResume(rest) {
-  const { error, row } = resolveByPrefix(rest.trim());
+async function handleResume(rest) {
+  const { error, row } = await resolveByPrefix(rest.trim());
   if (error) return `❌ ${error}`;
   const paused = row.status === "blocked" && (row.reason ?? "").startsWith("PAUSED");
   if (!paused) return `goal is not paused (status=${row.status})`;
-  store.updateStatus(row.goal.id, "pending");
+  await store.updateStatus(row.goal.id, "pending");
   return `▶ resumed \`${row.goal.id.slice(0,12)}\``;
 }
 
@@ -1307,8 +1356,8 @@ function saveAutoState() {
   try { fs.writeFileSync(AUTO_STATE_PATH, JSON.stringify({ enabled: autoEnabled, ts: Date.now() })); } catch {}
 }
 
-function findOptimizerGoal() {
-  return store.list().find((r) =>
+async function findOptimizerGoal() {
+  return (await store.list()).find((r) =>
     r.goal.id?.startsWith("opt-") &&
     r.status !== "completed" &&
     r.status !== "cancelled"
@@ -1316,8 +1365,8 @@ function findOptimizerGoal() {
 }
 
 // Look up opt- goal that supports a specific user goal (via parent prefix tag).
-function findOptimizerGoalForParent(parentId) {
-  return store.list().find((r) =>
+async function findOptimizerGoalForParent(parentId) {
+  return (await store.list()).find((r) =>
     r.goal.id?.startsWith(`opt-${parentId.slice(0, 8)}-`) &&
     r.status !== "completed" && r.status !== "cancelled"
   );
@@ -1337,15 +1386,15 @@ async function optimizerTick() {
     const ctx = `${goal.type} ${(goal.target?.building ?? goal.target?.tech ?? goal.target?.ship ?? "?")} @${goal.planet}`;
     if (!best || best.savings < AUTO_SAVINGS_THRESHOLD_SEC) {
       // No worthwhile candidate. Retire any existing opt- attached to this goal.
-      const existing = findOptimizerGoalForParent(goal.id);
+      const existing = await findOptimizerGoalForParent(goal.id);
       if (existing) {
-        store.updateStatus(existing.goal.id, "cancelled", "optimizer: savings below threshold");
+        await store.updateStatus(existing.goal.id, "cancelled", "optimizer: savings below threshold");
         console.log(`[auto] retired ${existing.goal.id} (parent ${tag} has no candidate > 30m)`);
       }
       null_action += 1;
       continue;
     }
-    const existing = findOptimizerGoalForParent(goal.id);
+    const existing = await findOptimizerGoalForParent(goal.id);
     if (existing) {
       const t = existing.goal.target;
       if (t?.building === best.mine && t?.level === best.L_new) {
@@ -1359,11 +1408,11 @@ async function optimizerTick() {
         blocked += 1;
         continue;
       }
-      store.updateStatus(existing.goal.id, "cancelled", "optimizer: superseded");
+      await store.updateStatus(existing.goal.id, "cancelled", "optimizer: superseded");
     }
     // Insert opt- goal tagged with parent (first 8 chars of parent id).
     const id = `opt-${tag}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`;
-    store.add({
+    await store.add({
       id, type: "build",
       target: { building: best.mine, level: best.L_new },
       planet: optimization.planet.id,
@@ -1451,7 +1500,7 @@ async function expeditionTick() {
   // 不再被 declaration order 锁死前 6. SQLite store.list() 同步无 await.
   {
     const lastExpTs = new Map();
-    for (const r of store.list()) {
+    for (const r of (await store.list())) {
       if (r.goal?.type !== "expedition") continue;
       const pid = r.goal.target?.source_planet ?? r.goal.planet;
       if (!pid) continue;
@@ -1516,10 +1565,10 @@ async function expeditionTick() {
   if (outbound >= slotCap) {
     // Also cancel any active expedition goal that would otherwise
     // keep triggering sendFleet attempts (and failing with no slot).
-    const activeExpGoals = store.list().filter((r) =>
+    const activeExpGoals = (await store.list()).filter((r) =>
       !["completed", "cancelled"].includes(r.status) && r.goal.type === "expedition");
     for (const r of activeExpGoals) {
-      store.updateStatus(r.goal.id, "cancelled", "expedition: slots full (scraped)");
+      await store.updateStatus(r.goal.id, "cancelled", "expedition: slots full (scraped)");
       console.log(`[expedition] cancelled ${r.goal.id} — slots full`);
     }
     return;
@@ -1530,10 +1579,10 @@ async function expeditionTick() {
   // below will queue fresh ones as needed.
   const autoBuildShips = cfg.auto_build_ships === true;
   if (!autoBuildShips) {
-    const activeGoals = store.list().filter((r) => !["completed", "cancelled"].includes(r.status));
+    const activeGoals = (await store.list()).filter((r) => !["completed", "cancelled"].includes(r.status));
     for (const r of activeGoals) {
       if (r.goal.id.startsWith("expb-")) {
-        store.updateStatus(r.goal.id, "cancelled", "daemon: auto-build disabled");
+        await store.updateStatus(r.goal.id, "cancelled", "daemon: auto-build disabled");
         console.log(`[expedition] cancelled stale expb ${r.goal.id.slice(0,8)}`);
       }
     }
@@ -1546,12 +1595,12 @@ async function expeditionTick() {
   while (inFlightLaunches.length > 0 && tickNow - inFlightLaunches[0].ts > INFLIGHT_TTL_MS) {
     inFlightLaunches.shift();
   }
-  const inFlightLocal = store.list().filter((r) => !['completed','cancelled'].includes(r.status) && r.goal.type === 'expedition').length; // operator 2026-05-28: was push-counter (45s TTL inflated when ApiExec deferred via userBusy)
+  const inFlightLocal = (await store.list()).filter((r) => !['completed','cancelled'].includes(r.status) && r.goal.type === 'expedition').length; // operator 2026-05-28: was push-counter (45s TTL inflated when ApiExec deferred via userBusy)
   // Also count active exp- goals already in sidecar queue (waiting for
   // ApiExec to drain them). Without this, daemon piles new goals every 10s
   // when ogame's outbound count stays stale → 17+ active goals → ogame
   // rejection storm on actual POST attempts.
-  const activeExpInQueue = store.list().filter((r) =>
+  const activeExpInQueue = (await store.list()).filter((r) =>
     !["completed", "cancelled"].includes(r.status) && r.goal.type === "expedition").length;
 
   // Slot accounting — ONLY count truly flying fleets (ogame outbound) and
@@ -1587,7 +1636,7 @@ async function expeditionTick() {
   // store.list() returns ALL goals; filter for our own exp goals cancelled
   // recently with a fleet-rejection reason.
   const nowMs = Date.now();
-  for (const r of store.list()) {
+  for (const r of (await store.list())) {
     if (r.goal.type !== "expedition") continue;
     if (r.status !== "cancelled") continue;
     const reason = r.reason ?? "";
@@ -1608,7 +1657,7 @@ async function expeditionTick() {
   // Iteration below skips them; planet re-enters the race only after its
   // current exp completes or cancels.
   const lockedPlanets = new Set(
-    store.list()
+    await store.list()
       .filter((r) =>
         r.goal.type === "expedition" &&
         !["completed", "cancelled"].includes(r.status))
@@ -1657,7 +1706,7 @@ async function expeditionTick() {
           if (have < need) missing[shipName] = need - have;
         }
         if (Object.keys(missing).length > 0) {
-          const hasActiveBuild = store.list().some((r) =>
+          const hasActiveBuild = (await store.list()).some((r) =>
             r.goal.id.startsWith("expb-") &&
             !["completed", "cancelled"].includes(r.status) &&
             (r.goal.target?.source_planet === p.id || r.goal.planet === p.id));
@@ -1666,7 +1715,7 @@ async function expeditionTick() {
           } else {
             for (const [shipName, amount] of Object.entries(missing)) {
               const bid = `expb-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}-${shipName}`;
-              store.add({
+              await store.add({
                 id: bid, type: "build_ships",
                 target: { ship: shipName, amount, source_planet: p.id },
                 planet: p.id, priority: 8, is_main_goal: false,
@@ -1688,7 +1737,7 @@ async function expeditionTick() {
     const queueCount = 1;
     {
       const id = `exp-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}-0`;
-      store.add({
+      await store.add({
         id, type: "expedition",
         target: { count: 1, source_planet: p.id, ships: { ...cfgTemplate } },
         planet: p.id, priority: 10, is_main_goal: false,
@@ -1742,7 +1791,7 @@ setInterval(async () => {
 async function handleAuto(rest) {
   // No more on/off — both daemons always run. Return status only.
   void rest;
-  const existing = findOptimizerGoal();
+  const existing = await findOptimizerGoal();
   const cur = existing
     ? `optimizer managed: ${existing.goal.target?.building} L${existing.goal.target?.level} (${existing.status})`
     : "optimizer: no managed goal currently";
@@ -1817,20 +1866,20 @@ async function handleExpedition(rest) {
   ].join("\n");
 }
 
-function handleSetMain(rest) {
+async function handleSetMain(rest) {
   const arg = rest.trim();
   if (!arg) {
-    const cur = store.getMainGoal();
+    const cur = await store.getMainGoal();
     if (!cur) return "no main goal set. usage: `/main <id-prefix>` to set, `/main clear` to clear.";
     return `current main: ${fmtRow(cur)}`;
   }
   if (/^(clear|none|off|unset)$/i.test(arg)) {
-    store.setMainGoal(null);
+    await store.setMainGoal(null);
     return "🧹 main goal cleared — planner reverts to flat priority order";
   }
-  const { error, row } = resolveByPrefix(arg);
+  const { error, row } = await resolveByPrefix(arg);
   if (error) return `❌ ${error}`;
-  store.setMainGoal(row.goal.id);
+  await store.setMainGoal(row.goal.id);
   return `⭐ main goal set: ${fmtRow({ ...row, goal: { ...row.goal, is_main_goal: true } })}`;
 }
 
