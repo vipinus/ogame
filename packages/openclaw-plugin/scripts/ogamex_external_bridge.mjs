@@ -1,18 +1,33 @@
 process.env.OGAMEX_LEGACY_USER_ID = process.env.OGAMEX_LEGACY_USER_ID || "4baba0e2-17ab-4275-a8eb-d642ba8d969f";
 /**
- * Standalone Discord command bridge for OgameX.
+ * OgameX External Bridge — Discord webhook + Gemini config glue (only).
  *
- * Polls a Discord text channel, parses `/<cmd> [...]` messages, executes
- * against the local plugin's GoalsStore (+ Gemini for NL add_goal), replies
- * inline. Bypasses OpenClaw entirely — only uses the bot token from the
- * openclaw.json `channels.discord.token` field for outbound REST.
+ * Phase 8c (2026-06-05) — operator "Discord webhook 和 gemini 配置什么的连接
+ * 外部系统的放一起". Renamed from ogamex_discord_bridge.mjs. 之前同时跑
+ * optimizer (8a 已搬 src/sidecar/optimizer.ts) + expedition (8b 已搬
+ * src/sidecar/expedition.ts), 现在只剩外部系统连接.
+ *
+ * 仍服务:
+ *   - Discord channel poll → command handler (/add /list /cancel /pause
+ *     /resume /eta /optimize /expedition /setMain /health /help)
+ *   - Discord REST helpers (postMessage, fetchNewMessages)
+ *   - Gemini-driven NL → goal parser (used by /add)
+ *
+ * 不再做 (搬 sidecar):
+ *   - optimizer 60s tick (Phase 8a, src/sidecar/optimizer.ts)
+ *   - expedition 5s tick + 1s trigger poll (Phase 8b, src/sidecar/expedition.ts)
+ *
+ * Archive — optimizer / expedition compute helpers + handler 仍在 file 里,
+ * 因为 Discord /optimize /eta /expedition commands 仍调用展示用. 真正 tick
+ * 不再跑. 后续 cleanup 可删 archive (无引用即删).
  *
  * Commands:
  *   /add <natural language>     — Gemini parses + queues a goal
  *   /list [pending|active|...]  — list goals (defaults to non-terminal)
- *   /cancel <id-prefix>         — cancel by id (prefix match if unambiguous)
- *   /pause <id-prefix>          — pause
- *   /resume <id-prefix>         — resume
+ *   /cancel <id-prefix>         — cancel by id (prefix match)
+ *   /pause /resume <id-prefix>
+ *   /eta /optimize              — read-only ETA + acceleration advice
+ *   /expedition                 — read-only exp config display
  *   /health                     — sidecar health snapshot
  *   /help                       — list commands
  */
