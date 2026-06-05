@@ -223,7 +223,9 @@ function syntheticTreeForGoal(goal: OptimizableGoal, state: WorldState): PrereqT
     //   1) colonyShip 1 ship (含 shipyard/impulseDrive 链路)
     //   2) astrophysics → owned*2 (max_planets gate)
     const ownedPlanets = Object.values(state.planets ?? {}).filter((p) => (p as { type?: string }).type === "planet").length;
-    const astroTarget = ownedPlanets * 2;
+    // v0.0.793 — ogame v12 真公式: max_total = floor((L+1)/2)+1.
+    // target = 2*owned-1 让 maxAt(target) > owned. owned=1 时 target=1.
+    const astroTarget = Math.max(1, 2 * ownedPlanets - 1);
     const astroCur = state.research?.levels?.astrophysics ?? 0;
     const colSource = target.source_planet ?? planetRef;
     const children: PrereqTreeNodeShape[] = [];

@@ -1538,7 +1538,9 @@ export async function startSidecar(
             // 后者会读到上一个 push 的 tenant (daigang astro=18) 让 colonize
             // 误判 "astro 已够" 不挂 astrophysics 子树.
             const astroLevel = (currentState?.research?.levels?.["astrophysics"] ?? 0);
-            const astroTarget = ownedPlanets * 2;
+            // v0.0.793 — ogame v12 真公式: max_total = floor((L+1)/2)+1.
+            // target = 2*owned-1 让 maxAt(target) > owned. owned=1 时 target=1.
+            const astroTarget = Math.max(1, 2 * ownedPlanets - 1);
             const colSim = simulate("colonyShip", 1, "building", colSourceId, "regular");
             let mergedTotalCost = colSim.totalCost;
             if (astroLevel < astroTarget && colSim.tree) {

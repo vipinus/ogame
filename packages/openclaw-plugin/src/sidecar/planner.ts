@@ -1291,19 +1291,20 @@ function planColonizeGoal(goal: Goal, state: WorldState): PlanResult {
     }
   }
 
-  // v0.0.786 — astrophysics gate. ogame v12 公式:
-  //   max_planets = floor(astrophysics_level / 2) + 1
-  // operator 2026-06-05 audit: astro=0 + 1 planet (33620666) 时 planner
-  // 仍在 cascade colonyShip → impulseDrive → 撞 ogame error 100001, 真根
-  // 因是该 colonize 永远完不成 (槽位已满). 必须先升 astro 把 max 拉开.
-  // 目标 level = ownedPlanets * 2 → 必然让 max > owned (严格 +1 个槽).
-  // moon 不算殖民地槽, 用 type === "planet" 过滤.
+  // v0.0.786 → v0.0.793 — astrophysics gate. ogame v12 真公式 (operator
+  // 2026-06-05 paste table 实证):
+  //   max_total_planets = floor((astro_level + 1) / 2) + 1
+  // L=0 → 1, L=1 → 2, L=2 → 2, L=3 → 3, L=4 → 3, L=5 → 4, ...
+  // 之前 v0.0.786 用 `floor(astro/2)+1` 差 1 级; target 用 `owned*2` overkill
+  // 2 倍 (owned=1 应 L=1, 实际开 L=2). 修: target = 2*owned-1 让
+  // maxPlanetsAt(target) 严格 > owned. moon 不算殖民地槽.
   const ownedPlanets = Object.values(state.planets ?? {})
     .filter((p) => p.type === "planet").length;
   const astroLevel = state.research?.levels?.["astrophysics"] ?? 0;
-  const maxPlanets = Math.floor(astroLevel / 2) + 1;
+  const maxPlanetsAt = (lvl: number): number => Math.floor((lvl + 1) / 2) + 1;
+  const maxPlanets = maxPlanetsAt(astroLevel);
   if (ownedPlanets >= maxPlanets) {
-    const targetAstro = ownedPlanets * 2;
+    const targetAstro = Math.max(1, 2 * ownedPlanets - 1);
     const virtualGoal: Goal = {
       ...goal,
       type: "research",
