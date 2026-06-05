@@ -13,13 +13,11 @@
   "dependencies": {
     "@ogamex/shared": "workspace:*",
     "@sinclair/typebox": "^0.34.0",
-    "better-sqlite3": "^11.0.0",
     "postgres": "^3.4.5",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.0",
-    "@types/better-sqlite3": "^7.6.0"
+    "@types/ws": "^8.5.0"
   },
   "peerDependencies": {
     "openclaw": ">=2026.5.17"
