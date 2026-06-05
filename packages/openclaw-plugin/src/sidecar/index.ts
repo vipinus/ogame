@@ -33,6 +33,7 @@ import { SaveCoordinatorManager, FailureAggregatorManager, ReporterManager } fro
 import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
 import type { GoalRow } from "./goals_types.js";
+import { needsFoodCascade } from "./lifeform_balance.js";
 import { GoalsStorePg } from "./goals_store_pg.js";
 // Phase 7a — DualReadGoalsStore + db_mode (sqlite|dual|pg) removed. PG is now
 // the sole reader path. Rollback = revert this commit.
@@ -1022,27 +1023,15 @@ export async function startSidecar(
           // gate, simulate 漏同步 → panel prereq_tree 看不到 food 前置 cascade.
           // 镜像 planner 逻辑: 当 housing (living_space) > food (well_fed)
           // 时, emit food building cascade as child.
+          // Phase 10 — needsFoodCascade 抽 shared helper (lifeform_balance.ts),
+          // 跟 planner.ts:535 同源. operator memory planner/simulate 共享 SOP.
           if (useTreeBuilder === "lifeform" && kind === "building" && planet) {
             const species = ((planet as { lifeform?: { species?: string } } | null)?.lifeform?.species) ?? "humans";
             const lfBldg2 = (planet as { lifeform_buildings?: Record<string, number> } | null)?.lifeform_buildings ?? {};
-            const lfr = (planet as { lifeform_resources?: { living_space?: number | null; well_fed?: number | null } } | null)?.lifeform_resources;
-            const livingSpace = lfr?.living_space ?? null;
-            const wellFed = lfr?.well_fed ?? null;
-            // Mirror POPULATION_FOOD_BY_SPECIES (planner.ts:480). Inline here
-            // until shared helper extraction (operator memory: planner/simulate
-            // 共享 helper SOP).
-            const popFoodRules: Record<string, { population: readonly string[]; food: string }> = {
-              humans: { population: ["residentialSector", "skyscraper", "metropolis"], food: "biosphereFarm" },
-              kaelesh: { population: ["sanctuary"], food: "antimatterCondenser" },
-            };
-            const rule = popFoodRules[species];
-            // 必须 current < targetLevel (unmet) 才 emit, 否则 antimatterCondenser
-            // 之 requires {sanctuary: 1} 又递归到这 → 死循环 (operator
-            // 2026-06-05 stack overflow 事故 v0.0.785-pre).
-            if (rule && rule.population.includes(techName) && current < targetLevel
-                && livingSpace !== null && wellFed !== null && livingSpace > wellFed) {
-              const curFood = lfBldg2[rule.food] ?? 0;
-              const foodChild = buildAndSimulate(rule.food, curFood + 1, "building");
+            const lfr = (planet as { lifeform_resources?: { living_space?: number | null; well_fed?: number | null } } | null)?.lifeform_resources ?? null;
+            const foodCheck = needsFoodCascade(techName, species, lfBldg2, lfr, current, targetLevel);
+            if (foodCheck) {
+              const foodChild = buildAndSimulate(foodCheck.rule.food, foodCheck.currentFoodLevel + 1, "building");
               if (foodChild) children.push(foodChild);
             }
           }

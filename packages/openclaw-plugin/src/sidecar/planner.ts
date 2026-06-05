@@ -474,23 +474,9 @@ const LF_BUILDING_ALIASES: Record<string, string> = {
 // resource already exceeds `well_fed`, divert one upgrade into the food
 // building first. Mirrors humans' "升居住区前先补生物圈农场" rule.
 //
-// Living-space / well-fed resource fields are species-agnostic in the
-// userscript's lifeform_resources extractor — each species' own buildings
-// drive the values; the planner just compares numbers.
-const POPULATION_FOOD_BY_SPECIES: Record<string, { population: readonly string[]; food: string }> = {
-  humans: {
-    population: ["residentialSector", "skyscraper", "metropolis"],
-    food: "biosphereFarm",
-  },
-  kaelesh: {
-    // Sanctuary (圣殿) is kaelesh's primary housing; antimatterCondenser
-    // (反物质凝聚器) is the satiety counterpart. Other kaelesh buildings
-    // can be added here later if/when they also drive living_space.
-    population: ["sanctuary"],
-    food: "antimatterCondenser",
-  },
-  // rocktal / mechas — not yet wired (no operator goals against them yet).
-};
+// Phase 10 (v0.0.785) — POPULATION_FOOD_BY_SPECIES + needsFoodCascade 抽到
+// shared helper. planner 跟 simulate 同源 (operator memory SOP).
+import { needsFoodCascade } from "./lifeform_balance.js";
 
 function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
   const target = goal.target as { building?: string; level?: number; planet?: string };
@@ -536,27 +522,14 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
     return { blocked: `another build active in queue (${buildQ2.building}, ends ${new Date(buildQ2.ends_at!).toISOString()})` };
   }
 
-  // Population/Food balance — auto-build food when housing grows. Without
-  // this, owner ends up with overcrowded planets → workers starve → mines
-  // run at reduced output. Operator rule, applied per-species via
-  // POPULATION_FOOD_BY_SPECIES lookup:
-  //   humans:   sanctuary-equivalent residentialSector → food biosphereFarm
-  //   kaelesh:  sanctuary → food antimatterCondenser
-  // Compare RESOURCE quantities (not building levels) from ogame's own UI:
-  //   生活空間 = planet.lifeform_resources.living_space  (housing capacity)
-  //   酒足飯飽 = planet.lifeform_resources.well_fed      (satiety capacity)
-  // Food is the supporter — only divert when housing capacity > food capacity.
-  const balanceRule = POPULATION_FOOD_BY_SPECIES[species];
-  if (balanceRule && balanceRule.population.includes(building)) {
-    const lfr = (planet as { lifeform_resources?: { living_space?: number | null; well_fed?: number | null } }).lifeform_resources;
-    const livingSpace = lfr?.living_space ?? null;
-    const wellFed = lfr?.well_fed ?? null;
-    if (livingSpace !== null && wellFed !== null && livingSpace > wellFed) {
-      const currentFood = lfBldg[balanceRule.food] ?? 0;
-      const subGoal: Goal = { ...goal, target: { building: balanceRule.food, level: currentFood + 1, planet: planet.id } } as Goal;
-      return planLifeformBuildingGoal(subGoal, state);
-    }
-    // Otherwise: food still adequate; let housing build.
+  // Population/Food balance — auto-build food when housing grows (sanctuary
+  // → antimatterCondenser for kaelesh; residentialSector etc → biosphereFarm
+  // for humans). 抽 needsFoodCascade helper (Phase 10), 跟 simulate 同源.
+  const lfr2 = (planet as { lifeform_resources?: { living_space?: number | null; well_fed?: number | null } }).lifeform_resources;
+  const foodCheck = needsFoodCascade(building, species, lfBldg, lfr2, current, level);
+  if (foodCheck) {
+    const subGoal: Goal = { ...goal, target: { building: foodCheck.rule.food, level: foodCheck.currentFoodLevel + 1, planet: planet.id } } as Goal;
+    return planLifeformBuildingGoal(subGoal, state);
   }
 
   // Prereq check — recurse into missing prereqs first.
