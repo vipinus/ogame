@@ -491,6 +491,11 @@ export async function runOptimizerOnce(
         progress_pct: 0,
         current_step: "queued",
         eta_at: null,
+        // v0.0.790 — operator 2026-06-05 "为什么 9 10 没在树里面" + "补的电厂
+        // 没有在里面". opt-* 是 optimizer 为加速 g.id (e.g. colonize) 而 emit
+        // 的派生 sub-goal. 记 parent 让 listGoals 把它挂回 parent tree, owner
+        // 看一棵 cascade 全貌, 不再 N 张独立卡片.
+        parent_goal_id: g.id,
       },
       status: "pending" as const,
       created_at: Date.now(),

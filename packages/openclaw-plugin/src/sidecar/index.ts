@@ -1555,6 +1555,55 @@ export async function startSidecar(
             captureSim({ tree: colSim.tree, totalCost: mergedTotalCost, bankAtStart: colSim.bankAtStart, currentStep: colSim.currentStep });
           }
         }
+        // v0.0.790 — operator 2026-06-05 "为什么 9 10 没在树里面" + "补的电厂
+        // 没有在里面". Optimizer 派的 opt-* sub-goals (parent_goal_id=this
+        // row.id) 各有自己的 prereq_tree (含 solarPlant energy cascade). 把它
+        // 们 push 进当前 tree 的 root.children — owner 看一棵全貌, 不再 N 张
+        // 独立卡片. opt-* 自身 panel 仍展示但加 "🔧 child of X" link.
+        if (prereq_tree && r.goal.id) {
+          const myId = r.goal.id;
+          for (const childRow of sourceRows) {
+            if (childRow.goal.parent_goal_id !== myId) continue;
+            const cTarget = childRow.goal.target as { building?: string; tech?: string; level?: number };
+            const cLvl = cTarget.level ?? 1;
+            let childSim: { tree: PrereqTreeNode | null } | null = null;
+            if (cTarget.building) {
+              childSim = simulate(cTarget.building, cLvl, "building", resolvedPlanetId, "regular");
+            } else if (cTarget.tech) {
+              childSim = simulate(cTarget.tech, cLvl, "research", resolvedPlanetId, "regular");
+            }
+            if (childSim?.tree) {
+              const root = prereq_tree as unknown as { children?: PrereqTreeNode[] };
+              root.children = [...(root.children ?? []), childSim.tree];
+            }
+          }
+        }
+        // v0.0.790 — operator "显示的对吗" → ETA double-count 修. impulseDrive
+        // 在 cascade tree 出现 2 次 (astrophysics 真前置 + colonyShip 真前置),
+        // ogame research_q 串行只升一次 → 同 tech 同 (current,target) 多次出现
+        // 只算第一次 eta, 之后置 0. dedup 走 BFS keep-first.
+        if (prereq_tree) {
+          const seenDedup = new Set<string>();
+          const dedupWalk = (n: PrereqTreeNode): number => {
+            const obj = n as unknown as { tech: string; currentLevel: number; targetLevel: number; eta_seconds?: number; subtree_eta_seconds?: number; children?: PrereqTreeNode[] };
+            const key = `${obj.tech}@${obj.currentLevel}→${obj.targetLevel}`;
+            if (seenDedup.has(key)) {
+              obj.eta_seconds = 0;
+              // children 仍 walk, 它们也 dedup
+              let cEta = 0;
+              for (const c of obj.children ?? []) cEta += dedupWalk(c);
+              obj.subtree_eta_seconds = cEta;
+              return cEta;
+            }
+            seenDedup.add(key);
+            let cEta = 0;
+            for (const c of obj.children ?? []) cEta += dedupWalk(c);
+            const selfEta = obj.eta_seconds ?? 0;
+            obj.subtree_eta_seconds = selfEta + cEta;
+            return selfEta + cEta;
+          };
+          dedupWalk(prereq_tree);
+        }
         // Operator 2026-05-29: panel renders "缺 X m / Y c / Z d" chip.
         // shortage = max(0, totalCost - planetBank) — only what operator
         // still needs to ship in (or accrue) on top of current stockpile.
