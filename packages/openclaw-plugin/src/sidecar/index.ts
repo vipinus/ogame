@@ -2035,14 +2035,19 @@ export async function startSidecar(
             }
             if (!row) row = goalsStore.list().find((r) => r.goal.id === goalId) ?? undefined;
             const type = row?.goal.type;
+            // Phase 7c.5.b — PG primary writes; SQLite paired-write retired.
+            // webtx-* (PG-only) used to throw "unknown goal id" on the SQLite
+            // side (operator hit it on leg 1 first dispatch 13:39:08).
             if (!isTransient && (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport")) {
-              goalsStore.updateStatus(goalId, "cancelled", reason);
-              shadowFire("goal.updateStatus.directiveFail.cancel", (uid) => pgStore!.updateGoalStatus(uid, goalId, "cancelled", reason));
+              if (pgStore && lookupUid) {
+                await pgStore.updateGoalStatus(lookupUid, goalId, "cancelled", reason);
+              }
               priorityMergerRef?.clearAwaiting(goalId);
               priorityMergerRef?.clearDispatched(goalId);
             } else {
-              goalsStore.updateStatus(goalId, "blocked", reason);
-              shadowFire("goal.updateStatus.directiveFail.blocked", (uid) => pgStore!.updateGoalStatus(uid, goalId, "blocked", reason));
+              if (pgStore && lookupUid) {
+                await pgStore.updateGoalStatus(lookupUid, goalId, "blocked", reason);
+              }
               // v0.0.459: event-triggered gate — goal stays blocked until
               // awaiting events clear.
               // v0.0.542: split policy by goal type (operator 2026-05-31
@@ -2120,12 +2125,12 @@ export async function startSidecar(
             if (!row) row = goalsStore.list().find((r) => r.goal.id === goalId) ?? undefined;
             const type = row?.goal.type;
             if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport" || type === "jumpgate") {
-              // v0.0.446: jumpgate added — operator 2026-05-29 verified
-              // JG dispatch succeeded but goal stuck active because this
-              // list missed it. Now mark completed on ack so chain prereq
-              // unblocks next leg (LegC deploy moon→planet).
-              goalsStore.updateStatus(goalId, "completed");
-              shadowFire("goal.updateStatus.atomicDone", (uid) => pgStore!.updateGoalStatus(uid, goalId, "completed", null));
+              // Phase 7c.5.b — PG primary. webtx-* leg 1 SQLite throw crashed
+              // the whole fan handler (operator 2026-06-05 13:39:08 evidence),
+              // making it look like "ack never arrived" to leg 2/3 downstream.
+              if (pgStore && lookupUid2) {
+                await pgStore.updateGoalStatus(lookupUid2, goalId, "completed", null);
+              }
             }
             // species_discovery: ApiExec success = ONE coord done. Append to
             // target.completed[] so planner picks next coord on next tick.
@@ -2150,8 +2155,9 @@ export async function startSidecar(
                 if (idx >= 0) {
                   completed.splice(idx, 1);
                   const revertedTarget = { ...tgt, completed } as Record<string, unknown>;
-                  goalsStore.updateTarget(goalId, revertedTarget);
-                  shadowFire("goal.updateTarget.discoverRevert", (uid) => pgStore!.updateGoalTarget(uid, goalId, revertedTarget));
+                  if (pgStore && lookupUid2) {
+                    await pgStore.updateGoalTarget(lookupUid2, goalId, revertedTarget);
+                  }
                   const totalCoords = ((tgt.range ?? 10) * 2 + 1) * 15;
                   console.log(`[discovery] goal ${goalId} HOLD ${lastDispatched} (slot_full, reverted optimistic add) progress: ${completed.length}/${totalCoords}`);
                 }
@@ -2176,8 +2182,9 @@ export async function startSidecar(
                 }
                 if (lastDispatched || batchAdded > 0) {
                   const progressTarget = { ...tgt, completed } as Record<string, unknown>;
-                  goalsStore.updateTarget(goalId, progressTarget);
-                  shadowFire("goal.updateTarget.discoverProgress", (uid) => pgStore!.updateGoalTarget(uid, goalId, progressTarget));
+                  if (pgStore && lookupUid2) {
+                    await pgStore.updateGoalTarget(lookupUid2, goalId, progressTarget);
+                  }
                   const totalCoords = ((tgt.range ?? 10) * 2 + 1) * 15;
                   console.log(`[discovery] goal ${goalId} progress: ${completed.length}/${totalCoords} (added ${lastDispatched ?? "?"}${batchAdded > 0 ? ` + batch ${batchAdded} from system_states` : ""})`);
                 }
@@ -2188,8 +2195,9 @@ export async function startSidecar(
                 // Multi-coord scan thus took ~90s/coord = 8h for 315 coords.
                 // Reset status to "pending" so next tick re-plans IMMEDIATELY,
                 // bypassing the active-block stuck-recovery wait.
-                goalsStore.updateStatus(goalId, "pending");
-                shadowFire("goal.updateStatus.discoverRescan", (uid) => pgStore!.updateGoalStatus(uid, goalId, "pending", null));
+                if (pgStore && lookupUid2) {
+                  await pgStore.updateGoalStatus(lookupUid2, goalId, "pending", null);
+                }
               }
             }
             // build / research / build_ships / lifeform_building → no-op,
