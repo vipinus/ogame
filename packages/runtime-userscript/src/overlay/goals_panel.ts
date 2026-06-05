@@ -4137,20 +4137,27 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const detailBlock = isExpanded
         ? `${reasonLine}${treeHtml}`
         : "";
-      // v0.0.795 — operator 2026-06-05 "折叠完就只有一行". collapsed 时
-      // 把 target (type + level) 并到 title row, 展开时再单独 row 显示.
-      // 参考 image: "等待资源 · 重氢合成器 L32 @1:97:10  P5  [★Set][Pause][Cancel]" 一行.
-      const inlineTarget = !isExpanded
-        ? `<span style="color:#bcc8d8; margin-left:6px;">· ${escapeHtml(targetStr)}</span>`
+      // v0.0.795 → v0.0.797 — operator 2026-06-05 image #3 参考 layout.
+      // collapsed 两行: row1 status+tech (displayStatus 已含 body_build_q.tech),
+      // row2 `L<target> @<planet>` 灰色小字; expanded row2 full "build crystalMine 10".
+      const lvlForRow2 = ((): string | "" => {
+        const tg = g.target as { target_level?: unknown; level?: unknown; amount?: unknown };
+        const v = tg?.target_level ?? tg?.level ?? tg?.amount;
+        return typeof v === "number" || (typeof v === "string" && v !== "") ? `L${String(v)}` : "";
+      })();
+      const collapsedRow2 = (lvlForRow2 || g.planet)
+        ? `<span style="color:#8090a8;">${lvlForRow2 ? escapeHtml(lvlForRow2) : ""}${lvlForRow2 && g.planet ? " " : ""}${g.planet ? `@${escapeHtml(g.planet)}` : ""}</span>`
         : "";
       return `
         <div style="${mainBg}border-top: 1px solid #2a3a52; padding: 6px 0;">
           <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? t("auto.257") : t("auto.258")}">
-            <span>${chevron}${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${inlineTarget}${coordChip}${etaAtBadge}${awaitingChip}</span>
+            <span>${chevron}${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${etaAtBadge}${awaitingChip}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
             <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${mainBtn}${pauseOrResume}${cancelBtn}</span>
           </div>
-          ${isExpanded ? `<div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</div>` : ""}
+          ${isExpanded
+            ? `<div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer; font-size:11px;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</div>`
+            : (collapsedRow2 ? `<div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer; font-size:10px; padding-left:16px;">${collapsedRow2}</div>` : "")}
           ${detailBlock}
         </div>`;
     };
