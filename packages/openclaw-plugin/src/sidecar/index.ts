@@ -460,70 +460,11 @@ export async function startSidecar(
   // removed here as dead code (Proxy already noop'd them under SQLITE_WRITE
   // = off, but keeping the call sites was just noise).
 
-  // Phase 6a hotfix — daemon-side goal write reconciler. The Phase 0
-  // shadowFire wiring catches SIDECAR-driven goals (createGoal HTTP,
-  // merger updateStatus). It does NOT catch the SEPARATE
-  // ogamex_discord_bridge.mjs daemon which opens the SQLite DB
-  // directly and calls store.add(...) for expedition + optimizer goals
-  // (3 add + 6 updateStatus sites). Until that daemon is refactored to
-  // POST via /v1/goals/create, this 30s interval scans SQLite vs PG
-  // for the env-resolved operator uid and upserts any drift. Idempotent
-  // via the timestamp-guarded ON CONFLICT in upsertGoal. Dual-mode
-  // observation showed the only drift sources today were daemon writes.
-  const RECONCILE_INTERVAL_MS = 30_000;
-  const reconcileGoalsTimer: NodeJS.Timeout = setInterval(async () => {
-    if (!pgStore || !pgUserId) return;
-    try {
-      // Step 1 — pull SQLite non-terminal rows (the "should be active in PG" set).
-      const sqRows = goalsStore.listByUser(pgUserId).filter(
-        (r) => r.status === "pending" || r.status === "active" || r.status === "blocked",
-      );
-      const sqById = new Map(sqRows.map((r) => [r.goal.id, r]));
-
-      // Step 2 — query PG non-terminal IDs; any in PG but not in SQLite set
-      // means SQLite moved that goal to terminal (completed/cancelled) and
-      // we need to sync the post-terminal state back to PG so it drops
-      // out of the active set.
-      const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
-      const pgActiveIds = (await sql<Array<{ id: string }>>`
-        SELECT id FROM ogame_goals
-        WHERE user_id = ${pgUserId}
-          AND status IN ('pending','active','blocked')
-      `).map((r) => r.id);
-
-      // Forward sync — SQLite non-terminal → PG upsert.
-      let forwardCount = 0;
-      for (const row of sqRows) {
-        pgStore!.upsertGoal(pgUserId, row).catch((e) =>
-          console.warn("[ogamex/sidecar/reconcile] forward upsert failed:",
-                       e instanceof Error ? e.message : e),
-        );
-        forwardCount += 1;
-      }
-
-      // Reverse sync — PG non-terminal IDs not in SQLite non-terminal set
-      // → fetch the SQLite row (which is now terminal) and upsert.
-      let reverseCount = 0;
-      for (const pgId of pgActiveIds) {
-        if (sqById.has(pgId)) continue;
-        const sqRow = goalsStore.get(pgId);
-        if (!sqRow) continue;
-        pgStore!.upsertGoal(pgUserId, sqRow).catch((e) =>
-          console.warn("[ogamex/sidecar/reconcile] reverse upsert failed:",
-                       e instanceof Error ? e.message : e),
-        );
-        reverseCount += 1;
-      }
-
-      if ((forwardCount > 0 || reverseCount > 0) && Math.random() < 0.1) {
-        console.info(`[ogamex/sidecar/reconcile] forward=${forwardCount} reverse=${reverseCount} (sampled)`);
-      }
-    } catch (e) {
-      console.warn("[ogamex/sidecar/reconcile] tick threw:",
-                   e instanceof Error ? e.message : e);
-    }
-  }, RECONCILE_INTERVAL_MS);
-  reconcileGoalsTimer.unref();
+  // Phase 7c.5.a (2026-06-05) — daemon-side reconciler retired.
+  // ogamex_discord_bridge.mjs no longer opens goals.db (Phase 7c.4); the
+  // 30s SQLite↔PG drift sweep this hack was paid to absorb has nothing
+  // left to reconcile. Sidecar writes PG primary (7c.2/7c.3.*), daemon
+  // writes PG primary (7c.4) — single source of truth, no double-write.
 
   const apiKey = config.geminiApiKey ?? process.env["GEMINI_API_KEY"] ?? "";
   // We construct the Gemini client unconditionally — even an empty key — so
