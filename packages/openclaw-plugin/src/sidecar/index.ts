@@ -857,9 +857,20 @@ export async function startSidecar(
       // state.snapshot (typically the legacy operator on s274), so daigang's
       // s275 colonize tree showed shipyard L12 / robotics L15 — operator's
       // levels, not daigang's. userStates is the per-tenant mirror populated
-      // by the ws.on("state.snapshot") handler.
+      // by the ws.on("state.snapshot") handler. currentState mirrors the
+      // same per-user routing for every state surface (research levels,
+      // research queue) read inside listGoals.
       const userState = explicitUid ? userStates.get(explicitUid) : undefined;
-      const planets = (userState?.planets ?? stateRef.current?.planets ?? {});
+      // 2026-06-05 — operator "每次第一次点开是错的, 再点就对了": when an
+      // explicit uid is supplied but state mirror hasn't seeded yet (TM
+      // boot race — first /v1/goals fetch beats first state.snapshot push),
+      // fall back to NULL rather than stateRef.current. The global mirror
+      // is whichever user pushed last (typically operator) — using it
+      // contaminates the new user's first prereq tree with the legacy
+      // operator's planet/research levels. NULL gives planets={} and
+      // research={}; simulate emits a benign empty tree instead.
+      const currentState = explicitUid ? (userState ?? null) : (userState ?? stateRef.current);
+      const planets = (currentState?.planets ?? {});
       const idToCoords = (ref: string | undefined): string | undefined => {
         if (!ref) return undefined;
         if (/^\d+:\d+:\d+$/.test(ref)) return ref;
@@ -981,7 +992,7 @@ export async function startSidecar(
             tech = (TECH_TREE as unknown as Record<string, { kind?: string; requires?: Record<string, number>; cost_at?: (l: number) => { m: number; c: number; d?: number; e?: number } }>)[techName];
             if (!tech) return null;
             const techKind = tech.kind ?? "";
-            const research = stateRef.current?.research?.levels ?? {};
+            const research = currentState?.research?.levels ?? {};
             // v0.0.456: when goal target body is a moon and the prereq is a
             // PLANET-ONLY building (researchLab, naniteFactory, terraformer,
             // mines, ...), fall back to highest level across all planets —
@@ -1047,7 +1058,7 @@ export async function startSidecar(
           if (useTreeBuilder === "regular" && kind === "building" && planet &&
               ENERGY_GATED_BUILDINGS.has(techName) &&
               techName !== "solarPlant" && techName !== "fusionReactor") {
-            const energyTechL = stateRef.current?.research?.levels?.["energyTech"] ?? 0;
+            const energyTechL = currentState?.research?.levels?.["energyTech"] ?? 0;
             const fusionStart = planet.buildings?.["fusionReactor"] ?? 0;
             const solarStart = planet.buildings?.["solarPlant"] ?? 0;
             const dSynth = planet.buildings?.["deuteriumSynth"] ?? 0;
@@ -1200,8 +1211,8 @@ export async function startSidecar(
                   const remaining = Math.max(0, Math.floor((bq.ends_at - Date.now()) / 1000));
                   stepOverride = remaining;
                 }
-              } else if (kind === "research" && stateRef.current?.research) {
-                const rq = (stateRef.current.research as { queue?: { tech?: string; level?: number; ends_at?: number } | null }).queue;
+              } else if (kind === "research" && currentState?.research) {
+                const rq = (currentState.research as { queue?: { tech?: string; level?: number; ends_at?: number } | null }).queue;
                 if (rq && rq.tech === techName && rq.level === l && typeof rq.ends_at === "number") {
                   stepOverride = Math.max(0, Math.floor((rq.ends_at - Date.now()) / 1000));
                 }
@@ -1406,7 +1417,7 @@ export async function startSidecar(
           }
         }
         if (goal.type === "research") {
-          const rq = stateRef.current?.research?.queue as { ends_at?: number; tech?: string } | undefined;
+          const rq = currentState?.research?.queue as { ends_at?: number; tech?: string } | undefined;
           if (rq && rq.tech === tgt.tech && rq.ends_at && rq.ends_at > now) return rq.ends_at;
         }
         return null;
