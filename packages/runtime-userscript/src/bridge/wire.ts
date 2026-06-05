@@ -353,9 +353,14 @@ export async function wireBridge(
             return b;
           },
           successCheck: (j) => !!j["system"],
-          maxAttempts: 1,
+          // v0.0.783 — operator 2026-06-05 "api 返回失败重试就好了, 为啥要派
+          // 两次". 之前 maxAttempts=1 + sidecar Signal C 兜底 = 派两次 fleet.
+          // 正确语义: galaxy fetch 失败时 wire 自己 retry 3 次, signal 只 fire
+          // 一次. cpPostWithRetry 已经内置 token race + 失败 backoff, 直接
+          // 把 attempts 提高.
+          maxAttempts: 3,
         });
-        if (galRes.status !== 200) { console.warn(`[debris] galaxy fetch HTTP ${galRes.status}`); return; }
+        if (galRes.status !== 200) { console.warn(`[debris] galaxy fetch HTTP ${galRes.status} after retries — giving up this signal`); return; }
         const json = (galRes.json ?? {}) as Record<string, unknown>;
         // v0.0.564 — operator 2026-06-01 forensic via /v1/debug/log mirror:
         // ogame v12 fetchGalaxyContent response shape is `{system: {galaxyContent:[...]}, token, ...}`,
