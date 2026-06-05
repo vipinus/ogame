@@ -32,7 +32,7 @@ import { SaveCoordinator } from "./save_coordinator.js";
 import { SaveCoordinatorManager, FailureAggregatorManager, ReporterManager } from "./multitenant_managers.js";
 import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
-import { GoalsStore } from "./goals_store.js";
+import { GoalsStore, type GoalRow } from "./goals_store.js";
 import { GoalsStorePg } from "./goals_store_pg.js";
 // Phase 7a — DualReadGoalsStore + db_mode (sqlite|dual|pg) removed. PG is now
 // the sole reader path. Rollback = revert this commit.
@@ -1984,7 +1984,10 @@ export async function startSidecar(
   for (const t of UPSTREAM_TYPES) {
     const set = new Set<AnyHandler>();
     registry.set(t, set);
-    const fan = (m: UpstreamMsg): void => {
+    // Phase 7c.3.c — fan async to allow PG lookups (goalsStorePg.get) in
+    // directive_completed handler. Outer transports treat handlers as
+    // fire-and-forget; making fan async is safe (returned Promise unawaited).
+    const fan = async (m: UpstreamMsg): Promise<void> => {
       // M8.5: every upstream message lands in the DebugBuffer once, before
       // consumer handlers run. directive_completed is doubly-recorded — once
       // as a generic event row, once as a state mutation on the matching
@@ -2068,7 +2071,18 @@ export async function startSidecar(
             // burn token / spam logs every minute.
             const HARD_BLOCK_RE = /120012|該行星已沒空間了|该行星已没空间|no space left|fields full|no field/i;
             const isHardBlock = HARD_BLOCK_RE.test(reason);
-            const row = goalsStore.list().find((r) => r.goal.id === goalId);
+            // Phase 7c.3.c (2026-06-05) — PG-first lookup, SQLite fallback.
+            // webtx-* (web POST → PG only) absent from goalsStore.list();
+            // without this lookup the handler sees row=undefined → type=
+            // undefined → falls into the blocked branch silently with no
+            // atomic-cancel semantics. Sync helper: await PG when uid known.
+            const lookupUid = getCurrentUserId() || pgUserId;
+            let row: GoalRow | undefined = undefined;
+            if (goalsStorePg && lookupUid) {
+              const pgRow = await goalsStorePg.get(lookupUid, goalId);
+              if (pgRow) row = pgRow;
+            }
+            if (!row) row = goalsStore.list().find((r) => r.goal.id === goalId) ?? undefined;
             const type = row?.goal.type;
             if (!isTransient && (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport")) {
               goalsStore.updateStatus(goalId, "cancelled", reason);
@@ -2143,7 +2157,16 @@ export async function startSidecar(
             // next tick and either dispatches the next level or detects
             // terminal via state ("already at or above target"). Don't auto-
             // complete those — would lose the higher target.
-            const row = goalsStore.list().find((r) => r.goal.id === goalId);
+            // Phase 7c.3.c — PG-first lookup; SQLite fallback. Without this,
+            // webtx-* atomic deploy/jumpgate never marked completed → goal
+            // stays active → stuck-recovery re-dispatch every ~30s.
+            const lookupUid2 = getCurrentUserId() || pgUserId;
+            let row: GoalRow | undefined = undefined;
+            if (goalsStorePg && lookupUid2) {
+              const pgRow = await goalsStorePg.get(lookupUid2, goalId);
+              if (pgRow) row = pgRow;
+            }
+            if (!row) row = goalsStore.list().find((r) => r.goal.id === goalId) ?? undefined;
             const type = row?.goal.type;
             if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport" || type === "jumpgate") {
               // v0.0.446: jumpgate added — operator 2026-05-29 verified
