@@ -108,7 +108,13 @@ if (_inIframe) {
     (window as unknown as { __OGAMEX__: unknown }).__OGAMEX__ = handle;
 
     // Wire bridge if a token is configured (GM_getValue OR window.localStorage)
-    const bridgeUrl = readConfig("OGAMEX_BRIDGE_URL", DEFAULT_BRIDGE_URL, INJECTED_BRIDGE_URL);
+    // v0.0.782 — auto-upgrade http(s)://ogame.anyfq.com → ws(s):// so旧 per-user
+    // install (route.ts injected https before fix) 不用重 install 也能走 WS.
+    // CF tunnel 同 host 同 port 支持 WS upgrade — scheme 切换无安全代价.
+    const rawBridgeUrl = readConfig("OGAMEX_BRIDGE_URL", DEFAULT_BRIDGE_URL, INJECTED_BRIDGE_URL);
+    const bridgeUrl = rawBridgeUrl
+      .replace(/^https:\/\//i, "wss://")
+      .replace(/^http:\/\//i, "ws://");
     const bridgeToken = readConfig("OGAMEX_BRIDGE_TOKEN", "smoke-test-token", INJECTED_BRIDGE_TOKEN);
     // Visible-in-console diagnostic: confirm which token wins. Show first 12
     // chars only — full token in console would be a credential leak if user
