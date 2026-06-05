@@ -1191,7 +1191,7 @@ function openGoalsSettings(
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
-          <input data-lf-level type="number" min="1" max="50" value="" placeholder="${escapeHtml(t('auto.133'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <input data-lf-level type="number" min="1" max="80" value="" placeholder="${escapeHtml(t('auto.133'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
