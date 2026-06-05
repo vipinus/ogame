@@ -2628,6 +2628,29 @@ export async function startSidecar(
     } catch { /* */ }
     return globalPauseCache.value;
   };
+  // v0.0.794 — subscription gate. operator 2026-06-05 "可以安装 但是要暂停".
+  // freemium throttle: 没 active sub 时 priorityMerger 跳过整 tick. cache
+  // per uid 60s (订阅状态变化频率低, 不需 5s). status IN (active, trialing) +
+  // current_period_end > NOW() 是 active 判定 (cover stripe/paypal/free_code).
+  const subPauseCache = new Map<string, { paused: boolean; ts: number }>();
+  priorityMerger.isSubscriptionPausedFn = (uid?: string): boolean => {
+    if (!pgStore || !uid) return false;
+    const now = Date.now();
+    const hit = subPauseCache.get(uid);
+    if (hit && now - hit.ts < 60_000) return hit.paused;
+    try {
+      void (async () => {
+        try {
+          const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+          const rows = await sql`SELECT 1 FROM subscriptions WHERE user_id = ${uid} AND status IN ('active','trialing') AND current_period_end > NOW() LIMIT 1`;
+          const hasSub = rows.length > 0;
+          subPauseCache.set(uid, { paused: !hasSub, ts: Date.now() });
+        } catch (e) { console.warn("[sub-pause] read threw", e); }
+      })();
+    } catch { /* */ }
+    // cold cache → default paused=false 安全侧 (避免初次启动 lag 误锁所有)
+    return hit?.paused ?? false;
+  };
   // Directive → goal mapping (in-memory). Trimmed when ack arrives.
   const directiveToGoal = new Map<string, string>();
   // v0.0.764 — directive → params snapshot so 120012 hard-block can call

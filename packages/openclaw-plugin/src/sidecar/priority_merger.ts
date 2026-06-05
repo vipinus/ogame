@@ -159,6 +159,10 @@ export class PriorityMerger {
   /** v0.0.765 — global pause kill-switch hook. Injected by setupSidecar so
    *  the merger can short-circuit when ogamex.global.paused=true. */
   public isGlobalPausedFn?: (userId?: string) => boolean;
+  // v0.0.794 — operator 2026-06-05 "可以安装 但是要暂停". Free user 装 + 看
+  // 都 OK, 但没 active subscription 时 priorityMerger 不真派 directive. 这是
+  // freemium 隔离层 — 不动 install/auth, 只 gate dispatch.
+  public isSubscriptionPausedFn?: (userId?: string) => boolean;
 
   constructor(deps: PriorityMergerDeps) {
     // Phase 7c.5.f — no this.store assignment.
@@ -300,6 +304,11 @@ export class PriorityMerger {
     // 'ogamex.global.paused' 为 "true" 时, dispatch 全部跳过.
     // Hook 在 setupSidecar 里通过 isGlobalPaused() callback 注入.
     if (this.isGlobalPausedFn && this.isGlobalPausedFn(userId)) {
+      return { dispatched: [], blocked: [], skipped_terminal: 0 };
+    }
+    // v0.0.794 — subscription gate. 没 active sub → 整 tick 跳过 dispatch.
+    // global pause 是 owner 手动 toggle, 这条是 freemium 自动 throttle.
+    if (this.isSubscriptionPausedFn && this.isSubscriptionPausedFn(userId)) {
       return { dispatched: [], blocked: [], skipped_terminal: 0 };
     }
     // v0.0.669 — Phase 5b: dispatch made async so a future swap of
