@@ -1846,7 +1846,8 @@ async function expeditionTick() {
 // 不主动 emit 远征 goal → 所有 exp- goal done 后远征停了. 现在恢复
 // expedition tick + trigger poll, 用 CURRENT_UID/CURRENT_BEARER swap 跟
 // optimizerTickAllTenants 同样的 multi-tenant pattern.
-console.log(`[expedition] daemon boot ENABLED — multi-tenant (CURRENT_UID/BEARER swap per tick)`);
+// Phase 8b — ENABLED 文本已陈旧, 真正 tick 在 sidecar. 留 archive 注释.
+// (历史 log: "[expedition] daemon boot ENABLED — multi-tenant")
 
 async function expeditionTickAllTenants() {
   let tenants;
@@ -1869,28 +1870,13 @@ async function expeditionTickAllTenants() {
   CURRENT_BEARER = "";
 }
 
-setInterval(() => {
-  expeditionTickAllTenants().catch((e) => console.warn("[expedition] outer tick threw:", e.message));
-}, EXPEDITION_TICK_MS);
-
-// Event-driven trigger: poll sidecar's tiny /v1/expedition/trigger endpoint
-// every 1s. Sidecar bumps trigger_ts on fleet-return delta (state.snapshot
-// handler) OR explicit POST. When ts > lastSeen → fire expeditionTickAllTenants.
-let lastExpeditionTriggerTs = 0;
-setInterval(async () => {
-  try {
-    const r = await fetch(`${SIDECAR}/ogamex/v1/expedition/trigger`);
-    if (!r.ok) return;
-    const j = await r.json();
-    const ts = typeof j?.trigger_ts === "number" ? j.trigger_ts : 0;
-    if (ts > lastExpeditionTriggerTs) {
-      lastExpeditionTriggerTs = ts;
-      setTimeout(() => {
-        expeditionTickAllTenants().catch((e) => console.warn("[expedition] event-tick error:", e.message));
-      }, 2000);
-    }
-  } catch {}
-}, EXPEDITION_TRIGGER_POLL_MS);
+// Phase 8b (v0.0.785) — operator 2026-06-05 "远征 setInterval 这个 也不要和
+// Discord webhook 放一起". 远征 tick 搬 sidecar (src/sidecar/expedition.ts).
+// daemon 这侧 setInterval 删除 — sidecar 内 state.snapshot handler 直接 fire
+// triggerForUid (取代 1s poll 的延迟), 5s tick 作 safety net 也在 sidecar.
+// 留 expeditionTickAllTenants / expeditionTick 函数 unused 作 archive.
+void expeditionTickAllTenants;
+console.log(`[expedition] daemon-side tick + trigger poll DISABLED — moved to sidecar (phase 8b)`);
 
 async function handleAuto(rest) {
   // No more on/off — both daemons always run. Return status only.

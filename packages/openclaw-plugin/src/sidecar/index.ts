@@ -2721,6 +2721,31 @@ export async function startSidecar(
   }
   void optimizerHandle;
 
+  // Phase 8b (v0.0.785) — expedition 从 daemon 搬到 sidecar. 5s base tick +
+  // state.snapshot event-driven trigger (fleet 回家时立刻 fire 而不必等 5s).
+  // daemon ogamex_discord_bridge.mjs 那侧 expedition setInterval 同步 disable.
+  let expeditionHandle: { stop: () => void; triggerForUid: (uid: string) => void } | null = null;
+  if (goalsStorePg && pgStore) {
+    const { startExpedition } = await import("./expedition.js");
+    expeditionHandle = startExpedition({
+      goalsStorePg,
+      pgStore,
+      getStateForUid: (uid: string) => userStates.get(uid) ?? null,
+      loadActiveTenantUids: async (): Promise<string[]> => {
+        if (!pgStore) return [];
+        try {
+          const sharedSql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+          const rows = await sharedSql`SELECT DISTINCT user_id FROM ogame_goals WHERE status IN ('active','blocked','pending')`;
+          return (rows as Array<{ user_id?: string }>).map((r) => r.user_id ?? "").filter(Boolean);
+        } catch (e) {
+          console.warn("[expedition] loadActiveTenantUids failed:", e instanceof Error ? e.message : e);
+          return [];
+        }
+      },
+    });
+  }
+  void expeditionHandle;
+
   // -------------------------------------------------------------------------
   // Upstream handlers — registered ONCE against the wrapped on, which the
   // cross-transport relay fans both ws and http arrivals into.
@@ -2890,6 +2915,12 @@ export async function startSidecar(
       // v0.0.669 — dispatch is async (Phase 5b); await within this snapshot
       // handler so the log line still reflects this tick's result.
       const dispUid = getCurrentUserId();
+      // Phase 8b — fleet 数变化时 trigger expedition (取代 daemon 的 1s poll).
+      // 不卡 hot path: fire-and-forget triggerForUid (内部 fire-and-forget).
+      if (dispUid && expeditionHandle) {
+        try { expeditionHandle.triggerForUid(dispUid); }
+        catch (e) { console.warn("[expedition] trigger threw:", e instanceof Error ? e.message : e); }
+      }
       const result = await priorityMerger.dispatch(msg.snapshot, dispUid);
       const actions = result.dispatched.map((d) => {
         const params = d.params as { building?: string; tech?: string; ship?: string };
