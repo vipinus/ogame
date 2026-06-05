@@ -4028,8 +4028,14 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             const shortageNumbersHtml = sh && (sh.m + sh.c + sh.d) > 0
               ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title=t("auto.152")>${escapeHtml(t('auto.289'))} ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span>`
               : "";
-            const shortageBtnHtml = sh && (sh.m + sh.c + sh.d) > 0
-              ? `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(sh.m)}" data-fill-c="${Math.ceil(sh.c)}" data-fill-d="${Math.ceil(sh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`
+            // v0.0.784 — operator 2026-06-05 "运输界面自动填的资源不对": 主行
+            // → 運輸 按钮之前用 sh (chain total shortage, 累计整链), 与 csLine
+            // 显示的 csh (current_step deepest-leaf shortage, 当下一步) 不一致.
+            // 操作员看 "缺 20.6M c" 是 csh, 期望点按钮就填这个数. 切换源到 csh
+            // 跟 stepFillBtn (line 4091) 同源, 一致.
+            const fillSrc = csForCmp?.shortage ?? sh ?? { m: 0, c: 0, d: 0 };
+            const shortageBtnHtml = (fillSrc.m + fillSrc.c + fillSrc.d) > 0
+              ? `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(fillSrc.m)}" data-fill-c="${Math.ceil(fillSrc.c)}" data-fill-d="${Math.ceil(fillSrc.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`
               : "";
             const shortageChip = samePrereqShortage
               ? shortageBtnHtml   // 只保留按钮, 数字让 csLine 显示
