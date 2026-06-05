@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.776";
+  const USERSCRIPT_VERSION = "0.0.777";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1868,7 +1868,21 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       const m = j.resources.metal?.amount ?? existing.resources?.m ?? 0;
       const c = j.resources.crystal?.amount ?? existing.resources?.c ?? 0;
       const d = j.resources.deuterium?.amount ?? existing.resources?.d ?? 0;
-      const e = j.resources.energy?.amount ?? existing.resources?.e ?? 0;
+      // 2026-06-05 — ogame /fetchResources 在 transient 帧 (fleet 降落 /
+      // cache miss / SPA poller race) 偶发 energy.amount=0. cp 串行队列
+      // 已锁死 client 端 race; 残留是 ogame server-side propagation. 沿用
+      // [feedback_preserve_on_uncertainty]: 若返 0 但 planet 有 power
+      // 基建 AND 上一帧 > 0, 视为不可信 → 保留上一帧值, 等下次 poll.
+      const eRaw = j.resources.energy?.amount;
+      const prevE = existing.resources?.e ?? 0;
+      const solarL = existing.buildings?.["solarPlant"] ?? 0;
+      const fusionL = existing.buildings?.["fusionReactor"] ?? 0;
+      const e = (eRaw === 0 && prevE > 0 && (solarL > 0 || fusionL > 0))
+        ? prevE
+        : (eRaw ?? prevE ?? 0);
+      if (eRaw === 0 && prevE > 0 && (solarL > 0 || fusionL > 0)) {
+        console.info(`[refreshSourcePlanet/energy-sanity] planet=${sourcePlanetId} ogame returned e=0 with solar=${solarL} fusion=${fusionL} prev=${prevE} → keep prev`);
+      }
       // v0.0.743 — operator 2026-06-04 "Leg 1 ... 已经跳过了怎么卡在这里
       // chain prereq: source 6354 ship inventory not yet synced". JG 到港
       // 后 dest planet 的 ships changed (received cargo) 但 fetchResources
@@ -2422,7 +2436,18 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const m = j.resources.metal?.amount ?? existing.resources?.m ?? 0;
         const c = j.resources.crystal?.amount ?? existing.resources?.c ?? 0;
         const d = j.resources.deuterium?.amount ?? existing.resources?.d ?? 0;
-        const e = j.resources.energy?.amount ?? existing.resources?.e ?? 0;
+        // 2026-06-05 — same energy sanity as refreshSourcePlanetResources
+        // (preserve prev on ogame transient 0). [feedback_preserve_on_uncertainty]
+        const eRaw2 = j.resources.energy?.amount;
+        const prevE2 = existing.resources?.e ?? 0;
+        const solarL2 = existing.buildings?.["solarPlant"] ?? 0;
+        const fusionL2 = existing.buildings?.["fusionReactor"] ?? 0;
+        const e = (eRaw2 === 0 && prevE2 > 0 && (solarL2 > 0 || fusionL2 > 0))
+          ? prevE2
+          : (eRaw2 ?? prevE2 ?? 0);
+        if (eRaw2 === 0 && prevE2 > 0 && (solarL2 > 0 || fusionL2 > 0)) {
+          console.info(`[poller/energy-sanity] planet=${activeIdRaw} ogame returned e=0 with solar=${solarL2} fusion=${fusionL2} prev=${prevE2} → keep prev`);
+        }
         // Lifeform: population.storage = 生活空間 (living_space), food.capableToFeed = 酒足飯飽 (well_fed).
         // Operator rule: build residentialSector unless living_space > well_fed.
         const popJson = (j.resources as { population?: { amount?: number; storage?: number } }).population;
