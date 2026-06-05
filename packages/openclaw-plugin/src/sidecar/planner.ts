@@ -1084,9 +1084,41 @@ function planBuildShipsGoal(goal: Goal, state: WorldState): PlanResult {
     return { blocked: `already at or above target — production started for ${ship} on ${planet.id}` };
   }
 
+  // v0.0.782 — prereq cascade. Operator 2026-06-05 (daigang 新服 colonyShip
+  // 死循环 ogame 100001/"shipyard page missing tech 208"): planColonizeGoal
+  // 短路直接 emit build_ships 没人查 shipyard L4 + impulseDrive L3, ogame 必拒.
+  // 复用 planBuild/planResearch cascade, 缺啥递归补啥.
+  const shipEntry = TECH_TREE[ship];
+  if (shipEntry?.requires) {
+    const ctx: PlanCtx = {
+      state,
+      rootGoal: goal,
+      depth: 0,
+      sourcePlanetId: planet.id,
+    };
+    for (const [reqTech, reqLevel] of Object.entries(shipEntry.requires)) {
+      const reqEntry = TECH_TREE[reqTech];
+      if (!reqEntry) {
+        return { blocked: `unknown prereq tech: ${reqTech} (required by ${ship})` };
+      }
+      if (reqEntry.kind === "building") {
+        const actual = planet.buildings?.[reqTech] ?? 0;
+        if (actual < reqLevel) {
+          return planBuild(reqTech, reqLevel, planet.id, { ...ctx, depth: ctx.depth + 1 });
+        }
+      } else if (reqEntry.kind === "research") {
+        const actual = state.research.levels[reqTech] ?? 0;
+        if (actual < reqLevel) {
+          return planResearch(reqTech, reqLevel, { ...ctx, depth: ctx.depth + 1 });
+        }
+      } else {
+        return { blocked: `unsupported prereq kind ${reqEntry.kind} for ${reqTech} (required by ${ship})` };
+      }
+    }
+  }
+
   // Resource shortfall → auto-upgrade the bottleneck mine. Without this the
   // ship build sits at ogame "資源不足" forever waiting on natural accumulation.
-  const shipEntry = TECH_TREE[ship];
   const cost = shipEntry?.cost_at ? shipEntry.cost_at(1) : null;
   if (cost) {
     const totalCost = { m: cost.m * amount, c: cost.c * amount, d: cost.d * amount, e: cost.e * amount };
@@ -1232,25 +1264,16 @@ function planColonizeGoal(goal: Goal, state: WorldState): PlanResult {
   // v0.0.689 — auto-build colonyShip when missing. Operator's flow step 1
   // ("在出发星球建造殖民船") becomes implicit: planner emits build_ships when
   // hangar is empty; next tick re-enters this fn and finds it ready.
+  // v0.0.782 — route through planBuildShipsGoal so shipyard/impulseDrive
+  // prereq cascade runs (daigang 新服 shipyard=0 死循环修复).
   const colonyShips = sourcePlanet.ships?.colonyShip ?? 0;
   if (colonyShips < 1) {
-    return {
-      id: `dir-${randomUUID()}`,
-      source: "goal",
-      method: "ui",
-      priority: goal.priority,
-      action: "build_ships",
-      params: {
-        planet_id: sourcePlanet.id,
-        ship: "colonyShip",
-        amount: 1,
-        technology_id: 208,  // colonyShip ogame numeric id
-      },
-      preconds: [],
-      expires_at: Date.now() + DIRECTIVE_TTL_MS,
-      reason: `colonize prereq: build 1 colonyShip on ${sourcePlanet.id}`,
-      goal_id: goal.id,
-    };
+    const virtualGoal: Goal = {
+      ...goal,
+      type: "build_ships",
+      target: { ship: "colonyShip", amount: 1, planet: sourcePlanet.id },
+    } as Goal;
+    return planBuildShipsGoal(virtualGoal, state);
   }
 
   // ColonyShip ready. Emit colonize directive — legacy single-coord or

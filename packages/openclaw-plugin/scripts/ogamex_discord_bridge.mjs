@@ -1561,7 +1561,8 @@ async function expeditionTick() {
     console.log(`[expedition] tick skipped — paused by operator`);
     return;
   }
-  const sRes = await fetch(`${SIDECAR}/ogamex/v1/state`);
+  const sidecarHeaders = CURRENT_BEARER ? { "Authorization": `Bearer ${CURRENT_BEARER}` } : {};
+  const sRes = await fetch(`${SIDECAR}/ogamex/v1/state`, { headers: sidecarHeaders });
   const state = await sRes.json();
   // state.planets is Record<string, Planet> — use Object.values for iteration.
   let planetList = Object.values(state.planets ?? {});
@@ -1617,7 +1618,7 @@ async function expeditionTick() {
   } else {
     // Fall back to sidecar's view (which knows class bonus).
     try {
-      const expRes = await fetch(`${SIDECAR}/ogamex/v1/expedition`);
+      const expRes = await fetch(`${SIDECAR}/ogamex/v1/expedition`, { headers: sidecarHeaders });
       const expBody = await expRes.json();
       slotCap = expBody.max ?? 0;
     } catch { /* keep 0 */ }
@@ -1836,36 +1837,56 @@ async function expeditionTick() {
   }
 }
 
-console.log(`[expedition] daemon boot DISABLED (Phase 7c.6 operator directive "只留优化一个通道 普通的不要了" — expedition tick + trigger poll commented out)`);
-// Phase 7c.6 (2026-06-05) — expedition daemon disabled per operator
-// directive. Only the optimizer tick remains. Restore by un-commenting
-// the two setInterval blocks below.
-// setInterval(() => {
-//   expeditionTick().catch((e) => console.warn("[expedition] tick error:", e.message));
-// }, EXPEDITION_TICK_MS);
+// Phase 7c.7 (2026-06-05) — expedition daemon RESTORED (multi-tenant).
+// Operator 2026-06-05 "重开 expedition daemon (推荐)": optimizer alone
+// 不主动 emit 远征 goal → 所有 exp- goal done 后远征停了. 现在恢复
+// expedition tick + trigger poll, 用 CURRENT_UID/CURRENT_BEARER swap 跟
+// optimizerTickAllTenants 同样的 multi-tenant pattern.
+console.log(`[expedition] daemon boot ENABLED — multi-tenant (CURRENT_UID/BEARER swap per tick)`);
+
+async function expeditionTickAllTenants() {
+  let tenants;
+  try {
+    tenants = await loadActiveUidsWithTokens();
+  } catch (e) {
+    console.warn("[expedition] loadActiveUidsWithTokens threw:", e.message);
+    return;
+  }
+  for (const { uid, bearer } of tenants) {
+    CURRENT_UID = uid;
+    CURRENT_BEARER = bearer;
+    try {
+      await expeditionTick();
+    } catch (e) {
+      console.warn(`[expedition] tick error (uid=${uid.slice(0, 8)}):`, e.message);
+    }
+  }
+  CURRENT_UID = OPERATOR_UID;
+  CURRENT_BEARER = "";
+}
+
+setInterval(() => {
+  expeditionTickAllTenants().catch((e) => console.warn("[expedition] outer tick threw:", e.message));
+}, EXPEDITION_TICK_MS);
+
 // Event-driven trigger: poll sidecar's tiny /v1/expedition/trigger endpoint
 // every 1s. Sidecar bumps trigger_ts on fleet-return delta (state.snapshot
-// handler) OR explicit POST. When ts > lastSeen → fire expeditionTick.
-// LAN poll, ~60 req/min to sidecar, ~30 bytes/resp = trivial cost.
-// Phase 7c.6 — event-driven trigger poll also disabled per operator
-// directive. let lastExpeditionTriggerTs preserved so re-enabling later
-// doesn't reset history.
+// handler) OR explicit POST. When ts > lastSeen → fire expeditionTickAllTenants.
 let lastExpeditionTriggerTs = 0;
-void lastExpeditionTriggerTs;
-// setInterval(async () => {
-//   try {
-//     const r = await fetch(`${SIDECAR}/ogamex/v1/expedition/trigger`);
-//     if (!r.ok) return;
-//     const j = await r.json();
-//     const ts = typeof j?.trigger_ts === "number" ? j.trigger_ts : 0;
-//     if (ts > lastExpeditionTriggerTs) {
-//       lastExpeditionTriggerTs = ts;
-//       setTimeout(() => {
-//         expeditionTick().catch((e) => console.warn("[expedition] event-tick error:", e.message));
-//       }, 2000);
-//     }
-//   } catch {}
-// }, EXPEDITION_TRIGGER_POLL_MS);
+setInterval(async () => {
+  try {
+    const r = await fetch(`${SIDECAR}/ogamex/v1/expedition/trigger`);
+    if (!r.ok) return;
+    const j = await r.json();
+    const ts = typeof j?.trigger_ts === "number" ? j.trigger_ts : 0;
+    if (ts > lastExpeditionTriggerTs) {
+      lastExpeditionTriggerTs = ts;
+      setTimeout(() => {
+        expeditionTickAllTenants().catch((e) => console.warn("[expedition] event-tick error:", e.message));
+      }, 2000);
+    }
+  } catch {}
+}, EXPEDITION_TRIGGER_POLL_MS);
 
 async function handleAuto(rest) {
   // No more on/off — both daemons always run. Return status only.
