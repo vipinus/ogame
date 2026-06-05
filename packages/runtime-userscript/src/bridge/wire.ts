@@ -300,14 +300,23 @@ export async function wireBridge(
       }
     }
     if (!g || !s || !origin) return;
-    // v0.0.671 — operator 2026-06-03 "T+30s 单信号就好": main-path dedup
-    // removed. Sidecar now fires exactly ONE debris-check per fleet
-    // (Signal B, delayed 30s after fleet truly leaves outbound), so
-    // there is no second event for this map to dedup against. The
-    // home-planet fallback (~L525) still uses recentHarvestDispatch +
-    // HARVEST_DEDUP_TTL_MS for its own scan source so the map + constant
-    // stay defined.
+    // v0.0.782 — main-path dedup RESTORED. Operator 2026-06-05 evidence:
+    // 3:260:9 → 3:260:16 4 次 recycler dispatch in 30 分钟 (15:39/15:44/
+    // 15:52/15:57). 同 origin 多 fleet 同 dest 时 sidecar fires N 次 (per
+    // fleet), wire 假设"1 fleet 1 fire" 不再成立. dedupKey 之前定义没用,
+    // 现在恢复 entry-side check — 6min 内同 origin→G:S 只发 1 次 recycler.
+    // 6min 宽于 explorer 单程 + 收集 + 回程, 不阻塞合法 fresh debris.
     const dedupKey = `${origin}→${g}:${s}`;
+    {
+      const lastDispatchTs = recentHarvestDispatch.get(dedupKey) ?? 0;
+      const ageMs = Date.now() - lastDispatchTs;
+      if (lastDispatchTs > 0 && ageMs < HARVEST_DEDUP_TTL_MS) {
+        const ageSec = Math.round(ageMs / 1000);
+        const ttlSec = Math.round(HARVEST_DEDUP_TTL_MS / 1000);
+        console.info(`[debris] DEDUP main-path skip ${dedupKey} (last ${ageSec}s ago, TTL=${ttlSec}s)`);
+        return;
+      }
+    }
     // v0.0.570 — ship type selection per position. expedition slot (16)
     // requires pathfinder/explorer (id=219); regular battle debris at any
     // position 1-15 uses recycler (id=209, ogame's standard collector).
