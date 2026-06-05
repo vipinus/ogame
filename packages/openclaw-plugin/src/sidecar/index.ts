@@ -2331,6 +2331,35 @@ export async function startSidecar(
                 await pgStore.updateGoalStatus(lookupUid2, goalId, "completed", null);
               }
             }
+            // v0.0.796 — operator 2026-06-05 "跳跃成功了 但是卡住了". JG ack
+            // 完成后 source moon ship -= ships, target moon += ships, 本地
+            // mirror; chain leg 2 source ship gate (priority_merger.ts:471-481)
+            // 立刻通过, 不等 pollFetchResources 5s+ cross-planet snapshot lag.
+            // 失败 (r?.success === false) 不动 inventory, 让 ogame 真态主导.
+            const innerResult = (m.result as { success?: boolean })?.success === true;
+            if (innerResult && type === "jumpgate" && actionDone === "jumpgate" && row && lookupUid2) {
+              const tgt = row.goal.target as { source_moon?: string; target_moon?: string; ships?: Record<string, number> };
+              const ships = tgt.ships ?? {};
+              const srcId = tgt.source_moon;
+              const dstId = tgt.target_moon;
+              const us = userStates.get(lookupUid2);
+              if (us && Object.keys(ships).length > 0) {
+                const planetsMap = us.planets ?? {};
+                if (srcId && planetsMap[srcId]) {
+                  const src = planetsMap[srcId] as { ships?: Record<string, number> };
+                  const srcShips: Record<string, number> = { ...(src.ships ?? {}) };
+                  for (const [k, v] of Object.entries(ships)) srcShips[k] = Math.max(0, (srcShips[k] ?? 0) - v);
+                  (planetsMap[srcId] as { ships?: Record<string, number> }).ships = srcShips;
+                }
+                if (dstId && planetsMap[dstId]) {
+                  const dst = planetsMap[dstId] as { ships?: Record<string, number> };
+                  const dstShips: Record<string, number> = { ...(dst.ships ?? {}) };
+                  for (const [k, v] of Object.entries(ships)) dstShips[k] = (dstShips[k] ?? 0) + v;
+                  (planetsMap[dstId] as { ships?: Record<string, number> }).ships = dstShips;
+                }
+                console.info(`[jg/local-mirror] uid=${lookupUid2.slice(0,8)} src=${srcId} dst=${dstId} ships=${JSON.stringify(ships)} — chain leg 2 unblocked`);
+              }
+            }
             // species_discovery: ApiExec success = ONE coord done. Append to
             // target.completed[] so planner picks next coord on next tick.
             // Goal stays "active" until all coords attempted (planner emits
