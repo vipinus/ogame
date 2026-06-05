@@ -444,6 +444,7 @@ export const STRINGS: StringRegistry = {
     "auto.289": "lacking",
     "auto.290": "· 🏗 building (~{eta}m to finish)",
     "auto.291": "· ✅ resources ready, dispatchable",
+    "auto.292": "✓ Colonize task created",
   },
 
   tw: {
@@ -847,5 +848,6 @@ export const STRINGS: StringRegistry = {
     "auto.289": "缺",
     "auto.290": "· 🏗 在造中 (~{eta}m 完工)",
     "auto.291": "· ✅ 資源夠, 立即可派",
+    "auto.292": "✓ 殖民任務已建立",
   },
 } as const;

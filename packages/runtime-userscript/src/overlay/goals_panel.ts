@@ -2529,7 +2529,7 @@ function openGoalsSettings(
             }),
           });
           if (r.ok) {
-            clStatusEl.textContent = t("auto.078");
+            clStatusEl.textContent = t("auto.292");
             clStatusEl.style.color = "#7cfc00";
           } else {
             clStatusEl.textContent = `HTTP ${r.status}`;

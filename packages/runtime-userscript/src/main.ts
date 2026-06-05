@@ -115,6 +115,14 @@ if (_inIframe) {
     // shares a screenshot. "(injected)" tag means per-user install is active.
     const tokenSource = wasInjected(INJECTED_BRIDGE_TOKEN) ? "(injected)" : "(localStorage/dev)";
     console.info(`[OgameX] bridge token ${bridgeToken.slice(0, 12)}… ${tokenSource}`);
+    // 2026-06-05 — write the resolved token to localStorage so panel POSTs
+    // (which use a localStorage-only authHeadersGlobal helper) actually
+    // pick up the per-user injected token instead of falling back to the
+    // smoke-test default. Root cause of daigang goals landing on operator
+    // uid (4baba0e2) instead of eb990432 even after v0.0.779 inject.
+    if (bridgeToken && bridgeToken !== "smoke-test-token") {
+      try { window.localStorage.setItem("OGAMEX_BRIDGE_TOKEN", bridgeToken); } catch { /* private browsing */ }
+    }
     let wired: Awaited<ReturnType<typeof wireBridge>> | null = null;
     if (bridgeToken) {
       try {

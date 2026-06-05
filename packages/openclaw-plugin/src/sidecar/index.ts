@@ -1496,6 +1496,17 @@ export async function startSidecar(
           if (shipTarget.ship) {
             captureSim(simulate(shipTarget.ship, shipTarget.amount ?? 1, "building", resolvedPlanetId, "regular"));
           }
+        } else if (r.goal.type === "colonize") {
+          // 2026-06-05 — operator: panel 上殖民任务看不到树状推演.
+          // Colonize requires 1 colony ship at source_planet; cascade to
+          // shipyard L4 → roboticsFactory etc. Use source_planet as the
+          // body for simulate, NOT goal.planet (planet field unused for
+          // colonize, target.source_planet is the source body).
+          const cTarget = r.goal.target as { source_planet?: string };
+          const colSourceId = cTarget.source_planet ?? resolvedPlanetId;
+          if (colSourceId) {
+            captureSim(simulate("colonyShip", 1, "building", colSourceId, "regular"));
+          }
         }
         // Operator 2026-05-29: panel renders "缺 X m / Y c / Z d" chip.
         // shortage = max(0, totalCost - planetBank) — only what operator
