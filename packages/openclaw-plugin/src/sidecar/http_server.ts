@@ -120,13 +120,13 @@ export interface HttpServerOptions {
   setMainGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
   unsetMainGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
   /** M4 — create an arbitrary goal from the panel modal. POST /v1/goals/create. */
-  createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string };
+  createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string } | Promise<{ ok: boolean; goal_id?: string; reason?: string }>;
   /** M4 — parse free-form NL into a goal-shape without storing. POST /v1/goals/parse. */
   parseGoalNL?: (description: string) => Promise<{ ok: boolean; parsed?: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }; reason?: string }>;
   /** Create a species_discovery goal — POST /ogamex/v1/discovery/create. */
   createDiscoveryGoal?: (body: {
     source_planet: string; galaxy: number; base_system: number; range?: number;
-  }) => { ok: boolean; goal_id?: string; reason?: string };
+  }) => { ok: boolean; goal_id?: string; reason?: string } | Promise<{ ok: boolean; goal_id?: string; reason?: string }>;
   /** Backend FSM hooks (operator 2026-05-24 "fsm 可以放后台"). Userscript
    *  POSTs to /v1/save/launched after a successful sendFleet; reports recall
    *  completion via /v1/save/recall-confirmed. SaveCoordinator owns
@@ -202,13 +202,13 @@ interface ResolvedHttpServerOptions {
   setMainGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
   unsetMainGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
   /** M4 — create an arbitrary goal from the panel modal. POST /v1/goals/create. */
-  createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string };
+  createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string } | Promise<{ ok: boolean; goal_id?: string; reason?: string }>;
   /** M4 — parse free-form NL into a goal-shape without storing. POST /v1/goals/parse. */
   parseGoalNL?: (description: string) => Promise<{ ok: boolean; parsed?: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }; reason?: string }>;
   /** Create a species_discovery goal — POST /ogamex/v1/discovery/create. */
   createDiscoveryGoal?: (body: {
     source_planet: string; galaxy: number; base_system: number; range?: number;
-  }) => { ok: boolean; goal_id?: string; reason?: string };
+  }) => { ok: boolean; goal_id?: string; reason?: string } | Promise<{ ok: boolean; goal_id?: string; reason?: string }>;
   recordSaveLaunched?: (body: {
     planet_id: string; fleet_id: number; hostile_event_ids: readonly string[];
   }) => { ok: boolean; reason?: string };
@@ -884,12 +884,12 @@ export class HttpServer {
       res.end(JSON.stringify({ ok: false, reason: "need target:object" }));
       return;
     }
-    const out = this.opts.createGoal({
+    const out = await Promise.resolve(this.opts.createGoal({
       type: body.type,
       target: body.target as Record<string, unknown>,
       ...(typeof body.planet === "string" ? { planet: body.planet } : {}),
       ...(typeof body.priority === "number" ? { priority: body.priority } : {}),
-    });
+    }));
     res.statusCode = out.ok ? 200 : 400;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(out));
@@ -998,12 +998,12 @@ export class HttpServer {
       res.end(JSON.stringify({ ok: false, reason: "need source_planet+galaxy+base_system" }));
       return;
     }
-    const out = this.opts.createDiscoveryGoal({
+    const out = await Promise.resolve(this.opts.createDiscoveryGoal({
       source_planet: body.source_planet,
       galaxy: body.galaxy,
       base_system: body.base_system,
       range: body.range ?? 10,
-    });
+    }));
     res.statusCode = out.ok ? 200 : 400;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(out));

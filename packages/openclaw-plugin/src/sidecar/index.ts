@@ -1858,14 +1858,13 @@ export async function startSidecar(
       if ("error" in result) return { ok: false, reason: result.error };
       return { ok: true, parsed: result };
     },
-    createGoal: (body) => {
-      // M4 — generic goal creation from the panel modal. Trust the body's
-      // type/target/planet/priority fields and write straight to goals_store.
-      // Validation is intentionally minimal (operator-only LAN UI); the
-      // planner will surface bad targets via "blocked: …" on first tick.
-      // Operator 2026-05-29: mirrors shared/types.ts GoalType union — keep
-      // these in sync. "jumpgate" (v0.0.421 Phase 2b), "species_discovery"
-      // both added so frontend modals can create them via this endpoint.
+    // Phase 7c.3.b (2026-06-05) — Group C create handlers: PG primary.
+    // Both createGoal and createDiscoveryGoal write directly to pgStore.
+    // upsertGoal; SQLite addForUser/add removed. Dedup in discovery walks
+    // goalsStorePg.list(uid) — multi-tenant scoped, no SQLite cross-tenant
+    // leak. Legacy operator path resolves uid via pgUserId env so the
+    // operator-bootstrap flow still creates goals without ALS context.
+    createGoal: async (body) => {
       const SUPPORTED = new Set([
         "research", "build", "build_universal", "colonize",
         "build_ships", "build_defense", "terraformer_to", "expedition",
@@ -1874,53 +1873,64 @@ export async function startSidecar(
         "species_discovery", "jumpgate",
       ]);
       if (!SUPPORTED.has(body.type)) return { ok: false, reason: `unsupported goal type: ${body.type}` };
+      const createUid = getCurrentUserId() ?? (getLegacyOperatorUid() || pgUserId || undefined);
+      if (!pgStore || !createUid) {
+        return { ok: false, reason: "pg unavailable or no user context" };
+      }
       const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      // Phase 9c.7 — tag with ALS uid (or legacy operator env fallback)
-      // so panel reads filter correctly. Legacy operator's uid lives in
-      // OGAMEX_LEGACY_USER_ID env. Lazy read (getLegacyOperatorUid) —
-      // see comment on isLegacyUid above for the ESM-hoisting trap that
-      // made this NULL out 5 expedition goals in production 2026-06-02.
-      const createUid = getCurrentUserId() ?? (getLegacyOperatorUid() || undefined);
-      const addedRow = goalsStore.addForUser({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        id, type: body.type as any,
-        target: body.target,
-        ...(body.planet ? { planet: body.planet } : { planet: "" }),
-        priority: typeof body.priority === "number" ? body.priority : 5,
-        is_main_goal: false,
-        status: "pending", created_at: Date.now(),
-        progress_pct: 0, current_step: "queued", eta_at: null,
-      }, createUid);
-      shadowFire("goal.add.create", (uid) => pgStore!.upsertGoal(uid, addedRow));
-      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid ? createUid.slice(0,8) : "legacy"}`);
+      const nowTs = Date.now();
+      const addedRow: GoalRow = {
+        goal: {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          id, type: body.type as any,
+          target: body.target,
+          ...(body.planet ? { planet: body.planet } : { planet: "" }),
+          priority: typeof body.priority === "number" ? body.priority : 5,
+          is_main_goal: false,
+          status: "pending", created_at: nowTs,
+          progress_pct: 0, current_step: "queued", eta_at: null,
+        },
+        status: "pending", created_at: nowTs, updated_at: nowTs,
+      };
+      await pgStore.upsertGoal(createUid, addedRow);
+      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid.slice(0,8)}`);
       triggerDispatch();
       return { ok: true, goal_id: id };
     },
-    createDiscoveryGoal: (body) => {
+    createDiscoveryGoal: async (body) => {
       const planet = stateRef.current?.planets?.[body.source_planet];
       if (!planet) return { ok: false, reason: `unknown planet ${body.source_planet}` };
+      const createUid = getCurrentUserId() ?? (getLegacyOperatorUid() || pgUserId || undefined);
+      if (!pgStore || !goalsStorePg || !createUid) {
+        return { ok: false, reason: "pg unavailable or no user context" };
+      }
       // Block second active discovery for same planet (operator panel UX).
-      const existing = goalsStore.list().find((r) =>
+      const allRows = await goalsStorePg.list(createUid);
+      const existing = allRows.find((r) =>
         r.goal.type === "species_discovery" &&
         !["completed", "cancelled"].includes(r.status) &&
-        (r.goal.target as { source_planet?: string }).source_planet === body.source_planet
+        (r.goal.target as { source_planet?: string }).source_planet === body.source_planet,
       );
       if (existing) return { ok: false, reason: `discovery already active on ${body.source_planet} (goal ${existing.goal.id})` };
       const id = `disc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const discRow = goalsStore.add({
-        id, type: "species_discovery",
-        target: {
-          source_planet: body.source_planet,
-          galaxy: body.galaxy,
-          base_system: body.base_system,
-          range: body.range ?? 10,
-          completed: [],
+      const dNow = Date.now();
+      const discRow: GoalRow = {
+        goal: {
+          id, type: "species_discovery",
+          target: {
+            source_planet: body.source_planet,
+            galaxy: body.galaxy,
+            base_system: body.base_system,
+            range: body.range ?? 10,
+            completed: [],
+          },
+          planet: body.source_planet, priority: 5, is_main_goal: false,
+          status: "pending", created_at: dNow,
+          progress_pct: 0, current_step: "queued", eta_at: null,
         },
-        planet: body.source_planet, priority: 5, is_main_goal: false,
-        status: "pending", created_at: Date.now(),
-        progress_pct: 0, current_step: "queued", eta_at: null,
-      });
-      shadowFire("goal.add.discovery", (uid) => pgStore!.upsertGoal(uid, discRow));
+        status: "pending", created_at: dNow, updated_at: dNow,
+      };
+      await pgStore.upsertGoal(createUid, discRow);
       console.log(`[discovery] created goal ${id} from planet ${body.source_planet} galaxy=${body.galaxy} base=${body.base_system} range=${body.range ?? 10}`);
       return { ok: true, goal_id: id };
     },
