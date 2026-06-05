@@ -92,6 +92,10 @@ export interface PrereqTreeNode {
   eta_seconds?: number | null;
   /** Seconds to complete this node + all unmet descendants, serialized. */
   subtree_eta_seconds?: number;
+  /** v0.0.791 — ogame queue label (R1/R2 research_q serial, B1/B2 build_q serial).
+   *  DFS post-order = ogame "prereq 先 root 后" 真实执行序. operator 直击
+   *  "建造和研究看不出先后顺序". */
+  queue_label?: string;
 }
 
 export interface GoalRowFromHttp {
@@ -3773,10 +3777,15 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const etaBadge = (n.met || subtreeEta <= 0)
       ? ""
       : `<span style="color:#8090a8; font-size:10px; margin-left:4px;" title="time to complete this branch (serial)">⏱ ${fmtSeconds(subtreeEta)}</span>`;
+    // v0.0.791 — queue label badge ([R1]/[B2]) 显示 ogame 真实执行序.
+    // research_q 全局 single, build_q per-tree single (cascade 通常同 planet).
+    const qlbl = n.queue_label
+      ? `<span style="color:#9ab; font-size:10px; background:#1a2332; padding:1px 4px; border-radius:3px; margin-right:3px;" title="ogame 执行序: ${n.queue_label.startsWith("R") ? "research_q" : "build_q"}">${escapeHtml(n.queue_label)}</span>`
+      : "";
     const me = `
       <div style="padding:2px 0 2px ${indent}px; font-size:11px; color:${techColor}; display:flex; align-items:center; gap:4px;">
         ${chev}<span>${kindIcon}</span>
-        <span style="flex:1;">${escapeHtml(techName(n.tech))} <span style="color:#8090a8;">(${levelStr})</span>${etaBadge}</span>
+        ${qlbl}<span style="flex:1;">${escapeHtml(techName(n.tech))} <span style="color:#8090a8;">(${levelStr})</span>${etaBadge}</span>
         ${statusBadge}
       </div>`;
     const kids = hasChildren && !collapsed

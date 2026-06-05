@@ -472,12 +472,45 @@ export async function runOptimizerOnce(
     if (!best || best.savings < AUTO_SAVINGS_THRESHOLD_SEC) { skipped++; continue; }
     // Found a worthwhile accelerator. Upsert opt-<accel>-L<new> goal.
     const optId = `opt-${best.mine}-L${best.L_new}-${uid.slice(0, 8)}`;
-    const existing = allRows.find((row) => row.goal.id === optId);
-    if (existing && ["active", "blocked", "pending"].includes(existing.status)) {
-      skipped++;
-      continue; // Already queued
-    }
     const planetId = (r.planet as { id?: string })?.id ?? g.planet ?? "";
+    // v0.0.791 — operator 2026-06-05 "最优解只有一个". 同 planet + 同 mine
+    // 只 keep 最高 L_new 的 opt-* 活着, 其他 lower-level cancel (老 tick emit
+    // L8, 这 tick cur=L8 后 best=L10 → L8 已被 ogame 真起建走完, 但 sidecar
+    // PG 还 active; 同理 L9). cancel 老的 owner-clean.
+    const sameAccelPrefix = `opt-${best.mine}-L`;
+    const uidSuffix = uid.slice(0, 8);
+    const sameAccelActive = allRows.filter((r) => {
+      if (!r.goal.id.startsWith(sameAccelPrefix)) return false;
+      if (!r.goal.id.endsWith(uidSuffix)) return false;
+      if (r.goal.planet !== planetId) return false;
+      return ["active", "blocked", "pending"].includes(r.status);
+    });
+    const higherActive = sameAccelActive.find((r) => {
+      const lvl = (r.goal.target as { level?: number })?.level ?? 0;
+      return lvl > best.L_new;
+    });
+    if (higherActive) {
+      // Existing already covers stronger upgrade — skip emit + don't cancel it.
+      skipped++;
+      continue;
+    }
+    const existing = sameAccelActive.find((r) => r.goal.id === optId);
+    // Cancel lower-level same-accel actives (best L_new > their L) — keep one truth.
+    for (const old of sameAccelActive) {
+      if (old.goal.id === optId) continue;
+      const oldLvl = (old.goal.target as { level?: number })?.level ?? 0;
+      if (oldLvl >= best.L_new) continue;
+      try {
+        await pgStore.updateGoalStatus(uid, old.goal.id, "cancelled", `optimizer: superseded by ${optId}`);
+        console.info(`[optimizer] uid=${uid.slice(0, 8)} cancel ${old.goal.id} (superseded by L${best.L_new})`);
+      } catch (e) {
+        console.warn(`[optimizer] cancel superseded ${old.goal.id} threw:`, e instanceof Error ? e.message : e);
+      }
+    }
+    if (existing) {
+      skipped++;
+      continue; // current best already queued
+    }
     const optRow = {
       goal: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

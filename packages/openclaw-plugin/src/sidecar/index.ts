@@ -80,6 +80,10 @@ interface PrereqTreeNode {
   children: PrereqTreeNode[];
   eta_seconds?: number | null;
   subtree_eta_seconds?: number;
+  // v0.0.791 — operator "建造和研究看不出先后顺序". queue_label = ogame 真实
+  // 执行序: R1/R2 (global research_q serial), B1@<planet> (per-planet build_q),
+  // S1@<planet> (shipyard_q). DFS post-order = ogame "prereq 先, root 后" 真序.
+  queue_label?: string;
 }
 
 export interface SidecarConfig {
@@ -1581,15 +1585,16 @@ export async function startSidecar(
         // v0.0.790 — operator "显示的对吗" → ETA double-count 修. impulseDrive
         // 在 cascade tree 出现 2 次 (astrophysics 真前置 + colonyShip 真前置),
         // ogame research_q 串行只升一次 → 同 tech 同 (current,target) 多次出现
-        // 只算第一次 eta, 之后置 0. dedup 走 BFS keep-first.
+        // 只算第一次 eta, 之后置 0. dedup 走 BFS keep-first. 也设 dedup_skip
+        // flag 让 queue_label walk 跳过, 不分配序号.
         if (prereq_tree) {
           const seenDedup = new Set<string>();
           const dedupWalk = (n: PrereqTreeNode): number => {
-            const obj = n as unknown as { tech: string; currentLevel: number; targetLevel: number; eta_seconds?: number; subtree_eta_seconds?: number; children?: PrereqTreeNode[] };
+            const obj = n as unknown as { tech: string; currentLevel: number; targetLevel: number; eta_seconds?: number; subtree_eta_seconds?: number; children?: PrereqTreeNode[]; _dedup_skip?: boolean };
             const key = `${obj.tech}@${obj.currentLevel}→${obj.targetLevel}`;
             if (seenDedup.has(key)) {
               obj.eta_seconds = 0;
-              // children 仍 walk, 它们也 dedup
+              obj._dedup_skip = true;
               let cEta = 0;
               for (const c of obj.children ?? []) cEta += dedupWalk(c);
               obj.subtree_eta_seconds = cEta;
@@ -1603,6 +1608,27 @@ export async function startSidecar(
             return selfEta + cEta;
           };
           dedupWalk(prereq_tree);
+        }
+        // v0.0.791 — operator "建造和研究看不出先后顺序". queue label DFS
+        // post-order = ogame 真序 (prereq 先, root 后). research_q 全局 single,
+        // build_q per-tree 单一 (cascade 通常同 planet). met / dedup_skip 节点
+        // 不算 queue (ogame 不 run).
+        if (prereq_tree) {
+          let rSeq = 0;
+          let bSeq = 0;
+          const labelWalk = (n: PrereqTreeNode): void => {
+            for (const c of n.children ?? []) labelWalk(c);
+            const obj = n as unknown as { kind: string; met?: boolean; _dedup_skip?: boolean; queue_label?: string };
+            if (obj.met || obj._dedup_skip) return;
+            if (obj.kind === "research") {
+              rSeq++;
+              obj.queue_label = `R${rSeq}`;
+            } else if (obj.kind === "building" || obj.kind === "ship") {
+              bSeq++;
+              obj.queue_label = `B${bSeq}`;
+            }
+          };
+          labelWalk(prereq_tree);
         }
         // Operator 2026-05-29: panel renders "缺 X m / Y c / Z d" chip.
         // shortage = max(0, totalCost - planetBank) — only what operator
