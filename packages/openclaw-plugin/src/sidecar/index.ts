@@ -244,17 +244,18 @@ function emptyWorldState(): WorldState {
  * decrement its `amount` by the delta. When the remaining amount drops to
  * <= 0, mark the goal completed.
  */
-function updateBuildShipsProgress(
+// Phase 7c.5.f — async PG primary. SQLite store retired; reader supplies
+// active goals per uid. Caller (state.snapshot handler) fires-and-forgets
+// because ship-progress is a non-critical optimization tracker.
+async function updateBuildShipsProgress(
   prev: WorldState,
   next: WorldState,
-  store: GoalsStore,
-  shadow?: (
-    label: string,
-    fn: (uid: string) => Promise<unknown>,
-  ) => void,
+  reader: { listActiveByUser: (uid: string) => Promise<GoalRow[]> } | null,
+  uid: string | null,
   pgStore?: WorldStateStorePg | null,
-): void {
-  const activeRows = store.listActive();
+): Promise<void> {
+  if (!reader || !uid || !pgStore) return;
+  const activeRows = await reader.listActiveByUser(uid);
   // Index active build_ships goals by (planet_id || "", ship) for O(1) lookup.
   const goalByKey = new Map<string, { goalId: string; remaining: number }>();
   for (const row of activeRows) {
@@ -298,15 +299,9 @@ function updateBuildShipsProgress(
       const matchedId = match.goalId;
       try {
         const newAmountTarget = { amount: Math.max(0, newRemaining) };
-        store.updateTarget(matchedId, newAmountTarget);
-        if (shadow && pgStore) {
-          shadow("goal.updateTarget.shipProgress", (uid) => pgStore.updateGoalTarget(uid, matchedId, newAmountTarget));
-        }
+        await pgStore.updateGoalTarget(uid, matchedId, newAmountTarget);
         if (newRemaining <= 0) {
-          store.updateStatus(matchedId, "completed");
-          if (shadow && pgStore) {
-            shadow("goal.updateStatus.shipDone", (uid) => pgStore.updateGoalStatus(uid, matchedId, "completed", null));
-          }
+          await pgStore.updateGoalStatus(uid, matchedId, "completed", null);
           goalByKey.delete(matchKey);
         } else {
           // Refresh map so subsequent deltas this tick stay accurate.
@@ -2385,7 +2380,6 @@ export async function startSidecar(
 
   // --- PriorityMerger ------------------------------------------------------
   const priorityMerger: PriorityMerger = new PriorityMerger({
-    store: goalsStore,
     planGoal,
     send: (msg: DownstreamMsg) => {
       // M8.5: record every dispatched directive in the DebugBuffer so the
@@ -2841,7 +2835,7 @@ export async function startSidecar(
     // delta. When amount drops to <= 0, the goal is completed.
     if (prev !== null) {
       try {
-        updateBuildShipsProgress(prev, msg.snapshot, goalsStore, shadowFire, pgStore);
+        void updateBuildShipsProgress(prev, msg.snapshot, goalsStorePg, getCurrentUserId() ?? null, pgStore);
       } catch (e) {
         console.error("[ogamex/sidecar] ship-progress watcher threw", e);
       }

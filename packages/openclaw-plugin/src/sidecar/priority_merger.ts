@@ -18,12 +18,13 @@
  * directives only; the higher-level merge slot is reserved for later wiring.
  */
 import type { Directive, DownstreamMsg, Goal, WorldState } from "@ogamex/shared";
-import type { GoalsStore } from "./goals_store.js";
 import type { GoalRow, GoalStatus } from "./goals_types.js";
 import type { IGoalsStoreReader } from "./goals_store_iface.js";
 
 export interface PriorityMergerDeps {
-  store: GoalsStore;
+  // Phase 7c.5.f — store: GoalsStore retired. reader (PG) is the sole read
+  // surface, writer (PG) the sole write surface. Boot dispatch with no uid
+  // → no-op (handled in dispatch()).
   planGoal: (goal: Goal, state: WorldState) => Directive | { blocked: string };
   /** Send a DownstreamMsg via the bridge (WsServer.send or HttpServer.queueDownstream). */
   send: (msg: DownstreamMsg) => void;
@@ -96,7 +97,7 @@ function compareRows(a: GoalRow, b: GoalRow): number {
 }
 
 export class PriorityMerger {
-  private readonly store: GoalsStore;
+  // Phase 7c.5.f — store removed (SQLite GoalsStore retired).
   private readonly planGoal: (goal: Goal, state: WorldState) => Directive | { blocked: string };
   private readonly send: (msg: DownstreamMsg) => void;
   // v0.0.459: pure event-driven gate (operator 2026-05-29 "基本原则就是只用
@@ -160,7 +161,7 @@ export class PriorityMerger {
   public isGlobalPausedFn?: (userId?: string) => boolean;
 
   constructor(deps: PriorityMergerDeps) {
-    this.store = deps.store;
+    // Phase 7c.5.f — no this.store assignment.
     this.planGoal = deps.planGoal;
     this.send = deps.send;
     this.onStatusChange = deps.onStatusChange;
@@ -200,23 +201,19 @@ export class PriorityMerger {
       }
       return;
     }
-    // Legacy fallback — no writer OR no ALS uid (bootstrap / single-tenant).
-    // Old SQLite + onStatusChange mirror semantics preserved verbatim.
+    // Phase 7c.5.f — SQLite legacy fallback retired. When writer + uid
+    // absent we have no place to persist (PG is the only store). Synthesize
+    // updated from currentRow for any onStatusChange observers, but the
+    // status change is in-memory only this iter — operator-driven CRUD
+    // endpoints (with their own PG paths) handle persistent state.
     let updated: GoalRow | null | undefined;
-    try {
-      this.store.updateStatus(goalId, status, reason);
-      updated = this.store.get(goalId);
-    } catch (e) {
-      const msg = (e as Error)?.message ?? "";
-      if (!msg.includes("unknown goal id")) throw e;
-      if (this.currentRow && this.currentRow.goal.id === goalId) {
-        updated = {
-          ...this.currentRow,
-          status,
-          ...(reason !== undefined ? { reason } : {}),
-          updated_at: Date.now(),
-        };
-      }
+    if (this.currentRow && this.currentRow.goal.id === goalId) {
+      updated = {
+        ...this.currentRow,
+        status,
+        ...(reason !== undefined ? { reason } : {}),
+        updated_at: Date.now(),
+      };
     }
     if (updated && this.onStatusChange) {
       try {
@@ -328,16 +325,13 @@ export class PriorityMerger {
     // loop, which read SQLite cross-tenant — PG-only legs were invisible.
     // Fetch once at top from the same source (reader when PG, store else).
     let allRowsForChain: GoalRow[] = [];
+    // Phase 7c.5.f — reader (PG) required. SQLite fallback retired.
+    // No reader OR no uid → no-op dispatch (boot stage / unauthenticated).
     if (this.reader && typeof userId === "string" && userId) {
       rows = [...(await this.reader.listActiveByUser(userId))];
       allRowsForChain = [...(await this.reader.list(userId))];
     } else {
-      rows = (
-        typeof userId === "string" && userId
-          ? [...(await this.store.listActiveByUser(userId))]
-          : [...(await this.store.listActive())]
-      );
-      allRowsForChain = this.store.list();
+      return { dispatched: [], blocked: [], skipped_terminal: 0 };
     }
     rows = rows.sort(compareRows);
     this.allRowsForChain = allRowsForChain;
