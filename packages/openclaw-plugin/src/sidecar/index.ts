@@ -1047,7 +1047,10 @@ export async function startSidecar(
           // if energy goes negative; if so, add a plant child sized to cover
           // THIS level's incremental energy. Multiple plant children = the
           // full sequence visible in tree (fusion 17, fusion 18, ...).
-          if (useTreeBuilder === "regular" && kind === "building" && planet &&
+          // Phase 11 — energy gate 扩到 lifeform path. ENERGY_GATED_BUILDINGS
+          // 已包含 LF major buildings (antimatterCondenser 等), catalog cost_at(L).e
+          // 真实有值时 cascade emit solarPlant 跟 regular path 同源.
+          if (kind === "building" && planet &&
               ENERGY_GATED_BUILDINGS.has(techName) &&
               techName !== "solarPlant" && techName !== "fusionReactor") {
             const energyTechL = currentState?.research?.levels?.["energyTech"] ?? 0;

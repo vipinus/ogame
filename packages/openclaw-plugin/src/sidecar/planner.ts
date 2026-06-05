@@ -30,10 +30,23 @@ const MISSION_EXPEDITION = 15;
 
 // Buildings whose construction draws from energy; if energy is negative or the
 // planet has 0 solar plant, recurse into solar plant upgrade first.
+//
+// Phase 11 (v0.0.785) — operator 2026-06-05 "LF 建筑有需要电的注意补电策略".
+// kaelesh sanctuary / antimatterCondenser / 等 LF major buildings 升级也耗
+// 电. catalog cost_at(L).e 当前 verified_against_live=false 故 0, future
+// 一次修 catalog 双端生效 (simulate + planner). gate 入口扩 LF building 名:
+// 当 catalog 真 e cost > 0 时 gate trigger emit solarPlant cascade.
 export const ENERGY_GATED_BUILDINGS: ReadonlySet<string> = new Set([
   "metalMine",
   "crystalMine",
   "deuteriumSynth",
+  // LF buildings (kaelesh — known energy-consumer) — sanctuary 是 housing
+  // 但其衍生 antimatterCondenser/runeForge/megalith 是真耗电.
+  "antimatterCondenser",
+  "runeForge",
+  "megalith",
+  // humans counterpart
+  "biosphereFarm",  // 实际 produces food (not electricity); 留作 placeholder
 ]);
 
 // v0.0.696 — operator 2026-06-03 "保留计算矿产量，分成两部分":
@@ -75,8 +88,24 @@ function pickStorageUpgrade(planet: Planet, short: { m: number; c: number; d: nu
 // produces 50*(1+0.02*energyTech).
 export function mineEnergyConsumption(building: string, level: number): number {
   if (level <= 0) return 0;
-  const base = building === "deuteriumSynth" ? 20 : 10;
-  return base * level * Math.pow(1.1, level);
+  // Phase 11 — LF building 走 catalog `cost_at(L).e` 而不是 hardcode 公式.
+  // catalog 数据 verified_against_live=false 时返回 0 → gate noop. 一次修
+  // catalog 即可双端 (planner + simulate) 同步生效.
+  const regularBases: Record<string, number> = { deuteriumSynth: 20, metalMine: 10, crystalMine: 10 };
+  if (regularBases[building] !== undefined) {
+    return regularBases[building]! * level * Math.pow(1.1, level);
+  }
+  // LF building energy lookup via catalog. species detection 在调用方,
+  // 这里跨所有 species 查 — 第一个 hit 就用 (ogame 同名 building 跨 species
+  // catalog 一致是合理假设, 否则签名要加 species 参数).
+  for (const speciesKey of Object.keys(LIFEFORM_TECH) as Array<keyof typeof LIFEFORM_TECH>) {
+    const entry = LIFEFORM_TECH[speciesKey]?.buildings?.[building];
+    if (entry?.cost_at) {
+      const cost = entry.cost_at(level);
+      return Math.max(0, (cost as { e?: number }).e ?? 0);
+    }
+  }
+  return 0;
 }
 
 // ogame v12 vanilla — power plant production (per hour, universe speed cancels
