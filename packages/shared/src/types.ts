@@ -8,7 +8,10 @@ export type CargoResources = { m: number; c: number; d: number };         // fle
 export type Storage = { m_max: number; c_max: number; d_max: number };
 export type Production = { m_h: number; c_h: number; d_h: number };
 
-export type BuildingQueueItem = { item: string; level: number; ends_at: number };
+// v0.0.789 — operator 2026-06-05 fix: field rename item → building 跟实际
+// 数据对齐 (userscript boot.ts 全用 `building`, PG/snapshot 也是 `building`).
+// 之前 `item` 是死字段, planner queue-gate 永远 false → 100001 反复事故.
+export type BuildingQueueItem = { building: string; level: number; ends_at: number };
 export type ShipyardQueueItem = { ship: ShipKey; count: number; ends_at: number };
 export type DefenseQueueItem  = { item: string; count: number; ends_at: number };
 

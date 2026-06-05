@@ -2021,6 +2021,17 @@ export async function startSidecar(
       // itself throws (it doesn't), so no try/catch.
       debug.recordEvent(m);
       if (m.type === "event.directive_completed") {
+        // v0.0.789 — operator 2026-06-05 "改" — PG events 看到同 directive_id
+        // 200ms 内 2 条 directive.completed reject. 真因: userscript
+        // goal_runner.ts:105-106 dual-path ack (WS instant + HTTP retry ×3
+        // 兜底 zombie WS); sidecar fan 被 ws + http 两个 transport 各调一次.
+        // dedup gate: directiveToGoal 是 source of truth (line 2438 set on
+        // dispatch, line 2061 delete on first ack). 第二次 ack 进来 has=false
+        // 就 skip 整个 directive_completed branch + 不 fan to consumer
+        // handlers (避免重复 trigger goal status update / Discord notify).
+        if (!directiveToGoal.has(m.directive_id)) {
+          return;
+        }
         debug.recordComplete(m.directive_id, m.result);
         // v0.0.636 — audit ack into events table. Truncate error string to
         // keep payloads bounded (matches debug-buffer convention).

@@ -726,6 +726,17 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
     return { blocked: `already at or above target level (${current} >= ${targetLevel}) for ${tech}` };
   }
 
+  // v0.0.789 — owner directive "研究的时候可以继续建筑除了研究所" 反向: 任何
+  // 星球 researchLab 正在升级时, research 不能 dispatch (ogame 拒 120024
+  // "研究正在開展中" 的对称). 扫所有 planets 看 build_q.building==researchLab.
+  for (const p of Object.values(ctx.state.planets ?? {})) {
+    const bq = (p as { build_q?: { building?: string; ends_at?: number } | null }).build_q;
+    if (bq && bq.building === "researchLab" && (bq.ends_at ?? 0) > Date.now()) {
+      const etaS = Math.max(0, Math.round(((bq.ends_at ?? 0) - Date.now()) / 1000));
+      return { blocked: `research blocked — researchLab upgrading on ${p.id} (~${etaS}s)` };
+    }
+  }
+
   const nextLevel = current + 1;
 
   for (const [reqTech, reqLevel] of Object.entries(entry.requires)) {
@@ -917,11 +928,19 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
     }
   }
 
-  // Is this building currently upgrading? Only treat as in-flight if the
-  // queue entry actually targets THIS building AND hasn't already ended.
+  // v0.0.789 — owner directive 2026-06-05 "建筑串行建设, 研究的时候可以
+  // 继续建筑除了研究所". ogame planet 同一时刻只跑 1 个 build queue, 任何
+  // active build (无论同建筑/不同建筑) 都要 block 第二个 dispatch. Research
+  // queue 独立, 不受影响 (planBuild → 不 gate research_q except researchLab).
+  // 历史 v0.0.* line 923 用 `buildQ.item` 是死字段 (实际数据用 `building`,
+  // shared/types.ts 同步修过), gate 永远 false → 100001 反复事故.
   const buildQ = planet.build_q;
-  if (buildQ && buildQ.item === building && (buildQ.ends_at ?? 0) > Date.now()) {
-    return { blocked: `${building} already upgrading in ogame queue on ${planetId}` };
+  if (buildQ && (buildQ.ends_at ?? 0) > Date.now()) {
+    const etaS = Math.max(0, Math.round(((buildQ.ends_at ?? 0) - Date.now()) / 1000));
+    if (buildQ.building === building) {
+      return { blocked: `${building} already upgrading in ogame queue on ${planetId} (~${etaS}s)` };
+    }
+    return { blocked: `planet ${planetId} build queue busy: ${buildQ.building} (~${etaS}s) — building serial` };
   }
 
   // researchLab is a facility that affects research speed network-wide.
