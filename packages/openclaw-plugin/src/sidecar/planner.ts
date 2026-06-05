@@ -1272,6 +1272,27 @@ function planColonizeGoal(goal: Goal, state: WorldState): PlanResult {
     }
   }
 
+  // v0.0.786 — astrophysics gate. ogame v12 公式:
+  //   max_planets = floor(astrophysics_level / 2) + 1
+  // operator 2026-06-05 audit: astro=0 + 1 planet (33620666) 时 planner
+  // 仍在 cascade colonyShip → impulseDrive → 撞 ogame error 100001, 真根
+  // 因是该 colonize 永远完不成 (槽位已满). 必须先升 astro 把 max 拉开.
+  // 目标 level = ownedPlanets * 2 → 必然让 max > owned (严格 +1 个槽).
+  // moon 不算殖民地槽, 用 type === "planet" 过滤.
+  const ownedPlanets = Object.values(state.planets ?? {})
+    .filter((p) => p.type === "planet").length;
+  const astroLevel = state.research?.levels?.["astrophysics"] ?? 0;
+  const maxPlanets = Math.floor(astroLevel / 2) + 1;
+  if (ownedPlanets >= maxPlanets) {
+    const targetAstro = ownedPlanets * 2;
+    const virtualGoal: Goal = {
+      ...goal,
+      type: "research",
+      target: { tech: "astrophysics", level: targetAstro },
+    } as Goal;
+    return planResearchGoal(virtualGoal, state);
+  }
+
   // v0.0.689 — auto-build colonyShip when missing. Operator's flow step 1
   // ("在出发星球建造殖民船") becomes implicit: planner emits build_ships when
   // hangar is empty; next tick re-enters this fn and finds it ready.
