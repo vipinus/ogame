@@ -32,13 +32,12 @@ import { SaveCoordinator } from "./save_coordinator.js";
 import { SaveCoordinatorManager, FailureAggregatorManager, ReporterManager } from "./multitenant_managers.js";
 import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
-import { GoalsStore } from "./goals_store.js";
 import type { GoalRow } from "./goals_types.js";
 import { GoalsStorePg } from "./goals_store_pg.js";
 // Phase 7a — DualReadGoalsStore + db_mode (sqlite|dual|pg) removed. PG is now
 // the sole reader path. Rollback = revert this commit.
 // resolveDbMode removed in Phase 7a — no more mode switch.
-import { WorldStateStore } from "./world_state_store.js";
+// Phase 7d — WorldStateStore SQLite class deleted (PG primary).
 import { WorldStateStorePg } from "./world_state_store_pg.js";
 import { getCurrentUserId } from "./user_context.js";
 import { GeminiClient } from "./gemini_client.js";
@@ -109,8 +108,7 @@ export interface SidecarHandle {
   http: HttpServer;
   reporter: Reporter | null;
   strategyManager: StrategyManager;
-  goalsStore: GoalsStore;
-  worldStateStore: WorldStateStore;
+  // Phase 7d — goalsStore + worldStateStore (SQLite) removed from handle.
   priorityMerger: PriorityMerger;
   failureAggregator: FailureAggregator;
   memoryWriter: MemoryWriterHandle;
@@ -344,43 +342,11 @@ export async function startSidecar(
   // init() is idempotent — safe to call even when the repo already exists.
   strategyManager.init();
 
-  const goalsStore = new GoalsStore({ dbPath: goalsDbPath });
-  // Phase 7c.5.c — legacy backfill removed. Daemon switched to PG (7c.4),
-  // sidecar writes PG primary (7c.2/7c.3.*); no NEW rows land in SQLite,
-  // so backfillLegacyUserId has nothing left to tag. `legacyUid` kept for
-  // hydrate() PG lookup below.
+  // Phase 7d (v0.0.784) — SQLite GoalsStore + WorldStateStore 删完. legacyUid 仍用作
+  // PG hydrate uid (operator's tenant). dbPath options ignored (无 SQLite file).
   const legacyUid = process.env.OGAMEX_LEGACY_USER_ID ?? "";
-  const rawWorldStateStore = new WorldStateStore({ dbPath: worldStateDbPath });
-
-  // Phase 6b — OGAMEX_SQLITE_WRITE=off no-ops worldStateStore write methods.
-  // shadowFire (below) already mirrors every mutation to PG (Phase 5/6 wiring),
-  // so when operator's confident PG is solid, this gates the SQLite path off
-  // without code surgery. Read methods unchanged (reads now come from PG via
-  // dbMode=pg routing). goalsStore writes (which return rows used downstream)
-  // are NOT gated here; phased out in Phase 7.
-  // Phase 7a — default flipped to "off". PG primary is stable enough that
-  // SQLite mirror writes are pure overhead + disk churn. Override by setting
-  // OGAMEX_SQLITE_WRITE=on if you need the legacy SQLite path back briefly
-  // (e.g. debugging a PG outage scenario).
-  const SQLITE_WRITE_OFF = (process.env.OGAMEX_SQLITE_WRITE ?? "off").toLowerCase() !== "on";
-  const WORLD_WRITE_METHODS: ReadonlySet<string> = new Set([
-    "upsertWorldState", "appendEvent", "trimEvents", "checkpoint",
-    "upsertSaveRecord", "deleteSaveRecord", "upsertFailureCooldown",
-  ]);
-  const worldStateStore: WorldStateStore = SQLITE_WRITE_OFF
-    ? new Proxy(rawWorldStateStore, {
-        get(target, prop, receiver) {
-          const val = Reflect.get(target, prop, receiver);
-          if (typeof val === "function" && typeof prop === "string" && WORLD_WRITE_METHODS.has(prop)) {
-            return (..._args: unknown[]) => undefined;
-          }
-          return typeof val === "function" ? val.bind(target) : val;
-        },
-      }) as WorldStateStore
-    : rawWorldStateStore;
-  if (SQLITE_WRITE_OFF) {
-    console.info("[ogamex/sidecar] OGAMEX_SQLITE_WRITE=off — worldStateStore writes DISABLED (PG-only mode)");
-  }
+  void goalsDbPath;
+  void worldStateDbPath;
 
   // Phase 8a — Postgres shadow writer (multi-tenant). When
   // OGAMEX_OPERATOR_USER_ID is set + DATABASE_URL is reachable, every
@@ -507,7 +473,7 @@ export async function startSidecar(
       }
     }
     if (persisted === null) {
-      const sqlitePersisted = worldStateStore.hydrate();
+      const sqlitePersisted = null; // Phase 7d — SQLite hydrate retired (PG primary)
       if (sqlitePersisted !== null) {
         persisted = sqlitePersisted;
         source = "sqlite-fallback";
@@ -707,7 +673,7 @@ export async function startSidecar(
           db_path: worldStateDbPath,
           db_size_bytes: dbSize,
           wal_size_bytes: walSize,
-          row_counts: worldStateStore.rowCounts(),
+          row_counts: { events: 0, save_records: 0, failure_cooldowns: 0, world_state_present: stateRef.current !== null },
         };
       },
     }),
@@ -1726,9 +1692,10 @@ export async function startSidecar(
       // 100/1000 (limit) — store-level pagination keeps memory tiny since
       // it's a single LIMIT N query on an indexed table.
       try {
-        return type !== undefined && type.length > 0
-          ? worldStateStore.listEventsByType(type, limit)
-          : worldStateStore.listRecentEvents(limit);
+        // Phase 7d — SQLite event list retired. Debug endpoint returns [];
+        // PG /v1/debug/events is the canonical source (multi-tenant).
+        void type; void limit;
+        return [];
       } catch (e) {
         console.error("[ogamex/sidecar] listEvents failed", e);
         return [];
@@ -2554,11 +2521,11 @@ export async function startSidecar(
   // there but the in-memory map would say "no active save" and a new
   // launch on the same planet would silently overwrite the prior record.
   try {
-    const persisted = worldStateStore.listSaveRecords();
-    if (persisted.length > 0) {
-      saveCoordinator.rehydrate(persisted);
-      console.info(`[ogamex/sidecar] rehydrated ${persisted.length} save_record(s) — planets=${persisted.map((r) => r.planet_id).join(",")}`);
-    }
+    // Phase 7d — SQLite retired; PG-backed SaveCoord rehydrate via shadowFire
+    // path (boot-time PG fetch is a future enhancement). Empty here = SaveCoord
+    // starts cold, ops 重新创建 save records when next fleet launches.
+    // No-op block — placeholder for future PG-backed rehydrate.
+    void saveCoordinator;
   } catch (e) {
     console.warn("[ogamex/sidecar] save_records hydrate failed (continuing empty):", e);
   }
@@ -2581,7 +2548,7 @@ export async function startSidecar(
       upsertCooldown: (task, last_analysis_at) => {
         shadowFire("upsertCooldown", (uid) => pgStore!.upsertFailureCooldown(uid, task, last_analysis_at));
       },
-      listCooldowns: () => worldStateStore.listFailureCooldowns(),
+      listCooldowns: () => [], // Phase 7d — PG cooldowns via shadowFire; boot starts fresh
     },
   });
 
@@ -3027,17 +2994,10 @@ export async function startSidecar(
     // periodic interval is gone). worldStateStore.close() below still runs
     // better-sqlite3's implicit checkpoint on the way out.
     await Promise.all([ws.stop(), http.stop()]);
-    // Phase 7c.5.c — goalsStore (SQLite) retired from runtime; close path
-    // dropped. worldStateStore.close below still flushes the legacy world.db
-    // until 7c.5.d retires that too.
-    try {
-      worldStateStore.close();
-      if (pgStore) {
-        try { await pgStore.close(); }
-        catch (err) { console.error("[ogamex/sidecar] pgStore.close failed", err); }
-      }
-    } catch (err) {
-      console.error("[ogamex/sidecar] worldStateStore.close failed", err);
+    // Phase 7d — SQLite stores retired. Only PG client needs close.
+    if (pgStore) {
+      try { await pgStore.close(); }
+      catch (err) { console.error("[ogamex/sidecar] pgStore.close failed", err); }
     }
   };
 
@@ -3061,8 +3021,6 @@ export async function startSidecar(
     http,
     reporter,
     strategyManager,
-    goalsStore,
-    worldStateStore,
     priorityMerger,
     failureAggregator,
     memoryWriter,
