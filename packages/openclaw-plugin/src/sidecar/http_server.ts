@@ -86,7 +86,7 @@ export interface HttpServerOptions {
   debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
   stateProvider?: () => unknown;
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
-  listGoals?: (userId?: string) => Array<unknown>;
+  listGoals?: (userId?: string) => Array<unknown> | Promise<Array<unknown>>;
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
   /** v0.0.636 — backed by worldStateStore. GET /v1/events?limit=N&type=foo.
@@ -170,7 +170,7 @@ interface ResolvedHttpServerOptions {
   debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
   stateProvider?: () => unknown;
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
-  listGoals?: (userId?: string) => Array<unknown>;
+  listGoals?: (userId?: string) => Array<unknown> | Promise<Array<unknown>>;
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
   listEvents?: (limit: number, type?: string) => Array<unknown>;
@@ -480,7 +480,7 @@ export class HttpServer {
         this.writeCorsHeaders(res);
         const uid = r.kind === "user" ? r.uid : undefined;
         const allGoals = this.opts.listGoals
-          ? this.opts.listGoals(uid) as Array<{ status?: string }>
+          ? (await Promise.resolve(this.opts.listGoals(uid))) as Array<{ status?: string }>
           : [];
         const includeAll = (url ?? "").includes("all=true");
         const goals = includeAll

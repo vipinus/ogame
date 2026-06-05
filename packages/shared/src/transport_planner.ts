@@ -158,7 +158,11 @@ export function planTransportChain(input: PlanTransportInput): PlanTransportOutp
         planet: fromMoon.id,
         priority: basePriority - 1,
       });
-      // Leg C: moon → planet (skip if `to` is already a moon).
+      // Leg C: moon → planet (skip if `to` is already a moon). When the
+      // JG hop ran with take_all, the source moon's fleet was swept onto
+      // toMoon, so the unload should also take_all to ferry whatever's
+      // there instead of only the originally-allocated ships. Operator
+      // 2026-06-05 "按照参数 空船走JG 带回JG上的其他船".
       if (to.type !== "moon") {
         legs.push({
           type: "deploy",
@@ -170,6 +174,7 @@ export function planTransportChain(input: PlanTransportInput): PlanTransportOutp
             source_planet: toMoon.id,
             chain_id: chainId,
             chain_phase: `${phasePrefix}_unload`,
+            take_all: jgTakeAll,
           },
           planet: toMoon.id,
           priority: basePriority - 2,

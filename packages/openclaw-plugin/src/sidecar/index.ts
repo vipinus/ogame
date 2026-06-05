@@ -903,11 +903,19 @@ export async function startSidecar(
     },
     // Operator API providers — surface state/goals/expedition over HTTP.
     stateProvider: () => stateRef.current ?? { ok: false, reason: "no snapshot yet" },
-    listGoals: (explicitUid?: string) => {
+    listGoals: async (explicitUid?: string) => {
       // Phase 9c.7 — when explicitUid is supplied (foreign Bearer
       // resolved at the http layer), filter rows by user_id. Operator's
       // legacy panel passes nothing → goalsStore.list() returns ALL rows
       // including the historic NULL-user_id rows that pre-date 9c.4.
+      // Phase 7b — read from PG when available (web /api/me/goals POSTs
+      // write straight to PG and never touch sidecar SQLite, so SQLite
+      // was missing the goal entirely → TM panel saw zero goals from
+      // web-created chains). Fall back to SQLite only when pgStore boot
+      // failed (single-process degraded mode).
+      const pgRows = goalsStorePg && explicitUid
+        ? await goalsStorePg.list(explicitUid)
+        : null;
       const planets = stateRef.current?.planets ?? {};
       const idToCoords = (ref: string | undefined): string | undefined => {
         if (!ref) return undefined;
@@ -1465,7 +1473,8 @@ export async function startSidecar(
         if (!node.met) out.add(node.tech);
         for (const c of node.children) collectPrereqNames(c, out);
       };
-      return goalsStore.listByUser(explicitUid).map((r) => {
+      const sourceRows = pgRows ?? goalsStore.listByUser(explicitUid);
+      return sourceRows.map((r) => {
         const target = r.goal.target as { tech?: string; building?: string; level?: number; target_level?: number };
         const lvl = target.target_level ?? target.level ?? 1;
         let prereq_tree: PrereqTreeNode | null = null;
