@@ -17,7 +17,7 @@
  *   Phase 7: delete SQLite path entirely, only PG implementer remains.
  */
 
-import type { GoalRow, GoalStatus } from "./goals_store.js";
+import type { GoalRow, GoalStatus } from "./goals_types.js";
 
 export interface IGoalsStoreReader {
   /** Non-terminal rows (pending|active|blocked) for a user. */

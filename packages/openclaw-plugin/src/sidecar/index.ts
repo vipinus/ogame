@@ -32,7 +32,8 @@ import { SaveCoordinator } from "./save_coordinator.js";
 import { SaveCoordinatorManager, FailureAggregatorManager, ReporterManager } from "./multitenant_managers.js";
 import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
-import { GoalsStore, type GoalRow } from "./goals_store.js";
+import { GoalsStore } from "./goals_store.js";
+import type { GoalRow } from "./goals_types.js";
 import { GoalsStorePg } from "./goals_store_pg.js";
 // Phase 7a — DualReadGoalsStore + db_mode (sqlite|dual|pg) removed. PG is now
 // the sole reader path. Rollback = revert this commit.
@@ -2692,9 +2693,13 @@ export async function startSidecar(
   // per local day at 06:00 UTC by default. Skips silently if no reporter is
   // configured. The poll interval is intentionally coarse — minute granularity
   // is plenty for a daily digest, and avoids wakeups during normal operation.
+  // Phase 7c.5.e — digest 切 PG. operatorUid 来自 env (OGAMEX_OPERATOR_USER_ID),
+  // 如果未配置 digest 仍能跑但 list 返回空 → 0 active / 0 blocked.
+  const digestOperatorUid = getLegacyOperatorUid() || pgUserId || "";
   const digestScheduler = startDigestScheduler({
     reporter,
-    goalsStore,
+    goalsStorePg: goalsStorePg!,
+    operatorUid: digestOperatorUid,
     strategyManager,
     stateRef,
   });

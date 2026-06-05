@@ -18,7 +18,8 @@
  * directives only; the higher-level merge slot is reserved for later wiring.
  */
 import type { Directive, DownstreamMsg, Goal, WorldState } from "@ogamex/shared";
-import type { GoalsStore, GoalRow, GoalStatus } from "./goals_store.js";
+import type { GoalsStore } from "./goals_store.js";
+import type { GoalRow, GoalStatus } from "./goals_types.js";
 import type { IGoalsStoreReader } from "./goals_store_iface.js";
 
 export interface PriorityMergerDeps {

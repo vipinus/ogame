@@ -1,25 +1,11 @@
 import Database from "better-sqlite3";
 import type { Goal } from "@ogamex/shared";
-
-/**
- * Status values tracked by the store. Narrower than @ogamex/shared GoalStatus
- * (we drop "pending_confirm") because this store represents the goal-manager's
- * execution state, not the negotiation lifecycle.
- *
- * Terminal: completed, cancelled. Non-terminal (returned by listActive):
- * pending, active, blocked.
- */
-export type GoalStatus = "pending" | "active" | "blocked" | "completed" | "cancelled";
+// Phase 7c.5.d (v0.0.784) — types 抽到 goals_types.ts. 这里 re-export 保留
+// 向后兼容 (其他 file 改成 import from "./goals_types.js" 之后这两行就可以删).
+import type { GoalRow, GoalStatus } from "./goals_types.js";
+export type { GoalRow, GoalStatus } from "./goals_types.js";
 
 const NON_TERMINAL: readonly GoalStatus[] = ["pending", "active", "blocked"];
-
-export interface GoalRow {
-  goal: Goal;
-  status: GoalStatus;
-  reason?: string;
-  created_at: number;
-  updated_at: number;
-}
 
 export interface GoalsStoreOptions {
   /** Path to SQLite db file. Use ":memory:" for tests. */

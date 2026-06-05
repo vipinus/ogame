@@ -29,7 +29,7 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import type { WorldState, Strategy } from "@ogamex/shared";
-import type { GoalRow } from "./goals_store.js";
+import type { GoalRow } from "./goals_types.js";
 
 export interface MemoryWriterOptions {
   /** Directory containing MEMORY.md and the memory file. */

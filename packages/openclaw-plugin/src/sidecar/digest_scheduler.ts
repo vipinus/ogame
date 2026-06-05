@@ -20,7 +20,8 @@
  * (e.g. a periodic `event.expedition_digest` envelope).
  */
 import type { Reporter } from "./reporter.js";
-import type { GoalsStore, GoalRow } from "./goals_store.js";
+import type { GoalsStorePg } from "./goals_store_pg.js";
+import type { GoalRow } from "./goals_types.js";
 import type { StrategyManager } from "./strategy_manager.js";
 import type { WorldState } from "@ogamex/shared";
 
@@ -39,7 +40,11 @@ export interface DigestSchedulerOptions {
 
 export interface DigestSchedulerDeps {
   reporter: Reporter | null;
-  goalsStore: GoalsStore;
+  /** Phase 7c.5.e (v0.0.784) — PG primary read. SQLite goalsStore retired. */
+  goalsStorePg: GoalsStorePg;
+  /** Operator uid (env OGAMEX_OPERATOR_USER_ID). digest 当前是 single-tenant
+   *  daily 推送 operator's Discord digest, 所以读 operator uid 的 PG 行. */
+  operatorUid: string;
   strategyManager: StrategyManager;
   /** Latest snapshot mirror. */
   stateRef: { current: WorldState | null };
@@ -117,7 +122,16 @@ export function startDigestScheduler(
     if (deps.reporter === null) {
       return { sent: false, reason: "no reporter configured" };
     }
-    const markdown = buildDigest(deps, now());
+    // Phase 7c.5.e — PG async pre-fetch. buildDigest 仍 sync, 接 prefetched
+    // goals 数组. 如果 PG 读失败 fall back 空数组 (digest 跑出来 0 active /
+    // 0 completed, 比静默 throw 更可观察).
+    let allGoals: GoalRow[] = [];
+    try {
+      allGoals = await deps.goalsStorePg.list(deps.operatorUid);
+    } catch (e) {
+      console.warn("[digest] goalsStorePg.list threw, using empty:", e instanceof Error ? e.message : e);
+    }
+    const markdown = buildDigest(deps, allGoals, now());
     let pushed: boolean;
     try {
       pushed = await deps.reporter.push(markdown);
@@ -146,7 +160,7 @@ export function startDigestScheduler(
 // Digest construction
 // ---------------------------------------------------------------------------
 
-function buildDigest(deps: DigestSchedulerDeps, ts: number): string {
+function buildDigest(deps: DigestSchedulerDeps, allGoals: GoalRow[], ts: number): string {
   const sections: string[] = [];
   sections.push("# 🪐 OgameX Daily Digest");
   sections.push("");
@@ -155,7 +169,7 @@ function buildDigest(deps: DigestSchedulerDeps, ts: number): string {
 
   sections.push(strategySection(deps));
   sections.push("");
-  sections.push(goalsSection(deps, ts));
+  sections.push(goalsSection(allGoals, ts));
   sections.push("");
   sections.push(snapshotSection(deps));
   sections.push("");
@@ -197,11 +211,10 @@ function strategySection(deps: DigestSchedulerDeps): string {
   return lines.join("\n");
 }
 
-function goalsSection(deps: DigestSchedulerDeps, ts: number): string {
+function goalsSection(all: GoalRow[], ts: number): string {
   const lines: string[] = [];
   lines.push("## Goals");
 
-  const all = deps.goalsStore.list();
   const active = all.filter((r) => r.status === "active" || r.status === "pending");
   const blocked = all.filter((r) => r.status === "blocked");
   const completed = all.filter((r) => r.status === "completed");
@@ -219,7 +232,7 @@ function goalsSection(deps: DigestSchedulerDeps, ts: number): string {
   lines.push(`- Blocked: ${blocked.length}`);
   lines.push("");
   lines.push("### Top active goals (by priority)");
-  const topActive = activeForDigest(deps.goalsStore.listActive());
+  const topActive = activeForDigest(active);
   if (topActive.length === 0) {
     lines.push("- _(none)_");
   } else {

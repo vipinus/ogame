@@ -20,7 +20,7 @@
 import postgres from "postgres";
 import type { Goal, WorldState } from "@ogamex/shared";
 
-import type { GoalRow, GoalStatus } from "./goals_store.js";
+import type { GoalRow, GoalStatus } from "./goals_types.js";
 
 export interface WorldStateStorePgOptions {
   /** Postgres connection URL, e.g. `postgres://ogamex:ogamex@127.0.0.1:5432/ogamex` */
