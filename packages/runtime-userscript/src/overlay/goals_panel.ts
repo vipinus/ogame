@@ -4299,7 +4299,10 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       try { return window.localStorage.getItem("ogamex.global.paused") === "true"; }
       catch { return false; }
     })();
-    const globalPauseBtn = `<button data-action="global-pause-toggle" style="background:${globalPaused ? "#5a2020" : "#205a20"}; color:#fff; border:1px solid ${globalPaused ? "#8a4040" : "#408a40"}; cursor:pointer; font-size:11px; padding:2px 8px; border-radius:3px; font-weight:bold;" title="${globalPaused ? "TM 已暂停 — 点击恢复" : "暂停全部 TM 动作 (build/fleet/research/...)"}">${globalPaused ? "⏸ PAUSED" : "▶ RUN"}</button>`;
+    // v0.0.* — operator 2026-06-04 "运行和暂停的 run 按钮搞反了": icon
+    // 用动作语义 (点了会发生啥), 不是当前状态. PAUSED → ▶ (继续, 红);
+    // RUN → ⏸ (暂停, 绿).
+    const globalPauseBtn = `<button data-action="global-pause-toggle" style="background:${globalPaused ? "#5a2020" : "#205a20"}; color:#fff; border:1px solid ${globalPaused ? "#8a4040" : "#408a40"}; cursor:pointer; font-size:11px; padding:2px 8px; border-radius:3px; font-weight:bold;" title="${globalPaused ? "TM 已暂停 — 点击恢复" : "暂停全部 TM 动作 (build/fleet/research/...)"}">${globalPaused ? "▶ PAUSED" : "⏸ RUN"}</button>`;
     const header = `
       <div data-ogamex-drag="1" style="display:flex; align-items:center; justify-content:space-between; padding-bottom:4px; cursor:move; user-select:none;">
         <strong style="color:#e0e8f0;">${bridgeLightHtml}${escapeHtml(t("panel.title_prefix"))} ${escapeHtml(serverSlug)} v${escapeHtml(currentVersion)}</strong>

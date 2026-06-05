@@ -568,7 +568,25 @@ export async function wireBridge(
               const homeDedupKey = `${origin}→${g}:${s}:${planetPos}`;
               const homeLast = recentHarvestDispatch.get(homeDedupKey) ?? 0;
               const homeAge = (Date.now() - homeLast) / 1000;
-              if (homeTotal > 0 && (homeLast === 0 || homeAge >= HARVEST_DEDUP_TTL_MS / 1000)) {
+              // v0.0.774 — operator 2026-06-04 "回收派了两次": 6min TTL 太短,
+              // recycler 来回 > 6min 就过期触发第二次派. 加 in-flight 检查:
+              // 任一 mission=8 (harvest) 到 [g:s:p,debris] 的 fleet 还在
+              // outbound, 直接跳, 不靠纯时间 dedup.
+              const storeAccess = (window as Window & { __OGAMEX__?: { store?: { state?: { fleets_outbound?: Array<{ mission?: number; destType?: number | string; dest?: number[]; arrival_at?: number | null }> } } } }).__OGAMEX__;
+              const outboundFleets = storeAccess?.store?.state?.fleets_outbound ?? [];
+              const inFlightRecycler = outboundFleets.some((f) => {
+                const isHarvest = Number(f?.mission) === 8;
+                const destIsDebris = String(f?.destType) === "2" || Number(f?.destType) === 2;
+                const destMatches = Array.isArray(f?.dest)
+                  && f.dest[0] === g && f.dest[1] === s && f.dest[2] === planetPos;
+                const stillInFlight = (f?.arrival_at ?? 0) === null || (typeof f?.arrival_at === "number" && f.arrival_at * 1000 > Date.now());
+                return isHarvest && destIsDebris && destMatches && stillInFlight;
+              });
+              if (inFlightRecycler) {
+                const homeSkip = `home recycler skip (in-flight to ${g}:${s}:${planetPos} debris already)`;
+                console.info(`[debris/home] ${homeSkip}`);
+              }
+              if (homeTotal > 0 && !inFlightRecycler && (homeLast === 0 || homeAge >= HARVEST_DEDUP_TTL_MS / 1000)) {
                 // Home planet = always battle debris → recycler (id=209).
                 const homeShipKey = "recycler";
                 const homeShipsAvail = Number(planet?.ships?.[homeShipKey] ?? 0);
