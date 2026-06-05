@@ -98,6 +98,7 @@ export interface PrereqTreeNode {
   queue_label?: string;
 }
 
+
 export interface GoalRowFromHttp {
   /** Sidecar's listGoals enriches each row with this flag so the panel can
    *  show ⭐ on the row currently selected as the player's main objective. */

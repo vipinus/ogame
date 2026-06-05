@@ -1568,6 +1568,9 @@ export async function startSidecar(
           const myId = r.goal.id;
           for (const childRow of sourceRows) {
             if (childRow.goal.parent_goal_id !== myId) continue;
+            // v0.0.792 — operator: cancelled/completed 不该 enrich 进 tree
+            // (3 个 crystalMine 重复事故). 只 walk 在飞的 sub-goal.
+            if (!["active", "blocked", "pending"].includes(childRow.status)) continue;
             const cTarget = childRow.goal.target as { building?: string; tech?: string; level?: number };
             const cLvl = cTarget.level ?? 1;
             let childSim: { tree: PrereqTreeNode | null } | null = null;
@@ -1610,9 +1613,9 @@ export async function startSidecar(
           dedupWalk(prereq_tree);
         }
         // v0.0.791 — operator "建造和研究看不出先后顺序". queue label DFS
-        // post-order = ogame 真序 (prereq 先, root 后). research_q 全局 single,
-        // build_q per-tree 单一 (cascade 通常同 planet). met / dedup_skip 节点
-        // 不算 queue (ogame 不 run).
+        // post-order = ogame 真序 (prereq 先, root 后). met / dedup_skip 节点
+        // 不算 queue. operator 2026-06-05 终拍板 "一棵树能看出先后顺序":
+        // 一棵 tree 内 R/B chip 标 ogame queue 执行序就够, 不需 two-column.
         if (prereq_tree) {
           let rSeq = 0;
           let bSeq = 0;
