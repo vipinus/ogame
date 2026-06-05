@@ -2169,7 +2169,20 @@ export async function startSidecar(
             }
             // Phase 7c.5.c — SQLite fallback removed; PG goalsStorePg.get is authoritative.
             const type = row?.goal.type;
-            if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport" || type === "jumpgate") {
+            // v0.0.782 — action must match goal.type. Cascade prereq directives
+            // (e.g. colonize-goal emitting `action=build building=shipyard`) share
+            // goal_id with the root colonize goal but are NOT terminal — their
+            // success means "shipyard L1 built", not "colonize done". Operator
+            // 2026-06-05 "还没造殖民船怎么可能完成" 实证 colonize 被 cascade
+            // build/shipyard success 误判 completed (没有新 planet 没有 colonyShip).
+            const actionDone = directiveToParams.get(m.directive_id)?.action;
+            const atomicTypeOk =
+              (type === "expedition" && actionDone === "expedition") ||
+              (type === "colonize"   && actionDone === "colonize") ||
+              (type === "deploy"     && actionDone === "deploy") ||
+              (type === "transport"  && actionDone === "transport") ||
+              (type === "jumpgate"   && actionDone === "jumpgate");
+            if (atomicTypeOk) {
               // Phase 7c.5.b — PG primary. webtx-* leg 1 SQLite throw crashed
               // the whole fan handler (operator 2026-06-05 13:39:08 evidence),
               // making it look like "ack never arrived" to leg 2/3 downstream.
@@ -2375,10 +2388,15 @@ export async function startSidecar(
         const d = msg.directive as { id: string; goal_id?: string; action?: string; params?: { galaxy?: number; system?: number; position?: number; building?: string; planet_id?: string } };
         if (d.id && d.goal_id) directiveToGoal.set(d.id, d.goal_id);
         // v0.0.764 — also stash params for 120012 fields_full retro-mark.
-        if (d.id && d.params) {
-          const entry: { building?: string; planet_id?: string } = {};
-          if (d.params.building !== undefined) entry.building = d.params.building;
-          if (d.params.planet_id !== undefined) entry.planet_id = d.params.planet_id;
+        // v0.0.782 — additionally stash action so directive_completed handler
+        // can verify it matches goal.type before mark-completed (cascade prereq
+        // bug: colonize goal's emitted build/build_ships directive误标整个 goal
+        // completed; operator 2026-06-05 "还没造殖民船怎么可能完成").
+        if (d.id) {
+          const entry: { action?: string; building?: string; planet_id?: string } = {};
+          if (d.action !== undefined) entry.action = d.action;
+          if (d.params?.building !== undefined) entry.building = d.params.building;
+          if (d.params?.planet_id !== undefined) entry.planet_id = d.params.planet_id;
           directiveToParams.set(d.id, entry);
         }
         // species_discovery: stash dispatched coord by directive_id (NOT on
@@ -2475,7 +2493,7 @@ export async function startSidecar(
   // v0.0.764 — directive → params snapshot so 120012 hard-block can call
   // markFieldsFull(planet_id, building) when the ack lands. operator
   // 2026-06-04 "船运资源到 4:299:8 就会触发升级一次核电站" loop fix.
-  const directiveToParams = new Map<string, { building?: string; planet_id?: string }>();
+  const directiveToParams = new Map<string, { action?: string; building?: string; planet_id?: string }>();
   // species_discovery: stamp dispatched coord per directive_id (NOT on row,
   // because goalsStore.list() returns SQL copies — mutating one is discarded).
   const directiveToDiscoverCoord = new Map<string, string>();
