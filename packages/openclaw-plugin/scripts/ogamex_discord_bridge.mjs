@@ -175,17 +175,55 @@ if (!OPERATOR_UID) {
 }
 const pgStore = new WorldStateStorePg({ databaseUrl: DATABASE_URL });
 const goalsPg = new GoalsStorePg({ sql: pgStore.sql });
-console.log(`[daemon] PG primary — uid=${OPERATOR_UID.slice(0, 8)}…`);
+console.log(`[daemon] PG primary — operator uid=${OPERATOR_UID.slice(0, 8)}…`);
 
-// store shim — async wrappers preserving the original SQLite call shapes so
-// the 31 daemon call sites only need an `await` prefix.
+// Phase 7c.6 (2026-06-05) — multi-tenant optimizer. CURRENT_UID is the
+// active tenant during a tick; store shim reads it on every call so
+// existing sync-shaped code paths don't need a uid param threaded
+// through every callsite. expedition tick stays single-tenant for now
+// (defer to 7c.7) — it owns rotation state + config file the optimizer
+// doesn't touch. Default to OPERATOR_UID so out-of-tick paths (Discord
+// command handlers etc.) keep operating on the operator's tenant.
+let CURRENT_UID = OPERATOR_UID;
+let CURRENT_BEARER = "";  // populated by optimizerTickAllTenants per tenant
+
+async function loadActiveUidsWithTokens() {
+  // Returns [{uid, bearer}] for users with bridge_token + active goals.
+  // Operator's uid is always included; its bearer comes from
+  // OGAMEX_BRIDGE_TOKEN env (same one sidecar accepts as global).
+  const rows = await pgStore.sql`
+    SELECT u.user_id, u.bridge_token
+      FROM user_settings u
+     WHERE u.bridge_token IS NOT NULL
+       AND EXISTS (
+         SELECT 1 FROM ogame_goals g
+          WHERE g.user_id = u.user_id
+            AND g.status IN ('pending','active','blocked')
+       )
+  `;
+  const seen = new Set();
+  const out = [];
+  for (const r of rows) {
+    if (seen.has(r.user_id)) continue;
+    seen.add(r.user_id);
+    out.push({ uid: r.user_id, bearer: r.bridge_token });
+  }
+  if (!seen.has(OPERATOR_UID)) {
+    out.push({ uid: OPERATOR_UID, bearer: process.env.OGAMEX_BRIDGE_TOKEN ?? "" });
+  }
+  return out;
+}
+
+// store shim — async wrappers; uid is CURRENT_UID at the moment of call
+// so callers don't pass uid explicitly. Set CURRENT_UID before iterating
+// per-tenant work then restore.
 const store = {
-  list: async () => goalsPg.list(OPERATOR_UID),
-  get: async (id) => goalsPg.get(OPERATOR_UID, id),
-  getMainGoal: async () => goalsPg.getMainGoal(OPERATOR_UID),
-  setMainGoal: async (id) => pgStore.setMainGoal(OPERATOR_UID, id),
+  list: async () => goalsPg.list(CURRENT_UID),
+  get: async (id) => goalsPg.get(CURRENT_UID, id),
+  getMainGoal: async () => goalsPg.getMainGoal(CURRENT_UID),
+  setMainGoal: async (id) => pgStore.setMainGoal(CURRENT_UID, id),
   updateStatus: async (id, status, reason) =>
-    pgStore.updateGoalStatus(OPERATOR_UID, id, status, reason ?? null),
+    pgStore.updateGoalStatus(CURRENT_UID, id, status, reason ?? null),
   add: async (goal) => {
     const nowTs = Date.now();
     const row = {
@@ -201,7 +239,7 @@ const store = {
       created_at: nowTs,
       updated_at: nowTs,
     };
-    await pgStore.upsertGoal(OPERATOR_UID, row);
+    await pgStore.upsertGoal(CURRENT_UID, row);
     return row;
   },
 };
@@ -1019,21 +1057,28 @@ async function computeOptimization() {
   const state = await stateResp.json();
   const goals = await goalsResp.json();
   if (state.ok === false) return { error: state.reason ?? "no snapshot" };
+  // Phase 7c.6 (2026-06-05) — operator "所有任务只进优化": allow ALL
+  // active/blocked/pending user-created goals to enter the optimizer.
+  // Exclude only daemon-created derivatives (opt-/exp-/expb-) to avoid
+  // recursive optimization of optimizer's own children.
   const activeGoals = goals.goals.filter(
     (g) => !g.id.startsWith("opt-") && !g.id.startsWith("exp-") && !g.id.startsWith("expb-")
-        && ["active", "blocked", "pending"].includes(g.status)
-        && g.prereq_tree,
+        && ["active", "blocked", "pending"].includes(g.status),
   );
   if (activeGoals.length === 0) return { error: "no active user goals" };
-  const main = activeGoals.sort((a, b) => (b.prereq_tree.subtree_eta_seconds ?? 0) - (a.prereq_tree.subtree_eta_seconds ?? 0))[0];
+  const main = activeGoals.sort((a, b) => (b.prereq_tree?.subtree_eta_seconds ?? 0) - (a.prereq_tree?.subtree_eta_seconds ?? 0))[0];
   return computeOptimizationForGoal(state, main);
 }
 
 // Per-goal iteration — used by optimizerTick. Returns array of
 // { goal, optimization } pairs for ALL active user goals (excluding opt-/exp-).
+// Phase 7c.6 — uses CURRENT_BEARER so sidecar's resolveBearer routes
+// /v1/state and /v1/goals to the per-tenant userStates + goalsStorePg.
 async function computeOptimizationsAllGoals() {
+  const sidecarHeaders = CURRENT_BEARER ? { "Authorization": `Bearer ${CURRENT_BEARER}` } : {};
   const [stateResp, goalsResp] = await Promise.all([
-    fetch(`${SIDECAR}/ogamex/v1/state`), fetch(`${SIDECAR}/ogamex/v1/goals`),
+    fetch(`${SIDECAR}/ogamex/v1/state`, { headers: sidecarHeaders }),
+    fetch(`${SIDECAR}/ogamex/v1/goals`, { headers: sidecarHeaders }),
   ]);
   if (!stateResp.ok || !goalsResp.ok) return { error: `sidecar unreachable` };
   const state = await stateResp.json();
@@ -1041,8 +1086,7 @@ async function computeOptimizationsAllGoals() {
   if (state.ok === false) return { error: state.reason ?? "no snapshot" };
   const activeGoals = goals.goals.filter(
     (g) => !g.id.startsWith("opt-") && !g.id.startsWith("exp-") && !g.id.startsWith("expb-")
-        && ["active", "blocked", "pending"].includes(g.status)
-        && g.prereq_tree,
+        && ["active", "blocked", "pending"].includes(g.status),
   );
   if (activeGoals.length === 0) return { results: [] };
   const results = [];
@@ -1428,9 +1472,32 @@ async function optimizerTick() {
 }
 
 console.log(`[auto] boot: enabled=${autoEnabled} interval=${AUTO_TICK_MS}ms threshold=${AUTO_SAVINGS_THRESHOLD_SEC}s`);
+// Phase 7c.6 — per-user optimizer iter. CURRENT_UID restored to OPERATOR_UID
+// after the loop so Discord command handlers (which depend on store shim)
+// keep operating on the operator's tenant.
+async function optimizerTickAllTenants() {
+  let tenants;
+  try {
+    tenants = await loadActiveUidsWithTokens();
+  } catch (e) {
+    console.warn("[auto] loadActiveUidsWithTokens threw:", e.message);
+    return;
+  }
+  for (const { uid, bearer } of tenants) {
+    CURRENT_UID = uid;
+    CURRENT_BEARER = bearer;
+    try {
+      await optimizerTick();
+    } catch (e) {
+      console.warn(`[auto] tick error (uid=${uid.slice(0, 8)}):`, e.message);
+    }
+  }
+  CURRENT_UID = OPERATOR_UID;
+  CURRENT_BEARER = "";
+}
 setInterval(() => {
   console.log(`[auto] tick at ${new Date().toISOString()} (enabled=${autoEnabled})`);
-  optimizerTick().catch((e) => console.warn("[auto] tick error:", e.message, e.stack?.split("\n")[1]));
+  optimizerTickAllTenants().catch((e) => console.warn("[auto] outer tick threw:", e.message));
 }, AUTO_TICK_MS);
 
 // ─── Expedition daemon ──────────────────────────────────────────────────
@@ -1758,35 +1825,36 @@ async function expeditionTick() {
   }
 }
 
-console.log(`[expedition] daemon boot: safety ${EXPEDITION_TICK_MS}ms + trigger-poll ${EXPEDITION_TRIGGER_POLL_MS}ms cfg=${EXPEDITION_TEMPLATE_PATH}`);
-// Safety-net periodic tick (background, idle case where no events fire).
-setInterval(() => {
-  expeditionTick().catch((e) => console.warn("[expedition] tick error:", e.message));
-}, EXPEDITION_TICK_MS);
+console.log(`[expedition] daemon boot DISABLED (Phase 7c.6 operator directive "只留优化一个通道 普通的不要了" — expedition tick + trigger poll commented out)`);
+// Phase 7c.6 (2026-06-05) — expedition daemon disabled per operator
+// directive. Only the optimizer tick remains. Restore by un-commenting
+// the two setInterval blocks below.
+// setInterval(() => {
+//   expeditionTick().catch((e) => console.warn("[expedition] tick error:", e.message));
+// }, EXPEDITION_TICK_MS);
 // Event-driven trigger: poll sidecar's tiny /v1/expedition/trigger endpoint
 // every 1s. Sidecar bumps trigger_ts on fleet-return delta (state.snapshot
 // handler) OR explicit POST. When ts > lastSeen → fire expeditionTick.
 // LAN poll, ~60 req/min to sidecar, ~30 bytes/resp = trivial cost.
+// Phase 7c.6 — event-driven trigger poll also disabled per operator
+// directive. let lastExpeditionTriggerTs preserved so re-enabling later
+// doesn't reset history.
 let lastExpeditionTriggerTs = 0;
-setInterval(async () => {
-  try {
-    const r = await fetch(`${SIDECAR}/ogamex/v1/expedition/trigger`);
-    if (!r.ok) return;
-    const j = await r.json();
-    const ts = typeof j?.trigger_ts === "number" ? j.trigger_ts : 0;
-    if (ts > lastExpeditionTriggerTs) {
-      lastExpeditionTriggerTs = ts;
-      console.log(`[expedition] EVENT triggered (ts=${ts}) — waiting 2s for fresh state push`);
-      // Plan A: sidecar queued data.refresh to userscript at the same moment
-      // it set trigger_ts. Wait 2s for userscript to harvest /movement,
-      // /empire, /fetchResources and push back. Then run expeditionTick on
-      // fresh state (sidecar's stateRef.current updated by the meantime).
-      setTimeout(() => {
-        expeditionTick().catch((e) => console.warn("[expedition] event-tick error:", e.message));
-      }, 2000);
-    }
-  } catch { /* sidecar may be down briefly; ignore */ }
-}, EXPEDITION_TRIGGER_POLL_MS);
+void lastExpeditionTriggerTs;
+// setInterval(async () => {
+//   try {
+//     const r = await fetch(`${SIDECAR}/ogamex/v1/expedition/trigger`);
+//     if (!r.ok) return;
+//     const j = await r.json();
+//     const ts = typeof j?.trigger_ts === "number" ? j.trigger_ts : 0;
+//     if (ts > lastExpeditionTriggerTs) {
+//       lastExpeditionTriggerTs = ts;
+//       setTimeout(() => {
+//         expeditionTick().catch((e) => console.warn("[expedition] event-tick error:", e.message));
+//       }, 2000);
+//     }
+//   } catch {}
+// }, EXPEDITION_TRIGGER_POLL_MS);
 
 async function handleAuto(rest) {
   // No more on/off — both daemons always run. Return status only.
