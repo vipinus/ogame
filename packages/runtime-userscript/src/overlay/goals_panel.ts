@@ -16,6 +16,24 @@ import { TECH_ID_BY_NAME } from "@ogamex/shared";
 import { planTransportChain, makeTransportChainId, type PlannerPlanet } from "@ogamex/shared";
 import { t } from "../i18n/t.js";
 import { techName } from "../i18n/tech_name.js";
+
+// 2026-06-05 — module-level bridge-token reader. Used by every POST to a
+// sidecar endpoint that needs per-user routing (createGoal, discovery
+// create, expedition config, etc). Without the Authorization header,
+// sidecar resolveBearer returns "legacy" and goals land on the env
+// operator's uid instead of the actual web user's uid (eb990432 etc.).
+// Symptom historic: web user adds goal in TM panel → PG ogame_goals
+// has 0 rows for their uid → goal silently lost.
+function readBridgeTok(injected?: string): string | null {
+  if (injected) return injected;
+  try {
+    return (typeof window !== "undefined" ? window.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") : null);
+  } catch { return null; }
+}
+function authHeadersGlobal(extra: Record<string, string> = {}): Record<string, string> {
+  const tok = readBridgeTok();
+  return tok ? { ...extra, "Authorization": `Bearer ${tok}` } : extra;
+}
 import { getOgameLocaleWithOverride } from "../i18n/locale.js";
 
 // v0.0.665 — operator 2026-06-02 "LF 建筑中文名不对" + "中文名称不是
@@ -668,7 +686,7 @@ function openExpeditionSettings(
       try {
         const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeadersGlobal({ "Content-Type": "application/json" }),
           body: JSON.stringify({ template, enabled_planets, auto_build_ships: liveAutoBuild }),
         });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -809,7 +827,7 @@ function openDiscoverySettings(
       try {
         const r = await fetchFn(`${baseUrl}/ogamex/v1/discovery/create`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeadersGlobal({ "Content-Type": "application/json" }),
           body: JSON.stringify({ source_planet: pid, galaxy, base_system: baseSystem, range }),
         });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1627,7 +1645,7 @@ function openGoalsSettings(
         try {
           const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeadersGlobal({ "Content-Type": "application/json" }),
             body: JSON.stringify({
               type: "build",
               target: { building: buildingRadio.value, level: lvl },
@@ -1745,7 +1763,7 @@ function openGoalsSettings(
         try {
           const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeadersGlobal({ "Content-Type": "application/json" }),
             body: JSON.stringify({
               type: "build",
               target: { building: buildingRadio.value, level: lvl },
@@ -1971,7 +1989,7 @@ function openGoalsSettings(
           try {
             const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: authHeadersGlobal({ "Content-Type": "application/json" }),
               body: JSON.stringify({
                 type: "lifeform_building",
                 target: { building: buildingRadio.value, level: lvl },
@@ -2099,7 +2117,7 @@ function openGoalsSettings(
         try {
           const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeadersGlobal({ "Content-Type": "application/json" }),
             body: JSON.stringify({
               type: "research",
               target: { tech: techRadio.value, level: lvl },
@@ -2412,7 +2430,7 @@ function openGoalsSettings(
         try {
           const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeadersGlobal({ "Content-Type": "application/json" }),
             body: JSON.stringify({
               type: "lifeform_research",
               target: { tech: techRadio.value, level: lvl },
@@ -2496,7 +2514,7 @@ function openGoalsSettings(
         try {
           const r = await fetchFn(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/goals/create`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeadersGlobal({ "Content-Type": "application/json" }),
             body: JSON.stringify({
               type: "colonize",
               target: {
@@ -2567,7 +2585,7 @@ function openGoalsSettings(
       try {
         const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/parse`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeadersGlobal({ "Content-Type": "application/json" }),
           body: JSON.stringify({ description }),
         });
         const j = await r.json() as { ok?: boolean; parsed?: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }; reason?: string };
@@ -2641,7 +2659,7 @@ function openGoalsSettings(
         try {
           const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/create`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeadersGlobal({ "Content-Type": "application/json" }),
             body: JSON.stringify({ type, target, planet: pid, priority }),
           });
           if (!r.ok) {
@@ -3244,7 +3262,7 @@ function openTransportSettings(
         for (const body of goalBodies) {
           const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/create`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeadersGlobal({ "Content-Type": "application/json" }),
             body: JSON.stringify(body),
           });
           if (!r.ok) {
@@ -3345,6 +3363,13 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   const baseUrl = opts.httpBaseUrl ?? "https://ogame.anyfq.com";
   const pollMs = opts.pollMs ?? 3000;
   const showTerminal = opts.showTerminal ?? false;
+
+  // authHeaders helper now module-level (see top of file). Wrap with opts.bridgeToken
+  // preference; falls back to localStorage when not injected (legacy install).
+  const authHeaders = (extra: Record<string, string> = {}): Record<string, string> => {
+    const tok = readBridgeTok(opts.bridgeToken);
+    return tok ? { ...extra, "Authorization": `Bearer ${tok}` } : extra;
+  };
 
   // Operator 2026-05-29: poll sidecar /v1/runtime-version every 60s; on
   // newer version, set window.__ogamexLatestVersion + __ogamexDownloadURL
@@ -4663,7 +4688,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         startBtn.textContent = "Creating...";
         try {
           const r = await fetchFn(`${baseUrl}/ogamex/v1/discovery/create`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
+            method: "POST", headers: authHeadersGlobal({ "Content-Type": "application/json" }),
             body: JSON.stringify({ source_planet: sel.value, galaxy, base_system: system, range }),
           });
           const j = await r.json() as { ok?: boolean; goal_id?: string; reason?: string };
