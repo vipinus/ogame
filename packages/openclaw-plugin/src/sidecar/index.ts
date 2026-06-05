@@ -1016,6 +1016,32 @@ export async function startSidecar(
             const node = buildAndSimulate(req, lvl, subKind);
             if (node) children.push(node);
           }
+          // v0.0.785 — operator 2026-06-05 "酒足饭饱 小于 生活空间的时候 建
+          // 农场反物质冷凝器" + "以前写好了，测试都通过了的". planner.ts:549
+          // commit 6198be4 加了 kaelesh sanctuary→antimatterCondenser food
+          // gate, simulate 漏同步 → panel prereq_tree 看不到 food 前置 cascade.
+          // 镜像 planner 逻辑: 当 housing (living_space) > food (well_fed)
+          // 时, emit food building cascade as child.
+          if (useTreeBuilder === "lifeform" && kind === "building" && planet) {
+            const species = ((planet as { lifeform?: { species?: string } } | null)?.lifeform?.species) ?? "humans";
+            const lfBldg2 = (planet as { lifeform_buildings?: Record<string, number> } | null)?.lifeform_buildings ?? {};
+            const lfr = (planet as { lifeform_resources?: { living_space?: number | null; well_fed?: number | null } } | null)?.lifeform_resources;
+            const livingSpace = lfr?.living_space ?? null;
+            const wellFed = lfr?.well_fed ?? null;
+            // Mirror POPULATION_FOOD_BY_SPECIES (planner.ts:480). Inline here
+            // until shared helper extraction (operator memory: planner/simulate
+            // 共享 helper SOP).
+            const popFoodRules: Record<string, { population: readonly string[]; food: string }> = {
+              humans: { population: ["residentialSector", "skyscraper", "metropolis"], food: "biosphereFarm" },
+              kaelesh: { population: ["sanctuary"], food: "antimatterCondenser" },
+            };
+            const rule = popFoodRules[species];
+            if (rule && rule.population.includes(techName) && livingSpace !== null && wellFed !== null && livingSpace > wellFed) {
+              const curFood = lfBldg2[rule.food] ?? 0;
+              const foodChild = buildAndSimulate(rule.food, curFood + 1, "building");
+              if (foodChild) children.push(foodChild);
+            }
+          }
           // v0.0.737 — operator 2026-06-04 "补电厂的逻辑是有的, 已经自动建
           // 电厂了, 不要重复写代码, 复用". Mirror planner.ts's decision by
           // calling the SAME helper. Single source of truth: planner picks
