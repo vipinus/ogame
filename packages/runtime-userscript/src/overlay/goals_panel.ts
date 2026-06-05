@@ -3490,7 +3490,20 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   }
 
   async function fetchGoals(): Promise<GoalRowFromHttp[]> {
-    const r = await fetchFn(`${baseUrl}/ogamex/v1/goals`);
+    // 2026-06-05 — per-user Bearer routes sidecar listGoals → goalsStorePg.list(uid)
+    // so PG-only goals (web POST /api/me/goals/transport → PG) become visible
+    // to the in-page TM panel. Without Bearer, sidecar resolveBearer returns
+    // legacy → SQLite cross-tenant only → webtx-* invisible. Token source
+    // matches the pause-daemon path above: opts.bridgeToken → localStorage.
+    let tok: string | null = opts.bridgeToken ?? null;
+    if (!tok) {
+      try { tok = (typeof window !== "undefined" ? window.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") : null); }
+      catch { /* sandbox isolation */ }
+    }
+    const init: RequestInit = tok
+      ? { headers: { "Authorization": `Bearer ${tok}` } }
+      : {};
+    const r = await fetchFn(`${baseUrl}/ogamex/v1/goals`, init);
     if (!r.ok) throw new Error(`http ${r.status}`);
     const body = await r.json() as { goals: GoalRowFromHttp[] };
     return body.goals;
