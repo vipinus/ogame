@@ -358,7 +358,33 @@ export async function startSidecar(
       if (n > 0) console.info(`[ogamex/sidecar] goals backfill: ${n} row(s) → user_id=${legacyUid.slice(0,8)}…`);
     } catch (e) { console.warn("[ogamex/sidecar] goals backfill failed:", e); }
   }
-  const worldStateStore = new WorldStateStore({ dbPath: worldStateDbPath });
+  const rawWorldStateStore = new WorldStateStore({ dbPath: worldStateDbPath });
+
+  // Phase 6b — OGAMEX_SQLITE_WRITE=off no-ops worldStateStore write methods.
+  // shadowFire (below) already mirrors every mutation to PG (Phase 5/6 wiring),
+  // so when operator's confident PG is solid, this gates the SQLite path off
+  // without code surgery. Read methods unchanged (reads now come from PG via
+  // dbMode=pg routing). goalsStore writes (which return rows used downstream)
+  // are NOT gated here; phased out in Phase 7.
+  const SQLITE_WRITE_OFF = (process.env.OGAMEX_SQLITE_WRITE ?? "on").toLowerCase() === "off";
+  const WORLD_WRITE_METHODS: ReadonlySet<string> = new Set([
+    "upsertWorldState", "appendEvent", "trimEvents", "checkpoint",
+    "upsertSaveRecord", "deleteSaveRecord", "upsertFailureCooldown",
+  ]);
+  const worldStateStore: WorldStateStore = SQLITE_WRITE_OFF
+    ? new Proxy(rawWorldStateStore, {
+        get(target, prop, receiver) {
+          const val = Reflect.get(target, prop, receiver);
+          if (typeof val === "function" && typeof prop === "string" && WORLD_WRITE_METHODS.has(prop)) {
+            return (..._args: unknown[]) => undefined;
+          }
+          return typeof val === "function" ? val.bind(target) : val;
+        },
+      }) as WorldStateStore
+    : rawWorldStateStore;
+  if (SQLITE_WRITE_OFF) {
+    console.info("[ogamex/sidecar] OGAMEX_SQLITE_WRITE=off — worldStateStore writes DISABLED (PG-only mode)");
+  }
 
   // Phase 8a — Postgres shadow writer (multi-tenant). When
   // OGAMEX_OPERATOR_USER_ID is set + DATABASE_URL is reachable, every
