@@ -322,7 +322,11 @@ export async function wireBridge(
     // position 1-15 uses recycler (id=209, ogame's standard collector).
     const harvestShipKey = targetPosition === 16 ? "explorer" : "recycler";
     console.info(`[debris] check G:S=${g}:${s}:${targetPosition} origin=${origin} ship=${harvestShipKey} reason=${m.reason ?? ""}`);
-    void (async (): Promise<void> => {
+    // v0.0.783 — operator 2026-06-05 "回家就派一次不用等30s, 失败 30s 后重派".
+    // 包成 attemptHarvest(n), 失败时 setTimeout 30s 重调 (max attempt=2). dedup
+    // SET 只在 sendFleet 成功路径, retry 进 IIFE 时 dedup 仍空, 自然继续.
+    const attemptHarvest = async (attempt: number): Promise<void> => {
+      let dispatchedThisAttempt = false;
       try {
         // v0.0.570 — operator 2026-06-01 "切 cp 要走標準接口". Galaxy fetch
         // now goes through cpPostWithRetry (the unified entry) instead of
@@ -533,6 +537,7 @@ export async function wireBridge(
           // sendFleet (insufficient ships, ogame race, etc.) doesn't block
           // legitimate retry.
           recentHarvestDispatch.set(dedupKey, Date.now());
+          dispatchedThisAttempt = true;
           try {
             void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
               method: "POST", credentials: "omit",
@@ -654,7 +659,14 @@ export async function wireBridge(
       } catch (e) {
         console.error("[debris] handler threw:", e);
       }
-    })();
+      if (!dispatchedThisAttempt && attempt < 2) {
+        console.info(`[debris] attempt ${attempt} no dispatch — retry in 30s`);
+        setTimeout(() => { void attemptHarvest(attempt + 1); }, 30_000);
+      } else if (!dispatchedThisAttempt) {
+        console.warn(`[debris] gave up after ${attempt} attempts for ${dedupKey}`);
+      }
+    };
+    void attemptHarvest(1);
   });
 
   // save.recall_now — sidecar's SaveCoordinator decided this fleet's recall

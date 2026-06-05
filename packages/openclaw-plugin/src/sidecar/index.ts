@@ -2797,21 +2797,11 @@ export async function startSidecar(
             // fire correctly.
             continue;
           }
-          // v0.0.673 — operator 2026-06-03 "回航以后延时 30s 再扫描银河系":
-          // Signal B = fleet truly home. ogame galaxy view sometimes
-          // lags the fleet-arrival event by a few seconds before the
-          // debris field row populates / requiredShips updates. Delay
-          // the scan dispatch by 30s so the userscript's first scan
-          // sees fresh debris instead of an empty pos16 row that gets
-          // logged as debris-skip. A and C signals keep firing
-          // immediately — they're early advisories, debris may or may
-          // not be there yet, dedup is per-signal so B's delayed fire
-          // still gets through.
-          const fidCapture = fid, originCapture = info.origin, destCapture = info.dest;
-          setTimeout(
-            () => fireFor(fidCapture, originCapture, destCapture, "fleet returned home (+30s settle delay)", "B"),
-            30_000,
-          ).unref();
+          // v0.0.783 — operator 2026-06-05 "回家就派一次不用等30s, 如果失败就
+          // 30s以后重新派一次". 删 +30s settle delay, Signal B 立即 fire. 失败
+          // 重试在 wire.ts handler 里做 (fetch 失败 30s 后 retry same signal),
+          // 不靠 sidecar 多 fire 兜底.
+          fireFor(fid, info.origin, info.dest, "fleet returned home", "B");
           expLastSeen.delete(fid);
         }
         // v0.0.567 — GC removed. Operator 2026-06-01 observed 3 mission=8
