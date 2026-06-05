@@ -349,16 +349,11 @@ export async function startSidecar(
   strategyManager.init();
 
   const goalsStore = new GoalsStore({ dbPath: goalsDbPath });
-  // Phase 9c.2 — one-shot legacy goal backfill. OGAMEX_LEGACY_USER_ID
-  // (operator's user_id from ogame-next) tags every row whose user_id
-  // is NULL. Idempotent — re-runs just touch 0 rows.
+  // Phase 7c.5.c — legacy backfill removed. Daemon switched to PG (7c.4),
+  // sidecar writes PG primary (7c.2/7c.3.*); no NEW rows land in SQLite,
+  // so backfillLegacyUserId has nothing left to tag. `legacyUid` kept for
+  // hydrate() PG lookup below.
   const legacyUid = process.env.OGAMEX_LEGACY_USER_ID ?? "";
-  if (legacyUid) {
-    try {
-      const n = goalsStore.backfillLegacyUserId(legacyUid);
-      if (n > 0) console.info(`[ogamex/sidecar] goals backfill: ${n} row(s) → user_id=${legacyUid.slice(0,8)}…`);
-    } catch (e) { console.warn("[ogamex/sidecar] goals backfill failed:", e); }
-  }
   const rawWorldStateStore = new WorldStateStore({ dbPath: worldStateDbPath });
 
   // Phase 6b — OGAMEX_SQLITE_WRITE=off no-ops worldStateStore write methods.
@@ -1414,7 +1409,10 @@ export async function startSidecar(
         if (!node.met) out.add(node.tech);
         for (const c of node.children) collectPrereqNames(c, out);
       };
-      const sourceRows = pgRows ?? goalsStore.listByUser(explicitUid);
+      // Phase 7c.5.c — SQLite fallback removed. goalsStorePg.list(uid) always
+      // available since 7c.2; if pgRows null we treat as empty result rather
+      // than fall through to cross-tenant SQLite.
+      const sourceRows = pgRows ?? [];
       return sourceRows.map((r) => {
         const target = r.goal.target as { tech?: string; building?: string; level?: number; target_level?: number };
         const lvl = target.target_level ?? target.level ?? 1;
@@ -2033,7 +2031,7 @@ export async function startSidecar(
               const pgRow = await goalsStorePg.get(lookupUid, goalId);
               if (pgRow) row = pgRow;
             }
-            if (!row) row = goalsStore.list().find((r) => r.goal.id === goalId) ?? undefined;
+            // Phase 7c.5.c — SQLite fallback removed; PG goalsStorePg.get is authoritative.
             const type = row?.goal.type;
             // Phase 7c.5.b — PG primary writes; SQLite paired-write retired.
             // webtx-* (PG-only) used to throw "unknown goal id" on the SQLite
@@ -2122,7 +2120,7 @@ export async function startSidecar(
               const pgRow = await goalsStorePg.get(lookupUid2, goalId);
               if (pgRow) row = pgRow;
             }
-            if (!row) row = goalsStore.list().find((r) => r.goal.id === goalId) ?? undefined;
+            // Phase 7c.5.c — SQLite fallback removed; PG goalsStorePg.get is authoritative.
             const type = row?.goal.type;
             if (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport" || type === "jumpgate") {
               // Phase 7c.5.b — PG primary. webtx-* leg 1 SQLite throw crashed
@@ -2348,18 +2346,22 @@ export async function startSidecar(
         if (d.action === "discover" && d.goal_id && d.params) {
           const coord = `${d.params.galaxy}:${d.params.system}:${d.params.position}`;
           directiveToDiscoverCoord.set(d.id, coord);
-          const row = goalsStore.list().find((r) => r.goal.id === d.goal_id);
-          if (row && row.goal.type === "species_discovery") {
-            const tgt = row.goal.target as { completed?: string[] };
+          // Phase 7c.5.c — PG primary discovery optimistic update. send() is
+          // sync but lookup + write is fire-and-forget; the next planner
+          // tick reads completed[] regardless of when it commits.
+          const dGoalId = d.goal_id;
+          void (async () => {
+            const uid = getCurrentUserId() || pgUserId;
+            if (!uid || !pgStore || !goalsStorePg) return;
+            const pgRow = await goalsStorePg.get(uid, dGoalId);
+            if (!pgRow || pgRow.goal.type !== "species_discovery") return;
+            const tgt = pgRow.goal.target as { completed?: string[] };
             const completed = Array.isArray(tgt.completed) ? [...tgt.completed] : [];
-            if (!completed.includes(coord)) {
-              completed.push(coord);
-              const optimisticTarget = { ...row.goal.target, completed } as Record<string, unknown>;
-              const dGoalId = d.goal_id;
-              goalsStore.updateTarget(dGoalId, optimisticTarget);
-              shadowFire("goal.updateTarget.discoverOptimistic", (uid) => pgStore!.updateGoalTarget(uid, dGoalId, optimisticTarget));
-            }
-          }
+            if (completed.includes(coord)) return;
+            completed.push(coord);
+            const optimisticTarget = { ...pgRow.goal.target, completed } as Record<string, unknown>;
+            await pgStore.updateGoalTarget(uid, dGoalId, optimisticTarget);
+          })().catch((e) => console.warn("[discover/optimistic] threw:", e instanceof Error ? e.message : e));
         }
       }
       ws.send(msg);
@@ -2764,9 +2766,16 @@ export async function startSidecar(
       }
     }
 
+    // Phase 7c.5.c — memoryWriter goals fed from PG. snapshot handler is
+    // already async; await the per-user PG list when uid known. Cross-tenant
+    // listActive over SQLite retired (no longer authoritative).
+    const memUid = getCurrentUserId() || pgUserId;
+    const memGoals = goalsStorePg && memUid
+      ? await goalsStorePg.listActiveByUser(memUid)
+      : [];
     memoryWriter.push({
       state: msg.snapshot,
-      goals: goalsStore.listActive(),
+      goals: memGoals,
       strategy: strategyManager.load(),
     });
     // v0.0.459: clear empire_poll awaiting for ALL goals — empire snapshot
@@ -2943,11 +2952,9 @@ export async function startSidecar(
     // periodic interval is gone). worldStateStore.close() below still runs
     // better-sqlite3's implicit checkpoint on the way out.
     await Promise.all([ws.stop(), http.stop()]);
-    try {
-      goalsStore.close();
-    } catch (err) {
-      console.error("[ogamex/sidecar] goalsStore.close failed", err);
-    }
+    // Phase 7c.5.c — goalsStore (SQLite) retired from runtime; close path
+    // dropped. worldStateStore.close below still flushes the legacy world.db
+    // until 7c.5.d retires that too.
     try {
       worldStateStore.close();
       if (pgStore) {
