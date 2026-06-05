@@ -34,8 +34,9 @@ import { Reporter } from "./reporter.js";
 import { StrategyManager } from "./strategy_manager.js";
 import { GoalsStore } from "./goals_store.js";
 import { GoalsStorePg } from "./goals_store_pg.js";
-import { DualReadGoalsStore } from "./dual_read_goals_store.js";
-import { resolveDbMode } from "./db_mode.js";
+// Phase 7a — DualReadGoalsStore + db_mode (sqlite|dual|pg) removed. PG is now
+// the sole reader path. Rollback = revert this commit.
+// resolveDbMode removed in Phase 7a — no more mode switch.
 import { WorldStateStore } from "./world_state_store.js";
 import { WorldStateStorePg } from "./world_state_store_pg.js";
 import { getCurrentUserId } from "./user_context.js";
@@ -366,7 +367,11 @@ export async function startSidecar(
   // without code surgery. Read methods unchanged (reads now come from PG via
   // dbMode=pg routing). goalsStore writes (which return rows used downstream)
   // are NOT gated here; phased out in Phase 7.
-  const SQLITE_WRITE_OFF = (process.env.OGAMEX_SQLITE_WRITE ?? "on").toLowerCase() === "off";
+  // Phase 7a — default flipped to "off". PG primary is stable enough that
+  // SQLite mirror writes are pure overhead + disk churn. Override by setting
+  // OGAMEX_SQLITE_WRITE=on if you need the legacy SQLite path back briefly
+  // (e.g. debugging a PG outage scenario).
+  const SQLITE_WRITE_OFF = (process.env.OGAMEX_SQLITE_WRITE ?? "off").toLowerCase() !== "on";
   const WORLD_WRITE_METHODS: ReadonlySet<string> = new Set([
     "upsertWorldState", "appendEvent", "trimEvents", "checkpoint",
     "upsertSaveRecord", "deleteSaveRecord", "upsertFailureCooldown",
@@ -411,39 +416,20 @@ export async function startSidecar(
   } else {
     console.info("[ogamex/sidecar] Postgres writer DISABLED (set DATABASE_URL to enable)");
   }
-  // Phase 5b — PG read mirror + dual-read drift observer. Mode picked
-  // via OGAMEX_DB_MODE env (sqlite|dual|pg). Default sqlite = pre-Phase-5
-  // behavior, zero risk. In dual mode a background ticker exercises both
-  // backends every 30s and logs drift; in pg mode the read fleet flips
-  // wholesale (Phase 6 work — for now mirrors dual, just declares intent).
-  const dbMode = resolveDbMode(process.env);
+  // Phase 7a — PG is the sole goal reader. Dual-read drift observer / mode
+  // switch (OGAMEX_DB_MODE) retired; PriorityMerger gets GoalsStorePg directly.
   let goalsStorePg: GoalsStorePg | null = null;
-  let dualGoalsStore: DualReadGoalsStore | null = null;
   if (pgStore) {
     try {
       // Share the WorldStateStorePg pool — avoids double-connecting.
       const sharedSql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
       goalsStorePg = new GoalsStorePg({ sql: sharedSql });
-      console.info(`[ogamex/sidecar] GoalsStorePg constructed (sharing pgStore pool) — dbMode=${dbMode}`);
+      console.info("[ogamex/sidecar] GoalsStorePg constructed (sharing pgStore pool)");
     } catch (e) {
       console.warn("[ogamex/sidecar] GoalsStorePg init failed:", e);
     }
   } else {
-    console.info(`[ogamex/sidecar] GoalsStorePg DISABLED (no pgStore) — dbMode=${dbMode}`);
-  }
-  if (dbMode !== "sqlite" && goalsStorePg) {
-    dualGoalsStore = new DualReadGoalsStore({ sqlite: goalsStore, pg: goalsStorePg });
-    console.info(`[ogamex/sidecar] DualReadGoalsStore active (dbMode=${dbMode}) — drift will be logged`);
-    // Background probe — every 30s exercise the wrapper on the operator's
-    // uid so drift metrics populate even when the panel is closed.
-    if (pgUserId) {
-      const driftProbeTimer = setInterval(() => {
-        dualGoalsStore!.listActiveByUser(pgUserId).catch((e) =>
-          console.warn("[ogamex/sidecar/drift-probe] threw:", e instanceof Error ? e.message : e),
-        );
-      }, 30_000);
-      driftProbeTimer.unref();
-    }
+    console.info("[ogamex/sidecar] GoalsStorePg DISABLED (no pgStore — SQLite-only fallback)");
   }
   /** Best-effort shadow fire — never throws, never blocks. Phase 9b:
    *  per-request AsyncLocalStorage user_id (from HttpServer resolving
@@ -2401,17 +2387,10 @@ export async function startSidecar(
         await pgStore!.upsertGoal(uid, row);
       });
     },
-    // v0.0.671 — Phase 6a: inject the async reader the merger reads from
-    // when env OGAMEX_DB_MODE flips off "sqlite". Three states:
-    //   - sqlite: reader undefined → merger reads SQLite (pre-Phase-6).
-    //   - dual:   reader = DualReadGoalsStore → SQLite primary + PG drift.
-    //   - pg:     reader = GoalsStorePg → PG primary, SQLite shadow.
-    // Rollback = flip OGAMEX_DB_MODE env + SIGHUP. No code redeploy.
-    ...(dbMode === "pg" && goalsStorePg
-      ? { reader: goalsStorePg }
-      : dbMode === "dual" && dualGoalsStore
-      ? { reader: dualGoalsStore }
-      : {}),
+    // Phase 7a — PG primary reader. SQLite reads survived in dist purely as
+    // a fallback when DATABASE_URL is unset; if pgStore boots OK, the merger
+    // never touches SQLite for reads.
+    ...(goalsStorePg ? { reader: goalsStorePg } : {}),
   });
   // v0.0.459 forward-ref assignment — CRUD endpoints + directive_completed
   // handler use priorityMergerRef + triggerDispatch via closure (declared
