@@ -1996,6 +1996,10 @@ export async function startSidecar(
           };
           worldStateStore.appendEvent("directive.completed", payload);
           shadowFire("appendEvent.completed", (uid) => pgStore!.appendEvent(uid, "directive.completed", payload));
+          // v0.0.* — operator: re-evaluate ETA on task completion. Building
+          // levels just bumped (R/N/etc), all downstream goals' ETAs may
+          // shrink. Force harvest + push fresh state.
+          emitPostDirectiveRefresh("post-completed-eta");
           // v0.0.689 — colonize result side-channel: write a dedicated
           // "colonize_done" event so the panel can render last-status
           // without parsing directive payloads.
@@ -2267,6 +2271,18 @@ export async function startSidecar(
     forceRefreshMs: 60_000,
   });
 
+  // v0.0.* — operator 2026-06-05 "每次任务开始和完成的时候自动重新评估".
+  // After dispatch / completion, push data.refresh so userscript re-harvests
+  // empire (buildings/research/resources), pushes fresh state.snapshot, and
+  // sidecar's next /v1/goals serves simulate() output with the up-to-date
+  // accel (R/N/lab levels). Without this, ETA stays stale until panel's
+  // natural 3s poll cycle and operator sees outdated estimates.
+  const emitPostDirectiveRefresh = (reason: string): void => {
+    const msg: DownstreamMsg = { type: "data.refresh", scope: "all", reason };
+    try { ws.send(msg); } catch (e) { console.warn("[ogamex/sidecar] emitPostDirectiveRefresh ws.send threw", e); }
+    try { http.queueDownstream(msg); } catch (e) { console.warn("[ogamex/sidecar] emitPostDirectiveRefresh http.queue threw", e); }
+  };
+
   // --- PriorityMerger ------------------------------------------------------
   const priorityMerger: PriorityMerger = new PriorityMerger({
     store: goalsStore,
@@ -2295,6 +2311,9 @@ export async function startSidecar(
           worldStateStore.appendEvent("directive.dispatch", payload);
           shadowFire("appendEvent.dispatch", (uid) => pgStore!.appendEvent(uid, "directive.dispatch", payload));
         } catch (e) { console.error("[ogamex/sidecar] appendEvent dispatch threw", e); }
+        // v0.0.* — operator: re-evaluate ETA on task start (accel may have
+        // changed since last snapshot). Async harvest + push fresh state.
+        emitPostDirectiveRefresh("post-dispatch-eta");
         // Remember directive_id → goal_id so we can mark the goal blocked
         // when the ack returns with success:false. Without this, ApiExec
         // failures (e.g., expedition 140054) leave the goal "active"
