@@ -185,6 +185,14 @@ export function pickEnergyPrereqBuilding(
   const needsPowerPlant =
     (solar === 0 && fusion === 0)
     || extraConsumption > curEnergy;
+  // 2026-06-05 — operator 反馈某次舰队落地仍触发. probe log records the inputs
+  // every time the gate evaluates so we can confirm whether the trigger
+  // matched a transient deficit or a stale snapshot. Remove once verified.
+  console.info(
+    `[ogamex/planner/energy-gate] planet=${planet.id} building=${building} ${current}->${nextLevel} ` +
+    `curEnergy=${curEnergy} extra=${Math.round(extraConsumption)} ` +
+    `(solar=${solar} fusion=${fusion}) trigger=${needsPowerPlant}`,
+  );
   if (!needsPowerPlant) return null;
   const solarCostFn = TECH_TREE.solarPlant?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
   const fusionCostFn = TECH_TREE.fusionReactor?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
@@ -1273,6 +1281,7 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
     target_coords?: unknown;
     target_type?: unknown;     // v0.0.428: "planet" | "moon" | "debris"
     ships?: unknown;
+    take_all?: unknown;        // v0.0.* — chain unload leg: sweep source body
     resources?: unknown;
     cargo?: unknown;           // v0.0.428: panel writes `cargo`, accept both
     source_planet?: unknown;
@@ -1281,10 +1290,22 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
   if (!targetCoords) return { blocked: `${goal.type} goal missing target.target_coords` };
   const targetType = typeof target.target_type === "string" ? target.target_type : "planet";
 
-  const ships = (typeof target.ships === "object" && target.ships !== null ? target.ships : {}) as ShipCount;
-  const shipsList = Object.entries(ships).filter(([, n]) => typeof n === "number" && (n as number) > 0);
-  if (shipsList.length === 0) {
-    return { blocked: `${goal.type} goal: ships map is empty` };
+  // v0.0.* — operator 2026-06-05 "按照参数 空船走JG 带回JG上的其他船". Chain
+  // unload leg (source moon → source planet after JG sweep) should ferry
+  // whatever is currently on the source body, not just the originally-
+  // allocated cargo ships. take_all on a deploy goal substitutes the static
+  // ships map with the body's full ship inventory at dispatch time (mirrors
+  // the JG take_all helper above). Static ships path stays for fine-grained
+  // chains and legacy callers.
+  const takeAll = (target as { take_all?: unknown }).take_all === true;
+  const staticShips = (typeof target.ships === "object" && target.ships !== null ? target.ships : {}) as ShipCount;
+  let ships: ShipCount = staticShips;
+  // shipsList finalized below after take_all substitution.
+  if (!takeAll) {
+    const initialList = Object.entries(staticShips).filter(([, n]) => typeof n === "number" && (n as number) > 0);
+    if (initialList.length === 0) {
+      return { blocked: `${goal.type} goal: ships map is empty` };
+    }
   }
 
   // v0.0.428: panel writes `cargo` (m/c/d); legacy callers use `resources`.
@@ -1302,6 +1323,24 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
     resolvePlanet(goal.planet, state) ??
     Object.values(state.planets ?? {})[0];
   if (!sourcePlanet) return { blocked: `${goal.type} goal: no source planet available` };
+
+  // v0.0.* — take_all substitution: pull the body's full live ship inventory
+  // at dispatch time. Filter zero counts so the directive payload stays lean.
+  if (takeAll) {
+    const onBody = (sourcePlanet.ships ?? {}) as Record<string, number | undefined>;
+    const swept: ShipCount = {} as ShipCount;
+    for (const [name, n] of Object.entries(onBody)) {
+      if ((n ?? 0) > 0) (swept as Record<string, number>)[name] = n as number;
+    }
+    if (Object.keys(swept).length === 0) {
+      return { blocked: `${goal.type} (take_all) source body ${sourcePlanet.id} has no ships available yet (waiting for upstream ferry)` };
+    }
+    ships = swept;
+  }
+  const shipsList = Object.entries(ships).filter(([, n]) => typeof n === "number" && (n as number) > 0);
+  if (shipsList.length === 0) {
+    return { blocked: `${goal.type} goal: ships map is empty` };
+  }
 
   // v0.0.485 — same-body no-op guard. Operator 2026-05-30: chain Seg 3
   // "to_stop_load" with fromP=moon emitted deploy with source=moon AND
