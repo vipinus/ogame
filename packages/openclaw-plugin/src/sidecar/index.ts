@@ -453,24 +453,12 @@ export async function startSidecar(
       console.warn(`[ogamex/sidecar/pg] ${label} failed (uid=${uid.slice(0,8)}…):`, e instanceof Error ? e.message : e);
     });
   };
-  // Bound events table at boot — rolling 10K window. Trims older rows so
-  // disk doesn't grow unbounded across a long-lived deployment. 10K @ ~200
-  // bytes/row ≈ 2MB ceiling.
-  try { worldStateStore.trimEvents(10_000); }
-  catch (e) { console.warn("[ogamex/sidecar] events trim failed (continuing):", e); }
-  // v0.0.637 — periodic WAL checkpoint so long-running sidecar keeps disk
-  // bounded. better-sqlite3 auto-checkpoints only at 1000 dirty pages / on
-  // close; with state.snapshot (every ~2s) + directive lifecycle events,
-  // WAL can balloon to 100s of MB between natural checkpoints. 5-min
-  // cadence matches typical sidecar idle window.
-  const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000;
-  const walCheckpointTimer: NodeJS.Timeout = setInterval(() => {
-    try { worldStateStore.checkpoint(); }
-    catch (e) { console.error("[ogamex/sidecar] WAL checkpoint threw", e); }
-  }, WAL_CHECKPOINT_INTERVAL_MS);
-  // unref so the timer doesn't keep the event loop alive — stop() still
-  // calls clearInterval explicitly for clean shutdown.
-  walCheckpointTimer.unref();
+  // Phase 7b — events trim + WAL checkpoint were SQLite-specific maintenance.
+  // PG has its own retention story; PG event trim still happens via
+  // pgStore.trimEvents called from the appendEvent paths where shadowFire
+  // fires after each insert. The SQLite trim / WAL checkpoint hooks are
+  // removed here as dead code (Proxy already noop'd them under SQLITE_WRITE
+  // = off, but keeping the call sites was just noise).
 
   // Phase 6a hotfix — daemon-side goal write reconciler. The Phase 0
   // shadowFire wiring catches SIDECAR-driven goals (createGoal HTTP,
@@ -2006,7 +1994,6 @@ export async function startSidecar(
             success: r?.success === true,
             error: errStr,
           };
-          worldStateStore.appendEvent("directive.completed", payload);
           shadowFire("appendEvent.completed", (uid) => pgStore!.appendEvent(uid, "directive.completed", payload));
           // v0.0.* — operator: re-evaluate ETA on task completion. Building
           // levels just bumped (R/N/etc), all downstream goals' ETAs may
@@ -2024,7 +2011,6 @@ export async function startSidecar(
               coord: typeof cr.coord === "string" ? cr.coord : undefined,
               reason: typeof cr.reason === "string" ? cr.reason : undefined,
             };
-            worldStateStore.appendEvent("colonize_done", clPayload);
             shadowFire("appendEvent.colonize_done", (uid) => pgStore!.appendEvent(uid, "colonize_done", clPayload));
           }
         } catch (e) { console.error("[ogamex/sidecar] appendEvent completed threw", e); }
@@ -2320,7 +2306,6 @@ export async function startSidecar(
             expires_at: d.expires_at,
             params: d.params,
           };
-          worldStateStore.appendEvent("directive.dispatch", payload);
           shadowFire("appendEvent.dispatch", (uid) => pgStore!.appendEvent(uid, "directive.dispatch", payload));
         } catch (e) { console.error("[ogamex/sidecar] appendEvent dispatch threw", e); }
         // v0.0.* — operator: re-evaluate ETA on task start (accel may have
@@ -2446,11 +2431,9 @@ export async function startSidecar(
     // instead of forgetting the pending event set.
     persistence: {
       upsert: (rec) => {
-        worldStateStore.upsertSaveRecord(rec);
         shadowFire("upsertSaveRecord", (uid) => pgStore!.upsertSaveRecord(uid, rec));
       },
       delete: (planet_id) => {
-        worldStateStore.deleteSaveRecord(planet_id);
         shadowFire("deleteSaveRecord", (uid) => pgStore!.deleteSaveRecord(uid, planet_id));
       },
     },
@@ -2485,7 +2468,6 @@ export async function startSidecar(
     // matching failure burst.
     persistence: {
       upsertCooldown: (task, last_analysis_at) => {
-        worldStateStore.upsertFailureCooldown(task, last_analysis_at);
         shadowFire("upsertCooldown", (uid) => pgStore!.upsertFailureCooldown(uid, task, last_analysis_at));
       },
       listCooldowns: () => worldStateStore.listFailureCooldowns(),
@@ -2812,7 +2794,7 @@ export async function startSidecar(
       const payload = {
         task: msg.task, attempts: msg.attempts, last_error: msg.last_error,
       };
-      worldStateStore.appendEvent("event.daily_failure", payload);
+      // worldStateStore.appendEvent removed in Phase 7b — shadowFire only.
       shadowFire("appendEvent.daily_failure", (uid) => pgStore!.appendEvent(uid, "event.daily_failure", payload));
     } catch (e) { console.error("[ogamex/sidecar] appendEvent daily_failure threw", e); }
     // record() is async; fire-and-forget. We attach a catch so a stuck
@@ -2836,7 +2818,7 @@ export async function startSidecar(
     // BEFORE downstream side-effects so audit log is durable even on crash.
     try {
       const payload = { subtype: msg.subtype, data: msg.data };
-      worldStateStore.appendEvent("event.emergency", payload);
+      // worldStateStore.appendEvent removed in Phase 7b — shadowFire only.
       shadowFire("appendEvent.emergency", (uid) => pgStore!.appendEvent(uid, "event.emergency", payload));
     } catch (e) { console.error("[ogamex/sidecar] appendEvent emergency threw", e); }
     // Always log on receipt — journalctl is the audit trail for natural
@@ -2928,14 +2910,13 @@ export async function startSidecar(
   const stop = async (): Promise<void> => {
     digestScheduler.stop();
     memoryWriter.stop();
-    clearInterval(walCheckpointTimer);
-    // Flush any pending debounced WorldState write BEFORE closing the SQLite
+    // Flush any pending debounced WorldState write BEFORE closing the store
     // handle — otherwise the most recent snapshot may not land on disk.
     try { flushWorldStatePersist(); }
     catch (err) { console.error("[ogamex/sidecar] WorldState flush threw", err); }
-    // Final checkpoint so the WAL on disk is fully merged before close.
-    try { worldStateStore.checkpoint(); }
-    catch (err) { console.error("[ogamex/sidecar] final WAL checkpoint threw", err); }
+    // Phase 7b — final WAL checkpoint dropped (was SQLite-specific and the
+    // periodic interval is gone). worldStateStore.close() below still runs
+    // better-sqlite3's implicit checkpoint on the way out.
     await Promise.all([ws.stop(), http.stop()]);
     try {
       goalsStore.close();
