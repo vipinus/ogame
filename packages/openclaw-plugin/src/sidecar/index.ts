@@ -2075,7 +2075,7 @@ export async function startSidecar(
             // 2026-05-30 "build naniteFactory 7 ↳ 100001 未知錯誤"); sidecar
             // side was inconsistent and kept cancelling fresh-server build
             // attempts. Align with userscript: 100001 + 未知錯誤 are transient.
-            const TRANSIENT_RE = /140043|140028|140019|100001|未知錯誤|未知错误|未知的錯誤|未知的错误|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum|previously unknown error/i;
+            const TRANSIENT_RE = /140043|140028|140019|100001|120017|未知錯誤|未知错误|未知的錯誤|未知的错误|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|insufficient resources|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum|previously unknown error/i;
             const isTransient = TRANSIENT_RE.test(reason);
             // v0.0.738 — operator 2026-06-04 "supplies:fusionReactor rejected
             // 該行星已沒空間了 120012 这个报错". Permanent error: planet's
@@ -2098,10 +2098,23 @@ export async function startSidecar(
             }
             // Phase 7c.5.c — SQLite fallback removed; PG goalsStorePg.get is authoritative.
             const type = row?.goal.type;
+            // v0.0.784 — failure cancel 必须 action 匹配 root goal.type, 跟
+            // success-mark (7f2f72d) 对称. cascade prereq directive (例如
+            // colonize goal emit action=research impulseDrive) 失败时不应
+            // cancel 整个 root goal — 仅当 atomic action (action=colonize
+            // 真派殖民 fleet 失败) 才 cancel. operator 2026-06-05 "殖民任务
+            // 又消失了" 实证: cascade 的 research:impulseDrive 因 120017
+            // crystal 不够 → 整 colonize goal cancelled.
+            const failedAction = directiveToParams.get(m.directive_id)?.action;
+            const atomicCancelOk =
+              (type === "expedition" && failedAction === "expedition") ||
+              (type === "colonize"   && failedAction === "colonize") ||
+              (type === "deploy"     && failedAction === "deploy") ||
+              (type === "transport"  && failedAction === "transport");
             // Phase 7c.5.b — PG primary writes; SQLite paired-write retired.
             // webtx-* (PG-only) used to throw "unknown goal id" on the SQLite
             // side (operator hit it on leg 1 first dispatch 13:39:08).
-            if (!isTransient && (type === "expedition" || type === "colonize" || type === "deploy" || type === "transport")) {
+            if (!isTransient && atomicCancelOk) {
               if (pgStore && lookupUid) {
                 await pgStore.updateGoalStatus(lookupUid, goalId, "cancelled", reason);
               }
