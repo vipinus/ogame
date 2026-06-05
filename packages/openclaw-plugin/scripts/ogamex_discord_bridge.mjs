@@ -941,6 +941,12 @@ function appliesToGoalType(accelerator, goalType) {
   if (goalType === "research") return accelerator === "researchLab";
   if (goalType === "build")    return accelerator === "roboticsFactory" || accelerator === "naniteFactory";
   if (goalType === "build_ships") return accelerator === "shipyard" || accelerator === "roboticsFactory" || accelerator === "naniteFactory";
+  // 2026-06-05 — colonize cascades through building 1 colony ship at
+  // the source planet, so it benefits from the same shipyard +
+  // robotics/nanite accelerators as build_ships. Without this branch
+  // the optimizer returned 0 candidates for daigang's s275 colonize
+  // and emitted no opt- goal even after threshold was lowered.
+  if (goalType === "colonize") return accelerator === "shipyard" || accelerator === "roboticsFactory" || accelerator === "naniteFactory";
   return false; // lifeform_building: no known regular-infra accelerator
 }
 
@@ -1377,9 +1383,14 @@ async function handleOptimize(rest) {
 // compat but not consulted on startup.
 const AUTO_STATE_PATH = "/home/ddxs/.openclaw/workspace/ogamex/runtime/ogamex-auto.json";
 const AUTO_TICK_MS = 60_000;
-// Threshold raised 600→1800s (30 min) for safety. Smaller saves are noise;
-// owner doesn't want flip-flopping that wastes resources via mid-build cancel.
-const AUTO_SAVINGS_THRESHOLD_SEC = 1800;
+// Phase 7c.6 (2026-06-05) — threshold lowered 1800→60s per operator
+// "好了, 没看到优化过的 tree" on a fresh s275-en colonize tree where
+// every prereq sits at L0/L1; per-candidate savings rarely cross 30
+// minutes on those small upgrades, so the optimizer was emitting no
+// opt- goals at all. Lock-in policy (AUTO_LOCKIN_WHEN_BUILDING below)
+// still prevents the cancel-mid-build flip-flop that the higher
+// threshold originally hedged against.
+const AUTO_SAVINGS_THRESHOLD_SEC = 60;
 // Once a candidate is dispatched (i.e. building started on ogame), the
 // optimizer must NOT supersede it — cancelling mid-build wastes resources
 // and time. Lock-in policy: if state.build_q.building matches the current
