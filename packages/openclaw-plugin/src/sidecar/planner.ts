@@ -176,22 +176,37 @@ export function pickEnergyPrereqBuilding(
 ): { building: "fusionReactor" | "solarPlant"; level: number; targetLevel: number } | null {
   if (!ENERGY_GATED_BUILDINGS.has(building)) return null;
   if (building === "solarPlant" || building === "fusionReactor") return null;
-  const curEnergy = (planet.resources as { e?: number } | undefined)?.e ?? 0;
   const solar = planet.buildings?.["solarPlant"] ?? 0;
   const fusion = planet.buildings?.["fusionReactor"] ?? 0;
   const extraConsumption =
     mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, current);
-  const projectedEnergy = curEnergy - extraConsumption;
+  // 2026-06-05 — operator 实证: snapshot.resources.e 在 fleet 降落 / 偶发
+  // sniffer 过渡帧里会瞬间报 0, planner 信了就误触发补电厂 (2:75:7 12:15:09
+  // curEnergy 1秒内 2770→0). 按 [feedback_compute_dont_scrape] 改成
+  // structural 公式: structuralBudget = solarOutput(solar) +
+  // fusionOutput(fusion) - sum(mineEnergyConsumption(b, currentL)). 不再
+  // 读 snapshot 的瞬时 e, snapshot artifact 无法骗到 gate.
+  const mineKeys = ["metalMine", "crystalMine", "deuteriumSynth"] as const;
+  let mineDraw = 0;
+  for (const mk of mineKeys) {
+    const lv = planet.buildings?.[mk] ?? 0;
+    mineDraw += mineEnergyConsumption(mk, lv);
+  }
+  const solarOut = solarProduction(solar);
+  const fusionOut = fusionProduction(fusion, energyTech);
+  const structuralBudget = solarOut + fusionOut - mineDraw;
   const needsPowerPlant =
     (solar === 0 && fusion === 0)
-    || extraConsumption > curEnergy;
-  // 2026-06-05 — operator 反馈某次舰队落地仍触发. probe log records the inputs
-  // every time the gate evaluates so we can confirm whether the trigger
-  // matched a transient deficit or a stale snapshot. Remove once verified.
+    || extraConsumption > structuralBudget;
+  // probe log retained: structural budget vs snapshot's reported e so we
+  // can spot future artifacts without re-debugging from scratch.
+  const snapE = (planet.resources as { e?: number } | undefined)?.e ?? 0;
   console.info(
     `[ogamex/planner/energy-gate] planet=${planet.id} building=${building} ${current}->${nextLevel} ` +
-    `curEnergy=${curEnergy} extra=${Math.round(extraConsumption)} ` +
-    `(solar=${solar} fusion=${fusion}) trigger=${needsPowerPlant}`,
+    `structural=${Math.round(structuralBudget)} (solarOut=${Math.round(solarOut)} ` +
+    `fusionOut=${Math.round(fusionOut)} mineDraw=${Math.round(mineDraw)}) ` +
+    `snapE=${snapE} extra=${Math.round(extraConsumption)} (solar=${solar} fusion=${fusion}) ` +
+    `trigger=${needsPowerPlant}`,
   );
   if (!needsPowerPlant) return null;
   const solarCostFn = TECH_TREE.solarPlant?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
@@ -216,11 +231,12 @@ export function pickEnergyPrereqBuilding(
     if (!isFieldsFull(planet.id, "fusionReactor") && fusionPrereqsMet) pickFusion = true;
     else return null;
   }
-  // v0.0.738 — solve for min plant level that covers the deficit. Deficit =
-  // |projectedEnergy| when projectedEnergy < 0, OR current shortfall when
-  // curEnergy already negative. Plant production at picked level must be
-  // (current plant prod) + deficit. Cap search at +20 levels to bound.
-  const deficit = Math.max(0, -projectedEnergy, -curEnergy);
+  // v0.0.738 — solve for min plant level that covers the deficit. Plant
+  // production at picked level must reach (current plant prod) + deficit.
+  // Cap search at +20 levels to bound. 2026-06-05 — deficit is now derived
+  // from structural budget (above) not snapshot e, so transient snapshot
+  // artifacts no longer over-size the chosen plant.
+  const deficit = Math.max(0, extraConsumption - structuralBudget);
   const baseProd = pickFusion ? fusionProduction(fusion, energyTech) : solarProduction(solar);
   const startLvl = pickFusion ? fusion + 1 : solar + 1;
   let chosenLvl = startLvl;
