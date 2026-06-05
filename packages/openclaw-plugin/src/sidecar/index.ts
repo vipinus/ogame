@@ -1759,20 +1759,21 @@ export async function startSidecar(
         return [];
       }
     },
-    cancelGoal: (id) => {
-      // Phase 9c.7 — ownership guard. ALS-resolved foreign user can only
-      // mutate goals they own; mismatch returns "goal not found" to avoid
-      // confirming the goal exists in another tenant. Legacy (no ALS,
-      // operator) path skips this — operator is admin and can manage all.
+    // Phase 7c.3.a (2026-06-05) — Group B CRUD handlers all on PG primary.
+    // Uid resolution mirrors shadowFire: ALS-resolved caller (web user) or
+    // env operator pgUserId fallback. When neither resolves, the handler
+    // refuses with a clear reason instead of silently dropping the write.
+    cancelGoal: async (id) => {
       const callerUid = getCurrentUserId();
-      if (callerUid) {
-        const owner = goalsStore.ownerOf(id);
-        if (owner !== callerUid) return { ok: false, reason: "goal not found" };
+      const uid = callerUid || pgUserId;
+      if (!pgStore || !goalsStorePg || !uid) {
+        return { ok: false, reason: "pg unavailable or no user context" };
       }
-      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
-      // v0.0.481: cascade cancel — cancel all live descendants whose
-      // parent_goal_id traces back to this id (BFS through parent_goal_id
-      // chain). Architecture B: parent-child sub-goal relationship.
+      const owner = await goalsStorePg.ownerOf(uid, id);
+      if (!owner) return { ok: false, reason: "goal not found" };
+      if (callerUid && owner !== callerUid) return { ok: false, reason: "goal not found" };
+      // Cascade cancel: BFS through parent_goal_id chain. Operator semantics
+      // preserved verbatim from the SQLite path.
       const cascadeIds: string[] = [];
       const queue = [id];
       const visited = new Set<string>();
@@ -1780,68 +1781,71 @@ export async function startSidecar(
         const pid = queue.shift()!;
         if (visited.has(pid)) continue;
         visited.add(pid);
-        for (const child of goalsStore.listChildren(pid)) {
+        const children = await goalsStorePg.listChildren(uid, pid);
+        for (const child of children) {
           if (child.status === "completed" || child.status === "cancelled") continue;
           cascadeIds.push(child.goal.id);
           queue.push(child.goal.id);
         }
       }
-      goalsStore.updateStatus(id, "cancelled", "via /v1/goals/{id}/cancel");
-      shadowFire("goal.updateStatus.cancel", (uid) => pgStore!.updateGoalStatus(uid, id, "cancelled", "via /v1/goals/{id}/cancel"));
+      await pgStore.updateGoalStatus(uid, id, "cancelled", "via /v1/goals/{id}/cancel");
       priorityMergerRef?.clearAwaiting(id);
       priorityMergerRef?.clearDispatched(id);
       for (const cid of cascadeIds) {
         const cReason = `cascade: parent ${id.slice(0, 12)} cancelled`;
-        goalsStore.updateStatus(cid, "cancelled", cReason);
-        shadowFire("goal.updateStatus.cascade", (uid) => pgStore!.updateGoalStatus(uid, cid, "cancelled", cReason));
+        await pgStore.updateGoalStatus(uid, cid, "cancelled", cReason);
         priorityMergerRef?.clearAwaiting(cid);
         priorityMergerRef?.clearDispatched(cid);
       }
       triggerDispatch();
       return { ok: true, cascaded: cascadeIds.length };
     },
-    pauseGoal: (id) => {
+    pauseGoal: async (id) => {
       const callerUid = getCurrentUserId();
-      if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
-      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
-      goalsStore.updateStatus(id, "blocked", "paused by operator");
-      shadowFire("goal.updateStatus.pause", (uid) => pgStore!.updateGoalStatus(uid, id, "blocked", "paused by operator"));
+      const uid = callerUid || pgUserId;
+      if (!pgStore || !goalsStorePg || !uid) return { ok: false, reason: "pg unavailable or no user context" };
+      const owner = await goalsStorePg.ownerOf(uid, id);
+      if (!owner) return { ok: false, reason: "goal not found" };
+      if (callerUid && owner !== callerUid) return { ok: false, reason: "goal not found" };
+      await pgStore.updateGoalStatus(uid, id, "blocked", "paused by operator");
       priorityMergerRef?.clearDispatched(id);
       triggerDispatch();
       return { ok: true };
     },
-    resumeGoal: (id) => {
+    resumeGoal: async (id) => {
       const callerUid = getCurrentUserId();
-      if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
-      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
-      goalsStore.updateStatus(id, "pending", "resumed by operator");
-      shadowFire("goal.updateStatus.resume", (uid) => pgStore!.updateGoalStatus(uid, id, "pending", "resumed by operator"));
-      // v0.0.459: operator-triggered retry — clear awaiting so this goal
-      // is eligible for dispatch on the immediate triggerDispatch below.
+      const uid = callerUid || pgUserId;
+      if (!pgStore || !goalsStorePg || !uid) return { ok: false, reason: "pg unavailable or no user context" };
+      const owner = await goalsStorePg.ownerOf(uid, id);
+      if (!owner) return { ok: false, reason: "goal not found" };
+      if (callerUid && owner !== callerUid) return { ok: false, reason: "goal not found" };
+      await pgStore.updateGoalStatus(uid, id, "pending", "resumed by operator");
+      // Operator-triggered retry — clear awaiting so this goal is eligible
+      // for dispatch on the immediate triggerDispatch below.
       priorityMergerRef?.clearAwaiting(id);
       priorityMergerRef?.clearDispatched(id);
       triggerDispatch();
       return { ok: true };
     },
-    setMainGoal: (id) => {
+    setMainGoal: async (id) => {
       const callerUid = getCurrentUserId();
-      if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
-      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
-      // NOTE: setMainGoal currently clears is_main_goal across ALL rows
-      // (cross-tenant bleed). Foreign user setting main on their own goal
-      // will also clear operator's. Tracked as a follow-up — needs a
-      // user-scoped clear in goalsStore. Operator unaffected today.
-      goalsStore.setMainGoal(id);
-      shadowFire("goal.setMain", (uid) => pgStore!.setMainGoal(uid, id));
+      const uid = callerUid || pgUserId;
+      if (!pgStore || !goalsStorePg || !uid) return { ok: false, reason: "pg unavailable or no user context" };
+      const owner = await goalsStorePg.ownerOf(uid, id);
+      if (!owner) return { ok: false, reason: "goal not found" };
+      if (callerUid && owner !== callerUid) return { ok: false, reason: "goal not found" };
+      await pgStore.setMainGoal(uid, id);
       triggerDispatch();
       return { ok: true };
     },
-    unsetMainGoal: (id) => {
+    unsetMainGoal: async (id) => {
       const callerUid = getCurrentUserId();
-      if (callerUid && goalsStore.ownerOf(id) !== callerUid) return { ok: false, reason: "goal not found" };
-      if (!goalsStore.get(id)) return { ok: false, reason: "goal not found" };
-      goalsStore.setMainGoal(null);
-      shadowFire("goal.setMain.clear", (uid) => pgStore!.setMainGoal(uid, null));
+      const uid = callerUid || pgUserId;
+      if (!pgStore || !goalsStorePg || !uid) return { ok: false, reason: "pg unavailable or no user context" };
+      const owner = await goalsStorePg.ownerOf(uid, id);
+      if (!owner) return { ok: false, reason: "goal not found" };
+      if (callerUid && owner !== callerUid) return { ok: false, reason: "goal not found" };
+      await pgStore.setMainGoal(uid, null);
       triggerDispatch();
       return { ok: true };
     },

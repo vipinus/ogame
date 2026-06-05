@@ -112,12 +112,13 @@ export interface HttpServerOptions {
   serverSwitchRestoreGoals?: (uid: string, newUniverse: string) => Promise<number>;
   /** v0.0.766 — S14 切服 audit log hook */
   serverSwitchAppendEvent?: (uid: string, payload: Record<string, unknown>) => Promise<void>;
-  /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
-  cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
-  pauseGoal?: (id: string) => { ok: boolean; reason?: string };
-  resumeGoal?: (id: string) => { ok: boolean; reason?: string };
-  setMainGoal?: (id: string) => { ok: boolean; reason?: string };
-  unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
+  /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404.
+   *  Phase 7c.3 — handlers may be sync OR async; handleGoalAction awaits. */
+  cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number } | Promise<{ ok: boolean; reason?: string; cascaded?: number }>;
+  pauseGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
+  resumeGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
+  setMainGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
+  unsetMainGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
   /** M4 — create an arbitrary goal from the panel modal. POST /v1/goals/create. */
   createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string };
   /** M4 — parse free-form NL into a goal-shape without storing. POST /v1/goals/parse. */
@@ -193,12 +194,13 @@ interface ResolvedHttpServerOptions {
   serverSwitchRestoreGoals?: (uid: string, newUniverse: string) => Promise<number>;
   /** v0.0.766 — S14 切服 audit log hook */
   serverSwitchAppendEvent?: (uid: string, payload: Record<string, unknown>) => Promise<void>;
-  /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404. */
-  cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number };
-  pauseGoal?: (id: string) => { ok: boolean; reason?: string };
-  resumeGoal?: (id: string) => { ok: boolean; reason?: string };
-  setMainGoal?: (id: string) => { ok: boolean; reason?: string };
-  unsetMainGoal?: (id: string) => { ok: boolean; reason?: string };
+  /** Per-action callbacks. URL-decoded id is passed. Return {ok:false,reason} for 404.
+   *  Phase 7c.3 — handlers may be sync OR async; handleGoalAction awaits. */
+  cancelGoal?: (id: string) => { ok: boolean; reason?: string; cascaded?: number } | Promise<{ ok: boolean; reason?: string; cascaded?: number }>;
+  pauseGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
+  resumeGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
+  setMainGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
+  unsetMainGoal?: (id: string) => { ok: boolean; reason?: string } | Promise<{ ok: boolean; reason?: string }>;
   /** M4 — create an arbitrary goal from the panel modal. POST /v1/goals/create. */
   createGoal?: (body: { type: string; target: Record<string, unknown>; planet?: string; priority?: number }) => { ok: boolean; goal_id?: string; reason?: string };
   /** M4 — parse free-form NL into a goal-shape without storing. POST /v1/goals/parse. */
@@ -1010,7 +1012,7 @@ export class HttpServer {
   /**
    * POST /v1/goals/{id}/{action} — delegate to wired goalAction hook.
    */
-  private handleGoalAction(res: http.ServerResponse, id: string, action: "cancel" | "pause" | "resume" | "set-main" | "unset-main"): void {
+  private async handleGoalAction(res: http.ServerResponse, id: string, action: "cancel" | "pause" | "resume" | "set-main" | "unset-main"): Promise<void> {
     this.writeCorsHeaders(res);
     const fn = action === "cancel" ? this.opts.cancelGoal
              : action === "pause"  ? this.opts.pauseGoal
@@ -1025,7 +1027,9 @@ export class HttpServer {
       return;
     }
     try {
-      const result = fn(id);
+      // Phase 7c.3 — handler may be async (PG-primary); wrap in
+      // Promise.resolve for sync compat.
+      const result = await Promise.resolve(fn(id));
       res.statusCode = result.ok ? 200 : 404;
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(result));
