@@ -159,17 +159,14 @@ export function clearFieldsFullByPlanet(planetId: string): number {
   return n;
 }
 
-// v0.0.* — operator 2026-06-05 "L32 太阳能不该建 不缺电". Root cause: transport
-// drops resources on a blocked mine goal → priority_merger retries planBuild →
-// pickEnergyPrereqBuilding triggered because `projectedEnergy < 0` is too
-// eager: a single deutSynth L31→L32 bump (~1600 energy) flips a +1000 surplus
-// into a "barely negative" projected, and we recurse into a 12h+ solarPlant
-// upgrade the operator never asked for. Add a tolerance band so the trigger
-// only fires when the upgrade would push energy meaningfully into deficit, not
-// merely a sliver below zero. Number tuned at 500 to absorb noise from energy
-// snapshot rounding + transient mine consumption fluctuations.
-const ENERGY_DEFICIT_BUFFER = 500;
-
+// v0.0.* — operator 2026-06-05 final spec: "如果新建的建筑需要的电量大于库存
+// 电量 就启动补电厂的任务". Trigger condition is the per-upgrade energy delta
+// vs the current energy surplus. If the building's L→L+1 step consumes more
+// energy than the planet currently has in surplus, queue a plant. Otherwise
+// leave it; the operator's transports/manual queue can deal.
+// Earlier iterations: v0.0.675/737 used projectedEnergy<0 (mathematically the
+// same as below); a -BUFFER tolerance was tried and rejected. Bootstrap branch
+// (no plant at all) stays — there's no operator decision to preserve.
 export function pickEnergyPrereqBuilding(
   building: string,
   current: number,
@@ -185,14 +182,9 @@ export function pickEnergyPrereqBuilding(
   const extraConsumption =
     mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, current);
   const projectedEnergy = curEnergy - extraConsumption;
-  // v0.0.* — gate: build solar/fusion only when meaningful deficit is impending.
-  // (1) already in real deficit (curEnergy < 0); or
-  // (2) no plant ever built (solar==0 && fusion==0); or
-  // (3) the upgrade would push us > BUFFER into deficit, not just a sliver.
   const needsPowerPlant =
-    curEnergy < 0
-    || (solar === 0 && fusion === 0)
-    || projectedEnergy < -ENERGY_DEFICIT_BUFFER;
+    (solar === 0 && fusion === 0)
+    || extraConsumption > curEnergy;
   if (!needsPowerPlant) return null;
   const solarCostFn = TECH_TREE.solarPlant?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
   const fusionCostFn = TECH_TREE.fusionReactor?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
