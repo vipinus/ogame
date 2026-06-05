@@ -1657,7 +1657,7 @@ async function expeditionTick() {
   // Iteration below skips them; planet re-enters the race only after its
   // current exp completes or cancels.
   const lockedPlanets = new Set(
-    await store.list()
+    (await store.list())
       .filter((r) =>
         r.goal.type === "expedition" &&
         !["completed", "cancelled"].includes(r.status))
