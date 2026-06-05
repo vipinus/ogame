@@ -1036,7 +1036,11 @@ export async function startSidecar(
               kaelesh: { population: ["sanctuary"], food: "antimatterCondenser" },
             };
             const rule = popFoodRules[species];
-            if (rule && rule.population.includes(techName) && livingSpace !== null && wellFed !== null && livingSpace > wellFed) {
+            // 必须 current < targetLevel (unmet) 才 emit, 否则 antimatterCondenser
+            // 之 requires {sanctuary: 1} 又递归到这 → 死循环 (operator
+            // 2026-06-05 stack overflow 事故 v0.0.785-pre).
+            if (rule && rule.population.includes(techName) && current < targetLevel
+                && livingSpace !== null && wellFed !== null && livingSpace > wellFed) {
               const curFood = lfBldg2[rule.food] ?? 0;
               const foodChild = buildAndSimulate(rule.food, curFood + 1, "building");
               if (foodChild) children.push(foodChild);
@@ -2690,6 +2694,32 @@ export async function startSidecar(
     strategyManager,
     stateRef,
   });
+
+  // Phase 8a (v0.0.785) — operator 2026-06-05 "方案 A" — optimizer 从 daemon
+  // 搬到 sidecar. 60s tick, per-tenant accelerator math, emit opt-* goal
+  // when net savings > 60s. daemon ogamex_discord_bridge.mjs 那侧 setInterval
+  // 同步 disable. cf. /home/ddxs/Sync/Works/ogamex/packages/openclaw-plugin/src/sidecar/optimizer.ts
+  let optimizerHandle: { stop: () => void } | null = null;
+  if (goalsStorePg && pgStore) {
+    const { startOptimizer } = await import("./optimizer.js");
+    optimizerHandle = startOptimizer({
+      goalsStorePg,
+      pgStore,
+      getStateForUid: (uid: string) => userStates.get(uid) ?? null,
+      loadActiveTenantUids: async (): Promise<string[]> => {
+        if (!pgStore) return [];
+        try {
+          const sharedSql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+          const rows = await sharedSql`SELECT DISTINCT user_id FROM ogame_goals WHERE status IN ('active','blocked','pending')`;
+          return (rows as Array<{ user_id?: string }>).map((r) => r.user_id ?? "").filter(Boolean);
+        } catch (e) {
+          console.warn("[optimizer] loadActiveTenantUids failed:", e instanceof Error ? e.message : e);
+          return [];
+        }
+      },
+    });
+  }
+  void optimizerHandle;
 
   // -------------------------------------------------------------------------
   // Upstream handlers — registered ONCE against the wrapped on, which the

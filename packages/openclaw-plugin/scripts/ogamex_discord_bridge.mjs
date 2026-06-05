@@ -1482,7 +1482,12 @@ async function optimizerTick() {
   console.log(`[auto] tick done: actioned=${actioned} locked=${blocked} no-action=${null_action}`);
 }
 
-console.log(`[auto] boot: enabled=${autoEnabled} interval=${AUTO_TICK_MS}ms threshold=${AUTO_SAVINGS_THRESHOLD_SEC}s`);
+// Phase 8a (v0.0.785) — operator 2026-06-05 "方案 A": optimizer 搬 sidecar
+// (src/sidecar/optimizer.ts). daemon 这侧的 60s tick + multi-tenant 包装
+// 全部 disable. /eta Discord command 仍调 computeOptimization 函数 (留
+// computeOptimization /Bottleneck wrapper, 因为 Discord command 是 daemon
+// 职责一部分). 真正"自动 emit opt-* goal" 由 sidecar 跑.
+console.log(`[auto] daemon-side tick DISABLED — optimizer moved to sidecar (phase 8a)`);
 // Phase 7c.6 — per-user optimizer iter. CURRENT_UID restored to OPERATOR_UID
 // after the loop so Discord command handlers (which depend on store shim)
 // keep operating on the operator's tenant.
@@ -1506,10 +1511,9 @@ async function optimizerTickAllTenants() {
   CURRENT_UID = OPERATOR_UID;
   CURRENT_BEARER = "";
 }
-setInterval(() => {
-  console.log(`[auto] tick at ${new Date().toISOString()} (enabled=${autoEnabled})`);
-  optimizerTickAllTenants().catch((e) => console.warn("[auto] outer tick threw:", e.message));
-}, AUTO_TICK_MS);
+// Phase 8a — setInterval daemon-side 已 disable, sidecar 跑 optimizer.
+// 留 optimizerTickAllTenants 函数 unused (作为 archive), 防 git revert 需要回.
+void optimizerTickAllTenants;
 
 // ─── Expedition daemon ──────────────────────────────────────────────────
 // Autonomous daily-task: when an expedition slot is free AND the planet
