@@ -838,7 +838,18 @@ export async function startSidecar(
       }
     },
     // Operator API providers — surface state/goals/expedition over HTTP.
-    stateProvider: () => stateRef.current ?? { ok: false, reason: "no snapshot yet" },
+    stateProvider: (uid?: string) => {
+      // 2026-06-05 — per-user routing for daemon optimizer + flagship.
+      // Without uid → legacy global mirror. With uid → user-tenant mirror.
+      // Null fallback (instead of cross-tenant) when uid given but no state
+      // seeded, mirroring listGoals' fix to avoid "operator data appears
+      // on daigang's first render" race.
+      if (uid) {
+        const us = userStates.get(uid);
+        return us ?? { ok: false, reason: "no snapshot yet for user" };
+      }
+      return stateRef.current ?? { ok: false, reason: "no snapshot yet" };
+    },
     listGoals: async (explicitUid?: string) => {
       // Phase 9c.7 — when explicitUid is supplied (foreign Bearer
       // resolved at the http layer), filter rows by user_id. Operator's

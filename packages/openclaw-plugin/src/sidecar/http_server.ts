@@ -84,7 +84,7 @@ export interface HttpServerOptions {
    * routing correctly. NO auth required (operator view).
    */
   debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
-  stateProvider?: () => unknown;
+  stateProvider?: (uid?: string) => unknown;
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
   listGoals?: (userId?: string) => Array<unknown> | Promise<Array<unknown>>;
   expeditionProvider?: () => unknown;
@@ -169,7 +169,7 @@ interface ResolvedHttpServerOptions {
   pollTimeoutMs: number;
   healthReporter?: () => Promise<unknown>;
   debugSnapshot?: () => { directives: DebugDirectiveEntry[]; events: DebugEventEntry[] };
-  stateProvider?: () => unknown;
+  stateProvider?: (uid?: string) => unknown;
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
   listGoals?: (userId?: string) => Array<unknown> | Promise<Array<unknown>>;
   expeditionProvider?: () => unknown;
@@ -461,7 +461,24 @@ export class HttpServer {
 
     // Operator API (no auth, LAN trust). GET state/goals/expedition.
     if (method === "GET" && url === "/ogamex/v1/state") {
-      this.handleProviderGet(res, this.opts.stateProvider);
+      // 2026-06-05 — per-user state. Without this daemon's optimizer fetched
+      // operator's state mirror even when sending daigang's Bearer (20 s274
+      // planets instead of 1 s275 planet), making accelerator math nonsense.
+      void (async () => {
+        const r = await this.resolveBearer(req);
+        if (r.kind === "forbidden") {
+          this.writeCorsHeaders(res);
+          res.statusCode = 401;
+          res.end();
+          return;
+        }
+        const uid = r.kind === "user" ? r.uid : undefined;
+        const value = this.opts.stateProvider ? this.opts.stateProvider(uid) : null;
+        this.writeCorsHeaders(res);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify(value));
+      })();
       return;
     }
     if (method === "GET" && (url === "/ogamex/v1/goals" || url?.startsWith("/ogamex/v1/goals?"))) {
