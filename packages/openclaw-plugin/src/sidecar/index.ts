@@ -1050,9 +1050,18 @@ export async function startSidecar(
           // Phase 11 — energy gate 扩到 lifeform path. ENERGY_GATED_BUILDINGS
           // 已包含 LF major buildings (antimatterCondenser 等), catalog cost_at(L).e
           // 真实有值时 cascade emit solarPlant 跟 regular path 同源.
+          //
+          // operator 2026-06-05 audit antimatterCondenser L48→L49: catalog
+          // e=0 → cascade nest 退化为单 self-level node → 跟 parent duplicate.
+          // 修: 入口检查 building 真实 energy delta, 0 时 skip gate (走普通 self
+          // loop, 无 duplicate). 当 catalog e cost 修正后立刻自动 trigger.
+          const energyDelta = (current < targetLevel)
+            ? mineEnergyConsumption(techName, targetLevel) - mineEnergyConsumption(techName, current)
+            : 0;
           if (kind === "building" && planet &&
               ENERGY_GATED_BUILDINGS.has(techName) &&
-              techName !== "solarPlant" && techName !== "fusionReactor") {
+              techName !== "solarPlant" && techName !== "fusionReactor" &&
+              energyDelta > 0) {
             const energyTechL = currentState?.research?.levels?.["energyTech"] ?? 0;
             const fusionStart = planet.buildings?.["fusionReactor"] ?? 0;
             const solarStart = planet.buildings?.["solarPlant"] ?? 0;

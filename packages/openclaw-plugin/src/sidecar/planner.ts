@@ -520,6 +520,15 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
   const planet = resolvePlanet(target.planet ?? goal.planet, state) ?? Object.values(state.planets)[0];
   if (!planet) return { blocked: "lifeform_building: no planet" };
 
+  // Phase 11+ (v0.0.785) — fields_full hard-block 路径之前只 cover regular
+  // building (line 2160 index.ts markFieldsFull on 120012 ack); planner
+  // 这侧 planBuildGoal 有 isFieldsFull check 防 retry spam, 但
+  // planLifeformBuildingGoal 漏了 → antimatterCondenser L49 120012 一直
+  // retry (operator 33653036 evidence 21:01-21:07 三次 dispatch). 修对齐.
+  if (isFieldsFull(planet.id, building)) {
+    return { blocked: `fields_full hard-block on ${planet.id}:${building} (24h backoff)` };
+  }
+
   // Determine species from planet.lifeform (set by userscript). Default to
   // humans if unknown — verified species path. Other species need sniffer.
   const species = ((planet.lifeform as { species?: string } | null)?.species ?? "humans") as keyof typeof LIFEFORM_TECH;
