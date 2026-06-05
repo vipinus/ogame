@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import type { UpstreamMsg, DownstreamMsg } from "@ogamex/shared";
+import { runWithUser } from "./user_context.js";
 
 export interface WsServerOptions {
   port: number;
@@ -76,7 +77,7 @@ export class WsServer {
       ws.on("pong", () => { this.aliveFlags.set(ws, true); });
       ws.on("close", () => { this.clients.delete(ws); this.aliveFlags.delete(ws); });
       ws.on("error", () => { /* swallow; close will follow */ });
-      ws.on("message", (data) => this.onMessage(data));
+      ws.on("message", (data) => this.onMessage(data, ws));
     });
     this.wss = wss;
     // Ping sweep for liveness — same as legacy start().
@@ -123,7 +124,7 @@ export class WsServer {
       ws.on("pong", () => { this.aliveFlags.set(ws, true); });
       ws.on("close", () => { this.clients.delete(ws); this.aliveFlags.delete(ws); });
       ws.on("error", () => { /* swallow; close will follow */ });
-      ws.on("message", (data) => this.onMessage(data));
+      ws.on("message", (data) => this.onMessage(data, ws));
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -325,7 +326,7 @@ export class WsServer {
     return { ok: false };
   }
 
-  private onMessage(data: unknown): void {
+  private onMessage(data: unknown, ws: WebSocket): void {
     let text: string;
     if (typeof data === "string") text = data;
     else if (Buffer.isBuffer(data)) text = data.toString("utf8");
@@ -343,9 +344,19 @@ export class WsServer {
 
     const set = (this.handlers as Record<string, Set<(m: UpstreamMsg) => void> | undefined>)[type];
     if (!set) return;
-    for (const h of set) {
-      try { h(parsed as UpstreamMsg); }
-      catch { /* handler errors must not crash the socket loop */ }
-    }
+    // Per-user Bearer-tagged sockets propagate uid via AsyncLocalStorage so
+    // downstream consumers (state.snapshot handler → priorityMerger.dispatch)
+    // read the right user_id. Without this wrap, getCurrentUserId() returns
+    // undefined and PG-backed reads fall back to legacy SQLite cross-tenant.
+    // 2026-06-05 — webtx-* goals stayed silently un-dispatched until this fix.
+    const uid = this.socketUid.get(ws);
+    const invoke = (): void => {
+      for (const h of set) {
+        try { h(parsed as UpstreamMsg); }
+        catch { /* handler errors must not crash the socket loop */ }
+      }
+    };
+    if (uid) runWithUser(uid, invoke);
+    else invoke();
   }
 }

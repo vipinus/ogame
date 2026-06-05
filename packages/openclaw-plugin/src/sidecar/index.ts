@@ -2284,6 +2284,23 @@ export async function startSidecar(
   // sidecar's next /v1/goals serves simulate() output with the up-to-date
   // accel (R/N/lab levels). Without this, ETA stays stale until panel's
   // natural 3s poll cycle and operator sees outdated estimates.
+  // v0.0.* — operator 2026-06-05 — after sidecar restart, TM may not push
+  // state.snapshot until the operator navigates a fresh ogame page. The
+  // state-staleness gate (5 min) then blocks every fleet POST goal until
+  // a snapshot arrives, leaving web-created transport chains stuck pending.
+  // Solve by periodically broadcasting data.refresh while stateRef is stale
+  // and there's a TM connected. Stops once a fresh snapshot lands.
+  const STATE_REFRESH_INTERVAL_MS = 30_000;
+  const stateRefreshTimer: NodeJS.Timeout = setInterval(() => {
+    const last = stateRef.current?.last_update ?? 0;
+    const ageMs = Date.now() - last;
+    if (last > 0 && ageMs < 60_000) return;  // fresh enough
+    const msg = { type: "data.refresh" as const, scope: "all" as const, reason: "stale-state-poll" };
+    try { ws.send(msg); } catch (e) { console.warn("[ogamex/sidecar] stale-poll ws.send threw", e); }
+    try { http.queueDownstream(msg); } catch (e) { console.warn("[ogamex/sidecar] stale-poll http.queue threw", e); }
+  }, STATE_REFRESH_INTERVAL_MS);
+  stateRefreshTimer.unref();
+
   const emitPostDirectiveRefresh = (reason: string): void => {
     const msg: DownstreamMsg = { type: "data.refresh", scope: "all", reason };
     try { ws.send(msg); } catch (e) { console.warn("[ogamex/sidecar] emitPostDirectiveRefresh ws.send threw", e); }
@@ -2385,6 +2402,12 @@ export async function startSidecar(
     // a fallback when DATABASE_URL is unset; if pgStore boots OK, the merger
     // never touches SQLite for reads.
     ...(goalsStorePg ? { reader: goalsStorePg } : {}),
+    // Phase 7c.2 (2026-06-05) — PG primary writer. The merger's
+    // updateStatusAndMirror writes status transitions directly via
+    // pgStore.updateGoalStatus, bypassing SQLite. PG-only goals (created
+    // via web POST → PG) no longer cause "unknown goal id" throws; the
+    // cross-tenant SQLite fallback remains for legacy single-tenant.
+    ...(pgStore ? { writer: pgStore } : {}),
   });
   // v0.0.459 forward-ref assignment — CRUD endpoints + directive_completed
   // handler use priorityMergerRef + triggerDispatch via closure (declared
@@ -2782,6 +2805,13 @@ export async function startSidecar(
       }).join(",");
       const uidTag = dispUid ? ` user=${dispUid.slice(0, 8)}…` : "";
       console.log(`[merger] dispatched=${result.dispatched.length} blocked=${result.blocked.length} done=0 actions=${actions}${uidTag}`);
+      // operator 2026-06-05 — dump blocked reasons so we can see why a new
+      // web-created transport chain stays pending. Keep entries short.
+      if (result.blocked.length > 0 && result.dispatched.length === 0) {
+        for (const b of result.blocked) {
+          console.info(`[merger/blocked] ${b.goal_id} reason="${(b.reason ?? "").slice(0, 200)}"`);
+        }
+      }
     } catch (e) {
       console.error("[ogamex/sidecar] priorityMerger.dispatch threw", e);
     }
