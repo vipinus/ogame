@@ -991,7 +991,10 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       const usedNow = srv?.used_fleet_slots ?? -1;
       const maxNow = srv?.max_fleet_slots ?? -1;
       const chainBound = typeof (params as { chain_id?: string }).chain_id === "string" && (params as { chain_id: string }).chain_id !== "";
-      const bypassKeepEmpty = directive.action === "transport" || (directive.action === "deploy" && chainBound);
+      // v0.0.843 — operator 2026-06-06: 第二处 slot gate (deploy/colonize 共享
+      // 通道, 单独 gate). 同 goal_runner 一并加 colonize 到 bypassKeepEmpty 列表
+      // (max_fleet_slots=1 新号永久 block fix).
+      const bypassKeepEmpty = directive.action === "transport" || (directive.action === "deploy" && chainBound) || directive.action === "colonize";
       const ceiling = bypassKeepEmpty ? maxNow : maxNow - 1;
       if (usedNow >= 0 && maxNow > 0 && usedNow >= ceiling) {
         const label = bypassKeepEmpty ? "all slots used" : "keep-1-empty";
