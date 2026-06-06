@@ -19,7 +19,13 @@ src/directive_executor.ts:562
 EOF
 )
 
-VIOLATIONS=$(grep -rnE '&cp=|\?cp=' src/ \
+# v0.0.855 — operator 2026-06-06 "有没有切cp的调用没有用cp保护通道的?"
+# 扩展 gate 覆盖 POST body 偷塞 cp ([cp body bypass] 老坑 — URL 不带 cp= 但
+# body 写 cp=PID 同样切顶栏). 新增 3 个 pattern:
+#   .append("cp", ...)    URLSearchParams 用法
+#   .set("cp", ...)       URLSearchParams.set
+#   "cp": <expr>          JSON / object literal
+VIOLATIONS=$(grep -rnE '&cp=|\?cp=|\.append\(\s*"cp"\s*,|\.set\(\s*"cp"\s*,|"cp"\s*:\s*[a-zA-Z_$`]' src/ \
   --include='*.ts' \
   --exclude-dir='__tests__' \
   | grep -v 'src/api/safe_fetch.ts' \
