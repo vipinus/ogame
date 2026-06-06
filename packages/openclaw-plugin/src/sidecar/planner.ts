@@ -1587,14 +1587,24 @@ function planJumpgateGoal(goal: Goal, state: WorldState): PlanResult {
   // ships → JG 真跳过 (whoever dispatched), auto_complete 给 priorityMerger
   // mark goal completed, chain unblock. take_all 模式 ships 是 dynamic, 此路径
   // 只 cover 静态 ships count.
+  // v0.0.829 — operator 2026-06-06 "月球没有 cd 根本没跳" — 老 self-detect 只
+  // 看 target_moon ships sufficient, chain context 下 target 上已经有历史 ships
+  // 残留(上一次 chain LC 还未 deploy 出去 / 多 chain 重叠使用同 moon), 误判
+  // auto_complete 跳过 JG 不真跳. 真因 fix: src moon cooldown active 才能证明
+  // "JG 刚跳过 (whoever dispatched)". src cd=0 + target ships sufficient =
+  // 历史残留, 必须 dispatch.
+  const srcCdSec = (srcMoon as { jumpgate_cooldown_sec?: number | null }).jumpgate_cooldown_sec;
+  const srcHarvestedAt = (srcMoon as { jumpgate_harvested_at?: number | null }).jumpgate_harvested_at;
+  const srcCdActive = typeof srcCdSec === "number" && srcCdSec > 0 && typeof srcHarvestedAt === "number"
+    && (srcCdSec - Math.floor((Date.now() - srcHarvestedAt) / 1000)) > 0;
   const expectedShips = target.ships;
-  if (expectedShips && typeof expectedShips === "object" && !Array.isArray(expectedShips)) {
+  if (srcCdActive && expectedShips && typeof expectedShips === "object" && !Array.isArray(expectedShips)) {
     const tgtShips = (tgtMoon as { ships?: Record<string, number> }).ships ?? {};
     const entries = Object.entries(expectedShips as Record<string, unknown>)
       .filter(([, v]) => typeof v === "number" && (v as number) > 0) as Array<[string, number]>;
     if (entries.length > 0 && entries.every(([k, v]) => (tgtShips[k] ?? 0) >= v)) {
       return {
-        blocked: `jumpgate already executed (target_moon ${targetMoonId} has expected ships)`,
+        blocked: `jumpgate already executed (src cd active + target ${targetMoonId} ships ≥ expected)`,
         auto_complete: true,
       };
     }

@@ -127,6 +127,14 @@ export class PriorityMerger {
   // within timeout window AND goal status is still "active" without ack,
   // skip re-dispatch this tick (defense-in-depth vs. userscript dedup).
   private readonly dispatchedAt = new Map<string, number>();
+  // v0.0.827 — operator 2026-06-06 "4-leg chain leg 1 双发". dispatch() 是
+  // fire-and-forget (index.ts:654 triggerDispatch + WS snapshot handler +
+  // status change), 同 uid 多 caller 并发. await updateStatusAndMirror yield
+  // control 后第二个 caller 还看到 row.status='pending' (PG read lag) → 同
+  // goal 同秒 emit 2 directive → 真双 fleet. Per-uid reentrancy guard: 同 uid
+  // 进行中的 dispatch tick 时第二个 call 立即 skip; 漏掉的工作 next snapshot
+  // / trigger 自然补上.
+  private readonly inFlightUids = new Set<string>();
   // v0.0.577 — operator 2026-06-01 "选C": stuck-recovery 60s race-free
   // safety net. Happy path ack ≈ 1s (event-driven), 60s tolerates internal
   // transient retry + slow ogame response without false-positive re-dispatch.
@@ -311,6 +319,20 @@ export class PriorityMerger {
     if (this.isSubscriptionPausedFn && this.isSubscriptionPausedFn(userId)) {
       return { dispatched: [], blocked: [], skipped_terminal: 0 };
     }
+    // v0.0.827 — per-uid reentrancy guard (see inFlightUids comment above).
+    const uidKey = userId ?? "__no_uid__";
+    if (this.inFlightUids.has(uidKey)) {
+      return { dispatched: [], blocked: [], skipped_terminal: 0 };
+    }
+    this.inFlightUids.add(uidKey);
+    try {
+      return await this._dispatchImpl(state, userId);
+    } finally {
+      this.inFlightUids.delete(uidKey);
+    }
+  }
+
+  private async _dispatchImpl(state: WorldState, userId?: string): Promise<DispatchResult> {
     // v0.0.669 — Phase 5b: dispatch made async so a future swap of
     // this.store to IGoalsStoreReader (PG/async) requires no further
     // refactor of the merger loop. `await` on the current sync GoalsStore
@@ -585,18 +607,36 @@ export class PriorityMerger {
             transport: 3,
           };
           const expectedMission = missionByType[goalType];
-          const targetParams = row.goal.target as { source_planet?: string };
+          const targetParams = row.goal.target as { source_planet?: string; target_coords?: string };
           const srcId = targetParams.source_planet ?? (typeof row.goal.planet === "string" ? row.goal.planet : "");
           const srcPlanet = srcId
             ? (Object.values(state.planets ?? {}).find((p) => p.id === srcId)
                ?? Object.values(state.planets ?? {}).find((p) => Array.isArray(p.coords) && p.coords.join(":") === srcId))
             : undefined;
           const srcCoordStr = Array.isArray(srcPlanet?.coords) ? srcPlanet.coords.join(":") : "";
+          const tgtCoordStr = typeof targetParams.target_coords === "string" ? targetParams.target_coords : "";
           const myOutbound = (state.fleets_outbound ?? []).filter((f) => {
             if (f.mission !== expectedMission) return false;
             const orig = Array.isArray(f.origin) ? f.origin.join(":") : "";
-            return orig === srcCoordStr;
+            if (orig !== srcCoordStr) return false;
+            if (tgtCoordStr) {
+              const dst = Array.isArray(f.dest) ? f.dest.join(":") : "";
+              if (dst !== tgtCoordStr) return false;
+            }
+            return true;
           });
+          // v0.0.828 — operator 2026-06-06 "Leg 1 起飞成功以后就标记完成, 这样
+          // 不可能发生重复发送". ogame 偶尔 503/HTML 让 userscript ack 返
+          // success=false, sidecar 等不到 success→ stuck-recovery 重派, 但
+          // fleets_outbound 已真有 fleet (ogame 真接收). fleets_outbound 才是
+          // ground truth — fleet 在飞就视作起飞成功, goal completed. ack 路径
+          // 仍可以正常 success 时也 mark completed (duplicate safe).
+          if (myOutbound.length > 0) {
+            await this.updateStatusAndMirror(row.goal.id, "completed", `fleet airborne mission=${expectedMission} ${srcCoordStr}→${tgtCoordStr || "?"} (outbound matched)`);
+            this.dispatchedAt.delete(row.goal.id);
+            skipped_terminal += 1;
+            continue;
+          }
           slotEmpty = myOutbound.length === 0;
         } else if (goalType === "species_discovery") {
           // v0.0.575 — operator 2026-06-01 "发现任务派的很慢": discover ack
