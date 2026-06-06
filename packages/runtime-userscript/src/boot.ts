@@ -178,7 +178,7 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
         : prefix === 13 ? "mechas"
         : prefix === 14 ? "kaelesh"
         : null;
-      if (sp) speciesVote[sp] += 1;
+      if (sp) speciesVote[sp] = (speciesVote[sp] ?? 0) + 1;
       continue;
     }
     if (techId !== undefined && idKind(techId) === "lifeform_research") {
@@ -388,6 +388,31 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   } else {
     console.log(`[OgameX] player class unknown — set via: localStorage.OGAMEX_CLASS = "discoverer"`);
   }
+  // v0.0.852 — class change event handler. 暴露给 200ms 轮询 tick 调用. 干 3 件事:
+  // 1) 清 localStorage.OGAMEX_CLASS (TRUMP 失效让重新检测可以覆写)
+  // 2) 立即跑一次 detectPlayerClass 看新 DOM 是不是已经 reflect
+  // 3) 1.5s 后再跑一次兜底 ogame DOM 异步更新延迟
+  const redetectPlayerClass = (): void => {
+    try { env.win.localStorage.removeItem("OGAMEX_CLASS"); } catch { /* */ }
+    const apply = (): void => {
+      const cls = detectPlayerClass();
+      if (cls !== "unknown") {
+        try { env.win.localStorage.setItem("OGAMEX_CLASS", cls); } catch { /* */ }
+        const cur2 = store.state;
+        const prevCls = (cur2.server as { player_class?: string } | undefined)?.player_class;
+        if (prevCls !== cls) {
+          store.setPartial({
+            server: { ...(cur2.server ?? {}), player_class: cls } as typeof cur2.server,
+          });
+          console.info(`[OgameX/class] player class updated → ${cls}`);
+        }
+      }
+    };
+    apply();
+    setTimeout(apply, 1500);
+    setTimeout(apply, 4000);
+  };
+  (env.win as Window & { __ogamexRedetectClass?: () => void }).__ogamexRedetectClass = redetectPlayerClass;
 
   // 1b. Slot caps localStorage hydration REMOVED (v0.0.685).
   //     - max_expedition_slots: now computed in harvestSlotsFromMovement via
@@ -548,6 +573,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // script writes dataset.ogamexLfChangeTs on lfsettings/pickLifeform URLs).
   let lastSeenLfChangeTs = 0;
   let lastSeenLfResearchChangeTs = 0;
+  let lastSeenClassChangeTs = 0;
   setInterval(async () => {
     try {
       const { cpInFlightCount } = await import("./api/safe_fetch.js");
@@ -576,6 +602,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         if (typeof refreshFn === "function") {
           console.info(`[OgameX/lfresearch] lfresearch change detected by sniffer @ ts=${lfrTs} — forcing refreshOnePage("lfresearch")`);
           void refreshFn("lfresearch").catch((e) => console.warn("[OgameX/lfresearch] force refresh failed", e));
+        }
+      }
+      // v0.0.852 — player class change event → re-run detectPlayerClass.
+      const clsTsRaw = env.doc.documentElement.dataset["ogamexClassChangeTs"];
+      const clsTs = clsTsRaw ? parseInt(clsTsRaw, 10) : 0;
+      if (clsTs > lastSeenClassChangeTs) {
+        lastSeenClassChangeTs = clsTs;
+        const redetectFn = (env.win as Window & { __ogamexRedetectClass?: () => void }).__ogamexRedetectClass;
+        if (typeof redetectFn === "function") {
+          console.info(`[OgameX/class] class change detected by sniffer @ ts=${clsTs} — re-running detection`);
+          redetectFn();
         }
       }
     } catch { /* */ }
@@ -690,6 +727,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           // lfresearch page so the per-planet research catalog stays current.
           if (/component=lfresearch|action=upgrade.*lfresearch|action=resetTree/i.test(u)) {
             document.documentElement.dataset.ogamexLfResearchChangeTs = String(Date.now());
+          }
+          // v0.0.852 — operator 2026-06-06 "以后会不会自己刷? 不需要手动干预,
+          // 事件探测". Player class activation/deactivation: ogame fires
+          // characterclassselection / premium category=characterClass POST.
+          // 宽 regex 兜底各 v12 子端点; 命中后 sandbox-side tick 清 localStorage
+          // 缓存 + 1.5s 后重跑 detectPlayerClass (给 ogame DOM 更新缓冲时间).
+          if (/characterclass|playerclass|classselect|classActivat|classDeactivat|category=characterClass/i.test(u)) {
+            document.documentElement.dataset.ogamexClassChangeTs = String(Date.now());
           }
         };
         // Expose a one-liner dump helper for operator. Reads OGAMEX_API_CAPTURES
@@ -1313,7 +1358,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.851";
+  const USERSCRIPT_VERSION = "0.0.852";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2796,7 +2841,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               : prefix === 13 ? "mechas"
               : prefix === 14 ? "kaelesh"
               : null;
-            if (sp) speciesVote2[sp] += 1;
+            if (sp) speciesVote2[sp] = (speciesVote2[sp] ?? 0) + 1;
             continue;
           }
           // v0.0.605 — operator 2026-06-01 "每個星球對應的生命形式科技也是
