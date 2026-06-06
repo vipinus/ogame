@@ -186,60 +186,12 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       });
       return;
     }
-    // Operator 2026-05-28 "刪除以前設計的防止和前端衝突的機制": removed
-    // userBusy DEFER branch. Conflict prevention is now handled by:
-    //   1. click intercept (boot.ts clickInterceptSync) — operator clicks
-    //      during in-flight cp= / trackBackgroundOp wait for completion
-    //   2. fleetdispatch page defer (the block below) — full page-aware
-    //      gate while the operator is in the fleet UI
-    // Operator 2026-05-28 evidence: ogame's own fleetdispatch UI fires
-    // checkTarget POST that shares the global ajax token with our
-    // background discover/expedition dispatch. Token race → ogame UI gets
-    // a stale-token rejection (resp=244B), then crashes:
-    //   "Cannot read properties of null (reading 'baseFuelCapacity')"
-    // While operator is on the fleetdispatch page, defer directives whose
-    // source planet MATCHES the current cp — token race is per-cp, so
-    // cross-planet dispatches are safe to run concurrently with the operator's
-    // fleet UI. v0.0.640 — operator 2026-06-01 實證: chain-bound deploy chain
-    // (txc-mpw0r15u-lhxz) parked at unack=75% because operator kept fleet UI
-    // open on planet A while the chain's legs targeted planets B/C/D.
-    // Pre-v0.0.640 defer-all variant blocked the operator's own automation.
-    if (typeof window !== "undefined" && window.location?.search?.includes("component=fleetdispatch")) {
-      // Parse current cp from URL (?cp=<planetId>&...). Falls back to "" if
-      // missing — in that case we can't prove it's a different cp, so the
-      // safe default is to defer (legacy behaviour).
-      const urlCp = (() => {
-        try {
-          const sp = new URLSearchParams(window.location.search);
-          return sp.get("cp") ?? "";
-        } catch { return ""; }
-      })();
-      const params = directive.params as { source_planet?: string; planet_id?: string } | undefined;
-      const dirCp = (params?.source_planet ?? params?.planet_id ?? "").toString();
-      const samePlanet = !urlCp || !dirCp || urlCp === dirCp;
-      // v0.0.673 — operator inactive (no input in 30s OR tab hidden) means
-      // ogame's fleetdispatch UI isn't firing token-rotating fetches, so
-      // there's no real race to worry about. Skip the defer in that case.
-      if (samePlanet && !isOperatorIdle()) {
-        const now = Date.now();
-        if (now - lastDeferLogAt > 60_000) {
-          console.info(`[GoalRunner] on fleetdispatch page (cp=${urlCp}) — deferring same-cp ${directive.action} & all queued (log throttled 60s)`);
-          lastDeferLogAt = now;
-        }
-        // v0.0.821 — operator 2026-06-06 "核心问题是 ACK 为什么收不到" 真因:
-        // defer path 之前 不 ack → sidecar 永远不知道 directive deferred →
-        // stuck-recovery 5min retry → 又 defer → 死循环 0 ack 直到 owner 离开
-        // fleetdispatch page. 修: defer 时 强制 ack with transient error,
-        // sidecar TRANSIENT_RE 已含 "deferred" 走 blocked retry (60s) 不再
-        // 30s atomic stuck-recovery 重派. owner idle 后 deferredQueue 自己
-        // execute 真值 sendFleet, 真 ack 接 success.
-        ack(directive.id, { success: false, error: `deferred: operator on fleetdispatch page (cp=${urlCp})` });
-        deferredQueue.push(directive);
-        schedulePollIdle();
-        return;
-      }
-      console.info(`[GoalRunner] on fleetdispatch page (cp=${urlCp}) but ${directive.action} targets src=${dirCp} (different planet) — running through, no token race`);
-    }
+    // v0.0.822 — operator 2026-06-06 "不要做任何兜底, 直接针对解决核心问题".
+    // 删除整段 `on fleetdispatch page` defer 路径 (历史 v0.0.640/673 累加的
+    // 复杂 same-cp/operator-idle 判定). 真因: defer 不 ack 是 ACK 链路 0
+    // event 死循环根源. 现在 directive 永远 execute → 必 ack (success / error
+    // / transient slot full). token race 风险由 click_intercept (boot.ts)
+    // + cp-protected fetch (safe_fetch.ts) 自己 cover, defer 兜底无意义.
     // eslint-disable-next-line no-console
     console.log(`[GoalRunner] executing ${directive.action} via ${chosen.constructor.name}`);
     // Operator 2026-05-28 "cp 的點選保護機制能不能一起保護 token":

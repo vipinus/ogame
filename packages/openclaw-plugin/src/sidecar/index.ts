@@ -2253,7 +2253,7 @@ export async function startSidecar(
             // 2026-05-30 "build naniteFactory 7 ↳ 100001 未知錯誤"); sidecar
             // side was inconsistent and kept cancelling fresh-server build
             // attempts. Align with userscript: 100001 + 未知錯誤 are transient.
-            const TRANSIENT_RE = /140043|140028|140019|100001|120017|未知錯誤|未知错误|未知的錯誤|未知的错误|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|insufficient resources|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum|previously unknown error|deferred: operator on fleetdispatch/i;
+            const TRANSIENT_RE = /140043|140028|140019|100001|120017|未知錯誤|未知错误|未知的錯誤|未知的错误|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|insufficient resources|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum|previously unknown error/i;
             const isTransient = TRANSIENT_RE.test(reason);
             // v0.0.738 — operator 2026-06-04 "supplies:fusionReactor rejected
             // 該行星已沒空間了 120012 这个报错". Permanent error: planet's
