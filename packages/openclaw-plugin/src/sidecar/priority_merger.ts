@@ -400,8 +400,13 @@ export class PriorityMerger {
         continue;
       }
       // Chain prereq gate.
+      // v0.0.819 — operator 2026-06-05 "链式等待?". v0.0.817 已 disable cross
+      // tick chain prereq gate (line 422+), per-tick chainBlocked 这条 (line
+      // 404) 跟 dispatch 后 chainBlocked.add (line 756) 没改 → 各 leg 同
+      // tick 仍互锁. 全 disable.
       const chainId = (row.goal.target as { chain_id?: unknown })?.chain_id;
-      if (typeof chainId === "string" && chainId && chainBlocked.has(chainId)) {
+      const CHAIN_GATE_ENABLED = false; // v0.0.819 disabled
+      if (CHAIN_GATE_ENABLED && typeof chainId === "string" && chainId && chainBlocked.has(chainId)) {
         const reason = "chain prereq: waiting for prior leg";
         if (row.status !== "blocked" || row.reason !== reason) {
           await this.updateStatusAndMirror(row.goal.id, "blocked", reason);
@@ -752,8 +757,10 @@ export class PriorityMerger {
         console.log(`[merger] DISPATCH goal=${row.goal.id} type=${row.goal.type} P=${row.goal.priority} action=${result.action} dirId=${result.id} planet_id=${dParams["planet_id"]} source_planet=${dParams["source_planet"]} target=${dParams["target_coords"]}(${dParams["target_type"]}) mission=${dParams["mission"]} ships=${JSON.stringify(dParams["ships"])} resources=${JSON.stringify(dParams["resources"])}`);
       } catch { /* */ }
       // v0.0.433: this leg is now active; downstream chain peers must wait.
+      // v0.0.819 — operator "解除链式依赖" disable chainBlocked.add 也.
       const cid = (row.goal.target as { chain_id?: unknown })?.chain_id;
-      if (typeof cid === "string" && cid) chainBlocked.add(cid);
+      void cid; // keep for future re-enable
+      // if (typeof cid === "string" && cid) chainBlocked.add(cid);
     }
 
     return { dispatched, blocked, skipped_terminal };
