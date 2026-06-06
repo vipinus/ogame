@@ -21,7 +21,14 @@ import type { WorldStateStorePg } from "./world_state_store_pg.js";
 // v0.0.834 — operator 2026-06-06: 5s tick 噪声大, event-driven 已能覆盖大多数,
 // base 拉到 30s 兜底.
 const EXPEDITION_TICK_MS = 30_000;
-const EXPEDITION_TEMPLATE_PATH = "/home/ddxs/.openclaw/workspace/ogamex/runtime/ogamex-expedition.json";
+// v0.0.840 — operator 2026-06-06 "远征的舰队设置分开了吗": per-uid 文件路径.
+// 老 EXPEDITION_TEMPLATE_PATH 全局单文件保留作 legacy fallback.
+const EXPEDITION_STATE_DIR_EXP = "/home/ddxs/.openclaw/workspace/ogamex/runtime";
+const EXPEDITION_TEMPLATE_PATH_LEGACY = `${EXPEDITION_STATE_DIR_EXP}/ogamex-expedition.json`;
+function templatePathForUid(uid?: string): string {
+  if (!uid) return EXPEDITION_TEMPLATE_PATH_LEGACY;
+  return `${EXPEDITION_STATE_DIR_EXP}/ogamex-expedition-${uid.slice(0, 8)}.json`;
+}
 const DEFAULT_EXPEDITION_TEMPLATE: Record<string, number> = { smallCargo: 1, espionageProbe: 1 };
 const FAILURE_COOL_OFF_MS = 15 * 1000;
 const INFLIGHT_TTL_MS = 45_000;
@@ -34,9 +41,16 @@ interface ExpeditionConfig {
   auto_build_ships?: boolean;
 }
 
-function loadExpeditionConfig(): ExpeditionConfig {
-  try { return JSON.parse(fs.readFileSync(EXPEDITION_TEMPLATE_PATH, "utf8")) as ExpeditionConfig; }
-  catch { return { enabled: true, template: DEFAULT_EXPEDITION_TEMPLATE }; }
+function loadExpeditionConfig(uid?: string): ExpeditionConfig {
+  const fp = templatePathForUid(uid);
+  try { return JSON.parse(fs.readFileSync(fp, "utf8")) as ExpeditionConfig; }
+  catch {
+    // per-uid 文件缺 → 回 legacy 兼容 (单租户旧装机)
+    if (uid) {
+      try { return JSON.parse(fs.readFileSync(EXPEDITION_TEMPLATE_PATH_LEGACY, "utf8")) as ExpeditionConfig; } catch { /* */ }
+    }
+    return { enabled: true, template: DEFAULT_EXPEDITION_TEMPLATE };
+  }
 }
 
 // Per-tenant cool-off + in-flight state. Keyed by `${uid}::${planetId}`.
@@ -92,7 +106,7 @@ export async function expeditionTickForUser(
   goalsStorePg: GoalsStorePg,
   pgStore: WorldStateStorePg,
 ): Promise<{ launched: number; skipped: number }> {
-  const cfg = loadExpeditionConfig();
+  const cfg = loadExpeditionConfig(uid);
   if (cfg.paused === true) {
     return { launched: 0, skipped: 0 };
   }

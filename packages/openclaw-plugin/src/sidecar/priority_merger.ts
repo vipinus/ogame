@@ -731,9 +731,35 @@ export class PriorityMerger {
           await this.updateStatusAndMirror(row.goal.id, "completed");
           skipped_terminal += 1;
         } else {
-          await this.updateStatusAndMirror(row.goal.id, "blocked", result.blocked);
-          blocked.push({ goal_id: row.goal.id, reason: result.blocked });
-          // v0.0.433: chain prereq — this leg is blocked, downstream waits.
+          // v0.0.838 — operator 2026-06-06 "是状态在不停切换? 还有同样的问题".
+          // 真因: 老逻辑每 tick 无条件写 status=blocked, reason 含倒计时数字
+          // (waiting 463s for resources) 每秒掉 → PG 写 → panel 看到 status 反复
+          // pending↔blocked → 颜色 toggle. 修: (1) reason 规范化去掉倒计时数字
+          // 比对实质变化才写 (2) "waiting resources" 类 reason 不强制 status=
+          // blocked — 保持 pending 让 panel 走稳定 active 颜色, planner 仍 continue
+          // skip 本 tick dispatch.
+          const reasonRaw = result.blocked;
+          // 去掉 "waiting Ns" / "waiting Xs" / "短缺 X" 等动态数字, 抽象出 reason 主干
+          const reasonKey = reasonRaw
+            .replace(/waiting\s+\d+s?/gi, "waiting Ns")
+            .replace(/short\s*\(m=\d+\s*c=\d+\s*d=\d+\s*short\)/gi, "short (m=N c=N d=N short)")
+            .replace(/\(~\d+s?\)/g, "(~Ns)")
+            .replace(/\d+s\s+remaining/gi, "Ns remaining");
+          const prevReason = row.reason ?? "";
+          const prevKey = prevReason
+            .replace(/waiting\s+\d+s?/gi, "waiting Ns")
+            .replace(/short\s*\(m=\d+\s*c=\d+\s*d=\d+\s*short\)/gi, "short (m=N c=N d=N short)")
+            .replace(/\(~\d+s?\)/g, "(~Ns)")
+            .replace(/\d+s\s+remaining/gi, "Ns remaining");
+          const reasonStable = reasonKey === prevKey;
+          // shortage countdown 类不该把 pending/active 翻 blocked, planner 仍 wait
+          const isShortageWait = /waiting\s+\d+s?\s+for\s+resources|waiting\s+resources/i.test(reasonRaw);
+          if (isShortageWait && (row.status === "pending" || row.status === "active") && reasonStable) {
+            // 保持原 status, 不写
+          } else if (row.status !== "blocked" || !reasonStable) {
+            await this.updateStatusAndMirror(row.goal.id, "blocked", reasonRaw);
+          }
+          blocked.push({ goal_id: row.goal.id, reason: reasonRaw });
           if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
         }
         continue;

@@ -93,10 +93,12 @@ export class WorldStateStorePg {
           const ex = existing[0]!.json as StateShape;
           const exPlanets = ex?.planets ?? {};
           const inPlanets = incoming.planets;
-          // Start with PG planets so any planet missing from incoming snapshot
-          // is preserved (incoming may have stale tab pushing partial planet
-          // dict that drops moons — observed 17:02:31 PASSTHROUGH log).
-          const mergedPlanets: Record<string, Patch & Record<string, unknown>> = { ...exPlanets };
+          // v0.0.840 — operator 2026-06-06 跨租户污染审计: 老 merge guard 用
+          // `{...exPlanets}` 起步, 把 PG 22 planets 全 keep, incoming 只 1 planet
+          // overlay 救不回. 一次性 cross-tenant pollution → 永久残留. 改: incoming
+          // planets 主导整 planet object (覆盖所有字段, 含废除不在 incoming 的
+          // 老 planet), 仅 per-planet JG cd 三字段 preserve 真值.
+          const mergedPlanets: Record<string, Patch & Record<string, unknown>> = {};
           for (const [pid, inP] of Object.entries(inPlanets)) {
             const exP = exPlanets[pid] ?? {};
             const inCd = inP.jumpgate_cooldown_sec;

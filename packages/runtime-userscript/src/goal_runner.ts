@@ -394,7 +394,12 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
         // standalone deploy (no chain_id) still reserve 1 slot for FS recall.
         const params = dr.params as { chain_id?: string } | undefined;
         const isChainBound = typeof params?.chain_id === "string" && params.chain_id !== "";
-        const bypassKeepEmpty = dr.action === "transport" || (dr.action === "deploy" && isChainBound);
+        // v0.0.841 — operator 2026-06-06 "新号殖民任务卡最后了, 殖民飞船没有飞":
+        // 新号 max_fleet_slots=1, 老逻辑 colonize 走 keep-1-empty → slotCeiling=0,
+        // 0/1 永远 block. colonize 是 atomic 单次飞, 落地新 planet 没 fleet 不需要
+        // FS recall slot 兜底, 加入 bypassKeepEmpty 跟 transport / chain-deploy 同
+        // 等级. 同样保护 emergency FS — FSM 走自己路径不经此 gate.
+        const bypassKeepEmpty = dr.action === "transport" || (dr.action === "deploy" && isChainBound) || dr.action === "colonize";
         const slotCeiling = bypassKeepEmpty ? maxF : maxF - 1;
         if (usedF >= 0 && maxF > 0 && usedF >= slotCeiling) {
           const label = bypassKeepEmpty ? "all slots used" : "keep-1-empty";

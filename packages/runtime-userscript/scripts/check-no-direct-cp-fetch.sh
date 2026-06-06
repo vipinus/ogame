@@ -53,8 +53,9 @@ EOF
 #   (delegate-to-sendFleet since v0.0.439); deleted ~167 unreachable lines
 #   that held the last 2 direct bypasses. ALLOW_LIST_DIRECTIVE now empty.
 ALLOW_LIST_DIRECTIVE=$(cat <<'EOF'
-src/api_executor.ts:754
-src/api_executor.ts:763
+src/api_executor.ts:141
+src/api_executor.ts:777
+src/api_executor.ts:786
 EOF
 )
 

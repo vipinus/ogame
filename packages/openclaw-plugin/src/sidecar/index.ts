@@ -1800,8 +1800,11 @@ export async function startSidecar(
         return { active: true, expires_at: null }; // safe-default: 不锁
       }
     },
-    expeditionProvider: () => {
-      const ready = stateRef.current !== null;
+    expeditionProvider: (uid?: string) => {
+      // v0.0.840 — operator 2026-06-06 "新账号 TM 远征显示老账号内容": 老逻辑
+      // 用 stateRef.current (主号全局), 改取 per-uid state, 没 uid 时 fallback.
+      const stateForUid: WorldState | null = uid ? (userStates.get(uid) ?? null) : (stateRef.current ?? null);
+      const ready = stateForUid !== null;
       let paused = false;
       try {
         // operator 2026-06-04 "远征设置里面的舰队配置不生效了" — must match
@@ -1820,11 +1823,11 @@ export async function startSidecar(
       // → 显示 0/6. Fix: use max(fleets15, srv.used_exp) for the both-aware
       // value, then CAP to max_expedition_slots so a stale srv=525 collapses
       // to 6/6 instead of 525/6 (the 525 bug that v0.0.720 was solving).
-      const srv = (stateRef.current?.server ?? {}) as {
+      const srv = (stateForUid?.server ?? {}) as {
         used_expedition_slots?: number; max_expedition_slots?: number; player_class?: string;
       };
-      const astro = stateRef.current?.research?.levels?.["astrophysics"] ?? 0;
-      const fleets15 = (stateRef.current?.fleets_outbound ?? []).filter((f) => f.mission === 15).length;
+      const astro = stateForUid?.research?.levels?.["astrophysics"] ?? 0;
+      const fleets15 = (stateForUid?.fleets_outbound ?? []).filter((f) => f.mission === 15).length;
       const classBonus = (srv.player_class ?? process.env["OGAMEX_DEFAULT_CLASS"] ?? "") === "discoverer" ? 2 : 0;
       const computedMax = Math.floor(Math.sqrt(astro)) + classBonus;
       const maxSlots = srv.max_expedition_slots && srv.max_expedition_slots > 0 ? srv.max_expedition_slots : computedMax;
@@ -1833,7 +1836,7 @@ export async function startSidecar(
         used: Math.min(rawUsed, maxSlots),  // cap defangs stale-srv amplification
         max: maxSlots,
       };
-      const fleets = stateRef.current?.fleets_outbound ?? [];
+      const fleets = stateForUid?.fleets_outbound ?? [];
       const now = Date.now();
       const active = fleets.filter((f) => f.mission === 15).map((f, i) => ({
         fleet_id: f.id ?? `mvt-${i}`,
@@ -1853,11 +1856,13 @@ export async function startSidecar(
         state_ready: true,
       };
     },
-    emergencyProvider: () => {
+    emergencyProvider: (uid?: string) => {
+      // v0.0.840 — per-uid: 跟 expeditionProvider 对称, 不再 stateRef.current 主号.
+      const stateForUid: WorldState | null = uid ? (userStates.get(uid) ?? null) : (stateRef.current ?? null);
       // Minimal emergency stub — surfaces hostile incoming events from
       // state.events_incoming as the panel expects. Full attack-save
       // orchestration lives userscript-side; this endpoint is just a read.
-      const ev = stateRef.current?.events_incoming ?? [];
+      const ev = stateForUid?.events_incoming ?? [];
       const now = Date.now();
       const nowSec = Math.floor(now / 1000);
       const hostile = ev.filter((e) => e.hostile === true).map((e) => ({
@@ -1880,7 +1885,7 @@ export async function startSidecar(
       return {
         hostile,
         count: hostile.length,
-        snapshot_age_ms: stateRef.current?.last_update ? (now - stateRef.current.last_update) : null,
+        snapshot_age_ms: stateForUid?.last_update ? (now - stateForUid.last_update) : null,
       };
     },
     listEvents: async (limit, type, userId) => {
@@ -2344,13 +2349,17 @@ export async function startSidecar(
                 backoffMs = seconds * 1000;
                 backoffLabel = `backoff_${seconds}s`;
                 console.info(`[backoff] goal=${goalId.slice(0,12)} failureCount=${n} → ${seconds}s`);
-                // v0.0.835 — operator 2026-06-06 "1 次以后就刷新": 任何失败立刻
-                // emit data.refresh, 让 userscript 主动刷 ogame state + token. 下次
-                // retry 吃 fresh state 不带 stale (token/resources/cp 三种 100001 根因
-                // 覆盖). 每次失败 push 1 次 (cheap), 不等 3 次累计.
+                // v0.0.835 + v0.0.842 节流: 任何失败 emit data.refresh, 但 per-goal
+                // 60s cooldown — 失败 storm 不再每秒触发 userscript 全 page poll
+                // (browser CPU 卡死).
                 try {
-                  emitPostDirectiveRefresh(`fail-recover goal=${goalId.slice(0,12)} n=${n}`);
-                  console.info(`[stale-recover] goal=${goalId.slice(0,12)} fail#${n} → data.refresh emitted`);
+                  const nowMs = Date.now();
+                  const lastEmit = lastRefreshEmitAt.get(goalId) ?? 0;
+                  if (nowMs - lastEmit >= REFRESH_EMIT_COOLDOWN_MS) {
+                    emitPostDirectiveRefresh(`fail-recover goal=${goalId.slice(0,12)} n=${n}`);
+                    lastRefreshEmitAt.set(goalId, nowMs);
+                    console.info(`[stale-recover] goal=${goalId.slice(0,12)} fail#${n} → data.refresh emitted`);
+                  }
                 } catch (e) { console.warn(`[stale-recover] emit threw:`, e); }
               }
               priorityMergerRef?.markAwaiting(goalId, ["empire_poll", backoffLabel]);
@@ -2383,6 +2392,7 @@ export async function startSidecar(
             priorityMergerRef?.clearDispatched(goalId);
             // v0.0.834 — success ack 清零失败计数, 下次失败从 60s 起重新算.
             goalFailureCount.delete(goalId);
+            lastRefreshEmitAt.delete(goalId);
             // ATOMIC actions (expedition / colonize / deploy / transport):
             // ApiExec's success means the fleet launched. Goal is terminal —
             // mark completed immediately. Without this, expedition goals
@@ -2813,6 +2823,12 @@ export async function startSidecar(
   // 次数, backoff = min(60s * 2^(N-1), 3600s). 60→120→240→480→960→1920→3600
   // 7 次后封顶 1h. 成功 ack 清零.
   const goalFailureCount = new Map<string, number>();
+  // v0.0.842 — operator 2026-06-06 "这个版本变得非常卡": v0.0.835 每次 fail 立即
+  // emit data.refresh storm (userscript 全 page poll) 把 browser CPU 拉满. 节流
+  // per-goal cooldown 60s, fail#1 emit 后下次 emit 至少等 60s. 失败爆发时去掉
+  // 重复 push, browser tab 不再卡.
+  const lastRefreshEmitAt = new Map<string, number>();
+  const REFRESH_EMIT_COOLDOWN_MS = 60_000;
   // species_discovery: stamp dispatched coord per directive_id (NOT on row,
   // because goalsStore.list() returns SQL copies — mutating one is discarded).
   const directiveToDiscoverCoord = new Map<string, string>();

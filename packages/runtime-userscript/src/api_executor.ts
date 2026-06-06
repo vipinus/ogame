@@ -121,14 +121,27 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       body = body.replace(reBody, `$1${v}`);
     }
     // Always refresh token from latest dataset if present.
-    const r = await this.fetchFn(url, {
+    // v0.0.839 — operator 2026-06-06 "还有切 CP 的代码再 audit". 老代码 raw fetch
+    // 用 captured URL 含 cp=PID, 0 safe_fetch 保护 → owner 顶栏钉死被 dispatch
+    // 的 planet (没 restore). 走 fetchWithCp 提 cp=, 串行 + restore.
+    const cpMatch = url.match(/[?&]cp=([^&]+)/);
+    const cpPid = cpMatch ? decodeURIComponent(cpMatch[1]!) : "";
+    const urlNoCp = url.replace(/([?&])cp=[^&]+(&|$)/, (_, before, after) => (after === "&" ? before : ""));
+    const init: RequestInit = {
       method: body ? "POST" : "GET",
       credentials: "same-origin",
       headers: body
         ? { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" }
         : { "X-Requested-With": "XMLHttpRequest" },
       body: body || undefined,
-    });
+    };
+    let r: Response;
+    if (cpPid) {
+      const { fetchWithCp } = await import("./api/safe_fetch.js");
+      r = await fetchWithCp(urlNoCp, init, cpPid);
+    } else {
+      r = await this.fetchFn(url, init);
+    }
     const txt = await r.text();
     return { status: r.status, body: txt };
   }
@@ -686,7 +699,17 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       // 看 cd in error → planner 下次 cd 真值兜底 跳过.
       let cdFromOverlay: number | null = null;
       try {
-        const ovRes = await this.fetchFn(overlayUrl, { credentials: "same-origin" });
+        // v0.0.839 — operator 2026-06-06 "还有切 CP 的代码再 audit". v0.0.833 把
+        // executeJump skipRestore: false 后, session cp 已 restore 回 owner 本家
+        // → raw fetch 命中 owner 本家 overlay (无 JG widget) 拿不到 cd. 改走
+        // fetchWithCpBypassBusy(sourceMoonId) safe_fetch 串行, 同时不会让 owner
+        // UI 看到 stale shift (mutex 持有期间所有 cp= 串行).
+        const { fetchWithCpBypassBusy: fetchOverlayCp } = await import("./api/safe_fetch.js");
+        const ovRes = await fetchOverlayCp(
+          overlayUrl,
+          { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+          sourceMoonId,
+        );
         if (ovRes.status === 200) {
           const html = await ovRes.text();
           // ogame v12 overlay 含 'jumpGateNextJumpAt' 或 'cooldown' field

@@ -46,12 +46,24 @@ import type {
  *  this file path was missed. Realign to daemon's canonical location so
  *  panel template edits propagate to next expedition tick. Env override
  *  OGAMEX_EXPEDITION_STATE_FILE for non-default deploys (CI/tests). */
-const EXPEDITION_STATE_FILE = process.env.OGAMEX_EXPEDITION_STATE_FILE
-  ?? path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime/ogamex-expedition.json");
+// v0.0.840 — operator 2026-06-06 "远征的舰队设置分开了吗": legacy 全局单文件
+// `ogamex-expedition.json` 所有 uid 共享 → 新号 panel save 写覆盖老号. 改 per-uid
+// 文件路径: `ogamex-expedition-<uid-prefix>.json`. uid 缺省 (legacy 单 tenant) 回
+// 退老路径保持向后兼容. 环境变量 OGAMEX_EXPEDITION_STATE_FILE 仍 override (CI/
+// tests).
+const EXPEDITION_STATE_DIR = path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime");
+const EXPEDITION_STATE_FILE_LEGACY = process.env.OGAMEX_EXPEDITION_STATE_FILE
+  ?? path.join(EXPEDITION_STATE_DIR, "ogamex-expedition.json");
+export function expeditionStateFileForUid(uid?: string): string {
+  if (process.env.OGAMEX_EXPEDITION_STATE_FILE) return process.env.OGAMEX_EXPEDITION_STATE_FILE;
+  if (!uid) return EXPEDITION_STATE_FILE_LEGACY;
+  return path.join(EXPEDITION_STATE_DIR, `ogamex-expedition-${uid.slice(0, 8)}.json`);
+}
 
-function readExpeditionState(): Record<string, unknown> {
+function readExpeditionState(uid?: string): Record<string, unknown> {
+  const fp = expeditionStateFileForUid(uid);
   try {
-    const raw = fs.readFileSync(EXPEDITION_STATE_FILE, "utf8");
+    const raw = fs.readFileSync(fp, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
@@ -62,8 +74,9 @@ function readExpeditionState(): Record<string, unknown> {
   return {};
 }
 
-function writeExpeditionState(state: Record<string, unknown>): void {
-  fs.writeFileSync(EXPEDITION_STATE_FILE, JSON.stringify(state, null, 2));
+function writeExpeditionState(state: Record<string, unknown>, uid?: string): void {
+  const fp = expeditionStateFileForUid(uid);
+  fs.writeFileSync(fp, JSON.stringify(state, null, 2));
 }
 
 export interface HttpServerOptions {
@@ -87,8 +100,8 @@ export interface HttpServerOptions {
   stateProvider?: (uid?: string) => unknown;
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
   listGoals?: (userId?: string) => Array<unknown> | Promise<Array<unknown>>;
-  expeditionProvider?: () => unknown;
-  emergencyProvider?: () => unknown;
+  expeditionProvider?: (uid?: string) => unknown;
+  emergencyProvider?: (uid?: string) => unknown;
   /** v0.0.804 — per-user subscription status. expired user → panel 弹
    *  续费 modal (always-on, 类似 force-update). */
   subscriptionProvider?: (uid: string) => Promise<{ active: boolean; expires_at: number | null }>;
@@ -178,8 +191,8 @@ interface ResolvedHttpServerOptions {
   stateProvider?: (uid?: string) => unknown;
   /** Returns the bare goals array — server wraps in `{goals: [...]}`. */
   listGoals?: (userId?: string) => Array<unknown> | Promise<Array<unknown>>;
-  expeditionProvider?: () => unknown;
-  emergencyProvider?: () => unknown;
+  expeditionProvider?: (uid?: string) => unknown;
+  emergencyProvider?: (uid?: string) => unknown;
   /** v0.0.804 — per-user subscription status. expired user → panel 弹
    *  续费 modal (always-on, 类似 force-update). */
   subscriptionProvider?: (uid: string) => Promise<{ active: boolean; expires_at: number | null }>;
@@ -522,7 +535,7 @@ export class HttpServer {
       return;
     }
     if (method === "GET" && url === "/ogamex/v1/expedition") {
-      this.handleProviderGet(res, this.opts.expeditionProvider);
+      this.handleProviderGet(res, this.opts.expeditionProvider, req);
       return;
     }
     // v0.0.636 — operator audit view backed by worldStateStore events table.
@@ -557,9 +570,14 @@ export class HttpServer {
     // loadExpeditionConfig() so writes take effect on the next tick.
     if (method === "GET" && url === "/ogamex/v1/expedition/config") {
       this.writeCorsHeaders(res);
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify(readExpeditionState()));
+      void (async () => {
+        // v0.0.840 — per-uid config 路由. Bearer-resolved uid → 各账号独立文件.
+        const r = await this.resolveBearer(req);
+        const uid = r.kind === "user" ? r.uid : undefined;
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify(readExpeditionState(uid)));
+      })();
       return;
     }
     // Operator 2026-05-29 "panel 名称改成 oGame+版本号 + 更新按钮 (没有
@@ -584,7 +602,7 @@ export class HttpServer {
       return;
     }
     if (method === "GET" && url === "/ogamex/v1/emergency") {
-      this.handleProviderGet(res, this.opts.emergencyProvider);
+      this.handleProviderGet(res, this.opts.emergencyProvider, req);
       return;
     }
     // v0.0.804 — operator 2026-06-05 "过期还可以用 弹强制更新类似窗口".
@@ -815,11 +833,11 @@ export class HttpServer {
       // 在 auth check 之后, panel 不带 bearer token → 401 拒绝. 移到 public
       // 区跟 discovery/save 端点一致 (LAN-only trust).
       if (url === EXPEDITION_PAUSE_PATH) {
-        this.handleExpeditionFlag(res, true);
+        this.handleExpeditionFlag(res, true, req);
         return;
       }
       if (url === EXPEDITION_RESUME_PATH) {
-        this.handleExpeditionFlag(res, false);
+        this.handleExpeditionFlag(res, false, req);
         return;
       }
       // Operator 2026-05-29: M2 expedition settings modal — POST full config
@@ -894,8 +912,11 @@ export class HttpServer {
 
   /**
    * Generic GET handler — call optional provider, return JSON. 503 if not configured.
+   * v0.0.840 — operator 2026-06-06 "新账号 TM 远征显示老账号内容": provider 接
+   * Bearer-resolved uid; 若 provider signature 不接 uid 则不传 (向后兼容). 调用
+   * 方 (expedition / emergency) 改 (uid) => 闭包查 userStates 用真 tenant state.
    */
-  private handleProviderGet(res: http.ServerResponse, provider?: () => unknown): void {
+  private handleProviderGet(res: http.ServerResponse, provider?: ((uid?: string) => unknown), req?: http.IncomingMessage): void {
     this.writeCorsHeaders(res);
     if (!provider) {
       res.statusCode = 503;
@@ -903,16 +924,25 @@ export class HttpServer {
       res.end(JSON.stringify({ ok: false, reason: "no provider wired" }));
       return;
     }
-    try {
-      const body = provider();
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify(body));
-    } catch (e) {
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ ok: false, reason: (e as Error).message }));
-    }
+    void (async () => {
+      let uid: string | undefined = undefined;
+      if (req) {
+        try {
+          const r = await this.resolveBearer(req);
+          if (r.kind === "user") uid = r.uid;
+        } catch { /* */ }
+      }
+      try {
+        const body = provider(uid);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify(body));
+      } catch (e) {
+        res.statusCode = 500;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ ok: false, reason: (e as Error).message }));
+      }
+    })();
   }
 
   /**
@@ -1104,22 +1134,26 @@ export class HttpServer {
    * Read-modify-write the JSON object so any other keys (e.g. last_run_at)
    * survive the toggle.
    */
-  private handleExpeditionFlag(res: http.ServerResponse, paused: boolean): void {
-    let ok = true;
-    let error: string | undefined;
-    try {
-      const state = readExpeditionState();
-      state["paused"] = paused;
-      state["updated_at"] = Date.now();
-      writeExpeditionState(state);
-    } catch (e) {
-      ok = false;
-      error = (e as Error).message;
-    }
-    this.writeCorsHeaders(res);
-    res.statusCode = ok ? 200 : 500;
-    res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify(ok ? { ok: true, paused } : { ok: false, error }));
+  private handleExpeditionFlag(res: http.ServerResponse, paused: boolean, req?: http.IncomingMessage): void {
+    void (async () => {
+      let ok = true;
+      let error: string | undefined;
+      try {
+        // v0.0.840 per-uid file routing
+        const uid = req ? await this.resolveBearer(req).then(r => r.kind === "user" ? r.uid : undefined).catch(() => undefined) : undefined;
+        const state = readExpeditionState(uid);
+        state["paused"] = paused;
+        state["updated_at"] = Date.now();
+        writeExpeditionState(state, uid);
+      } catch (e) {
+        ok = false;
+        error = (e as Error).message;
+      }
+      this.writeCorsHeaders(res);
+      res.statusCode = ok ? 200 : 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(ok ? { ok: true, paused } : { ok: false, error }));
+    })();
   }
 
   /**
@@ -1150,13 +1184,16 @@ export class HttpServer {
     }
     const allowed = new Set(["template", "paused", "enabled", "target_position", "enabled_planets", "auto_build_ships"]);
     try {
-      const state = readExpeditionState();
+      // v0.0.840 per-uid file routing
+      const r = await this.resolveBearer(req);
+      const uid = r.kind === "user" ? r.uid : undefined;
+      const state = readExpeditionState(uid);
       for (const [k, v] of Object.entries(patch)) {
         if (!allowed.has(k)) continue;
         state[k] = v;
       }
       state["updated_at"] = Date.now();
-      writeExpeditionState(state);
+      writeExpeditionState(state, uid);
       this.writeCorsHeaders(res);
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json");

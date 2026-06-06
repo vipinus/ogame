@@ -3651,7 +3651,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   }
   async function fetchEmergency(): Promise<EmergencyPayload | null> {
     try {
-      const r = await fetchFn(`${baseUrl}/ogamex/v1/emergency`);
+      // v0.0.841 同 fetchExpedition 修补 — 加 Bearer header 避免 fallback stateRef.current.
+      const r = await fetchFn(`${baseUrl}/ogamex/v1/emergency`, { headers: authHeaders() });
       if (!r.ok) return null;
       const body = await r.json() as Partial<EmergencyPayload>;
       // Validate shape — tests / stale stubs may return wrong objects.
@@ -3661,7 +3662,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   }
   async function fetchExpedition(): Promise<ExpeditionPayload | null> {
     try {
-      const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition`);
+      // v0.0.841 — operator 2026-06-06 "新号 TM 远征看到老号, 老号看到新号":
+      // fetchExpedition 老逻辑没带 Bearer header → sidecar resolveBearer 落空,
+      // expeditionProvider fallback stateRef.current (全局主号 state) → cross-tenant
+      // 串流. 跟 fetchEmergency / fetchGoals 对齐用 authHeaders (含 localStorage fallback).
+      const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition`, { headers: authHeaders() });
       if (!r.ok) return null;
       const body = await r.json() as Partial<ExpeditionPayload>;
       if (!Array.isArray(body.active)) return null;
