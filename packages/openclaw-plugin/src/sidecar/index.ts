@@ -874,7 +874,11 @@ export async function startSidecar(
       // sidecar simulate 也同步: post-expedition phase (astro >= 4) 时 wait
       // 视为 0, 只计 build_sec — 不再按 production rate 推 21d/346d 等离谱
       // 数字, owner 用 transport 自己掌控资源 supply.
-      const postExpeditionPhase = (stateRef.current?.research?.levels?.astrophysics ?? 0) >= 4;
+      // v0.0.810 — per-tenant fix同 v0.0.809: postExpeditionPhase 之前用
+      // global stateRef → 决定 wait_sec 是否 skip 错串号. astro 18 (daigang)
+      // 拿到 astro 0 (新账号 fallback) → wait_sec 不该 skip → simulate ETA
+      // 膨胀 (operator L32 11h40m 怀疑案). 改 currentState 拿真正 tenant.
+      const postExpeditionPhase = (currentState?.research?.levels?.astrophysics ?? 0) >= 4;
       function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number }; currentStep: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null } {
         const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
         // Initial bank — REAL planet resources at this moment.
