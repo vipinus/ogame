@@ -55,13 +55,16 @@ import { argv, exit, stdout } from "node:process";
 const ICARUS_UID = "4baba0e2-17ab-4275-a8eb-d642ba8d969f";
 const ICARUS_EXPECTED_NAME = "Commander Icarus";
 
-const CETI_UID = "eb990432-1f97-4dc3-8fc0-08aacb9d4d6c";
+const CETI_UID = "eb990432-7e6d-43b1-91d8-93b951729e87";
 const CETI_EXPECTED_NAME = "Commodore Ceti";
 const CETI_MAX_PLANETS = 5;
 
 const SSH_TARGET = "ddxs@europa";
 const PG_CMD = `PGPASSWORD=ogamex psql -h 127.0.0.1 -U ogamex -d ogamex -At -F '|'`;
-const WORKSPACE_DIR = "~/.openclaw/workspace/ogamex";
+// v0.0.862 follow-up — real expedition state files live under runtime/,
+// not the workspace root. Filenames use the 8-char uid prefix (see
+// expedition.ts:templatePathForUid + http_server.ts:expeditionStateFileForUid).
+const WORKSPACE_DIR = "~/.openclaw/workspace/ogamex/runtime";
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -152,8 +155,10 @@ function checkPlanetCountSanity() {
   const name = "ceti-planet-count";
   let raw;
   try {
+    // v0.0.862 follow-up — planets is JSONB OBJECT (planet_id → planet_obj),
+    // not an array. json_array_length errors out; count keys instead.
     raw = pgQuery(
-      `SELECT json_array_length(json->'planets') FROM ogame_world_state WHERE user_id = '${CETI_UID}'`,
+      `SELECT (SELECT count(*) FROM jsonb_object_keys(json->'planets')) FROM ogame_world_state WHERE user_id = '${CETI_UID}'`,
     );
   } catch (e) {
     fail(name, `query error: ${e.message}`);
@@ -181,7 +186,7 @@ function checkExpeditionConfigFiles() {
   try {
     // List both files with size; "|| true" so missing file doesn't kill ssh.
     listing = ssh(
-      `ls -la ${WORKSPACE_DIR}/ogamex-expedition.json ${WORKSPACE_DIR}/ogamex-expedition-${CETI_UID}.json 2>&1 || true`,
+      `ls -la ${WORKSPACE_DIR}/ogamex-expedition.json ${WORKSPACE_DIR}/ogamex-expedition-${CETI_UID.slice(0, 8)}.json 2>&1 || true`,
     );
   } catch (e) {
     fail(name, `ssh error: ${e.message}`);
@@ -190,10 +195,10 @@ function checkExpeditionConfigFiles() {
 
   const lines = listing.split("\n").map((l) => l.trim()).filter(Boolean);
   const legacyLine = lines.find((l) => l.endsWith("ogamex-expedition.json"));
-  const ctiLine    = lines.find((l) => l.endsWith(`ogamex-expedition-${CETI_UID}.json`));
+  const ctiLine    = lines.find((l) => l.endsWith(`ogamex-expedition-${CETI_UID.slice(0, 8)}.json`));
 
   if (!ctiLine) {
-    fail(name, `missing per-uid file ogamex-expedition-${CETI_UID}.json. ls output:\n${listing}`);
+    fail(name, `missing per-uid file ogamex-expedition-${CETI_UID.slice(0, 8)}.json. ls output:\n${listing}`);
     return;
   }
 
