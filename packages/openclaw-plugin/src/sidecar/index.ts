@@ -1740,6 +1740,22 @@ export async function startSidecar(
         };
       });
     },
+    // v0.0.804 — operator "过期还可以用 弹强制更新类似窗口 点击跳充值页面".
+    subscriptionProvider: async (uid: string): Promise<{ active: boolean; expires_at: number | null }> => {
+      if (!pgStore) return { active: true, expires_at: null };
+      try {
+        const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+        const rows = await sql`SELECT current_period_end FROM subscriptions WHERE user_id = ${uid} AND status IN ('active','trialing') AND current_period_end > NOW() ORDER BY current_period_end DESC LIMIT 1`;
+        const r = rows[0] as { current_period_end?: Date } | undefined;
+        if (r?.current_period_end) {
+          return { active: true, expires_at: r.current_period_end.getTime() };
+        }
+        return { active: false, expires_at: null };
+      } catch (e) {
+        console.warn("[subscriptionProvider] threw", e);
+        return { active: true, expires_at: null }; // safe-default: 不锁
+      }
+    },
     expeditionProvider: () => {
       const ready = stateRef.current !== null;
       let paused = false;

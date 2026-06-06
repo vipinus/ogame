@@ -3409,14 +3409,21 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const overlay = document.createElement("div");
     overlay.id = "ogamex-update-modal";
     overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:2147483647;display:flex;align-items:center;justify-content:center;";
+    const titleTxt = t("panel.update.modal.title");
+    const bodyTpl = t("panel.update.modal.body", { cur: "{cur}", latest: "{latest}" })
+      .replace("{cur}", `<strong>${escapeHtml(cur)}</strong>`)
+      .replace("{latest}", `<strong style="color:#7cfc00;">${escapeHtml(latest)}</strong>`);
+    const hintTxt = t("panel.update.modal.hint");
+    const btnNowTxt = t("panel.update.modal.btn_now");
+    const btnLaterTxt = t("panel.update.modal.btn_later");
     overlay.innerHTML = `
       <div style="background:#1a2a40;border:2px solid #4a8a4a;border-radius:8px;padding:24px;color:#e0e8f0;font-family:Arial,sans-serif;max-width:420px;box-shadow:0 6px 24px rgba(0,0,0,0.5);">
-        <div style="font-size:16px;font-weight:bold;margin-bottom:8px;color:#7cfc00;">OgameX 新版本就绪</div>
-        <div style="font-size:13px;margin-bottom:14px;color:#bcc8d8;">当前: <strong>${escapeHtml(cur)}</strong> → 最新: <strong style="color:#7cfc00;">${escapeHtml(latest)}</strong></div>
-        <div style="font-size:12px;margin-bottom:16px;color:#8090a8;">点击下方按钮在新标签页打开安装链接, TM 会弹安装确认.</div>
+        <div style="font-size:16px;font-weight:bold;margin-bottom:8px;color:#7cfc00;">${escapeHtml(titleTxt)}</div>
+        <div style="font-size:13px;margin-bottom:14px;color:#bcc8d8;">${bodyTpl}</div>
+        <div style="font-size:12px;margin-bottom:16px;color:#8090a8;">${escapeHtml(hintTxt)}</div>
         <div style="display:flex;gap:8px;justify-content:flex-end;">
-          <button id="ogamex-update-later" style="background:#404040;color:#fff;border:1px solid #606060;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;">稍后</button>
-          <button id="ogamex-update-now" style="background:#205a20;color:#fff;border:1px solid #408a40;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;">立即安装</button>
+          <button id="ogamex-update-later" style="background:#404040;color:#fff;border:1px solid #606060;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;">${escapeHtml(btnLaterTxt)}</button>
+          <button id="ogamex-update-now" style="background:#205a20;color:#fff;border:1px solid #408a40;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;">${escapeHtml(btnNowTxt)}</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
@@ -3428,6 +3435,55 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   };
   void checkRuntimeUpdate();
   const updateCheckTimer = setInterval(() => { void checkRuntimeUpdate(); }, 60_000);
+
+  // v0.0.804 — operator 2026-06-05 "过期还可以用 弹强制更新类似窗口 点击
+  // 跳充值页面". 60s poll subscription-status, expired → always-on modal
+  // 设计 (同 update modal). 点 "立即续费" → window.open(/flagship).
+  const checkSubscription = async (): Promise<void> => {
+    try {
+      const r = await fetchFn(`${baseUrl}/ogamex/v1/subscription-status`, { method: "GET" });
+      if (!r.ok) return;
+      const j = await r.json() as { active?: boolean; expires_at?: number | null };
+      if (j.active === false) {
+        showSubscriptionExpiredModal();
+      }
+    } catch { /* sidecar down / 无 bearer → keep modal hidden */ }
+  };
+  const showSubscriptionExpiredModal = (): void => {
+    if (typeof document === "undefined" || document.getElementById("ogamex-sub-expired-modal")) return;
+    const renewUrl = ((): string => {
+      try {
+        const u = new URL(baseUrl);
+        return `${u.protocol}//${u.host}/flagship`;
+      } catch { return "https://ogame.anyfq.com/flagship"; }
+    })();
+    const overlay = document.createElement("div");
+    overlay.id = "ogamex-sub-expired-modal";
+    overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:2147483646;display:flex;align-items:center;justify-content:center;";
+    const sTitle = t("panel.sub_expired.modal.title");
+    const sBody = t("panel.sub_expired.modal.body");
+    const sHint = t("panel.sub_expired.modal.hint");
+    const sBtnRenew = t("panel.sub_expired.modal.btn_renew");
+    const sBtnLater = t("panel.sub_expired.modal.btn_later");
+    overlay.innerHTML = `
+      <div style="background:#2a1a1a;border:2px solid #a04040;border-radius:8px;padding:24px;color:#e0e8f0;font-family:Arial,sans-serif;max-width:420px;box-shadow:0 6px 24px rgba(0,0,0,0.5);">
+        <div style="font-size:16px;font-weight:bold;margin-bottom:8px;color:#ff8080;">${escapeHtml(sTitle)}</div>
+        <div style="font-size:13px;margin-bottom:14px;color:#bcc8d8;">${escapeHtml(sBody)}</div>
+        <div style="font-size:12px;margin-bottom:16px;color:#8090a8;">${escapeHtml(sHint)}</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button id="ogamex-sub-later" style="background:#404040;color:#fff;border:1px solid #606060;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;">${escapeHtml(sBtnLater)}</button>
+          <button id="ogamex-sub-renew" style="background:#7a3030;color:#fff;border:1px solid #a05050;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;">${escapeHtml(sBtnRenew)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector("#ogamex-sub-renew")?.addEventListener("click", () => {
+      try { window.open(renewUrl, "_blank"); } catch { /* */ }
+      overlay.remove();
+    });
+    overlay.querySelector("#ogamex-sub-later")?.addEventListener("click", () => overlay.remove());
+  };
+  void checkSubscription();
+  const subCheckTimer = setInterval(() => { void checkSubscription(); }, 60_000);
 
   // Local-storage helpers — persist position + collapse state across page
   // reloads so the operator's preferred layout sticks.

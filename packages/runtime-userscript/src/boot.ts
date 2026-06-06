@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.803";
+  const USERSCRIPT_VERSION = "0.0.804";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2536,6 +2536,47 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // already updates resources when user navigates; this 30s is just for
   // background-tab cases where mutations don't fire.
   scheduleBurst(() => { void pollFetchResources(); }, 1500);
+
+  // v0.0.804 — operator 2026-06-05 "建完以后, 没有更新建筑等级和资源".
+  // build queue 完成 (build_q.ends_at <= now) 时自动 trigger pollEmpire +
+  // pollFetchResources + pushNow, panel 立刻看到 fresh building levels +
+  // 扣除 resources. 1s tick 扫所有 planet queue, 检测 future → past 翻转.
+  const lastSeenEnds = new Map<string, number>();
+  setInterval(() => {
+    try {
+      const state = store.state;
+      const planets = state.planets ?? {};
+      let triggered = false;
+      const now = Date.now();
+      const checkQueue = (key: string, endsAt: number | undefined): void => {
+        if (!endsAt || triggered) return;
+        const prev = lastSeenEnds.get(key);
+        if (prev && prev > now - 30_000 && endsAt <= now && prev > now - 5_000) {
+          triggered = true;
+          console.info(`[build-complete] ${key} ends_at hit — refreshing fresh state`);
+          lastSeenEnds.delete(key);
+        } else if (endsAt > now) {
+          lastSeenEnds.set(key, endsAt);
+        }
+      };
+      for (const [pid, planet] of Object.entries(planets)) {
+        const p = planet as { build_q?: { ends_at?: number } | null; lf_build_q?: { ends_at?: number } | null; shipyard_q?: { ends_at?: number } | null };
+        checkQueue(`${pid}.build_q`, p.build_q?.ends_at);
+        checkQueue(`${pid}.lf_build_q`, p.lf_build_q?.ends_at);
+        checkQueue(`${pid}.shipyard_q`, p.shipyard_q?.ends_at);
+      }
+      const rq = (state.research as { queue?: { ends_at?: number } | null } | undefined)?.queue;
+      checkQueue(":research_q", rq?.ends_at);
+      if (triggered) {
+        void pollEmpire({ force: true });
+        void pollFetchResources();
+        setTimeout(() => {
+          const pn = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
+          if (typeof pn === "function") pn();
+        }, 1500);
+      }
+    } catch (e) { console.warn("[build-complete-watcher] threw", e); }
+  }, 1_000);
   // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed 30s
   // setInterval. Resources accumulate predictably (production rates +
   // delta T), DOM mutation observers update on navigation. Background-

@@ -89,6 +89,9 @@ export interface HttpServerOptions {
   listGoals?: (userId?: string) => Array<unknown> | Promise<Array<unknown>>;
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
+  /** v0.0.804 — per-user subscription status. expired user → panel 弹
+   *  续费 modal (always-on, 类似 force-update). */
+  subscriptionProvider?: (uid: string) => Promise<{ active: boolean; expires_at: number | null }>;
   /** v0.0.636 — backed by worldStateStore. GET /v1/events?limit=N&type=foo.
    *  Returns most-recent-first audit log rows from the persisted events table.
    *  When `type` is supplied, filters server-side; absent ⇒ all types. */
@@ -174,6 +177,9 @@ interface ResolvedHttpServerOptions {
   listGoals?: (userId?: string) => Array<unknown> | Promise<Array<unknown>>;
   expeditionProvider?: () => unknown;
   emergencyProvider?: () => unknown;
+  /** v0.0.804 — per-user subscription status. expired user → panel 弹
+   *  续费 modal (always-on, 类似 force-update). */
+  subscriptionProvider?: (uid: string) => Promise<{ active: boolean; expires_at: number | null }>;
   listEvents?: (limit: number, type?: string) => Array<unknown>;
   resolveUserToken?: (bearer: string) => Promise<string | null>;
   /** Operator 2026-06-04 "全做" — read/write per-user in-game panel toggle
@@ -571,6 +577,34 @@ export class HttpServer {
     }
     if (method === "GET" && url === "/ogamex/v1/emergency") {
       this.handleProviderGet(res, this.opts.emergencyProvider);
+      return;
+    }
+    // v0.0.804 — operator 2026-06-05 "过期还可以用 弹强制更新类似窗口".
+    // panel poll 60s, expired → always-on modal "请续费". 公平: cold uid
+    // (no bearer) → active:true 默认 (legacy operator 不 gate).
+    if (method === "GET" && url === "/ogamex/v1/subscription-status") {
+      void (async () => {
+        const r = await this.resolveBearer(req);
+        this.writeCorsHeaders(res);
+        if (r.kind === "forbidden") { res.statusCode = 401; res.end(); return; }
+        if (r.kind !== "user" || !this.opts.subscriptionProvider) {
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ active: true, expires_at: null }));
+          return;
+        }
+        try {
+          const sub = await this.opts.subscriptionProvider(r.uid);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify(sub));
+        } catch (e) {
+          console.warn("[subscription-status] provider threw", e);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ active: true, expires_at: null }));
+        }
+      })();
       return;
     }
     // section-settings — operator "全做" bidir sync.
