@@ -502,29 +502,47 @@ export async function startSidecar(
   // already covers full-state replacement; event-driven deltas land via
   // state_store.setPartial → next snapshot includes them.
   const WORLD_STATE_DEBOUNCE_MS = 1000;
-  let worldStateWriteTimer: NodeJS.Timeout | null = null;
-  const scheduleWorldStatePersist = (): void => {
-    if (worldStateWriteTimer !== null) return;
-    worldStateWriteTimer = setTimeout(() => {
-      worldStateWriteTimer = null;
-      const snap = stateRef.current;
-      if (snap === null) return;
+  // v0.0.858 — operator 2026-06-06 "新号第二颗星优化有问题没建造重氢工厂".
+  // 真因: stateRef.current 是 module-level global, 任何 user push snapshot 都覆写.
+  // 老 scheduleWorldStatePersist 1s debounce 期间, 别 user 的 snapshot 把 global
+  // 改了 → timer fire 时读 stateRef.current 已不是 schedule 时 user 的 snap → 写
+  // user A 的 PG row 写成 user B 的 snap (cross-tenant 污染). 顶层修法: per-uid
+  // debounce 状态, schedule 时 capture uid + snapshot, fire 时读 captured value
+  // 不再读 global.
+  const perUidWriteTimer = new Map<string, NodeJS.Timeout>();
+  const perUidPendingSnap = new Map<string, WorldState>();
+  const scheduleWorldStatePersist = (snap: WorldState, uid: string): void => {
+    if (!uid) return; // legacy / no-uid: skip persist (matches pre-857 silent path)
+    perUidPendingSnap.set(uid, snap);
+    if (perUidWriteTimer.has(uid)) return;
+    const t = setTimeout(() => {
+      perUidWriteTimer.delete(uid);
+      const pending = perUidPendingSnap.get(uid);
+      perUidPendingSnap.delete(uid);
+      if (!pending) return;
       // v0.0.725 — Phase 6b (task #163, operator 2026-06-03 "sqlite 马上要
       // 放弃了 用PG"): PG-only primary write for world_state. SQLite write
       // dropped — fallback hydrate path (worldStateStore.hydrate) still kept
       // for crash safety until Phase 7 deletes SQLite entirely.
-      shadowFire("upsertWorldState", (uid) => pgStore!.upsertWorldState(uid, snap));
+      if (!pgStore) return;
+      void pgStore.upsertWorldState(uid, pending).catch((e) => {
+        console.warn(`[ogamex/sidecar/pg] upsertWorldState failed (uid=${uid.slice(0,8)}…):`, e instanceof Error ? e.message : e);
+      });
     }, WORLD_STATE_DEBOUNCE_MS);
+    perUidWriteTimer.set(uid, t);
   };
   const flushWorldStatePersist = (): void => {
-    if (worldStateWriteTimer !== null) {
-      clearTimeout(worldStateWriteTimer);
-      worldStateWriteTimer = null;
+    // Shutdown / explicit flush — drain every per-uid pending snap immediately.
+    for (const [uid, t] of perUidWriteTimer) clearTimeout(t);
+    const drains = Array.from(perUidPendingSnap.entries());
+    perUidWriteTimer.clear();
+    perUidPendingSnap.clear();
+    if (!pgStore) return;
+    for (const [uid, snap] of drains) {
+      void pgStore.upsertWorldState(uid, snap).catch((e) => {
+        console.warn(`[ogamex/sidecar/pg] flushWorldState failed (uid=${uid.slice(0,8)}…):`, e instanceof Error ? e.message : e);
+      });
     }
-    const snap = stateRef.current;
-    if (snap === null) return;
-    // v0.0.725 — Phase 6b: PG-only primary, no SQLite duplicate write.
-    shadowFire("flushWorldState", (uid) => pgStore!.upsertWorldState(uid, snap));
   };
 
   // --- DebugBuffer (M8.5) --------------------------------------------------
@@ -3077,10 +3095,14 @@ export async function startSidecar(
     stateRef.current = msg.snapshot;
     lastSeen.at = Date.now();
 
-    // Persist (debounced) — every snapshot schedules at most one write inside
-    // the 1s window. Coalesces bursts when the userscript pushes 3-5
-    // snapshots per page change.
-    scheduleWorldStatePersist();
+    // Persist (debounced) — every snapshot schedules at most one write per
+    // uid inside the 1s window. Coalesces bursts when the userscript pushes
+    // 3-5 snapshots per page change. v0.0.858 — uid + snap captured here
+    // so cross-tenant push during debounce window doesn't corrupt PG row.
+    {
+      const persistUid = ctxUid || pgUserId;
+      if (persistUid) scheduleWorldStatePersist(msg.snapshot, persistUid);
+    }
 
     // SaveCoordinator: diff hostile events between snapshots so per-planet
     // FSM can advance IN_FLIGHT → RECALL_READY when all that planet's
