@@ -340,45 +340,37 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (/characterClassDiscoverer\b/.test(html)) return "discoverer";
       if (/characterClassCollector\b/.test(html)) return "collector";
       if (/characterClassGeneral\b/.test(html)) return "general";
-      // v0.0.853 — operator 2026-06-06 "新账号的远征种族加成没有" — characterclass
-      // selection 页 (lobby + ingame premium 都可能) 顶栏没渲染 characterClass*
-      // CSS. v0.0.851 猜 `a.btn_deactivate` selector 没命中 (v12 用别的 selector).
-      // 换 TEXT-PROXIMITY: 整页 HTML 里搜 "Deactivate" / "停用" / "Deaktivieren"
-      // 等本地化激活态文本; 命中后取上下文 1500 chars 看 class 关键词. 失败时
-      // 把上下文打 console.warn 让 owner 直接 paste, 不再靠瞎猜.
-      const deactivateRe = /\b(?:Deactivate|停用|停止使用|去除|Deaktivieren|D[ée]sactiver|Disattiva|Desactivar)\b/i;
-      const dm = deactivateRe.exec(html);
-      if (dm) {
-        const idx = dm.index;
-        const lo = Math.max(0, idx - 1500);
-        const hi = Math.min(html.length, idx + 1500);
-        const ctx = html.slice(lo, hi).toLowerCase();
-        // Exclude DM-cost prompts (inactive classes show "Buy for 500,000 DM").
-        // Active class context has Deactivate; we already filtered, but add
-        // sanity: prefer the class name closest to Deactivate (smallest delta).
-        const candidates: Array<{ cls: "discoverer" | "collector" | "general"; idx: number }> = [];
-        for (const cls of ["discoverer", "collector", "general"] as const) {
-          const r = new RegExp(`\\b${cls}\\b`, "gi");
-          let m: RegExpExecArray | null;
-          while ((m = r.exec(ctx)) !== null) candidates.push({ cls, idx: m.index });
-        }
-        if (candidates.length > 0) {
-          const target = ctx.length / 2; // Deactivate is roughly centered in ctx
-          candidates.sort((a, b) => Math.abs(a.idx - target) - Math.abs(b.idx - target));
-          return candidates[0]!.cls;
-        }
-        console.warn(`[OgameX/class] Deactivate found but no class keyword in window. ctx=`, ctx.slice(0, 600));
-      }
-      // Fallback CSS selectors — guess set, will dump if all miss.
+      // v0.0.854 — operator 2026-06-06 paste 了 ogame v12 真 markup:
+      //   <a class="deactivate-it deactivate"
+      //      rel="...page=ingame&component=characterclassselection&
+      //           characterClassId=3&action=deselectClass&ajax=1...">
+      //     <span>Deactivate</span></a>
+      // characterClassId 是服务端权威整数 ID (1=Collector, 2=General,
+      // 3=Discoverer), 语言无关 / 主题无关 / DOM 改 layout 也不影响. 文字
+      // proximity / CSS selector 猜全废, 直接抓 rel URL 里的 characterClassId.
       try {
-        const cand = env.doc.querySelector('[class*="deactivate" i], [class*="active" i][class*="discoverer" i], [class*="active" i][class*="collector" i], [class*="active" i][class*="general" i]');
-        if (cand) {
-          const txt = cand.outerHTML.toLowerCase();
-          if (txt.includes("discoverer") || txt.includes("explorer")) return "discoverer";
-          if (txt.includes("collector")) return "collector";
-          if (txt.includes("general")) return "general";
+        const deact = env.doc.querySelector<HTMLAnchorElement>('a.deactivate-it, a.deactivate, a[rel*="deselectClass"]');
+        const relUrl = deact?.getAttribute("rel") ?? deact?.getAttribute("href") ?? "";
+        const m = /characterClassId=(\d+)/i.exec(relUrl);
+        if (m) {
+          const id = parseInt(m[1]!, 10);
+          if (id === 1) return "collector";
+          if (id === 2) return "general";
+          if (id === 3) return "discoverer";
         }
       } catch { /* */ }
+      // 同样的 ID 兜底: 全页 HTML 里 grep deselectClass 的 rel URL — 万一
+      // querySelector miss (DOM 局部刷新 / 异步 render). 一锤定音.
+      {
+        const m = /characterClassId=(\d+)[^"]*action=deselectClass/i.exec(html)
+          ?? /action=deselectClass[^"]*characterClassId=(\d+)/i.exec(html);
+        if (m) {
+          const id = parseInt(m[1]!, 10);
+          if (id === 1) return "collector";
+          if (id === 2) return "general";
+          if (id === 3) return "discoverer";
+        }
+      }
       // Last resort — data attrs.
       try {
         const root = env.doc.documentElement;
@@ -1400,7 +1392,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.853";
+  const USERSCRIPT_VERSION = "0.0.854";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
