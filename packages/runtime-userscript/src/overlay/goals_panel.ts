@@ -4230,13 +4230,34 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // marker so visual hierarchy is clear.
     const renderWithChildren = (g: GoalRowFromHttp, depth: number): string => {
       const indent = depth * 16;
+      // v0.0.800 — operator 2026-06-05 "sub 去掉 树保持主树": parent slot
+      // promote active child status (例: colonize 卡片显示 opt-crystalMine 当前
+      // waiting resources L10), parent 自己的 stale reason (ogame 100001 旧
+      // failure) 隐藏. tree 仍是 parent prereq_tree (已通过 v0.0.790 enrich
+      // opt-* nodes). buttons 控 parent (id 不变).
+      if (depth === 0) {
+        const children = childrenByParent.get(g.id) ?? [];
+        const activeChild = children.find((c) => ["active", "blocked", "pending"].includes(c.status));
+        if (activeChild) {
+          const synth: GoalRowFromHttp = {
+            ...g,
+            target: activeChild.target,
+            status: activeChild.status,
+            reason: activeChild.reason,
+            current_step: activeChild.current_step,
+            body_build_q: activeChild.body_build_q,
+            resource_shortage: activeChild.resource_shortage,
+            eta_at: activeChild.eta_at,
+            // prereq_tree keep parent (含 enriched opt-* cascade)
+          } as GoalRowFromHttp;
+          return renderSingleGoalRow(synth);
+        }
+        return renderSingleGoalRow(g);
+      }
       const body = renderSingleGoalRow(g);
       const childRows = (childrenByParent.get(g.id) ?? [])
-        .map((c) => `<div style="margin-left:${indent + 16}px; border-left:2px solid #3a4a60; padding-left:6px;"><span style="color:#80a8d0; font-size:10px;">↳ sub</span>${renderWithChildren(c, depth + 1)}</div>`)
+        .map((c) => `<div style="margin-left:${indent + 16}px; border-left:2px solid #3a4a60; padding-left:6px;">${renderWithChildren(c, depth + 1)}</div>`)
         .join("");
-      if (depth === 0) {
-        return childRows ? body + childRows : body;
-      }
       return body + childRows;
     };
     // v0.0.767 — operator 2026-06-04 "goals 按照坐标排序". 同 flagship
