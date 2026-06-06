@@ -600,6 +600,40 @@ export async function startSidecar(
   // disappeared from /movement, Signal B mis-fired (太早, no debris yet),
   // dedup then blocked the real "returned home" disappear @ 15:40 → no harvest.
   const expLastSeen = new Map<string, { origin: readonly number[]; dest: readonly number[]; arrival_at: number | null; return_at: number | null }>();
+  // v0.0.818 — operator 2026-06-05 "2:260:9 远征回来了没有触发自动回收".
+  // sidecar restart 期间 expedition return → in-memory expLastSeen 丢 →
+  // Signal B miss. 文件持久化, restart 重 load. firedDebrisCheckFor 也持久
+  // 防 重 fire (fleet id 全宇宙单调递增, 重启后看到旧 id 已 fired).
+  const EXP_PERSIST_PATH = `${process.env.HOME ?? "/tmp"}/.openclaw/workspace/ogamex/exp_state.json`;
+  try {
+    const raw = fs.readFileSync(EXP_PERSIST_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      expLastSeen?: Array<[string, { origin: number[]; dest: number[]; arrival_at: number | null; return_at: number | null }]>;
+      firedDebrisCheckFor?: Array<[string, Array<"B" | "C">]>;
+    };
+    if (Array.isArray(parsed.expLastSeen)) {
+      for (const [k, v] of parsed.expLastSeen) expLastSeen.set(k, v);
+    }
+    if (Array.isArray(parsed.firedDebrisCheckFor)) {
+      for (const [k, arr] of parsed.firedDebrisCheckFor) firedDebrisCheckFor.set(k, new Set(arr));
+    }
+    console.info(`[exp-persist] loaded ${expLastSeen.size} expLastSeen + ${firedDebrisCheckFor.size} firedDebrisCheckFor entries from ${EXP_PERSIST_PATH}`);
+  } catch (e) {
+    if ((e as { code?: string })?.code !== "ENOENT") console.warn("[exp-persist] load threw", e);
+  }
+  const persistExpState = (): void => {
+    try {
+      const data = {
+        expLastSeen: Array.from(expLastSeen.entries()),
+        firedDebrisCheckFor: Array.from(firedDebrisCheckFor.entries()).map(([k, s]) => [k, Array.from(s)]),
+      };
+      fs.writeFileSync(EXP_PERSIST_PATH, JSON.stringify(data));
+    } catch (e) { console.warn("[exp-persist] save threw", e); }
+  };
+  const persistTimer = setInterval(persistExpState, 30_000);
+  if (typeof (persistTimer as unknown as { unref?: () => void }).unref === "function") {
+    (persistTimer as unknown as { unref: () => void }).unref();
+  }
   const triggerDispatch = (): void => {
     if (!priorityMergerRef) return;
     // Phase 9c.7 hotfix — read ALS uid. When this runs inside a Bearer-
