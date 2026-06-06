@@ -3750,21 +3750,15 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const goalShortageEarly = g.resource_shortage;
     const hasShortageEarly = csShortageEarly > 0
       || !!(goalShortageEarly && (goalShortageEarly.m + goalShortageEarly.c + goalShortageEarly.d) > 0);
-    if (isBuildFamily && hasShortageEarly) {
-      // v0.0.811 — operator 2026-06-05 "每次刷新都变橘色, 点击变绿色, 为什么
-      // 渲染两次写两套代码". 真因不是两套代码, 是 race state:
-      // - panel 拉 goals 时 body_build_q 还没同步 (sidecar restart 后或
-      //   state.snapshot 暂态), 但 sidecar 已经算了 eta_at (基于 ogame queue
-      //   end_at). cs.shortage 仍是 stale "还要 X 资源" 数据.
-      // - L2 命中 → 显 "等待资源" 橘色; 几秒后 fresh data 走 L1 building 绿色.
-      // 修: 如果 sidecar 已知 eta_at > now (queue 真在跑), 即便 cs.shortage 有
-      // 数据也优先 building 绿色 (跟 L3 一致). cs.shortage 仅在 没 eta_at 时
-      // 主导 "等待资源" 判断.
+    // v0.0.837 — operator 2026-06-06 "感觉还是有两套渲染机制, 点一下绿色 多点
+    // 几次变黄色 再点几次又绿色 循环". 真因 = L2.5 hasShortageEarly 每 tick
+    // 抖, planner shortage 数据跨 tick 变化导致 green↔yellow 闪烁. 修: L2.5
+    // 收紧只 status==='blocked' 才 fire (status=pending/active 让 L3 eta_at 或
+    // L4 status label 主导, 绿色稳定). 老 v0.0.811 eta_at 兜底保留.
+    if (isBuildFamily && hasShortageEarly && g.status === "blocked") {
       if (typeof g.eta_at === "number" && g.eta_at > now) {
         // fall through to L3 building branch — eta_at 是 ground truth
       } else {
-        // v0.0.693 — operator 2026-06-03 "等待资源和等待运输合并": 单一语义
-        // "等待資源" 覆盖两种 (本地无产能/产能不足都归一)。颜色统一橙 #ffaa55。
         const target = cs ? stepLabel : "";
         return { label: target ? t("goal.state.waiting_resources_step", { step: target }) : t("goal.state.waiting_resources"), color: "#ffaa55" };
       }
