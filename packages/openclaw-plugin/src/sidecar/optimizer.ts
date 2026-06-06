@@ -611,6 +611,19 @@ export async function runOptimizerOnce(
         return lvl >= chosenLvl;
       });
       if (exists) continue;
+      // v0.0.866 — operator 2026-06-06 "新加的电厂为什么没有挂到树里面, 而是
+      // 单独一个". v0.0.790 同款架构: opt-* 必带 parent_goal_id 让 panel cascade
+      // merge 进 root tree. 上面 mine/build accelerator 走 g.id (loop's main goal);
+      // energy-guard 是 planet-scoped 独立扫描, 没 g.id 上下文 — 找同 planet 最高优
+      // active root (跳 opt-/exp-/expb- 子目标) 作 parent. 无 root 时仍 emit
+      // standalone (殖民地刚开荒只有 opt-* 时仍想要修电).
+      const sameRoot = allRows.find((r) => {
+        if (r.goal.planet !== planetId) return false;
+        if (!["active", "blocked", "pending"].includes(r.status)) return false;
+        const id = r.goal.id;
+        if (id.startsWith("opt-") || id.startsWith("exp-") || id.startsWith("expb-")) return false;
+        return true;
+      });
       const energyOptRow = {
         goal: {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -624,6 +637,7 @@ export async function runOptimizerOnce(
           progress_pct: 0,
           current_step: "queued",
           eta_at: null,
+          ...(sameRoot ? { parent_goal_id: sameRoot.goal.id } : {}),
         },
         status: "pending" as const,
         created_at: Date.now(),
