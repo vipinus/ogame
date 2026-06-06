@@ -466,32 +466,28 @@ export class PriorityMerger {
         //    + 中转 (to_stop_load/hop/unload). 直送 completed 时整 chain 达成,
         //    中转链 应自动 cancel (ships 已 delivered, ferry 失去意义).
         const upstreamActive = upstream.filter((u) => u.status !== "completed" && u.status !== "cancelled");
-        // v0.0.815 — operator 2026-06-05 实证: chain 可能含多个独立子任务
-        // (e.g. direct 去 1:486:7 + ferry path 去 3:279:7), owner 一次派两
-        // 个目标共 chain_id. v0.0.814 单看 phase=to_target_direct completed
-        // 就 cancel 所有 ferry — 把不同目标的 ferry 也误杀. 修: 必须 direct
-        // 跟 ferry unload 的 target_coords 一致才 supersede. unload phase 是
-        // ferry final-leg, 它的 target_coords = ferry 真目的. 不同目的的 ferry
-        // 各自跑.
+        // v0.0.816 — operator 2026-06-05 实证 chain template (genFerry, shared/
+        // transport_planner.ts) 分 3 segments:
+        //   SEG1 (P=12) ferry_to_res_*: empty ferry → resource pickup (optional)
+        //   SEG2 (P=9)  to_target_direct OR to_target_load/hop/unload: delivery
+        //   SEG3 (P=6)  to_stop_load/hop/unload: empty ferry → stopover (optional cleanup)
+        // SEG2 direct completed = delivery 已送达, SEG3 cleanup 不强制 (跟
+        // delivery target_coords 设计上就不同, 是 post-delivery 空船 回 stopover).
+        // v0.0.815 target_coords 比对反向锁死 SEG3 永远不 supersede → owner
+        // panel 看 ferry SEG3 永久 blocked. 修: 任何 SEG2 final leg
+        // (direct OR to_target_unload) 完成 → 整 chain delivery 完, 自动 cancel
+        // SEG3 (to_stop_*) cleanup, owner 不再看到无意义 blocked.
         const myPhase = (row.goal.target as { chain_phase?: string })?.chain_phase ?? "";
         if (/^to_stop_(load|hop|unload)$/.test(myPhase)) {
-          // find unload leg in same chain to learn ferry's final target
-          const unloadLeg = allRows.find((r) => {
+          const seg2Done = allRows.find((r) => {
             if ((r.goal.target as { chain_id?: unknown })?.chain_id !== chainId) return false;
-            return (r.goal.target as { chain_phase?: string })?.chain_phase === "to_stop_unload";
+            const ph = (r.goal.target as { chain_phase?: string })?.chain_phase ?? "";
+            if (!/^to_target_(direct|unload)$/.test(ph)) return false;
+            return r.status === "completed";
           });
-          const ferryTarget = (unloadLeg?.goal.target as { target_coords?: string })?.target_coords;
-          if (ferryTarget) {
-            const directLegSameTarget = allRows.find((r) => {
-              if ((r.goal.target as { chain_id?: unknown })?.chain_id !== chainId) return false;
-              if ((r.goal.target as { chain_phase?: string })?.chain_phase !== "to_target_direct") return false;
-              if (r.status !== "completed") return false;
-              return (r.goal.target as { target_coords?: string })?.target_coords === ferryTarget;
-            });
-            if (directLegSameTarget) {
-              await this.updateStatusAndMirror(row.goal.id, "cancelled", `chain superseded: direct leg ${directLegSameTarget.goal.id.slice(0, 12)} reached ${ferryTarget}, ferry obsolete`);
-              continue;
-            }
+          if (seg2Done) {
+            await this.updateStatusAndMirror(row.goal.id, "cancelled", `chain superseded: SEG2 delivery ${seg2Done.goal.id.slice(0, 12)} completed, SEG3 cleanup obsolete`);
+            continue;
           }
         }
         if (!upstreamReason && upstreamActive.length > 0) {
