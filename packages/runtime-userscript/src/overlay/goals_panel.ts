@@ -3724,7 +3724,16 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       || goalType === "research" || goalType === "build_ships" || goalType === "build_defense"
       || goalType === "lifeform_building";
     const bq = g.body_build_q;
-    if (isBuildFamily && bq && bq.ends_at > now) {
+    // v0.0.836 — operator 2026-06-06 "为什么要渲染两次, 两套代码合并一下".
+    // L2 老逻辑 蹭 body_build_q 不管 queue 在建的是不是本 goal 目标. 同 planet
+    // 多 goal 时, A goal 显示 B goal 的 tech+L+eta (panel 第一次刷新错), 直到
+    // L3 eta_at fresh 数据来了才纠正绿色. 修: L2 仅当 bq.tech === goal.target.
+    // building (或同等 alias) 时才认为 "ogame queue 正在做本 goal". 否则不蹭
+    // bq, 让 L3 (planner eta_at) / L4 (status active) 主导.
+    const goalTargetBuilding = (g.target as { building?: string; tech?: string } | undefined);
+    const goalTargetTech = goalTargetBuilding?.building ?? goalTargetBuilding?.tech ?? "";
+    const bqMatchesGoal = bq && goalTargetTech && bq.tech === goalTargetTech;
+    if (isBuildFamily && bq && bq.ends_at > now && bqMatchesGoal) {
       const lvLabel = bq.level !== null && bq.level !== undefined ? ` L${bq.level}` : "";
       const etaMin = Math.max(0, Math.round((bq.ends_at - now) / 60_000));
       const tplKey = bq.queue === "lf_build" ? "goal.state.body_q.lifeform_template"

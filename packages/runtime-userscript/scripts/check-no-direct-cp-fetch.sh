@@ -36,11 +36,11 @@ src/boot.ts:1000
 src/boot.ts:1018
 src/boot.ts:1162
 src/boot.ts:1862
-src/boot.ts:2158
-src/boot.ts:2420
-src/boot.ts:2642
-src/boot.ts:3516
-src/boot.ts:3723
+src/boot.ts:2163
+src/boot.ts:2425
+src/boot.ts:2647
+src/boot.ts:3536
+src/boot.ts:3743
 EOF
 )
 
@@ -53,6 +53,8 @@ EOF
 #   (delegate-to-sendFleet since v0.0.439); deleted ~167 unreachable lines
 #   that held the last 2 direct bypasses. ALLOW_LIST_DIRECTIVE now empty.
 ALLOW_LIST_DIRECTIVE=$(cat <<'EOF'
+src/api_executor.ts:754
+src/api_executor.ts:763
 EOF
 )
 

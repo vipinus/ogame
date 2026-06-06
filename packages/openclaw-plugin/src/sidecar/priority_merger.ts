@@ -144,8 +144,10 @@ export class PriorityMerger {
   // goal 类型。原 60s 是按 sendFleet 最慢 round-trip 估的；实测 ack 通常
   // <10s，30s 给 3x 安全 margin，让 chain pipeline 卡死后更快 self-heal。
   // 安全网仍在：planner 重发前 re-check slot/cooldown/库存，不会 double-fire。
-  private readonly STUCK_TIMEOUT_MS = 30_000;
-  private readonly STUCK_TIMEOUT_MS_ATOMIC = 30_000;
+  // v0.0.834 — operator 2026-06-06 retry 审计: stuck-recovery 30s 比 backoff
+  // 60s 短被 race, 双向都升 60s 跟齐, 减少噪声.
+  private readonly STUCK_TIMEOUT_MS = 60_000;
+  private readonly STUCK_TIMEOUT_MS_ATOMIC = 60_000;
 
   private readonly onStatusChange: ((row: GoalRow, userId: string | undefined) => void) | undefined;
   private readonly reader: IGoalsStoreReader | undefined;

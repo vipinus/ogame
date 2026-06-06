@@ -2253,7 +2253,11 @@ export async function startSidecar(
             // 2026-05-30 "build naniteFactory 7 ↳ 100001 未知錯誤"); sidecar
             // side was inconsistent and kept cancelling fresh-server build
             // attempts. Align with userscript: 100001 + 未知錯誤 are transient.
-            const TRANSIENT_RE = /140043|140028|140019|100001|120017|未知錯誤|未知错误|未知的錯誤|未知的错误|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|insufficient resources|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum|previously unknown error/i;
+            // v0.0.834 — operator 2026-06-06 retry 审计: 加 ogame HTML 503/
+            // overload 典型 ack message. Titania OGame 服器过载 / non-success
+            // HTTP 200 (response 不是 JSON 是 HTML 错误页) 是 transient, 跟
+            // 100001 同等待遇, 进 exponential backoff 队列.
+            const TRANSIENT_RE = /140043|140028|140019|100001|120017|未知錯誤|未知错误|未知的錯誤|未知的错误|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|insufficient resources|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum|previously unknown error|non-success response HTTP|HTTP 503|Service Temporarily Unavailable|Service Unavailable|Titania OGame|rejected: non-JSON response/i;
             const isTransient = TRANSIENT_RE.test(reason);
             // v0.0.738 — operator 2026-06-04 "supplies:fusionReactor rejected
             // 該行星已沒空間了 120012 这个报错". Permanent error: planet's
@@ -2326,8 +2330,29 @@ export async function startSidecar(
                // + stuck-recovery 60s, race risk is acceptable for auto-recovery.
               // v0.0.738 — hard-block errors (120012 fields full) use 24h
               // backoff: needs operator demolish/terraformer, won't self-resolve.
-              const backoffLabel = isHardBlock ? "backoff_24h_hardblock" : "backoff_60s";
-              const backoffMs = isHardBlock ? 24 * 3600 * 1000 : 60_000;
+              // v0.0.834 — exponential backoff. failureCount 累计, 每次失败
+              // backoff = min(60s * 2^(N-1), 3600s). hardblock 走 24h 单独路径.
+              let backoffMs: number;
+              let backoffLabel: string;
+              if (isHardBlock) {
+                backoffMs = 24 * 3600 * 1000;
+                backoffLabel = "backoff_24h_hardblock";
+              } else {
+                const n = (goalFailureCount.get(goalId) ?? 0) + 1;
+                goalFailureCount.set(goalId, n);
+                const seconds = Math.min(60 * Math.pow(2, n - 1), 3600);
+                backoffMs = seconds * 1000;
+                backoffLabel = `backoff_${seconds}s`;
+                console.info(`[backoff] goal=${goalId.slice(0,12)} failureCount=${n} → ${seconds}s`);
+                // v0.0.835 — operator 2026-06-06 "1 次以后就刷新": 任何失败立刻
+                // emit data.refresh, 让 userscript 主动刷 ogame state + token. 下次
+                // retry 吃 fresh state 不带 stale (token/resources/cp 三种 100001 根因
+                // 覆盖). 每次失败 push 1 次 (cheap), 不等 3 次累计.
+                try {
+                  emitPostDirectiveRefresh(`fail-recover goal=${goalId.slice(0,12)} n=${n}`);
+                  console.info(`[stale-recover] goal=${goalId.slice(0,12)} fail#${n} → data.refresh emitted`);
+                } catch (e) { console.warn(`[stale-recover] emit threw:`, e); }
+              }
               priorityMergerRef?.markAwaiting(goalId, ["empire_poll", backoffLabel]);
               setTimeout(() => {
                 priorityMergerRef?.clearAwaiting(goalId, backoffLabel);
@@ -2356,6 +2381,8 @@ export async function startSidecar(
             priorityMergerRef?.clearAwaiting(goalId);
             // v0.0.478: clear dispatch stamp so next leg/level can dispatch.
             priorityMergerRef?.clearDispatched(goalId);
+            // v0.0.834 — success ack 清零失败计数, 下次失败从 60s 起重新算.
+            goalFailureCount.delete(goalId);
             // ATOMIC actions (expedition / colonize / deploy / transport):
             // ApiExec's success means the fleet launched. Goal is terminal —
             // mark completed immediately. Without this, expedition goals
@@ -2782,6 +2809,10 @@ export async function startSidecar(
   // markFieldsFull(planet_id, building) when the ack lands. operator
   // 2026-06-04 "船运资源到 4:299:8 就会触发升级一次核电站" loop fix.
   const directiveToParams = new Map<string, { action?: string; building?: string; planet_id?: string }>();
+  // v0.0.834 — operator 2026-06-06 retry 审计 exponential backoff: 累计失败
+  // 次数, backoff = min(60s * 2^(N-1), 3600s). 60→120→240→480→960→1920→3600
+  // 7 次后封顶 1h. 成功 ack 清零.
+  const goalFailureCount = new Map<string, number>();
   // species_discovery: stamp dispatched coord per directive_id (NOT on row,
   // because goalsStore.list() returns SQL copies — mutating one is discarded).
   const directiveToDiscoverCoord = new Map<string, string>();

@@ -18,7 +18,9 @@ import type { WorldState } from "@ogamex/shared";
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
 
-const EXPEDITION_TICK_MS = 5_000;
+// v0.0.834 — operator 2026-06-06: 5s tick 噪声大, event-driven 已能覆盖大多数,
+// base 拉到 30s 兜底.
+const EXPEDITION_TICK_MS = 30_000;
 const EXPEDITION_TEMPLATE_PATH = "/home/ddxs/.openclaw/workspace/ogamex/runtime/ogamex-expedition.json";
 const DEFAULT_EXPEDITION_TEMPLATE: Record<string, number> = { smallCargo: 1, espionageProbe: 1 };
 const FAILURE_COOL_OFF_MS = 15 * 1000;

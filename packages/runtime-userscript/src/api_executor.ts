@@ -305,7 +305,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       action: `${component}:tokenpage`,
       method: "GET",
       maxAttempts: 2,
-      skipRestore: true,
+      skipRestore: false,
     });
     const html = resp.raw;
     // v0.0.684 — token regex shotgun removed (caller didn't use it).
@@ -361,7 +361,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         token: tk,
       }),
       maxAttempts: 4,
-      skipRestore: true,
+      skipRestore: false,
     });
     if (res.json && ((res.json as { success?: boolean }).success === false || (res.json as { status?: string }).status === "failure")) {
       const errs = (res.json as { errors?: unknown; error?: unknown }).errors ?? (res.json as { error?: unknown }).error;
@@ -419,7 +419,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         token: tk,
       }),
       maxAttempts: 4,
-      skipRestore: true,
+      skipRestore: false,
     });
     if (res.json && ((res.json as { success?: boolean }).success === false || (res.json as { status?: string }).status === "failure")) {
       const errs = (res.json as { errors?: unknown; error?: unknown }).errors ?? (res.json as { error?: unknown }).error;
@@ -620,7 +620,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         token: this.tokenManager!,            // satisfies API; overlay GET doesn't actually use it
         action: "jg:overlay",
         method: "GET",
-        skipRestore: true,
+        skipRestore: false,
       });
       if (res.status !== 200) throw new Error(`jumpgate overlay HTTP ${res.status}`);
       const html = res.raw;
@@ -669,7 +669,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         return rawOk && errs.length === 0;
       },
       buildBody: buildJgBody,
-      skipRestore: true,
+      skipRestore: false,
     });
     // Post-retry distillation: cpPostWithRetry's successCheck returning false
     // (after exhausting transient retries) means non-transient failure;
@@ -729,7 +729,53 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         }
       } catch (e) { console.warn(`[ApiExec/jumpgate] commit threw:`, e); }
     } else {
-      console.warn(`[ApiExec/jumpgate] response had no cooldown/nextActionAt — JG cd not committed`);
+      console.warn(`[ApiExec/jumpgate] response had no cooldown/nextActionAt — JG cd not committed, fallback overlay fetch`);
+      // v0.0.832 — operator 2026-06-06: 同级单边 fetch 写双边, 异级双边 fetch
+      // 各写各的 cd. 服务器 cd 真值, 不假设 3600.
+      const parseCd = (html: string): number | null => {
+        const m = html.match(/(?:nextJumpAt|cooldown|nextActionAt)["'\s:=]+(\d+)/i);
+        if (m && m[1]) {
+          const v = Number(m[1]);
+          if (Number.isFinite(v) && v > 0) {
+            return v > 1e10 ? Math.max(0, Math.floor((v - Date.now()) / 1000)) : v;
+          }
+        }
+        return null;
+      };
+      try {
+        const storeRef = (this.win as Window & { __ogamexStore?: { state: { planets?: Record<string, { buildings?: Record<string, number> }> } } }).__ogamexStore;
+        const srcLvl = storeRef?.state?.planets?.[sourceMoonId]?.buildings?.["jumpgate"] ?? 0;
+        const tgtLvl = storeRef?.state?.planets?.[targetMoonId]?.buildings?.["jumpgate"] ?? 0;
+        const sameLevel = srcLvl > 0 && tgtLvl > 0 && srcLvl === tgtLvl;
+        // v0.0.832 operator "如果需要 cp 就走 cp 保护, 不要直跑" — fetchWithCpBypassBusy
+        // 走 safe_fetch.ts mutex + restore + click_intercept (架构 docs/architecture/
+        // cp-token-protected-access.md), 不裸 cp= URL 绕过.
+        const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
+        const srcRes = await fetchWithCpBypassBusy(
+          overlayUrl,
+          { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+          sourceMoonId,
+        );
+        const srcCd = srcRes.status === 200 ? parseCd(await srcRes.text()) : null;
+        let tgtCd: number | null = null;
+        if (!sameLevel) {
+          // 异级: 抓 tgt overlay 拿 tgt 自己的 cd
+          const tgtRes = await fetchWithCpBypassBusy(
+            overlayUrl,
+            { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+            targetMoonId,
+          );
+          tgtCd = tgtRes.status === 200 ? parseCd(await tgtRes.text()) : null;
+        }
+        if (srcCd !== null && srcCd > 0) {
+          const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, sc: number, tc?: number) => void }).__ogamexCommitJgCd;
+          if (typeof commit === "function") {
+            const tgtCdArg = (!sameLevel && tgtCd !== null && tgtCd > 0) ? tgtCd : undefined;
+            commit(sourceMoonId, targetMoonId, srcCd, tgtCdArg);
+            console.info(`[ApiExec/jumpgate] overlay-parsed src=${srcCd}s tgt=${tgtCd ?? "same"} (srcLvl=${srcLvl} tgtLvl=${tgtLvl} sameLevel=${sameLevel})`);
+          }
+        }
+      } catch (e) { console.warn(`[ApiExec/jumpgate] overlay fetch threw:`, e); }
     }
     // v0.0.546 — operator 2026-05-31 "跳躍以後要立刻刷新艦隊數量". Old code
     // fired one pollEmpire force, but ogame's empire endpoint can return
@@ -854,7 +900,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
             },
             successCheck: (j) => !!j["system"],
             maxAttempts: 1,
-            skipRestore: true,
+            skipRestore: false,
           });
           const j = JSON.parse(galRes.raw) as {
             system?: { galaxyContent?: Array<{ position?: number; planet?: unknown }> };
@@ -1027,7 +1073,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
           },
           successCheck: (j) => !!j["system"],
           maxAttempts: 1,
-          skipRestore: true,
+          skipRestore: false,
         });
         const galTxt = galRes.raw;
         // Response is JSON. Verified shape from operator sniff:
@@ -1223,7 +1269,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       // that aren't in TRANSIENT_RACE_RE and need bespoke handling.
       successCheck: () => true,
       maxAttempts: 1,
-      skipRestore: true,
+      skipRestore: false,
     });
     const respText = discRes.raw;
     if (discRes.status !== 200) throw new Error(`discover: HTTP ${discRes.status}`);
@@ -1305,7 +1351,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
           buildBody: buildDiscBody,
           successCheck: () => true,
           maxAttempts: 1,
-          skipRestore: true,
+          skipRestore: false,
         });
         const retryText = r2.raw;
         const retryParsed = r2.json as typeof parsed;
@@ -1353,7 +1399,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
             buildBody: buildDiscBody,
             successCheck: () => true,
             maxAttempts: 1,
-            skipRestore: true,
+            skipRestore: false,
           });
           const retryText = r2.raw;
           const retryParsed = r2.json as typeof parsed;
@@ -1429,7 +1475,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         action: `${action}:bootstrap`,
         method: "GET",
         maxAttempts: 1,
-        skipRestore: true,
+        skipRestore: false,
       });
       const newToken = (res.json as { newAjaxToken?: unknown } | null)?.newAjaxToken;
       if (typeof newToken === "string" && newToken.length >= 16) {

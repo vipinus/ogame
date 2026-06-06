@@ -16,7 +16,7 @@ import {
 import { extractIncomingEvents } from "./probes/extractors/events.js";
 import { extractPlanets } from "./probes/extractors/planets.js";
 import { extractTechLevels, extractTechLabels } from "./probes/extractors/buildings.js";
-import { TECH_TREE, TECH_NAME_BY_ID, TECH_ID_BY_NAME, idKind, LIFEFORM_TECH, expeditionSlots } from "@ogamex/shared";
+import { TECH_TREE, TECH_NAME_BY_ID, TECH_ID_BY_NAME, idKind, LIFEFORM_TECH, expeditionSlots, buildingSec } from "@ogamex/shared";
 import { extractFleetMovements } from "./probes/extractors/fleet.js";
 import { installEventBoxHook } from "./probes/eventbox_hook.js";
 import { extractToken, type OgameWindow } from "./probes/extractors/token.js";
@@ -989,7 +989,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         `/game/index.php?page=componentOnly&component=eventList&action=fetchEventBox&ajax=1&asJson=1`,
         { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
         planetId,
-        { bypassBusy: true, skipRestore: true },
+        { bypassBusy: true, skipRestore: false },
       );
       const j0 = await r0.json() as { newAjaxToken?: string };
       let token = j0.newAjaxToken;
@@ -1003,7 +1003,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
           body: body1 },
         planetId,
-        { bypassBusy: true, skipRestore: true },
+        { bypassBusy: true, skipRestore: false },
       );
       const j1 = await r1.json() as { newAjaxToken?: string };
       if (!j1.newAjaxToken) return;
@@ -1021,7 +1021,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
           body: body2 },
         planetId,
-        { bypassBusy: true, skipRestore: true },
+        { bypassBusy: true, skipRestore: false },
       );
       const j2 = await r2.json() as { shipsData?: unknown };
       console.info(`[OgameX/cargo-probe] checkTarget response shipsData present=${!!j2.shipsData}`);
@@ -1277,7 +1277,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.830";
+  const USERSCRIPT_VERSION = "0.0.836";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1999,23 +1999,28 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // 自身返回 cd field (resp.cooldown / nextActionAt), api_executor 已捕获.
   // 旧路径走 sniffer-postMessage-CASE-B-HTML-overlay-regex, 改一刀直写双边
   // store. 0 网页扫描, 0 race window (atomic setPlanetsPatch).
-  (env.win as Window & { __ogamexCommitJgCd?: (src: string, tgt: string, cdSec: number) => void }).__ogamexCommitJgCd =
-    (src: string, tgt: string, cdSec: number): void => {
-      if (!src || !tgt || !Number.isFinite(cdSec) || cdSec <= 0) return;
+  // v0.0.832 — operator 2026-06-06 "如果两边的 JG 级别不同 抓双边". signature
+  // 加 optional tgtCdSec: 两边 jumpgate 等级相同 → 仅传 src cdSec (helper apply
+  // 双边); 不同等级 → caller 抓双边 overlay 拿各自 cd 一起传, helper 写各自值.
+  // tgtCdSec undefined 退回旧行为 = 两边同 cd (向后兼容).
+  (env.win as Window & { __ogamexCommitJgCd?: (src: string, tgt: string, srcCdSec: number, tgtCdSec?: number) => void }).__ogamexCommitJgCd =
+    (src: string, tgt: string, srcCdSec: number, tgtCdSec?: number): void => {
+      if (!src || !tgt || !Number.isFinite(srcCdSec) || srcCdSec <= 0) return;
+      const tgtCd = (typeof tgtCdSec === "number" && Number.isFinite(tgtCdSec) && tgtCdSec > 0) ? tgtCdSec : srcCdSec;
       const now = Date.now();
       const patch: Record<string, Partial<typeof store.state.planets[string]>> = {};
       if (store.state.planets[src]) {
-        patch[src] = { jumpgate_cooldown_sec: cdSec, jumpgate_harvested_at: now, jumpgate_pair_with: tgt };
+        patch[src] = { jumpgate_cooldown_sec: srcCdSec, jumpgate_harvested_at: now, jumpgate_pair_with: tgt };
       }
       if (store.state.planets[tgt]) {
-        patch[tgt] = { jumpgate_cooldown_sec: cdSec, jumpgate_harvested_at: now, jumpgate_pair_with: src };
+        patch[tgt] = { jumpgate_cooldown_sec: tgtCd, jumpgate_harvested_at: now, jumpgate_pair_with: src };
       }
       if (Object.keys(patch).length > 0) {
         store.setPlanetsPatch(patch);
         try { window.localStorage.setItem("ogamex.panel.section.moons", "false"); } catch { /* */ }
         const pushNow = (env.win as Window & { __ogamexPushNow?: () => void }).__ogamexPushNow;
         if (typeof pushNow === "function") { try { pushNow(); } catch { /* */ } }
-        console.info(`[OgameX/jg-commit] api-driven cd=${cdSec}s src=${src} tgt=${tgt} (${Object.keys(patch).length} sides written)`);
+        console.info(`[OgameX/jg-commit] api-driven src=${src}(cd=${srcCdSec}s) tgt=${tgt}(cd=${tgtCd}s) (${Object.keys(patch).length} sides written)`);
       } else {
         console.warn(`[OgameX/jg-commit] both moons missing in store: src=${src} tgt=${tgt}`);
       }
@@ -2421,7 +2426,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         `/game/index.php?page=fetchResources&ajax=1`,
         { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
         planetId,
-        { bypassBusy: true, skipRestore: true },
+        { bypassBusy: true, skipRestore: false },
       );
       if (!resp.ok) return;
       const j = await resp.json() as Record<string, unknown> & {
@@ -3274,12 +3279,27 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             // Pull level from inside the <a class="active">...N+1...</a> tag.
             const lvlMatch = /<a[^>]*class=["'][^"']*active[^"']*["'][^>]*>(\d+)<\/a>/.exec(html);
             const level = lvlMatch ? parseInt(lvlMatch[1]!, 10) : 1;
-            // Preserve precise ends_at if live build_q matches the same
-            // building+level (operator visited the body, fetchResources wrote
-            // it). Otherwise estimate +12h placeholder.
+            // v0.0.836 — operator 2026-06-06 "时间评估不对". 老 fallback `+12h`
+            // 让 panel L2 显 "~720m" 假数据. 改用 sharedBuildingSec(cost,
+            // {robotics,nanite}, universeSpeed) 真公式估算. 缺数据时 fallback
+            // 仍 12h (保证非 null), 但 buildings/server.speed 有值时算真值.
+            let computedEndsAt: number | null = null;
+            try {
+              const techEntry = (TECH_TREE as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)[name];
+              if (techEntry?.cost_at) {
+                const cost = techEntry.cost_at(level);
+                const robotics = buildings["roboticsFactory"] ?? 0;
+                const nanite = buildings["naniteFactory"] ?? 0;
+                const universeSpeed = store.state.server?.speed ?? 1;
+                const sec = buildingSec({ m: cost.m, c: cost.c }, { robotics, nanite }, universeSpeed);
+                if (sec > 0 && Number.isFinite(sec)) {
+                  computedEndsAt = Date.now() + sec * 1000;
+                }
+              }
+            } catch { /* */ }
             const ends_at = (liveBq && liveBq.building === name && liveBq.level === level && (liveBq.ends_at ?? 0) > Date.now())
               ? liveBq.ends_at!
-              : Date.now() + 12 * 3600 * 1000;
+              : (computedEndsAt ?? Date.now() + 12 * 3600 * 1000);
             return { building: name, technology_id: tid, level, ends_at };
           }
           return undefined;
@@ -3729,7 +3749,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             body,
           },
           planetId,
-          { skipRestore: true },
+          { skipRestore: false },
         );
         if (!r.ok) { console.warn(`[OgameX/lf-prereq] tid=${tid} HTTP ${r.status}`); continue; }
         const txt = await r.text();
