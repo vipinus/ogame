@@ -597,7 +597,30 @@ export class PriorityMerger {
             const orig = Array.isArray(f.origin) ? f.origin.join(":") : "";
             return orig === srcCoordStr;
           });
-          slotEmpty = myOutbound.length === 0;
+          // v0.0.820 — operator 2026-06-06 "Leg 1 发了两次 如果不是船不够
+          // 肯定会发第三次". 真因: state.snapshot lag → fleets_outbound 暂
+          // 不含真飞的 fleet → slotEmpty=true → 5min stuck-recovery 重派.
+          // 加双信号判定: source 仍有 expected ships 才算真 stuck (说明
+          // ack 没回 + 船没飞). source ships 不足 = 船已飞 + snapshot lag,
+          // keep waiting 不重派.
+          if (myOutbound.length === 0) {
+            const myT = row.goal.target as { ships?: unknown; take_all?: unknown };
+            const shipsRaw = myT.ships;
+            const isTakeAll = myT.take_all === true || shipsRaw === "all";
+            const expectedShips = (shipsRaw && typeof shipsRaw === "object" && !Array.isArray(shipsRaw))
+              ? shipsRaw as Record<string, unknown>
+              : {};
+            if (!isTakeAll && Object.keys(expectedShips).length > 0 && srcPlanet) {
+              const srcShips = (srcPlanet as { ships?: Record<string, number> }).ships ?? {};
+              const anyShipMissing = Object.entries(expectedShips).some(([k, v]) => typeof v === "number" && (srcShips[k] ?? 0) < v);
+              // 船不够 + 0 outbound = 已派出 snapshot lag, 不重派
+              slotEmpty = !anyShipMissing;
+            } else {
+              slotEmpty = true;
+            }
+          } else {
+            slotEmpty = false;
+          }
         } else if (goalType === "species_discovery") {
           // v0.0.575 — operator 2026-06-01 "发现任务派的很慢": discover ack
           // completes when sendDiscoveryFleet POST returns success — the
