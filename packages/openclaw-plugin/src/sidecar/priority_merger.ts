@@ -458,7 +458,25 @@ export class PriorityMerger {
         // CURRENTLY visible → ferries the residual 3 LC instead of the
         // 2713 LC just delivered by Leg 1. Block this leg until source
         // ship counts cover the goal's expected ships.
-        if (!upstreamReason) {
+        // v0.0.814 — operator 2026-06-05 "leg0 第一步没飞 没有运输". 两件:
+        // 1) ship-sync gate (v0.0.664) 之前不分 upstream 状态, 修 only check
+        //    in-flight upstream (status active). completed = ships delivered,
+        //    cancelled = 作废, 都不该等.
+        // 2) 链顶 supersede: genFerry 模板同时建直送 (phase=to_target_direct)
+        //    + 中转 (to_stop_load/hop/unload). 直送 completed 时整 chain 达成,
+        //    中转链 应自动 cancel (ships 已 delivered, ferry 失去意义).
+        const upstreamActive = upstream.filter((u) => u.status !== "completed" && u.status !== "cancelled");
+        const directLegCompleted = allRows.find((r) => {
+          if ((r.goal.target as { chain_id?: unknown })?.chain_id !== chainId) return false;
+          if (r.goal.id === row.goal.id) return false;
+          if ((r.goal.target as { chain_phase?: string })?.chain_phase !== "to_target_direct") return false;
+          return r.status === "completed";
+        });
+        if (directLegCompleted && /^to_stop_(load|hop|unload)$/.test(((row.goal.target as { chain_phase?: string })?.chain_phase ?? ""))) {
+          await this.updateStatusAndMirror(row.goal.id, "cancelled", `chain superseded: direct leg ${directLegCompleted.goal.id.slice(0, 12)} completed, ferry path obsolete`);
+          continue;
+        }
+        if (!upstreamReason && upstreamActive.length > 0) {
           const myT = row.goal.target as {
             source_moon?: string;
             source_planet?: string;
