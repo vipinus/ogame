@@ -678,6 +678,35 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     const rawOk = resp.status === true || resp.success === true;
     const errsArr = Array.isArray(resp.errors) ? resp.errors : [];
     if (!rawOk) {
+      // v0.0.823 — operator 2026-06-06 "JG 不正常". JG 失败时 ogame 返
+      // empty errors → 老 throw "jumpgate rejected: \"\"" sidecar 不知 cd
+      // 状态 → planner 每 60s 重派 → 5+ 次 spam. 真因 fix: 失败时立刻
+      // fetch 同份 overlay HTML 拿 cd, commit 双边 store (planner 后续
+      // cd check 真识别), 然后 ack 带准确 reason "JG cd active Xs". sidecar
+      // 看 cd in error → planner 下次 cd 真值兜底 跳过.
+      let cdFromOverlay: number | null = null;
+      try {
+        const ovRes = await this.fetchFn(overlayUrl, { credentials: "same-origin" });
+        if (ovRes.status === 200) {
+          const html = await ovRes.text();
+          // ogame v12 overlay 含 'jumpGateNextJumpAt' 或 'cooldown' field
+          const m = html.match(/(?:nextJumpAt|cooldown|nextActionAt)["'\s:=]+(\d+)/i);
+          if (m && m[1]) {
+            const v = Number(m[1]);
+            if (Number.isFinite(v) && v > 0) {
+              // If absolute timestamp (>1e10) treat as ms-since-epoch, convert to seconds remaining
+              cdFromOverlay = v > 1e10 ? Math.max(0, Math.floor((v - Date.now()) / 1000)) : v;
+            }
+          }
+        }
+      } catch { /* */ }
+      if (cdFromOverlay !== null && cdFromOverlay > 0) {
+        try {
+          const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, c: number) => void }).__ogamexCommitJgCd;
+          if (typeof commit === "function") commit(sourceMoonId, targetMoonId, cdFromOverlay);
+        } catch { /* */ }
+        throw new Error(`jumpgate rejected: cd_active ${cdFromOverlay}s (sync'd to store)`);
+      }
       const errMsg = String(resp.message ?? JSON.stringify(resp.errors ?? "") ?? jgRes.raw.slice(0, 200));
       throw new Error(`jumpgate rejected: ${errMsg.slice(0, 200)}`);
     }

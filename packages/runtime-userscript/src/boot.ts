@@ -1269,7 +1269,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.822";
+  const USERSCRIPT_VERSION = "0.0.826";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2463,6 +2463,16 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           },
         } : {};
         let updatedPlanet: PlanetT = { ...existing, resources: { m, c, d, e }, ...lfExtra };
+        // v0.0.825 — operator 2026-06-06 "把 storage_cap 真值 wire 进 sidecar state".
+        // fetchResources JSON 不带 storage cap, 但 env.doc 的 metal_box / crystal_box /
+        // deuterium_box title attribute 是 active page 实时值, 对应 activeIdRaw planet.
+        // 跟 resources 同 patch 写进 per-planet storage, planner 可消费真值绕开
+        // `5000 * 2.5^L` 估算偏差. 当 extractStorage 返 null (transient 页) → preserve
+        // existing.storage (uncertainty 不写, [feedback_preserve_on_uncertainty]).
+        const liveStorage = extractStorage(env.doc);
+        if (liveStorage) {
+          updatedPlanet = { ...updatedPlanet, storage: liveStorage };
+        }
         // Production
         if (j.resources.metal?.production != null) {
           updatedPlanet = {

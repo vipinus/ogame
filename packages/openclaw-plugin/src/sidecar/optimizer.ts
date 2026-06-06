@@ -18,6 +18,7 @@ import { buildingSec as sharedBuildingSec, TECH_TREE } from "@ogamex/shared";
 import type { WorldState } from "@ogamex/shared";
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
+import { mineEnergyConsumption, solarProduction, fusionProduction } from "./planner.js";
 
 interface TechCost {
   kind: "research" | "building" | "ship" | "defense";
@@ -546,6 +547,88 @@ export async function runOptimizerOnce(
     }
   }
   if (noTree > 0) console.info(`[optimizer] uid=${uid.slice(0, 8)} no-tree=${noTree} actioned=${actioned} skipped=${skipped} (enrich callback ${enrichGoalWithTree ? "wired" : "missing"})`);
+
+  // v0.0.826 — operator 2026-06-06 "矿建完就电量会变成负值, 这个节点补电厂,
+  // 而不是已经变负值了再补". Predictive energy guard: 遍历 planet, 把 ogame
+  // build_q 里 *正在建* 的耗电建筑级数 apply 进 mineDraw (post-completion
+  // 模拟), 算后续 budget. 任何 mine/lf 耗电建筑升级 in-flight 都立刻反映到
+  // budget. 提前 emit opt-solarPlant 让电厂跟矿同步爬, 不让 ogame queue 完成
+  // 再触发反应式 emit (那时已经至少 30 分钟负电).
+  try {
+    const planetsMap = state.planets ?? {};
+    const energyTech = state.research?.levels?.["energyTech"] ?? 0;
+    const mineKeys = ["metalMine", "crystalMine", "deuteriumSynth"] as const;
+    for (const planet of Object.values(planetsMap)) {
+      if ((planet as { type?: string }).type !== "planet") continue;
+      const b = (planet as { buildings?: Record<string, number> }).buildings ?? {};
+      // post-completion levels: build_q.building 是耗电 mine 时 mineDraw 用 queue level,
+      // 是电厂 (solar/fusion) 时 plant 输出也提前算 — 双向都要 predict
+      const bq = (planet as { build_q?: { building?: string; level?: number } | null }).build_q;
+      const projectedLvl = (name: string): number => {
+        const cur = b[name] ?? 0;
+        if (bq && bq.building === name && (bq.level ?? 0) > cur) return bq.level!;
+        return cur;
+      };
+      const solar = projectedLvl("solarPlant");
+      const fusion = projectedLvl("fusionReactor");
+      let mineDraw = 0;
+      for (const mk of mineKeys) mineDraw += mineEnergyConsumption(mk, projectedLvl(mk));
+      const solarOut = solarProduction(solar);
+      const fusionOut = fusionProduction(fusion, energyTech);
+      const budget = solarOut + fusionOut - mineDraw;
+      if (budget >= 0) continue;
+      const inflightMine = bq && mineKeys.includes(bq.building as typeof mineKeys[number]) ? `${bq.building} L${bq.level} in-flight` : "current levels";
+      const deficit = -budget;
+      // pick min solarPlant L that closes deficit (solar 优先, fusion 需 dSynth>=5 + energyTech>=3)
+      let chosenLvl = solar + 1;
+      for (let l = solar + 1; l <= solar + 30; l++) {
+        const extra = solarProduction(l) - solarProduction(solar);
+        if (extra >= deficit) { chosenLvl = l; break; }
+        chosenLvl = l;
+      }
+      const planetId = (planet as { id?: string }).id ?? "";
+      if (!planetId) continue;
+      const optId = `opt-solarPlant-L${chosenLvl}-${uid.slice(0, 8)}`;
+      // 跳过已 active 同 planet 同 building (任何 level >= chosenLvl)
+      const exists = allRows.find((r) => {
+        if (!r.goal.id.startsWith(`opt-solarPlant-L`)) return false;
+        if (!r.goal.id.endsWith(uid.slice(0, 8))) return false;
+        if (r.goal.planet !== planetId) return false;
+        if (!["active", "blocked", "pending"].includes(r.status)) return false;
+        const lvl = (r.goal.target as { level?: number })?.level ?? 0;
+        return lvl >= chosenLvl;
+      });
+      if (exists) continue;
+      const energyOptRow = {
+        goal: {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          id: optId, type: "build" as any,
+          target: { building: "solarPlant", level: chosenLvl } as Record<string, unknown>,
+          planet: planetId,
+          priority: 9,
+          is_main_goal: false,
+          status: "pending" as const,
+          created_at: Date.now(),
+          progress_pct: 0,
+          current_step: "queued",
+          eta_at: null,
+        },
+        status: "pending" as const,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      };
+      try {
+        await pgStore.upsertGoal(uid, energyOptRow);
+        console.log(`[optimizer/energy-guard] uid=${uid.slice(0, 8)} planet=${planetId} budget=${Math.round(budget)} (${inflightMine}) → emit ${optId}`);
+        actioned++;
+      } catch (e) {
+        console.warn(`[optimizer/energy-guard] upsert ${optId} threw:`, e instanceof Error ? e.message : e);
+      }
+    }
+  } catch (e) {
+    console.warn(`[optimizer/energy-guard] sweep threw uid=${uid.slice(0, 8)}:`, e instanceof Error ? e.message : e);
+  }
+
   return { actioned, skipped };
 }
 

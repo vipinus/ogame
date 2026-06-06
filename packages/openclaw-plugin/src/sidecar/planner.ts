@@ -72,11 +72,17 @@ function isPostExpeditionPhase(state: WorldState): boolean {
 // to upgrade, or null when wait-only path is appropriate.
 function pickStorageUpgrade(planet: Planet, short: { m: number; c: number; d: number }): "crystalStorage" | "deuteriumTank" | null {
   const r = planet.resources ?? { m: 0, c: 0, d: 0 };
+  // v0.0.825 — operator 2026-06-06 真值 wire. planet.storage.{c,d}_max 真值优先
+  // (boot.ts pollFetchResources 写入), 缺/0 时 fallback 到估算公式. 真公式 ogame
+  // v12 是 5000*floor(2.5*exp(20L/33)) 偏陡, 这里保留 5000*2.5^L 估算 (保守偏低
+  // 阈值更易触发, 不会漏修, 偶尔会 false-positive 但 0.95 阈值兜住).
   const cap = (lvl: number): number => Math.floor(5000 * Math.pow(2.5, lvl));
   const cStorLvl = planet.buildings?.["crystalStorage"] ?? 0;
   const dStorLvl = planet.buildings?.["deuteriumTank"] ?? 0;
-  if (short.c > 0 && r.c >= cap(cStorLvl) * 0.95) return "crystalStorage";
-  if (short.d > 0 && r.d >= cap(dStorLvl) * 0.95) return "deuteriumTank";
+  const cMax = (planet.storage?.c_max ?? 0) > 0 ? planet.storage!.c_max : cap(cStorLvl);
+  const dMax = (planet.storage?.d_max ?? 0) > 0 ? planet.storage!.d_max : cap(dStorLvl);
+  if (short.c > 0 && r.c >= cMax * 0.95) return "crystalStorage";
+  if (short.d > 0 && r.d >= dMax * 0.95) return "deuteriumTank";
   return null;
 }
 
@@ -774,6 +780,51 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
     }
   }
 
+  // v0.0.824 — operator 2026-06-06 "殖民任务执行过程中存储罐满了, 有没有处理".
+  // 真因: colo → astro cascade → espionageTech L4, planResearch 直接 emit 不查
+  // 资源. crystalStorage L1 cap ~12K, mine 满了停产, sidecar 缓存的 resources
+  // 比 ogame 真实多 → affordable=true 但 ogame 拒 120017 "Insufficient Crystal"
+  // 反复 60s 重派.
+  // 跟 planBuild 1040 / planBuildShips 1156 / planLifeformBuild 588 对称兜底,
+  // 并加一道 proactive storage gate: research lab 所在星球任意一种资源 ≥ 95% cap
+  // → 优先升 storage (即便看似 affordable, sidecar resources 可能 stale).
+  // lab 用 sourcePlanetId 上的 resources (research 在主科研星算).
+  const labPlanet = Object.values(ctx.state.planets ?? {}).find((p) => p.id === ctx.sourcePlanetId);
+  if (labPlanet) {
+    const proactive = pickStorageUpgrade(labPlanet, { m: 1, c: 1, d: 1 });
+    if (proactive) {
+      const curLvl = labPlanet.buildings?.[proactive] ?? 0;
+      const elevatedRoot = { ...ctx.rootGoal, priority: Math.min(10, ctx.rootGoal.priority + 3) } as Goal;
+      return planBuild(proactive, curLvl + 1, labPlanet.id, { ...ctx, rootGoal: elevatedRoot, depth: ctx.depth + 1 });
+    }
+  }
+  const costFnR = entry.cost_at as ((l: number) => { m: number; c: number; d?: number; e?: number }) | undefined;
+  if (labPlanet && costFnR) {
+    const rawCost = costFnR(nextLevel);
+    const rCost = { m: rawCost.m, c: rawCost.c, d: rawCost.d ?? 0 };
+    const r = labPlanet.resources ?? { m: 0, c: 0, d: 0 };
+    const affordable = r.m >= rCost.m && r.c >= rCost.c && r.d >= rCost.d;
+    if (!affordable) {
+      const sM = Math.max(0, rCost.m - r.m), sC = Math.max(0, rCost.c - r.c), sD = Math.max(0, rCost.d - r.d);
+      if (isPostExpeditionPhase(ctx.state)) {
+        return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short)` };
+      }
+      const storUp = pickStorageUpgrade(labPlanet, { m: sM, c: sC, d: sD });
+      if (storUp) {
+        const curLvl = labPlanet.buildings?.[storUp] ?? 0;
+        const elevatedRoot = { ...ctx.rootGoal, priority: Math.min(10, ctx.rootGoal.priority + 3) } as Goal;
+        return planBuild(storUp, curLvl + 1, labPlanet.id, { ...ctx, rootGoal: elevatedRoot, depth: ctx.depth + 1 });
+      }
+      const prod = labPlanet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
+      const econSpeed = ctx.state.server?.speed ?? 1;
+      const tM = (prod.m_h ?? 0) > 0 ? sM / ((prod.m_h ?? 1) * econSpeed) * 3600 : (sM > 0 ? 999999 : 0);
+      const tC = (prod.c_h ?? 0) > 0 ? sC / ((prod.c_h ?? 1) * econSpeed) * 3600 : (sC > 0 ? 999999 : 0);
+      const tD = (prod.d_h ?? 0) > 0 ? sD / ((prod.d_h ?? 1) * econSpeed) * 3600 : (sD > 0 ? 999999 : 0);
+      const wait = Math.round(Math.max(tM, tC, tD));
+      return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
+    }
+  }
+
   return makeResearchDirective(tech, nextLevel, ctx);
 }
 
@@ -1003,8 +1054,15 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
       };
       return planBuild(energyPick.building, energyPick.level, planetId, elevCtx);
     }
-    // else: fall through; original mine cost check will block with a
-    // resource-wait reason that names the deficit.
+    // v0.0.826 — operator 2026-06-06 "电已经变负数了, 还在建金属矿". 老逻辑
+    // 注释假设 "mine block", 但 mine afford 时下面 cost check 直接过, 仍 dispatch
+    // metalMine 让 e 更负. 真因 fix: solarPlant 不 afford 时, mine 也禁止 dispatch
+    // (升 mine 让 e 越负, 不修电就是错). block 带 deficit 让 owner 看见, 等
+    // resources 自然回流 (transport / production) 后 solarPlant afford 再走.
+    const sM = Math.max(0, pickCost.m - r.m);
+    const sC = Math.max(0, pickCost.c - r.c);
+    const sD = Math.max(0, (pickCost.d ?? 0) - r.d);
+    return { blocked: `energy negative — need ${energyPick.building} L${energyPick.level} first (short m=${sM} c=${sC} d=${sD})` };
   }
 
   for (const [reqTech, reqLevel] of Object.entries(entry.requires)) {
