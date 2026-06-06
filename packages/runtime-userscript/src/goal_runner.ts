@@ -226,6 +226,14 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
           console.info(`[GoalRunner] on fleetdispatch page (cp=${urlCp}) — deferring same-cp ${directive.action} & all queued (log throttled 60s)`);
           lastDeferLogAt = now;
         }
+        // v0.0.821 — operator 2026-06-06 "核心问题是 ACK 为什么收不到" 真因:
+        // defer path 之前 不 ack → sidecar 永远不知道 directive deferred →
+        // stuck-recovery 5min retry → 又 defer → 死循环 0 ack 直到 owner 离开
+        // fleetdispatch page. 修: defer 时 强制 ack with transient error,
+        // sidecar TRANSIENT_RE 已含 "deferred" 走 blocked retry (60s) 不再
+        // 30s atomic stuck-recovery 重派. owner idle 后 deferredQueue 自己
+        // execute 真值 sendFleet, 真 ack 接 success.
+        ack(directive.id, { success: false, error: `deferred: operator on fleetdispatch page (cp=${urlCp})` });
         deferredQueue.push(directive);
         schedulePollIdle();
         return;
