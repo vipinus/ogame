@@ -4275,8 +4275,14 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         const children = childrenByParent.get(g.id) ?? [];
         const activeChild = children.find((c) => ["active", "blocked", "pending"].includes(c.status));
         if (activeChild) {
+          // v0.0.803 — operator 2026-06-05 image #7 实证: parent slot 仍显
+          // "colonizing" (goal.state.{parent.type}). synth 必须 inherit child
+          // 的 type/target 才能让 goalStatusLabel 推出 "building Crystal Mine"
+          // / "waiting resources · X" 橙色 等 contextual action label. id +
+          // priority + planet 保持 parent (buttons 控 parent).
           const synth: GoalRowFromHttp = {
             ...g,
+            type: activeChild.type,
             target: activeChild.target,
             status: activeChild.status,
             reason: activeChild.reason,
