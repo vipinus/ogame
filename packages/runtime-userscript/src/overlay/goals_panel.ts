@@ -476,7 +476,13 @@ function openExpeditionSettings(
       // v0.0.845 — operator 2026-06-06 "新账号的远征设置存不住": GET 老逻辑
       // 没带 Bearer → sidecar uid=undefined → 读 legacy 主号文件 (per-uid POST
       // 写的新号文件读不到). 同 fetchExpedition/fetchEmergency 修同款.
-      const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, { method: "GET", headers: authHeaders() });
+      // v0.0.855 — operator 2026-06-06 "新账号 远征舰队设置显示不了以前保持的
+      // 舰队设置": 845 用了 `authHeaders` 但这个 helper 是 startGoalsPanel 闭包
+      // 内变量, openExpeditionSettings 是 module-level fn 拿不到 → ReferenceError
+      // 被 try/catch 吞 → initial={} → 渲染空. rollup TS plugin 不 fail TS error
+      // 所以 dist 静默出错. 改用 module-level `authHeadersGlobal` (同 localStorage
+      // 兜底, save/POST L697 用的就是它).
+      const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, { method: "GET", headers: authHeadersGlobal() });
       if (r.ok) initial = await r.json();
     } catch (e) { console.warn("[panel/expedition-settings] GET failed:", e); }
     // Pull live planet+moon list from the frontend store. Operator 2026-05-29:
@@ -657,7 +663,7 @@ function openExpeditionSettings(
       liveExpPaused = !nextEnabled;
       reflectPaused(nextEnabled);
       try {
-        await fetchFn(`${baseUrl}/ogamex/v1/expedition/${liveExpPaused ? "pause" : "resume"}`, { method: "POST", headers: authHeaders() });
+        await fetchFn(`${baseUrl}/ogamex/v1/expedition/${liveExpPaused ? "pause" : "resume"}`, { method: "POST", headers: authHeadersGlobal() });
       } catch (e) { console.warn("[panel/expedition-settings] pause/resume failed:", e); }
     });
     // Auto-build toggle (saved with main 保存 button — no instant POST since
