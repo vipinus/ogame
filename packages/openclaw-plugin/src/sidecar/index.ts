@@ -861,8 +861,14 @@ export async function startSidecar(
       // seconds and per-node contribution. Replaces the old per-node
       // sum-with-no-carryover which over-estimated wait time when prior
       // levels' waits already accumulated future needs.
-      const universeSpeed = stateRef.current?.server?.speed ?? 1;
-      const researchSpeed = stateRef.current?.server?.research_speed ?? universeSpeed;
+      // v0.0.809 — operator 2026-06-05 "L7 deuteriumSynth 720m ETA 服务器
+      // 因子? TM 已经采集服务器时间了". multi-tenant bug: 之前用 global
+      // stateRef (last-push tenant), 跨 tenant 串号. 新账号无 server.speed
+      // 拿到 daigang 的 speed=8 — OR worse 反过来 拿 default 1 → simulate
+      // build sec 膨胀 8×. 改 per-tenant currentState (跟 v0.0.788 astroLevel
+      // fix 同款).
+      const universeSpeed = currentState?.server?.speed ?? 1;
+      const researchSpeed = currentState?.server?.research_speed ?? universeSpeed;
       // v0.0.773 — operator 2026-06-04 "昨天说好的 天体物理大于4以后就不
       // 考虑矿了 直接等待资源". Daemon v0.0.739 已加同款 gate (skip 优化器);
       // sidecar simulate 也同步: post-expedition phase (astro >= 4) 时 wait
