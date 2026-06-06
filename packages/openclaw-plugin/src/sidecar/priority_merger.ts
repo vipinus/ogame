@@ -419,7 +419,14 @@ export class PriorityMerger {
       // source coords + dest coords) to be gone. Priority ordering is the
       // chain template's existing sequence signal (genFerry: load=N,
       // hop=N-1, unload=N-2; Seg 2=9, Seg 3=6).
-      if (typeof chainId === "string" && chainId) {
+      // v0.0.817 — operator 2026-06-05 "把链式任务依赖关系解除 变成多个单独
+      // 的任务". 整个 chain prereq gate (chain ship-sync gate, SEG3 supersede,
+      // chain-Blocked propagation) 全部 disable. 各 transport/jumpgate/deploy
+      // goal 独立 plan + dispatch, 让 planner.planDeployGoal 自己 preflight
+      // check ships (现有 logic), ogame 真值决定能不能飞. chain_id 字段保留
+      // 仅 panel UI grouping, 不再作为 sidecar 调度依赖.
+      const CHAIN_DEPS_DISABLED = true;
+      if (!CHAIN_DEPS_DISABLED && typeof chainId === "string" && chainId) {
         // Phase 7c.2 — use dispatch-tick cached list (reader.list when PG)
         // so PG-only chain siblings (web POST → PG only) are visible to
         // the chain prereq gate.
