@@ -3391,7 +3391,40 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       };
       if (j.version) win.__ogamexLatestVersion = j.version;
       if (j.downloadURL) win.__ogamexDownloadURL = j.downloadURL;
+      // v0.0.801 — operator 2026-06-05 "以后都强制更新, 省的你老瞎怀疑":
+      // 不持久 dismiss, 每 60s poll 都 ensure modal on screen. id check
+      // (showUpdateModal 内) 防重复 append. owner 安装新版后 cur===latest
+      // → mismatch=false → modal 自动不再弹. "稍后" 关 modal 只本次,
+      // 下次 poll 又会自动 re-pop 直到 owner 立即安装.
+      const cur = win.__ogamexVersion ?? "";
+      const latest = win.__ogamexLatestVersion ?? "";
+      const dl = win.__ogamexDownloadURL ?? "";
+      if (cur && latest && dl && cmpSemver(latest, cur) > 0) {
+        showUpdateModal(cur, latest, dl);
+      }
     } catch { /* sidecar down or CORS — keep button hidden */ }
+  };
+  const showUpdateModal = (cur: string, latest: string, dl: string): void => {
+    if (typeof document === "undefined" || document.getElementById("ogamex-update-modal")) return;
+    const overlay = document.createElement("div");
+    overlay.id = "ogamex-update-modal";
+    overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:2147483647;display:flex;align-items:center;justify-content:center;";
+    overlay.innerHTML = `
+      <div style="background:#1a2a40;border:2px solid #4a8a4a;border-radius:8px;padding:24px;color:#e0e8f0;font-family:Arial,sans-serif;max-width:420px;box-shadow:0 6px 24px rgba(0,0,0,0.5);">
+        <div style="font-size:16px;font-weight:bold;margin-bottom:8px;color:#7cfc00;">OgameX 新版本就绪</div>
+        <div style="font-size:13px;margin-bottom:14px;color:#bcc8d8;">当前: <strong>${escapeHtml(cur)}</strong> → 最新: <strong style="color:#7cfc00;">${escapeHtml(latest)}</strong></div>
+        <div style="font-size:12px;margin-bottom:16px;color:#8090a8;">点击下方按钮在新标签页打开安装链接, TM 会弹安装确认.</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button id="ogamex-update-later" style="background:#404040;color:#fff;border:1px solid #606060;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;">稍后</button>
+          <button id="ogamex-update-now" style="background:#205a20;color:#fff;border:1px solid #408a40;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;">立即安装</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector("#ogamex-update-now")?.addEventListener("click", () => {
+      try { window.open(dl, "_blank"); } catch { /* */ }
+      overlay.remove();
+    });
+    overlay.querySelector("#ogamex-update-later")?.addEventListener("click", () => overlay.remove());
   };
   void checkRuntimeUpdate();
   const updateCheckTimer = setInterval(() => { void checkRuntimeUpdate(); }, 60_000);
