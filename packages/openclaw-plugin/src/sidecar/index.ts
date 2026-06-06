@@ -41,6 +41,7 @@ import { GoalsStorePg } from "./goals_store_pg.js";
 // Phase 7d — WorldStateStore SQLite class deleted (PG primary).
 import { WorldStateStorePg } from "./world_state_store_pg.js";
 import { getCurrentUserId } from "./user_context.js";
+import { TenantRegistry, hydrate as hydrateTenantRegistry, serialize as serializeTenantRegistry } from "./tenant_context.js";
 import { GeminiClient } from "./gemini_client.js";
 import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
@@ -594,30 +595,22 @@ export async function startSidecar(
   // ref so closures stay typesafe; assigned at line ~1055 just after
   // `new PriorityMerger(...)`.
   let priorityMergerRef: PriorityMerger | null = null;
-  // v0.0.500 — track fleet IDs we've already fired debris-check for, so each
-  // expedition triggers at most one explorer dispatch even if /movement
-  // scrape flaps (fleet appears, disappears, reappears across snapshots).
-  // v0.0.677 — operator 2026-06-03 实测: sidecar 8.5h 0 FIRED. Root cause:
-  // v0.0.674 single-Signal-B design required `return_at !== null` but ogame
-  // v12 on this server frequently leaves return_at NULL for expeditions even
-  // when fleet is truly returning. Result: Signal B never crossed the gate.
-  // Restored Signal C (arrival_at past→future phase jump) as fallback so the
-  // path no longer depends solely on return_at populating. Per-signal dedup
-  // (was per-fleet) so B and C each fire once independently — avoids the
-  // v0.0.574 holding-entry false-fire dedup-then-block scenario.
-  const firedDebrisCheckFor = new Map<string, Set<"B" | "C">>();
-  // v0.0.501 — fallback signal: track last-seen origin/dest per expedition
-  // fleet so we can fire debris-check when fleet disappears from outbound.
-  // v0.0.502 — also track last arrival_at so we can detect phase transition
-  // (arrival_at jumps from past to future = fleet entered next phase, which
-  // for expedition mission means exploration ended → returning home).
-  // v0.0.574 — also track return_at so Signal B can distinguish:
-  //   - fleet disappear with return_at === null → entered HOLDING (skip)
-  //   - fleet disappear with return_at !== null → truly RETURNED HOME (fire)
-  // operator 2026-06-01 实证: fleet 2353595 1:486 entered holding at 15:19,
-  // disappeared from /movement, Signal B mis-fired (太早, no debris yet),
-  // dedup then blocked the real "returned home" disappear @ 15:40 → no harvest.
-  const expLastSeen = new Map<string, { origin: readonly number[]; dest: readonly number[]; arrival_at: number | null; return_at: number | null }>();
+  // v0.0.860 — Sprint 1 of multi-tenant cleanup: per-uid state held in
+  // TenantRegistry (tenant_context.ts) instead of module-level Maps keyed
+  // by id. Pilot scope = expLastSeen / firedDebrisCheckFor / directiveToGoal.
+  // v0.0.857 used `${uid}::${fid}` prefixed keys on the global Map; that
+  // worked but left the storage shape brittle. Now each uid gets a real
+  // private Map; the on-disk persist file stays in the v0.0.857 shape for
+  // backward compat (serialize/hydrate translate prefix↔registry).
+  //
+  // Per-context fields (see tenant_context.ts for full docs):
+  //   - expLastSeen          : Map<fleetId, { origin, dest, arrival_at, return_at }>
+  //   - firedDebrisCheckFor  : Map<fleetId, Set<"B"|"C">>
+  //   - directiveToGoal      : Map<directiveId, goalId>
+  //
+  // Legacy operator (no Bearer / no ALS uid) → EMPTY_LEGACY_UID bucket,
+  // preserves single-tenant behavior.
+  const tenantRegistry = new TenantRegistry();
   // v0.0.818 — operator 2026-06-05 "2:260:9 远征回来了没有触发自动回收".
   // sidecar restart 期间 expedition return → in-memory expLastSeen 丢 →
   // Signal B miss. 文件持久化, restart 重 load. firedDebrisCheckFor 也持久
@@ -629,22 +622,14 @@ export async function startSidecar(
       expLastSeen?: Array<[string, { origin: number[]; dest: number[]; arrival_at: number | null; return_at: number | null }]>;
       firedDebrisCheckFor?: Array<[string, Array<"B" | "C">]>;
     };
-    if (Array.isArray(parsed.expLastSeen)) {
-      for (const [k, v] of parsed.expLastSeen) expLastSeen.set(k, v);
-    }
-    if (Array.isArray(parsed.firedDebrisCheckFor)) {
-      for (const [k, arr] of parsed.firedDebrisCheckFor) firedDebrisCheckFor.set(k, new Set(arr));
-    }
-    console.info(`[exp-persist] loaded ${expLastSeen.size} expLastSeen + ${firedDebrisCheckFor.size} firedDebrisCheckFor entries from ${EXP_PERSIST_PATH}`);
+    const counts = hydrateTenantRegistry(tenantRegistry, parsed);
+    console.info(`[exp-persist] loaded ${counts.expLastSeen} expLastSeen + ${counts.firedDebrisCheckFor} firedDebrisCheckFor entries across ${tenantRegistry.size()} tenant bucket(s) from ${EXP_PERSIST_PATH}`);
   } catch (e) {
     if ((e as { code?: string })?.code !== "ENOENT") console.warn("[exp-persist] load threw", e);
   }
   const persistExpState = (): void => {
     try {
-      const data = {
-        expLastSeen: Array.from(expLastSeen.entries()),
-        firedDebrisCheckFor: Array.from(firedDebrisCheckFor.entries()).map(([k, s]) => [k, Array.from(s)]),
-      };
+      const data = serializeTenantRegistry(tenantRegistry);
       fs.writeFileSync(EXP_PERSIST_PATH, JSON.stringify(data));
     } catch (e) { console.warn("[exp-persist] save threw", e); }
   };
@@ -2196,11 +2181,16 @@ export async function startSidecar(
         // 200ms 内 2 条 directive.completed reject. 真因: userscript
         // goal_runner.ts:105-106 dual-path ack (WS instant + HTTP retry ×3
         // 兜底 zombie WS); sidecar fan 被 ws + http 两个 transport 各调一次.
-        // dedup gate: directiveToGoal 是 source of truth (line 2438 set on
-        // dispatch, line 2061 delete on first ack). 第二次 ack 进来 has=false
-        // 就 skip 整个 directive_completed branch + 不 fan to consumer
-        // handlers (避免重复 trigger goal status update / Discord notify).
-        if (!directiveToGoal.has(m.directive_id)) {
+        // dedup gate: directiveToGoal 是 source of truth (set on dispatch,
+        // delete on first ack). 第二次 ack 进来 has=false 就 skip 整个
+        // directive_completed branch + 不 fan to consumer handlers (避免重复
+        // trigger goal status update / Discord notify).
+        // v0.0.860 — directiveToGoal lives in TenantRegistry per-uid. The
+        // ack runs under ALS uid set by ws_server / http_server.dispatchPush
+        // (same uid that dispatched, since send() ran in the dispatch frame).
+        const ackCtxUid = getCurrentUserId();
+        const ackTenant = tenantRegistry.get(ackCtxUid);
+        if (!ackTenant.directiveToGoal.has(m.directive_id)) {
           return;
         }
         debug.recordComplete(m.directive_id, m.result);
@@ -2238,9 +2228,9 @@ export async function startSidecar(
             shadowFire("appendEvent.colonize_done", (uid) => pgStore!.appendEvent(uid, "colonize_done", clPayload));
           }
         } catch (e) { console.error("[ogamex/sidecar] appendEvent completed threw", e); }
-        const goalId = directiveToGoal.get(m.directive_id);
+        const goalId = ackTenant.directiveToGoal.get(m.directive_id);
         if (goalId) {
-          directiveToGoal.delete(m.directive_id);
+          ackTenant.directiveToGoal.delete(m.directive_id);
           const result = m.result as { success?: boolean; error?: string } | undefined;
           if (result?.success === false) {
             const reason = String(result?.error ?? "ApiExec failed (no reason)").slice(0, 400);
@@ -2678,7 +2668,13 @@ export async function startSidecar(
         // failures (e.g., expedition 140054) leave the goal "active"
         // forever and merger keeps re-dispatching every cooldown cycle.
         const d = msg.directive as { id: string; goal_id?: string; action?: string; params?: { galaxy?: number; system?: number; position?: number; building?: string; planet_id?: string } };
-        if (d.id && d.goal_id) directiveToGoal.set(d.id, d.goal_id);
+        // v0.0.860 — directiveToGoal lives in TenantRegistry per-uid. The
+        // send callback runs inside priorityMerger.dispatch's ALS frame, so
+        // getCurrentUserId() matches the dispatching tenant. Legacy operator
+        // (no ALS uid) → EMPTY_LEGACY_UID bucket.
+        const dispCtxUid = getCurrentUserId();
+        const dispTenant = tenantRegistry.get(dispCtxUid);
+        if (d.id && d.goal_id) dispTenant.directiveToGoal.set(d.id, d.goal_id);
         // v0.0.764 — also stash params for 120012 fields_full retro-mark.
         // v0.0.782 — additionally stash action so directive_completed handler
         // can verify it matches goal.type before mark-completed (cascade prereq
@@ -2831,8 +2827,9 @@ export async function startSidecar(
     // cold cache → default paused=false 安全侧 (避免初次启动 lag 误锁所有)
     return hit?.paused ?? false;
   };
-  // Directive → goal mapping (in-memory). Trimmed when ack arrives.
-  const directiveToGoal = new Map<string, string>();
+  // v0.0.860 — directiveToGoal moved to TenantRegistry per-uid (see
+  // tenant_context.ts). Construct happens at L597-ish alongside the
+  // exp_state.json hydrate; this comment kept as a navigation breadcrumb.
   // v0.0.764 — directive → params snapshot so 120012 hard-block can call
   // markFieldsFull(planet_id, building) when the ack lands. operator
   // 2026-06-04 "船运资源到 4:299:8 就会触发升级一次核电站" loop fix.
@@ -3145,13 +3142,15 @@ export async function startSidecar(
         };
         // v0.0.857 — operator 2026-06-06 "是隔离问题?". 是. expLastSeen /
         // firedDebrisCheckFor 是 module-level global 不分 uid → 跨账户 fleet 条目
-        // 互相覆写 + 误删. 顶层修法: key 全部加 uid 前缀 isolated. ctxUid 是当前
-        // 推 state.snapshot 的 user (ALS), 没 uid 时退到空字符串 (legacy
-        // single-tenant 跟原行为兼容).
-        const keyFor = (fid: string): string => ctxUid ? `${ctxUid}::${fid}` : fid;
+        // 互相覆写 + 误删.
+        // v0.0.860 — Sprint 1 cleanup: 用 TenantRegistry 每 uid 独立 Map 替代
+        // `${uid}::${fid}` 前缀 trick. ctxUid 是当前推 state.snapshot 的 user
+        // (ALS), 没 uid 时退到 EMPTY_LEGACY_UID bucket (legacy single-tenant
+        // 跟原行为兼容). serialize/hydrate 仍然写 `${uid}::${fid}` 形 key 到
+        // exp_state.json, downgrade 不丢数据.
+        const tenant = tenantRegistry.get(ctxUid);
         const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string, signal: "B" | "C"): "fired" | "skip-origin" | "noop" => {
-          const dedupKey = keyFor(fleetId);
-          const firedSignals = firedDebrisCheckFor.get(dedupKey) ?? new Set<"B" | "C">();
+          const firedSignals = tenant.firedDebrisCheckFor.get(fleetId) ?? new Set<"B" | "C">();
           if (firedSignals.has(signal)) return "noop";
           if (!Array.isArray(origin) || origin.length !== 3 || !Array.isArray(dest)) return "noop";
           const originPlanet = findOriginPlanet(origin.join(":"));
@@ -3162,7 +3161,7 @@ export async function startSidecar(
           const g = dest[0], s = dest[1];
           if (typeof g !== "number" || typeof s !== "number") return "noop";
           firedSignals.add(signal);
-          firedDebrisCheckFor.set(dedupKey, firedSignals);
+          tenant.firedDebrisCheckFor.set(fleetId, firedSignals);
           const dbgMsg = { type: "expedition.debris_check" as const, galaxy: g, system: s, origin_planet_id: originPlanet.id, reason };
           ws.send(dbgMsg);
           http.queueDownstream(dbgMsg);
@@ -3179,8 +3178,8 @@ export async function startSidecar(
         for (const f of msg.snapshot.fleets_outbound ?? []) {
           if (typeof f.id !== "string") continue;
           if (f.mission !== 15) continue;
-          currentExpIds.add(keyFor(f.id));
-          expLastSeen.set(keyFor(f.id), { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null, return_at: f.return_at ?? null });
+          currentExpIds.add(f.id);
+          tenant.expLastSeen.set(f.id, { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null, return_at: f.return_at ?? null });
         }
         // Signal B: fleet disappeared from outbound. ogame removes mission=15
         // fleet from /movement when it's HOLDING at :16 (60min) — same
@@ -3191,12 +3190,9 @@ export async function startSidecar(
         //     (fire harvest)
         // v0.0.574 — operator 2026-06-01 实证: 1:486 fleet 2353595 false-fired
         // at holding-entry, dedup then blocked real return → no harvest.
-        // v0.0.857 — 只扫当前 uid 的条目 (key 以 `${uid}::` 开头). 别的 user 的
-        // 留给他们自己的 snapshot 处理. legacy uid="" 时扫无前缀条目.
-        const myKeyPrefix = ctxUid ? `${ctxUid}::` : "";
-        for (const [fid, info] of Array.from(expLastSeen.entries())) {
-          if (myKeyPrefix && !fid.startsWith(myKeyPrefix)) continue;
-          if (!myKeyPrefix && fid.includes("::")) continue;
+        // v0.0.860 — scan only this tenant's bucket; other users' entries
+        // live in their own buckets and process under their own snapshot.
+        for (const [fid, info] of Array.from(tenant.expLastSeen.entries())) {
           if (currentExpIds.has(fid)) continue;
           if (info.return_at === null) {
             // Holding entry — keep expLastSeen so the next reappearance
@@ -3208,10 +3204,8 @@ export async function startSidecar(
           // 30s以后重新派一次". 删 +30s settle delay, Signal B 立即 fire. 失败
           // 重试在 wire.ts handler 里做 (fetch 失败 30s 后 retry same signal),
           // 不靠 sidecar 多 fire 兜底.
-          // v0.0.857 — fid 已带 uid 前缀, 还原 raw fleet id 给 fireFor (其内再加).
-          const rawFid = myKeyPrefix ? fid.slice(myKeyPrefix.length) : fid;
-          const result = fireFor(rawFid, info.origin, info.dest, "fleet returned home", "B");
-          if (result === "fired") expLastSeen.delete(fid);
+          const result = fireFor(fid, info.origin, info.dest, "fleet returned home", "B");
+          if (result === "fired") tenant.expLastSeen.delete(fid);
         }
         // v0.0.567 — GC removed. Operator 2026-06-01 observed 3 mission=8
         // fleets dispatched for the SAME expedition return. Root cause: the
