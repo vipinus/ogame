@@ -3688,8 +3688,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       if (goalType === "lifeform_building") return { label: t("goal.state.building_lifeform_with_step", { step: slot }), color: "#7cfc00" };
       return { label: t("goal.state.building_with_step", { step: slot }), color: "#7cfc00" };
     }
-    // L4 — active status without eta_at (fleet ops or initial dispatch)
-    if (g.status === "active") {
+    // L4 — active/pending status without eta_at. v0.0.802 — operator
+    // 2026-06-05 "不要显示 pending 显示当前动作是什么": pending 走跟 active
+    // 同 logic, 推 "building X" / "researching X" 等 contextual label, 不再
+    // 在 L7 fallthrough 显示 raw "pending" 文本.
+    if (g.status === "active" || g.status === "pending") {
       if (goalType === "research") return { label: cs ? t("goal.state.researching_with_step", { step: stepLabel }) : t("goal.state.researching"), color: "#7cc0ff" };
       if (goalType === "build" || goalType === "build_universal") return { label: cs ? t("goal.state.building_with_step", { step: stepLabel }) : t("goal.state.building"), color: "#7cfc00" };
       if (goalType === "build_ships" || goalType === "build_defense") return { label: t("goal.state.constructing_ships"), color: "#7cfc00" };
