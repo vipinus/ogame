@@ -262,6 +262,7 @@ export class HttpServer {
       ...(opts.listGoals !== undefined ? { listGoals: opts.listGoals } : {}),
       ...(opts.expeditionProvider !== undefined ? { expeditionProvider: opts.expeditionProvider } : {}),
       ...(opts.emergencyProvider !== undefined ? { emergencyProvider: opts.emergencyProvider } : {}),
+      ...(opts.subscriptionProvider !== undefined ? { subscriptionProvider: opts.subscriptionProvider } : {}),
       ...(opts.listEvents !== undefined ? { listEvents: opts.listEvents } : {}),
       ...(opts.resolveUserToken !== undefined ? { resolveUserToken: opts.resolveUserToken } : {}),
       ...(opts.sectionSettingsRead !== undefined ? { sectionSettingsRead: opts.sectionSettingsRead } : {}),
