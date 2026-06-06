@@ -466,15 +466,33 @@ export class PriorityMerger {
         //    + 中转 (to_stop_load/hop/unload). 直送 completed 时整 chain 达成,
         //    中转链 应自动 cancel (ships 已 delivered, ferry 失去意义).
         const upstreamActive = upstream.filter((u) => u.status !== "completed" && u.status !== "cancelled");
-        const directLegCompleted = allRows.find((r) => {
-          if ((r.goal.target as { chain_id?: unknown })?.chain_id !== chainId) return false;
-          if (r.goal.id === row.goal.id) return false;
-          if ((r.goal.target as { chain_phase?: string })?.chain_phase !== "to_target_direct") return false;
-          return r.status === "completed";
-        });
-        if (directLegCompleted && /^to_stop_(load|hop|unload)$/.test(((row.goal.target as { chain_phase?: string })?.chain_phase ?? ""))) {
-          await this.updateStatusAndMirror(row.goal.id, "cancelled", `chain superseded: direct leg ${directLegCompleted.goal.id.slice(0, 12)} completed, ferry path obsolete`);
-          continue;
+        // v0.0.815 — operator 2026-06-05 实证: chain 可能含多个独立子任务
+        // (e.g. direct 去 1:486:7 + ferry path 去 3:279:7), owner 一次派两
+        // 个目标共 chain_id. v0.0.814 单看 phase=to_target_direct completed
+        // 就 cancel 所有 ferry — 把不同目标的 ferry 也误杀. 修: 必须 direct
+        // 跟 ferry unload 的 target_coords 一致才 supersede. unload phase 是
+        // ferry final-leg, 它的 target_coords = ferry 真目的. 不同目的的 ferry
+        // 各自跑.
+        const myPhase = (row.goal.target as { chain_phase?: string })?.chain_phase ?? "";
+        if (/^to_stop_(load|hop|unload)$/.test(myPhase)) {
+          // find unload leg in same chain to learn ferry's final target
+          const unloadLeg = allRows.find((r) => {
+            if ((r.goal.target as { chain_id?: unknown })?.chain_id !== chainId) return false;
+            return (r.goal.target as { chain_phase?: string })?.chain_phase === "to_stop_unload";
+          });
+          const ferryTarget = (unloadLeg?.goal.target as { target_coords?: string })?.target_coords;
+          if (ferryTarget) {
+            const directLegSameTarget = allRows.find((r) => {
+              if ((r.goal.target as { chain_id?: unknown })?.chain_id !== chainId) return false;
+              if ((r.goal.target as { chain_phase?: string })?.chain_phase !== "to_target_direct") return false;
+              if (r.status !== "completed") return false;
+              return (r.goal.target as { target_coords?: string })?.target_coords === ferryTarget;
+            });
+            if (directLegSameTarget) {
+              await this.updateStatusAndMirror(row.goal.id, "cancelled", `chain superseded: direct leg ${directLegSameTarget.goal.id.slice(0, 12)} reached ${ferryTarget}, ferry obsolete`);
+              continue;
+            }
+          }
         }
         if (!upstreamReason && upstreamActive.length > 0) {
           const myT = row.goal.target as {
