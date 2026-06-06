@@ -3121,23 +3121,29 @@ export async function startSidecar(
           return Object.values(msg.snapshot.planets ?? {})
             .find((p) => Array.isArray(p.coords) && p.coords.join(":") === origCoord && p.type === "planet");
         };
-        const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string, signal: "B" | "C"): void => {
+        const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string, signal: "B" | "C"): "fired" | "skip-origin" | "noop" => {
           const firedSignals = firedDebrisCheckFor.get(fleetId) ?? new Set<"B" | "C">();
-          if (firedSignals.has(signal)) return;
-          if (!Array.isArray(origin) || origin.length !== 3 || !Array.isArray(dest)) return;
+          if (firedSignals.has(signal)) return "noop";
+          if (!Array.isArray(origin) || origin.length !== 3 || !Array.isArray(dest)) return "noop";
           const originPlanet = findOriginPlanet(origin.join(":"));
           if (!originPlanet) {
+            // v0.0.856 — operator 2026-06-06 "远征 4:242:8 回航没自动派". expLastSeen
+            // 是 module-level global, 任何 user 推 state.snapshot 都会扫. 跨账户场景
+            // (operator + 新号), 新号 snapshot 里没有 4:242:8 planet → SKIP. 老逻辑
+            // SKIP 后仍 delete expLastSeen[fid] (在 caller 那), 真 owner 后续推时
+            // 条目已没 → Signal B silent fail. 返回 "skip-origin" 让 caller 保留.
             console.log(`[debris-check] SKIP fleet ${fleetId}: origin ${origin.join(":")} not in planets`);
-            return;
+            return "skip-origin";
           }
           const g = dest[0], s = dest[1];
-          if (typeof g !== "number" || typeof s !== "number") return;
+          if (typeof g !== "number" || typeof s !== "number") return "noop";
           firedSignals.add(signal);
           firedDebrisCheckFor.set(fleetId, firedSignals);
           const dbgMsg = { type: "expedition.debris_check" as const, galaxy: g, system: s, origin_planet_id: originPlanet.id, reason };
           ws.send(dbgMsg);
           http.queueDownstream(dbgMsg);
           console.log(`[debris-check] FIRED fleet ${fleetId} signal=${signal} ${reason}: G:S=${g}:${s} origin=${originPlanet.id}`);
+          return "fired";
         };
         // v0.0.783 — Signal C 删除. Operator 2026-06-05 "不要搞 b c 能否一次
         // 成功" — 接受偶发 Signal B miss (return_at 偶发 null) 换"远征回家恰好
@@ -3173,8 +3179,10 @@ export async function startSidecar(
           // 30s以后重新派一次". 删 +30s settle delay, Signal B 立即 fire. 失败
           // 重试在 wire.ts handler 里做 (fetch 失败 30s 后 retry same signal),
           // 不靠 sidecar 多 fire 兜底.
-          fireFor(fid, info.origin, info.dest, "fleet returned home", "B");
-          expLastSeen.delete(fid);
+          // v0.0.856 — only delete on FIRED. skip-origin 说明这条 entry 不属于
+          // 当前 user snapshot, 保留给真 owner 下次推时处理.
+          const result = fireFor(fid, info.origin, info.dest, "fleet returned home", "B");
+          if (result === "fired") expLastSeen.delete(fid);
         }
         // v0.0.567 — GC removed. Operator 2026-06-01 observed 3 mission=8
         // fleets dispatched for the SAME expedition return. Root cause: the
