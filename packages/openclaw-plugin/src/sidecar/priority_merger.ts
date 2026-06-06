@@ -632,6 +632,15 @@ export class PriorityMerger {
       }
       const result = this.planGoal(row.goal, state);
       if (isBlocked(result)) {
+        // v0.0.805 — operator 2026-06-05 "跳跃成功了 还卡在这里 是自动跳完
+        // 刷新不到结果". planner 返 auto_complete 标记 (e.g. JG self-detect
+        // target_moon has expected ships) → priorityMerger mark completed,
+        // 不再 blocked. 覆盖 sidecar 自动跳完 但 ack/state 未同步 卡死场景.
+        if ((result as { auto_complete?: boolean }).auto_complete === true) {
+          await this.updateStatusAndMirror(row.goal.id, "completed");
+          skipped_terminal += 1;
+          continue;
+        }
         if (ALREADY_AT_TARGET_RE.test(result.blocked)) {
           await this.updateStatusAndMirror(row.goal.id, "completed");
           skipped_terminal += 1;

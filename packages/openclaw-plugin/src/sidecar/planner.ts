@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import type { Directive, Goal, GoalType, Planet, WorldState, ShipCount } from "@ogamex/shared";
 import { TECH_TREE, nameToId, LIFEFORM_TECH } from "@ogamex/shared";
 
-export type PlanResult = Directive | { blocked: string };
+export type PlanResult = Directive | { blocked: string; auto_complete?: boolean };
 
 const DIRECTIVE_TTL_MS = 24 * 60 * 60 * 1000;
 // Defensive cap so a malformed tech tree (e.g. accidental cycle) can't hang.
@@ -1522,6 +1522,25 @@ function planJumpgateGoal(goal: Goal, state: WorldState): PlanResult {
   const tgtMoon = state.planets?.[targetMoonId];
   if (!srcMoon) return { blocked: `jumpgate: source_moon ${sourceMoonId} not in state` };
   if (tgtMoon === undefined) return { blocked: `jumpgate: target_moon ${targetMoonId} not in state` };
+  // v0.0.805 — operator 2026-06-05 "跳跃成功了 还卡在这里, 任务不知道":
+  // owner 手动 click ogame UI 跳 JG, sidecar 没经过 directive ack 路径, JG
+  // goal status 一直 active/blocked. ogame cooldown 启动 → planner 看 cd > 0
+  // → blocked, chain leg 2 跟着卡. self-detect: target_moon 已 collect expected
+  // ships → JG 真跳过 (whoever dispatched), auto_complete 给 priorityMerger
+  // mark goal completed, chain unblock. take_all 模式 ships 是 dynamic, 此路径
+  // 只 cover 静态 ships count.
+  const expectedShips = target.ships;
+  if (expectedShips && typeof expectedShips === "object" && !Array.isArray(expectedShips)) {
+    const tgtShips = (tgtMoon as { ships?: Record<string, number> }).ships ?? {};
+    const entries = Object.entries(expectedShips as Record<string, unknown>)
+      .filter(([, v]) => typeof v === "number" && (v as number) > 0) as Array<[string, number]>;
+    if (entries.length > 0 && entries.every(([k, v]) => (tgtShips[k] ?? 0) >= v)) {
+      return {
+        blocked: `jumpgate already executed (target_moon ${targetMoonId} has expected ships)`,
+        auto_complete: true,
+      };
+    }
+  }
   // Cooldown check — frontend captures jumpgate_cooldown_sec on each click;
   // we treat absence as "ready" (operator's overlay GET will refresh).
   // v0.0.720 — operator 2026-06-03 "JG 没有跳" 真因: ogame v12 JG lock 是
