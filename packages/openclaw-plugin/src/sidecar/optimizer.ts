@@ -371,8 +371,13 @@ export function computeOptimizationForGoal(state: WorldState, main: OptimizableG
       // operator 2026-06-05 "注意加服务器速度因子" — ogame raw prod 字段是
       // base-per-hour 未乘 universe.speed, planner.ts:1040 已经用同一公式.
       const prodPerSec = prodH * speed / 3600;
-      if (prodPerSec <= 0) continue;
-      const oldWaitSec = total / prodPerSec;
+      // v0.0.859 — operator 2026-06-06 "新号第二颗星没建造重氢工厂". 新殖民地
+      // deuteriumSynth L0 + d_h=0 时旧 gate `if (prodPerSec <= 0) continue;` 拦死,
+      // 永远不 emit opt-deuteriumSynth → 殖民地无 d 永远卡住. catch-22: 没 mine
+      // → 0 prod → 优化器不推 → 永远不建. 修法: prodPerSec=0 + curLvl=0 + total>0
+      // 用 86400s (1d) sentinel oldWaitSec, L0→L1 ratio=100 公式正常跑, saving 巨大.
+      if (prodPerSec <= 0 && (curLvl !== 0 || total <= 0)) continue;
+      const oldWaitSec = prodPerSec > 0 ? total / prodPerSec : 86400;
       for (let dL = 1; dL <= 3; dL++) {
         const L_new = curLvl + dL;
         const ratio = mineProdRatio(curLvl, L_new);
