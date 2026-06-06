@@ -3441,7 +3441,17 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   // 设计 (同 update modal). 点 "立即续费" → window.open(/flagship).
   const checkSubscription = async (): Promise<void> => {
     try {
-      const r = await fetchFn(`${baseUrl}/ogamex/v1/subscription-status`, { method: "GET" });
+      // v0.0.807 — operator "没有提示续费" 真因: subscription-status endpoint
+      // 需 per-user Bearer 才能查 PG; 无 Bearer 时 endpoint 返 fallback
+      // {active:true} → modal 永不弹. 加 Bearer header 跟 fetchGoals (line
+      // 3528-3531) 同款.
+      let tok: string | null = opts.bridgeToken ?? null;
+      if (!tok) {
+        try { tok = (typeof window !== "undefined" ? window.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") : null); }
+        catch { /* sandbox isolation */ }
+      }
+      const init: RequestInit = tok ? { headers: { "Authorization": `Bearer ${tok}` } } : {};
+      const r = await fetchFn(`${baseUrl}/ogamex/v1/subscription-status`, init);
       if (!r.ok) return;
       const j = await r.json() as { active?: boolean; expires_at?: number | null };
       if (j.active === false) {
