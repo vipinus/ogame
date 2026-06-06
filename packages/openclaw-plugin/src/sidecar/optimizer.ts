@@ -580,10 +580,17 @@ export async function runOptimizerOnce(
       for (const mk of mineKeys) mineDraw += mineEnergyConsumption(mk, projectedLvl(mk));
       const solarOut = solarProduction(solar);
       const fusionOut = fusionProduction(fusion, energyTech);
-      const budget = solarOut + fusionOut - mineDraw;
-      if (budget >= 0) continue;
+      const formulaBudget = solarOut + fusionOut - mineDraw;
+      // v0.0.865 — operator 2026-06-06 "老账号星球出现负电, 自动优化是不是自动的".
+      // 老 guard 只看 formulaBudget (mines vs solar+fusion), 漏 LF building / crawler /
+      // 其他耗电消费者. snapE 显负但 formula 说仍 +2K → guard 永远跳过 → planet
+      // 永远负电. 用 snapE 兜底: 跟 formulaBudget 取最小, 让真实负电信号也能 fire.
+      // 容差 -50: 避免 snapshot 抖动 / 计算延迟造成小负值反复 emit.
+      const snapE = (planet as { resources?: { e?: number } }).resources?.e ?? 0;
+      const realBudget = snapE < -50 ? Math.min(formulaBudget, snapE) : formulaBudget;
+      if (realBudget >= 0) continue;
       const inflightMine = bq && mineKeys.includes(bq.building as typeof mineKeys[number]) ? `${bq.building} L${bq.level} in-flight` : "current levels";
-      const deficit = -budget;
+      const deficit = -realBudget;
       // pick min solarPlant L that closes deficit (solar 优先, fusion 需 dSynth>=5 + energyTech>=3)
       let chosenLvl = solar + 1;
       for (let l = solar + 1; l <= solar + 30; l++) {
@@ -624,7 +631,7 @@ export async function runOptimizerOnce(
       };
       try {
         await pgStore.upsertGoal(uid, energyOptRow);
-        console.log(`[optimizer/energy-guard] uid=${uid.slice(0, 8)} planet=${planetId} budget=${Math.round(budget)} (${inflightMine}) → emit ${optId}`);
+        console.log(`[optimizer/energy-guard] uid=${uid.slice(0, 8)} planet=${planetId} formulaBudget=${Math.round(formulaBudget)} snapE=${snapE} realBudget=${Math.round(realBudget)} (${inflightMine}) → emit ${optId}`);
         actioned++;
       } catch (e) {
         console.warn(`[optimizer/energy-guard] upsert ${optId} threw:`, e instanceof Error ? e.message : e);
