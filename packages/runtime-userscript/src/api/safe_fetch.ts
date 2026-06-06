@@ -210,20 +210,23 @@ export async function fetchWithCp(
         // newAjaxToken from response — fire-and-forget was leaking token
         // rotations to global ogame state without our tokenManager learning
         // about them (operator: "沒有恢復cp和token").
-        // v0.0.580 — restore retry × 3 with 250/500/1000ms backoff. Operator
-        // 2026-06-01 "會不會又發生 cp shift 跳屏": single-attempt restore
-        // could leave operator stuck on origin planet if that ONE call also
-        // hit timeout/network blip. Three attempts make the failure rate
-        // ≈ (single-fail-rate)³ — typically <0.1% even under flaky network.
-        // Restore is idempotent (cp= overview ajax) so retry is safe.
+        // v0.0.580 — restore retry × 3 with 250/500/1000ms backoff.
+        // v0.0.869 — operator 2026-06-06 "ogame 网页发船经常卡住" 实测真因:
+        // clickInterceptSync 在 __ogamexCpInFlight > 0 整段都拦 owner click +
+        // replay; restore 老阈值 3 attempts × 10s timeout = 最坏 30s+ owner 卡死.
+        // restore 是 GET overview ajax 实际 <500ms 就成, 10s 严重过保守.
+        // 降到 2 attempts × 2s timeout + 250ms backoff → 最坏 4.25s, 仍保留
+        // 1 次 retry 兜底 flaky network. 失败率 (single-fail-rate)² 通常 <1%.
         const restoreUrl = `/game/index.php?page=componentOnly&component=overview&ajax=1&cp=${encodeURIComponent(operatorCp)}`;
         let restoreOk = false;
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        const RESTORE_TIMEOUT_MS = 2_000;
+        const RESTORE_MAX_ATTEMPTS = 2;
+        for (let attempt = 1; attempt <= RESTORE_MAX_ATTEMPTS; attempt++) {
           try {
             const restoreRes = await fetchWithTimeout(restoreUrl, {
               credentials: "same-origin",
               headers: { "X-Requested-With": "XMLHttpRequest" },
-            }, 10_000);
+            }, RESTORE_TIMEOUT_MS);
             if (restoreRes.ok) {
               // Surface restore-side newAjaxToken on documentElement.dataset so
               // tokenManager.refresh() (which reads dataset.ogamexToken) picks it
@@ -243,12 +246,12 @@ export async function fetchWithCp(
             const errName = (e as { name?: string }).name;
             console.warn(`[safe_fetch/restore] attempt=${attempt} ${errName === "AbortError" ? "TIMEOUT" : "ERROR"}: ${(e as Error).message ?? e}`);
           }
-          if (attempt < 3) {
+          if (attempt < RESTORE_MAX_ATTEMPTS) {
             await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
           }
         }
         if (!restoreOk) {
-          console.warn(`[safe_fetch/restore] gave up after 3 attempts for cp=${operatorCp} — operator may see top-bar stuck on ${sourceStr}; manual click recovers`);
+          console.warn(`[safe_fetch/restore] gave up after ${RESTORE_MAX_ATTEMPTS} attempts for cp=${operatorCp} — operator may see top-bar stuck on ${sourceStr}; manual click recovers`);
         }
       }
     } finally {
