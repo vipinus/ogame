@@ -3461,11 +3461,12 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   };
   const showSubscriptionExpiredModal = (): void => {
     if (typeof document === "undefined" || document.getElementById("ogamex-sub-expired-modal")) return;
+    // v0.0.808 — operator 2026-06-05 "续费充值挑错页面了 /pricing".
     const renewUrl = ((): string => {
       try {
         const u = new URL(baseUrl);
-        return `${u.protocol}//${u.host}/flagship`;
-      } catch { return "https://ogame.anyfq.com/flagship"; }
+        return `${u.protocol}//${u.host}/pricing`;
+      } catch { return "https://ogame.anyfq.com/pricing"; }
     })();
     const overlay = document.createElement("div");
     overlay.id = "ogamex-sub-expired-modal";
