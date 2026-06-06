@@ -3121,28 +3121,30 @@ export async function startSidecar(
           return Object.values(msg.snapshot.planets ?? {})
             .find((p) => Array.isArray(p.coords) && p.coords.join(":") === origCoord && p.type === "planet");
         };
+        // v0.0.857 — operator 2026-06-06 "是隔离问题?". 是. expLastSeen /
+        // firedDebrisCheckFor 是 module-level global 不分 uid → 跨账户 fleet 条目
+        // 互相覆写 + 误删. 顶层修法: key 全部加 uid 前缀 isolated. ctxUid 是当前
+        // 推 state.snapshot 的 user (ALS), 没 uid 时退到空字符串 (legacy
+        // single-tenant 跟原行为兼容).
+        const keyFor = (fid: string): string => ctxUid ? `${ctxUid}::${fid}` : fid;
         const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string, signal: "B" | "C"): "fired" | "skip-origin" | "noop" => {
-          const firedSignals = firedDebrisCheckFor.get(fleetId) ?? new Set<"B" | "C">();
+          const dedupKey = keyFor(fleetId);
+          const firedSignals = firedDebrisCheckFor.get(dedupKey) ?? new Set<"B" | "C">();
           if (firedSignals.has(signal)) return "noop";
           if (!Array.isArray(origin) || origin.length !== 3 || !Array.isArray(dest)) return "noop";
           const originPlanet = findOriginPlanet(origin.join(":"));
           if (!originPlanet) {
-            // v0.0.856 — operator 2026-06-06 "远征 4:242:8 回航没自动派". expLastSeen
-            // 是 module-level global, 任何 user 推 state.snapshot 都会扫. 跨账户场景
-            // (operator + 新号), 新号 snapshot 里没有 4:242:8 planet → SKIP. 老逻辑
-            // SKIP 后仍 delete expLastSeen[fid] (在 caller 那), 真 owner 后续推时
-            // 条目已没 → Signal B silent fail. 返回 "skip-origin" 让 caller 保留.
-            console.log(`[debris-check] SKIP fleet ${fleetId}: origin ${origin.join(":")} not in planets`);
+            console.log(`[debris-check] SKIP fleet ${fleetId} uid=${(ctxUid ?? "_").slice(0,8)}: origin ${origin.join(":")} not in this user's planets`);
             return "skip-origin";
           }
           const g = dest[0], s = dest[1];
           if (typeof g !== "number" || typeof s !== "number") return "noop";
           firedSignals.add(signal);
-          firedDebrisCheckFor.set(fleetId, firedSignals);
+          firedDebrisCheckFor.set(dedupKey, firedSignals);
           const dbgMsg = { type: "expedition.debris_check" as const, galaxy: g, system: s, origin_planet_id: originPlanet.id, reason };
           ws.send(dbgMsg);
           http.queueDownstream(dbgMsg);
-          console.log(`[debris-check] FIRED fleet ${fleetId} signal=${signal} ${reason}: G:S=${g}:${s} origin=${originPlanet.id}`);
+          console.log(`[debris-check] FIRED fleet ${fleetId} uid=${(ctxUid ?? "_").slice(0,8)} signal=${signal} ${reason}: G:S=${g}:${s} origin=${originPlanet.id}`);
           return "fired";
         };
         // v0.0.783 — Signal C 删除. Operator 2026-06-05 "不要搞 b c 能否一次
@@ -3155,8 +3157,8 @@ export async function startSidecar(
         for (const f of msg.snapshot.fleets_outbound ?? []) {
           if (typeof f.id !== "string") continue;
           if (f.mission !== 15) continue;
-          currentExpIds.add(f.id);
-          expLastSeen.set(f.id, { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null, return_at: f.return_at ?? null });
+          currentExpIds.add(keyFor(f.id));
+          expLastSeen.set(keyFor(f.id), { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null, return_at: f.return_at ?? null });
         }
         // Signal B: fleet disappeared from outbound. ogame removes mission=15
         // fleet from /movement when it's HOLDING at :16 (60min) — same
@@ -3167,7 +3169,12 @@ export async function startSidecar(
         //     (fire harvest)
         // v0.0.574 — operator 2026-06-01 实证: 1:486 fleet 2353595 false-fired
         // at holding-entry, dedup then blocked real return → no harvest.
+        // v0.0.857 — 只扫当前 uid 的条目 (key 以 `${uid}::` 开头). 别的 user 的
+        // 留给他们自己的 snapshot 处理. legacy uid="" 时扫无前缀条目.
+        const myKeyPrefix = ctxUid ? `${ctxUid}::` : "";
         for (const [fid, info] of Array.from(expLastSeen.entries())) {
+          if (myKeyPrefix && !fid.startsWith(myKeyPrefix)) continue;
+          if (!myKeyPrefix && fid.includes("::")) continue;
           if (currentExpIds.has(fid)) continue;
           if (info.return_at === null) {
             // Holding entry — keep expLastSeen so the next reappearance
@@ -3179,9 +3186,9 @@ export async function startSidecar(
           // 30s以后重新派一次". 删 +30s settle delay, Signal B 立即 fire. 失败
           // 重试在 wire.ts handler 里做 (fetch 失败 30s 后 retry same signal),
           // 不靠 sidecar 多 fire 兜底.
-          // v0.0.856 — only delete on FIRED. skip-origin 说明这条 entry 不属于
-          // 当前 user snapshot, 保留给真 owner 下次推时处理.
-          const result = fireFor(fid, info.origin, info.dest, "fleet returned home", "B");
+          // v0.0.857 — fid 已带 uid 前缀, 还原 raw fleet id 给 fireFor (其内再加).
+          const rawFid = myKeyPrefix ? fid.slice(myKeyPrefix.length) : fid;
+          const result = fireFor(rawFid, info.origin, info.dest, "fleet returned home", "B");
           if (result === "fired") expLastSeen.delete(fid);
         }
         // v0.0.567 — GC removed. Operator 2026-06-01 observed 3 mission=8
