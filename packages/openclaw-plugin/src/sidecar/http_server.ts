@@ -92,10 +92,13 @@ export interface HttpServerOptions {
   /** v0.0.804 — per-user subscription status. expired user → panel 弹
    *  续费 modal (always-on, 类似 force-update). */
   subscriptionProvider?: (uid: string) => Promise<{ active: boolean; expires_at: number | null }>;
+  // v0.0.813 — operator 2026-06-05 "稽核日誌 0 rows". listEvents 之前 Phase 7d
+  // 标 retired 返 []. 改 PG-backed per-user. 签名加 userId 让 endpoint
+  // resolveBearer 后传入.
   /** v0.0.636 — backed by worldStateStore. GET /v1/events?limit=N&type=foo.
    *  Returns most-recent-first audit log rows from the persisted events table.
    *  When `type` is supplied, filters server-side; absent ⇒ all types. */
-  listEvents?: (limit: number, type?: string) => Array<unknown>;
+  listEvents?: (limit: number, type?: string, userId?: string) => Array<unknown> | Promise<Array<unknown>>;
   resolveUserToken?: (bearer: string) => Promise<string | null>;
   /** Operator 2026-06-04 "全做" — read/write per-user in-game panel toggle
    *  flags (mirrors user_settings.section_settings jsonb). */
@@ -180,7 +183,7 @@ interface ResolvedHttpServerOptions {
   /** v0.0.804 — per-user subscription status. expired user → panel 弹
    *  续费 modal (always-on, 类似 force-update). */
   subscriptionProvider?: (uid: string) => Promise<{ active: boolean; expires_at: number | null }>;
-  listEvents?: (limit: number, type?: string) => Array<unknown>;
+  listEvents?: (limit: number, type?: string, userId?: string) => Array<unknown> | Promise<Array<unknown>>;
   resolveUserToken?: (bearer: string) => Promise<string | null>;
   /** Operator 2026-06-04 "全做" — read/write per-user in-game panel toggle
    *  flags (mirrors user_settings.section_settings jsonb). */
@@ -526,21 +529,25 @@ export class HttpServer {
     // GET /ogamex/v1/events?limit=N&type=foo. Defaults to 100, cap at 1000
     // to prevent payload bloat. No auth (LAN trust).
     if (method === "GET" && (url === "/ogamex/v1/events" || url?.startsWith("/ogamex/v1/events?"))) {
-      this.writeCorsHeaders(res);
-      if (!this.opts.listEvents) {
-        res.statusCode = 503;
+      void (async () => {
+        const r = await this.resolveBearer(req);
+        this.writeCorsHeaders(res);
+        if (!this.opts.listEvents) {
+          res.statusCode = 503;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: false, reason: "no events store wired" }));
+          return;
+        }
+        const u = new URL(url ?? "/ogamex/v1/events", "http://_");
+        const limitRaw = Number(u.searchParams.get("limit"));
+        const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(1000, Math.floor(limitRaw)) : 100;
+        const typeFilter = u.searchParams.get("type") ?? undefined;
+        const uid = r.kind === "user" ? r.uid : undefined;
+        const events = await Promise.resolve(this.opts.listEvents(limit, typeFilter, uid));
+        res.statusCode = 200;
         res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ ok: false, reason: "no events store wired" }));
-        return;
-      }
-      const u = new URL(url ?? "/ogamex/v1/events", "http://_");
-      const limitRaw = Number(u.searchParams.get("limit"));
-      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(1000, Math.floor(limitRaw)) : 100;
-      const typeFilter = u.searchParams.get("type") ?? undefined;
-      const events = this.opts.listEvents(limit, typeFilter);
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ events }));
+        res.end(JSON.stringify({ events }));
+      })();
       return;
     }
     // Operator 2026-05-29: M2 expedition settings modal — panel reads/writes

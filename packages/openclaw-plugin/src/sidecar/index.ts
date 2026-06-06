@@ -1849,17 +1849,25 @@ export async function startSidecar(
         snapshot_age_ms: stateRef.current?.last_update ? (now - stateRef.current.last_update) : null,
       };
     },
-    listEvents: (limit, type) => {
-      // v0.0.636 — operator audit view. Defaults bounded by HttpServer at
-      // 100/1000 (limit) — store-level pagination keeps memory tiny since
-      // it's a single LIMIT N query on an indexed table.
+    listEvents: async (limit, type, userId) => {
+      // v0.0.813 — operator 2026-06-05 "稽核日誌 0 rows". 旧版 stub return [].
+      // 改 PG per-user 真查 (cover stripe-event/userscript event audit view).
+      // 无 userId fallback 返 [] (legacy operator 用 global token, 跨 tenant
+      // 不让看).
+      if (!pgStore || !userId) return [];
       try {
-        // Phase 7d — SQLite event list retired. Debug endpoint returns [];
-        // PG /v1/debug/events is the canonical source (multi-tenant).
-        void type; void limit;
-        return [];
+        const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+        const rows = type
+          ? await sql`SELECT id, type, payload, EXTRACT(EPOCH FROM created_at)*1000 AS ts FROM ogame_events WHERE user_id=${userId} AND type=${type} ORDER BY id DESC LIMIT ${limit}`
+          : await sql`SELECT id, type, payload, EXTRACT(EPOCH FROM created_at)*1000 AS ts FROM ogame_events WHERE user_id=${userId} ORDER BY id DESC LIMIT ${limit}`;
+        return rows.map((r) => ({
+          id: (r as { id: number }).id,
+          type: (r as { type: string }).type,
+          ts: Number((r as { ts: string | number }).ts),
+          payload: (r as { payload: unknown }).payload,
+        }));
       } catch (e) {
-        console.error("[ogamex/sidecar] listEvents failed", e);
+        console.error("[ogamex/sidecar] listEvents PG query failed", e);
         return [];
       }
     },
