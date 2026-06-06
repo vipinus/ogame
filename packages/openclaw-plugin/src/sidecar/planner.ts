@@ -70,19 +70,28 @@ function isPostExpeditionPhase(state: WorldState): boolean {
 // AND current storage is ≥95% full → recommend storage upgrade. metal is
 // EXCLUDED per operator policy (metal永远过剩). Returns the storage building
 // to upgrade, or null when wait-only path is appropriate.
-function pickStorageUpgrade(planet: Planet, short: { m: number; c: number; d: number }): "crystalStorage" | "deuteriumTank" | null {
+function pickStorageUpgrade(planet: Planet, short: { m: number; c: number; d: number }, econSpeed: number = 1): "metalStorage" | "crystalStorage" | "deuteriumTank" | null {
   const r = planet.resources ?? { m: 0, c: 0, d: 0 };
-  // v0.0.825 — operator 2026-06-06 真值 wire. planet.storage.{c,d}_max 真值优先
-  // (boot.ts pollFetchResources 写入), 缺/0 时 fallback 到估算公式. 真公式 ogame
-  // v12 是 5000*floor(2.5*exp(20L/33)) 偏陡, 这里保留 5000*2.5^L 估算 (保守偏低
-  // 阈值更易触发, 不会漏修, 偶尔会 false-positive 但 0.95 阈值兜住).
+  // v0.0.825 / v0.0.848 — operator 2026-06-06 解除 metalStorage 限制.
+  // v0.0.849 — operator 2026-06-06 "新账号金属满了 没有触发建存储罐". 0.95 阈值
+  // 在 speed-1 服 OK 但 speed-8 服只剩 ~12 分钟窗口 (60% 距 cap, 实际产量 *8 倍
+  // 已要溢出). 改成预测式: 把当前 r + 未来 30min 产出加起来比 cap, 命中 0.95
+  // 就 fire. 慢服 m_h≈0 等价于纯静态阈值, 快服自然提前.
   const cap = (lvl: number): number => Math.floor(5000 * Math.pow(2.5, lvl));
+  const mStorLvl = planet.buildings?.["metalStorage"] ?? 0;
   const cStorLvl = planet.buildings?.["crystalStorage"] ?? 0;
   const dStorLvl = planet.buildings?.["deuteriumTank"] ?? 0;
+  const mMax = (planet.storage?.m_max ?? 0) > 0 ? planet.storage!.m_max : cap(mStorLvl);
   const cMax = (planet.storage?.c_max ?? 0) > 0 ? planet.storage!.c_max : cap(cStorLvl);
   const dMax = (planet.storage?.d_max ?? 0) > 0 ? planet.storage!.d_max : cap(dStorLvl);
-  if (short.c > 0 && r.c >= cMax * 0.95) return "crystalStorage";
-  if (short.d > 0 && r.d >= dMax * 0.95) return "deuteriumTank";
+  const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
+  const horizonH = 0.5; // 30 min predictive horizon
+  const mProj = r.m + Math.max(0, (prod.m_h ?? 0)) * econSpeed * horizonH;
+  const cProj = r.c + Math.max(0, (prod.c_h ?? 0)) * econSpeed * horizonH;
+  const dProj = r.d + Math.max(0, (prod.d_h ?? 0)) * econSpeed * horizonH;
+  if (short.m > 0 && mProj >= mMax * 0.95) return "metalStorage";
+  if (short.c > 0 && cProj >= cMax * 0.95) return "crystalStorage";
+  if (short.d > 0 && dProj >= dMax * 0.95) return "deuteriumTank";
   return null;
 }
 
@@ -598,7 +607,7 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
         return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short)` };
       }
       // Pre-phase: try storage upgrade first
-      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD });
+      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD }, state.server?.speed ?? 1);
       if (storUp) {
         const curLvl = planet.buildings?.[storUp] ?? 0;
         const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;
@@ -791,7 +800,7 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
   // lab 用 sourcePlanetId 上的 resources (research 在主科研星算).
   const labPlanet = Object.values(ctx.state.planets ?? {}).find((p) => p.id === ctx.sourcePlanetId);
   if (labPlanet) {
-    const proactive = pickStorageUpgrade(labPlanet, { m: 1, c: 1, d: 1 });
+    const proactive = pickStorageUpgrade(labPlanet, { m: 1, c: 1, d: 1 }, ctx.state.server?.speed ?? 1);
     if (proactive) {
       const curLvl = labPlanet.buildings?.[proactive] ?? 0;
       const elevatedRoot = { ...ctx.rootGoal, priority: Math.min(10, ctx.rootGoal.priority + 3) } as Goal;
@@ -809,7 +818,7 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
       if (isPostExpeditionPhase(ctx.state)) {
         return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short)` };
       }
-      const storUp = pickStorageUpgrade(labPlanet, { m: sM, c: sC, d: sD });
+      const storUp = pickStorageUpgrade(labPlanet, { m: sM, c: sC, d: sD }, ctx.state.server?.speed ?? 1);
       if (storUp) {
         const curLvl = labPlanet.buildings?.[storUp] ?? 0;
         const elevatedRoot = { ...ctx.rootGoal, priority: Math.min(10, ctx.rootGoal.priority + 3) } as Goal;
@@ -1062,6 +1071,16 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
     const sM = Math.max(0, pickCost.m - r.m);
     const sC = Math.max(0, pickCost.c - r.c);
     const sD = Math.max(0, (pickCost.d ?? 0) - r.d);
+    // v0.0.849 — operator 2026-06-06 "新账号金属满了 没有触发建存储罐". 之前 energy
+    // 不 afford 直接 block, 永远到不了下面 cost check 的 storage upgrade 分支.
+    // 若任意资源已接近 cap 而我们在等更多 → 升 storage 是合理优先动作.
+    if (!isPostExpeditionPhase(ctx.state)) {
+      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD }, ctx.state.server?.speed ?? 1);
+      if (storUp) {
+        const curLvl = planet.buildings?.[storUp] ?? 0;
+        return planBuild(storUp, curLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
+      }
+    }
     return { blocked: `energy negative — need ${energyPick.building} L${energyPick.level} first (short m=${sM} c=${sC} d=${sD})` };
   }
 
@@ -1101,7 +1120,7 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
         return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short)` };
       }
       // Pre-phase: storage strategy first, then production wait ETA
-      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD });
+      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD }, ctx.state.server?.speed ?? 1);
       if (storUp) {
         const curLvl = planet.buildings?.[storUp] ?? 0;
         return planBuild(storUp, curLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
@@ -1217,7 +1236,7 @@ function planBuildShipsGoal(goal: Goal, state: WorldState): PlanResult {
       if (isPostExpeditionPhase(state)) {
         return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short)` };
       }
-      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD });
+      const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD }, state.server?.speed ?? 1);
       if (storUp) {
         const curLvl = (planet.buildings as Record<string, number>)[storUp] ?? 0;
         const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;

@@ -473,7 +473,10 @@ function openExpeditionSettings(
     if (!body) return;
     let initial: { template?: Record<string, number>; paused?: boolean; enabled?: boolean; enabled_planets?: string[]; auto_build_ships?: boolean } = {};
     try {
-      const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, { method: "GET" });
+      // v0.0.845 — operator 2026-06-06 "新账号的远征设置存不住": GET 老逻辑
+      // 没带 Bearer → sidecar uid=undefined → 读 legacy 主号文件 (per-uid POST
+      // 写的新号文件读不到). 同 fetchExpedition/fetchEmergency 修同款.
+      const r = await fetchFn(`${baseUrl}/ogamex/v1/expedition/config`, { method: "GET", headers: authHeaders() });
       if (r.ok) initial = await r.json();
     } catch (e) { console.warn("[panel/expedition-settings] GET failed:", e); }
     // Pull live planet+moon list from the frontend store. Operator 2026-05-29:
@@ -654,7 +657,7 @@ function openExpeditionSettings(
       liveExpPaused = !nextEnabled;
       reflectPaused(nextEnabled);
       try {
-        await fetchFn(`${baseUrl}/ogamex/v1/expedition/${liveExpPaused ? "pause" : "resume"}`, { method: "POST" });
+        await fetchFn(`${baseUrl}/ogamex/v1/expedition/${liveExpPaused ? "pause" : "resume"}`, { method: "POST", headers: authHeaders() });
       } catch (e) { console.warn("[panel/expedition-settings] pause/resume failed:", e); }
     });
     // Auto-build toggle (saved with main 保存 button — no instant POST since
@@ -807,7 +810,7 @@ function openDiscoverySettings(
       if (!gid) return;
       btn.textContent = "stopping…";
       try {
-        await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(gid)}/cancel`, { method: "POST" });
+        await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(gid)}/cancel`, { method: "POST", headers: authHeadersGlobal() });
         setTimeout(() => m.remove(), 400);
       } catch (err) {
         btn.textContent = `× ${(err as Error).message}`;
@@ -3682,7 +3685,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   }
 
   async function actGoal(id: string, action: "cancel" | "pause" | "resume" | "set-main" | "unset-main"): Promise<void> {
-    const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+    const r = await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: authHeaders() });
     if (!r.ok) {
       const body = await r.text();
       throw new Error(`${action} failed: http ${r.status} ${body}`);
@@ -3716,7 +3719,14 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const reason = g.reason ?? "";
     const goalType = g.type;
     const cs = g.current_step;
-    const stepLabel = cs ? `${techName(cs.tech)} L${cs.level}` : "";
+    // v0.0.847 — operator 2026-06-06 "如果建了能源会变负值, 没有优化吗": planner
+    // 真在 cascade (energy gate trigger → 派 solarPlant 先), 但 cs 还是 root goal
+    // tech. 解析 reason "need <tech> L<lvl> first" 提 cascade leaf 覆盖显示, 让
+    // owner 一眼看出当前是在等谁的资源.
+    const cascadeMatch = reason.match(/need\s+(\w+)\s+L(\d+)\s+first/i);
+    const stepLabel = cascadeMatch
+      ? `${techName(cascadeMatch[1]!)} L${cascadeMatch[2]} (cascade prereq)`
+      : (cs ? `${techName(cs.tech)} L${cs.level}` : "");
     const now = Date.now();
 
     // L1
@@ -4894,7 +4904,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         e.stopPropagation();
         const gid = stopBtn.getAttribute("data-goal-id") ?? "";
         if (!gid) return;
-        await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(gid)}/cancel`, { method: "POST" });
+        await fetchFn(`${baseUrl}/ogamex/v1/goals/${encodeURIComponent(gid)}/cancel`, { method: "POST", headers: authHeadersGlobal() });
         await refresh();
       });
     }
