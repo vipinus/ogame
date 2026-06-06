@@ -69,7 +69,34 @@ function readExpeditionState(uid?: string): Record<string, unknown> {
       return parsed as Record<string, unknown>;
     }
   } catch {
-    /* missing or malformed — treat as empty */
+    /* missing or malformed — fall through to legacy fallback */
+  }
+  // v0.0.868 — operator 2026-06-06 "TM 远征设置船的页面加载不到以前的远征
+  // 舰队配置". v0.0.840 加 per-uid 路由后, 老 single-tenant 时代 operator 的
+  // ogamex-expedition.json 没自动迁给 operator's per-uid bucket. operator 用
+  // per-user Bearer 连入 → 读 ogamex-expedition-<uid8>.json (missing) → {}.
+  // 修法: operator uid (== OGAMEX_LEGACY_USER_ID env) 读 missing 时 fallback
+  // 到 legacy file, 顺手 migrate (copy to per-uid file) — 下次直接命中 per-uid.
+  // 别 user 不走这条 (legacy 是 operator 的, 不能让别人继承).
+  const operatorUid = (process.env.OGAMEX_LEGACY_USER_ID ?? "").trim();
+  if (uid && operatorUid && uid === operatorUid && fp !== EXPEDITION_STATE_FILE_LEGACY) {
+    try {
+      const raw = fs.readFileSync(EXPEDITION_STATE_FILE_LEGACY, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const obj = parsed as Record<string, unknown>;
+        // one-shot migrate so next read hits per-uid directly
+        try {
+          fs.writeFileSync(fp, JSON.stringify(obj, null, 2));
+          console.log(`[expedition] migrated legacy ogamex-expedition.json → ${fp} for operator uid=${uid.slice(0, 8)}`);
+        } catch (e) {
+          console.warn(`[expedition] legacy migrate write failed:`, e instanceof Error ? e.message : e);
+        }
+        return obj;
+      }
+    } catch {
+      /* legacy also missing — fall through */
+    }
   }
   return {};
 }
