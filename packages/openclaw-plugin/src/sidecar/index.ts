@@ -3312,16 +3312,23 @@ export async function startSidecar(
       `[sidecar/emergency] subtype=${msg.subtype} event_id=${data.event_id ?? "?"} from=${fromStr} to=${toStr} arrives_at=${arr}`,
     );
     // Phase 9c.8 — route emergency by ALS uid:
-    //   legacy uid (no Bearer / operator's bridge_token) → global Reporter
-    //     (OpenClaw SDK → operator's Discord channel) — unchanged.
-    //   foreign uid → reporterManager.get(uid) → user's webhook URL.
-    //     If user has no webhook configured, manager returns null and the
-    //     emergency is silently skipped (they opted out of Discord).
+    //   显式 operator uid → 全局 Reporter (OpenClaw SDK → operator's Discord)
+    //   foreign uid → reporterManager.get(uid) → user's webhook URL
+    //   uid 缺失 (untagged WS / 异常) → 安全 SKIP, 绝不 fall back 到 operator
+    //
+    // v0.0.850 — operator 2026-06-06 "新账号的信息发到了老账号的Discord频道里了":
+    // 老逻辑 isLegacyUid(undefined)=true 导致 untagged WS 的 emergency 全漏到
+    // operator. 新账号 daigang@yahoo 装的 userscript 若没注入 per-user
+    // bridge_token, WS auth 落 global token 路径 → socketUid 不 set →
+    // event.emergency 不带 ALS uid → 误判 legacy → operator's Discord 收到.
+    // 修复: 改成正向匹配 operator uid, undefined 不再 fall back.
     const emergencyUid = getCurrentUserId();
-    if (isLegacyUid(emergencyUid)) {
+    const operatorUid = getLegacyOperatorUid();
+    const isOperator = emergencyUid && operatorUid !== "" && emergencyUid === operatorUid;
+    if (isOperator) {
       if (reporter === null) return;
       void reporter.pushEmergency(msg.markdown_report).catch((err: unknown) => {
-        console.error("[ogamex/sidecar] reporter.pushEmergency (legacy) failed", err);
+        console.error("[ogamex/sidecar] reporter.pushEmergency (operator) failed", err);
       });
     } else if (reporterManager !== null && emergencyUid) {
       void reporterManager.get(emergencyUid)
@@ -3329,6 +3336,8 @@ export async function startSidecar(
         .catch((err: unknown) => {
           console.error(`[ogamex/sidecar] reporter.pushEmergency user=${emergencyUid.slice(0,8)} failed`, err);
         });
+    } else {
+      console.warn(`[ogamex/sidecar] emergency skipped — uid missing or untagged (subtype=${msg.subtype}); refusing fallback to operator channel`);
     }
   });
 
