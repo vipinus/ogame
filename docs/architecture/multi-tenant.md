@@ -211,7 +211,97 @@ if (fireFor(fid) === "fired") {
 }
 ```
 
-## 8. Glossary
+## 8. Continuous verification
+
+The Sprint 4 runtime verifier
+(`packages/openclaw-plugin/scripts/verify-tenant-isolation.mjs`,
+documented in §7 "Sprint 4") is wired into a **user-level systemd
+timer** on europa so cross-tenant regressions surface without operator
+intervention. Sprint 5 (`v0.0.864-ci`, this commit) added the wiring.
+
+### Cadence
+
+- **Service**: `ogamex-verify-tenant.service` — oneshot, runs the script
+  with `--quiet` so PASS lines stay out of the journal; FAIL lines and
+  the final summary always print.
+- **Timer**: `ogamex-verify-tenant.timer` — first fire `OnBootSec=5min`,
+  then `OnUnitActiveSec=30min`. `Persistent=true` so a missed fire
+  during downtime catches up on next boot.
+- Exit-code semantics: `0` pass, `1` at least one FAIL, `2` ssh target
+  unreachable (sanity gate; treated as success by `SuccessExitStatus=2`
+  so cron noise is suppressed during europa reboot windows).
+
+### Installation (one-time, per host)
+
+```
+scp packages/openclaw-plugin/scripts/verify-tenant-isolation.mjs \
+    ddxs@europa:~/.openclaw/workspace/ogamex/scripts/
+scp packages/openclaw-plugin/scripts/systemd/ogamex-verify-tenant.{service,timer} \
+    ddxs@europa:~/.config/systemd/user/
+ssh ddxs@europa "systemctl --user daemon-reload && \
+                 systemctl --user enable --now ogamex-verify-tenant.timer"
+```
+
+Verify the timer is scheduled:
+
+```
+ssh ddxs@europa "systemctl --user list-timers | grep verify-tenant"
+```
+
+### Manual invocation
+
+From the repo root:
+
+```
+npm run verify-tenant --workspace=@ogamex/openclaw-plugin
+```
+
+Or directly: `node packages/openclaw-plugin/scripts/verify-tenant-isolation.mjs`.
+
+### Optional Discord FAIL alerts
+
+Drop a single line into
+`~/.openclaw/workspace/ogamex/verify-tenant.env` (file is optional —
+the unit's `EnvironmentFile=-…` prefix tolerates absence):
+
+```
+VERIFY_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/…
+```
+
+On any FAIL, the script POSTs a one-line summary
+(`🚨 ogamex tenant-isolation FAIL — N/M checks passed at <iso>. Failed: <names>.`)
+to that webhook. Fire-and-forget — webhook errors do NOT mask the script's
+exit code; failures are logged to stderr.
+
+### Overriding tenant uids / names
+
+Same EnvironmentFile pattern. All defaults match the operator's
+europa setup, but any can be overridden:
+
+- `VERIFY_ICARUS_UID`, `VERIFY_ICARUS_NAME`
+- `VERIFY_CETI_UID`, `VERIFY_CETI_NAME`
+- `SSH_TARGET` (default `ddxs@localhost` when running from the service
+  unit on europa; `ddxs@europa` when running from a dev workstation)
+
+### Logs
+
+```
+journalctl --user -u ogamex-verify-tenant.service --no-pager | tail -20
+```
+
+Healthy line:
+
+```
+ogamex-verify-tenant[…]: tenant-isolation: 5/5 checks passed
+```
+
+Run once on demand:
+
+```
+systemctl --user start ogamex-verify-tenant.service
+```
+
+## 9. Glossary
 
 - **ALS** — `AsyncLocalStorage`, Node's `async_hooks`-based per-request
   context store. Propagates through await chains and timers.
@@ -233,7 +323,7 @@ if (fireFor(fid) === "fired") {
 - **TenantRegistry** — the `Map<uid, TenantContext>` container with
   lazy-mint, iteration, and persistence helpers.
 
-## 9. Links
+## 10. Links
 
 - Sprint 1 (v0.0.860): `1fc51ca` — TenantContext registry + 3-Map pilot
   migration.
@@ -246,6 +336,11 @@ if (fireFor(fid) === "fired") {
   `packages/runtime-userscript/scripts/`.
 - Sprint 4 (v0.0.864 docs): **this file** + runtime verifier
   `packages/openclaw-plugin/scripts/verify-tenant-isolation.mjs`.
+- Sprint 5 (v0.0.864-ci): CI-friendly verifier (env-configurable
+  uids, `--quiet`, ssh sanity gate, optional Discord webhook),
+  `npm run verify-tenant`, and the europa user-systemd timer pair
+  (`packages/openclaw-plugin/scripts/systemd/ogamex-verify-tenant.{service,timer}`).
+  See §8.
 - Operator memory note: `feedback_cross_tenant_globals.md` in
   `~/.claude/projects/-home-ddxs-Sync-Works-ogamex/memory/` (not
   checked into git; private to operator's Claude memory).

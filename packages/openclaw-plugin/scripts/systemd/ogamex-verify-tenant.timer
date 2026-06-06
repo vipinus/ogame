@@ -1,0 +1,16 @@
+# ogamex-verify-tenant.timer — schedule for tenant-isolation verifier
+#
+# Pairs with ogamex-verify-tenant.service.
+# See docs/architecture/multi-tenant.md §8 for the full story.
+
+[Unit]
+Description=ogamex tenant-isolation verifier (every 30 min)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Persistent=true
+Unit=ogamex-verify-tenant.service
+
+[Install]
+WantedBy=timers.target

@@ -46,25 +46,28 @@
  */
 
 import { execSync } from "node:child_process";
-import { argv, exit, stdout } from "node:process";
+import { argv, exit, stdout, stderr, env } from "node:process";
 
 // ---------------------------------------------------------------------------
-// Constants — adjust here if tenant uids change
+// Constants — adjust via env vars if tenant uids / names differ from defaults
 // ---------------------------------------------------------------------------
 
-const ICARUS_UID = "4baba0e2-17ab-4275-a8eb-d642ba8d969f";
-const ICARUS_EXPECTED_NAME = "Commander Icarus";
+const ICARUS_UID = env.VERIFY_ICARUS_UID || "4baba0e2-17ab-4275-a8eb-d642ba8d969f";
+const ICARUS_EXPECTED_NAME = env.VERIFY_ICARUS_NAME || "Commander Icarus";
 
-const CETI_UID = "eb990432-7e6d-43b1-91d8-93b951729e87";
-const CETI_EXPECTED_NAME = "Commodore Ceti";
+const CETI_UID = env.VERIFY_CETI_UID || "eb990432-7e6d-43b1-91d8-93b951729e87";
+const CETI_EXPECTED_NAME = env.VERIFY_CETI_NAME || "Commodore Ceti";
 const CETI_MAX_PLANETS = 5;
 
-const SSH_TARGET = "ddxs@europa";
+const SSH_TARGET = env.SSH_TARGET || "ddxs@europa";
 const PG_CMD = `PGPASSWORD=ogamex psql -h 127.0.0.1 -U ogamex -d ogamex -At -F '|'`;
 // v0.0.862 follow-up — real expedition state files live under runtime/,
 // not the workspace root. Filenames use the 8-char uid prefix (see
 // expedition.ts:templatePathForUid + http_server.ts:expeditionStateFileForUid).
 const WORKSPACE_DIR = "~/.openclaw/workspace/ogamex/runtime";
+
+// Optional Discord webhook for FAIL alerts. Leave unset to disable.
+const DISCORD_WEBHOOK_URL = env.VERIFY_DISCORD_WEBHOOK_URL || "";
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -74,6 +77,8 @@ if (argv.includes("--help") || argv.includes("-h")) {
   printHelp();
   exit(0);
 }
+
+const QUIET = argv.includes("--quiet") || argv.includes("-q");
 
 // ---------------------------------------------------------------------------
 // Output helpers
@@ -91,11 +96,13 @@ const results = [];
 
 function pass(name, detail) {
   results.push({ name, ok: true, detail });
+  if (QUIET) return;
   console.log(`${C.green("[PASS]")} ${name}${detail ? ` — ${C.dim(detail)}` : ""}`);
 }
 
 function fail(name, detail) {
   results.push({ name, ok: false, detail });
+  // FAIL lines always print, even in --quiet (cron needs the signal).
   console.log(`${C.red("[FAIL]")} ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
@@ -266,12 +273,61 @@ function checkJournalErrors() {
 // Main
 // ---------------------------------------------------------------------------
 
-function main() {
-  console.log(C.bold("tenant-isolation verifier"));
-  console.log(C.dim(`  ssh target: ${SSH_TARGET}`));
-  console.log(C.dim(`  tenants:    icarus=${ICARUS_UID}`));
-  console.log(C.dim(`              ceti=${CETI_UID}`));
-  console.log("");
+// ---------------------------------------------------------------------------
+// Sanity gate — refuse to run if ssh target unreachable. Avoids cron spam
+// during europa reboot windows (5 ssh-error FAILs back-to-back).
+// ---------------------------------------------------------------------------
+
+function sanityGateSshReachable() {
+  try {
+    execSync(
+      `ssh -o BatchMode=yes -o ConnectTimeout=3 ${SSH_TARGET} true`,
+      { stdio: ["ignore", "ignore", "pipe"], timeout: 5000 },
+    );
+    return true;
+  } catch (e) {
+    stderr.write(`[ERROR] ${SSH_TARGET} unreachable — abort\n`);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Discord webhook alert (optional, fire-and-forget)
+// ---------------------------------------------------------------------------
+
+async function postFailureWebhook(passed, total, failedNames) {
+  if (!DISCORD_WEBHOOK_URL) return;
+  const ts = new Date().toISOString();
+  const body = {
+    content: `🚨 ogamex tenant-isolation FAIL — ${passed}/${total} checks passed at ${ts}. Failed: ${failedNames.join(", ")}.`,
+  };
+  try {
+    const resp = await fetch(DISCORD_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    // Discord returns 204; httpbin returns 200. Don't enforce — just log.
+    if (!resp.ok) {
+      stderr.write(`webhook post non-2xx: ${resp.status} ${resp.statusText}\n`);
+    }
+  } catch (err) {
+    stderr.write(`webhook post failed: ${err?.message || err}\n`);
+  }
+}
+
+async function main() {
+  if (!sanityGateSshReachable()) {
+    exit(2);
+  }
+
+  if (!QUIET) {
+    console.log(C.bold("tenant-isolation verifier"));
+    console.log(C.dim(`  ssh target: ${SSH_TARGET}`));
+    console.log(C.dim(`  tenants:    icarus=${ICARUS_UID}`));
+    console.log(C.dim(`              ceti=${CETI_UID}`));
+    console.log("");
+  }
 
   checkPgRowIdentity();
   checkPlanetCountSanity();
@@ -279,15 +335,18 @@ function main() {
   checkDiscordWebhooks();
   checkJournalErrors();
 
-  console.log("");
+  if (!QUIET) console.log("");
   const passed = results.filter((r) => r.ok).length;
   const total = results.length;
+  const failed = results.filter((r) => !r.ok);
   const summary = `tenant-isolation: ${passed}/${total} checks passed`;
   if (passed === total) {
     console.log(C.green(C.bold(summary)));
     exit(0);
   } else {
     console.log(C.red(C.bold(summary)));
+    // Fire-and-forget webhook; never mask the exit code.
+    await postFailureWebhook(passed, total, failed.map((r) => r.name));
     exit(1);
   }
 }
@@ -296,13 +355,34 @@ function printHelp() {
   console.log(`verify-tenant-isolation.mjs — runtime sidecar isolation smoke verifier
 
 USAGE
-  node packages/openclaw-plugin/scripts/verify-tenant-isolation.mjs
+  node packages/openclaw-plugin/scripts/verify-tenant-isolation.mjs [--quiet]
   node packages/openclaw-plugin/scripts/verify-tenant-isolation.mjs --help
+
+FLAGS
+  --quiet, -q    Suppress per-check PASS lines and the header. Only the
+                 final summary line plus any FAIL lines are printed. Use
+                 from cron / systemd timer to keep the journal clean.
+  --help, -h     Show this help.
+
+ENV VARS (all optional; defaults match the operator's europa setup)
+  VERIFY_ICARUS_UID            override Icarus tenant uid (default:
+                               4baba0e2-17ab-4275-a8eb-d642ba8d969f)
+  VERIFY_ICARUS_NAME           override expected Icarus player.name
+                               (default: "Commander Icarus")
+  VERIFY_CETI_UID              override Ceti tenant uid (default:
+                               eb990432-7e6d-43b1-91d8-93b951729e87)
+  VERIFY_CETI_NAME             override expected Ceti player.name
+                               (default: "Commodore Ceti")
+  SSH_TARGET                   override ssh user@host (default: ddxs@europa)
+  VERIFY_DISCORD_WEBHOOK_URL   if set, POST a one-line FAIL summary to
+                               this Discord-compatible webhook when any
+                               check fails. Fire-and-forget; does NOT
+                               mask the exit code on webhook error.
 
 WHAT IT DOES
   Connects to europa via ssh and asserts the per-tenant invariants
   documented in docs/architecture/multi-tenant.md. Exits 0 on full pass,
-  1 on any fail.
+  1 on any fail, 2 if the ssh target is unreachable (sanity gate).
 
 CHECKS
   1. pg-row-identity            — Icarus / Ceti universe rows have the right
@@ -328,6 +408,7 @@ REQUIREMENTS
 EXIT
   0 — all checks passed
   1 — at least one [FAIL] line; see output for details
+  2 — ssh target unreachable (sanity gate; safe-no-op for cron)
 `);
 }
 

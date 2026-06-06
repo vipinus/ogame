@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --root .",
     "plugin:build": "openclaw plugins build --entry ./dist/index.js",
-    "plugin:validate": "openclaw plugins validate ."
+    "plugin:validate": "openclaw plugins validate .",
+    "verify-tenant": "node scripts/verify-tenant-isolation.mjs"
   },
   "dependencies": {
     "@ogamex/shared": "workspace:*",

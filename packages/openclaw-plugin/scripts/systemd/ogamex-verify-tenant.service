@@ -1,0 +1,42 @@
+# ogamex-verify-tenant.service — runtime cross-tenant isolation verifier
+#
+# Pairs with ogamex-verify-tenant.timer (OnUnitActiveSec=30min).
+# See docs/architecture/multi-tenant.md §8 for the full story.
+#
+# Install:
+#   scp packages/openclaw-plugin/scripts/systemd/ogamex-verify-tenant.{service,timer} \
+#       ddxs@europa:~/.config/systemd/user/
+#   ssh ddxs@europa "systemctl --user daemon-reload && \
+#                    systemctl --user enable --now ogamex-verify-tenant.timer"
+#
+# Logs:    journalctl --user -u ogamex-verify-tenant.service --no-pager
+# Run now: systemctl --user start ogamex-verify-tenant.service
+# Status:  systemctl --user list-timers | grep verify-tenant
+#
+# To enable Discord FAIL alerts, drop VERIFY_DISCORD_WEBHOOK_URL=... into
+# ~/.openclaw/workspace/ogamex/verify-tenant.env (the EnvironmentFile is
+# optional — leading '-' means "ignore if missing").
+
+[Unit]
+Description=ogamex tenant-isolation verifier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /home/ddxs/.openclaw/workspace/ogamex/scripts/verify-tenant-isolation.mjs --quiet
+EnvironmentFile=-/home/ddxs/.openclaw/workspace/ogamex/verify-tenant.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Default to ssh-to-self via localhost; the unit runs ON europa, so the
+# "ddxs@europa" hostname (Tailscale) isn't always resolvable from inside.
+# Override via EnvironmentFile if you ever run this unit from elsewhere.
+Environment=SSH_TARGET=ddxs@localhost
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ogamex-verify-tenant
+# Exit 2 = ssh sanity-gate (europa unreachable). Treat as success so the
+# timer's next tick still runs; cron noise prevention.
+SuccessExitStatus=2
+
+[Install]
+WantedBy=default.target
