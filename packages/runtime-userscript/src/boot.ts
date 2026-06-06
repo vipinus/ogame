@@ -340,26 +340,68 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (/characterClassDiscoverer\b/.test(html)) return "discoverer";
       if (/characterClassCollector\b/.test(html)) return "collector";
       if (/characterClassGeneral\b/.test(html)) return "general";
-      // v0.0.851 — operator 2026-06-06 "没有抓到切换种族的事件 / 新账号远征
-      // 加成没有". 新账号停留在 characterclassselection 页时, 顶栏没渲染
-      // characterClass* CSS (那是 in-game header 才有). 但 selection 页里
-      // 当前激活类用 "active" / "btn_deactivate" 标志位区分 inactive.
-      // 查 DOM: a.btn_deactivate 节点祖先里有 collector/general/discoverer 关键词.
-      try {
-        const deactivate = env.doc.querySelector('a.btn_deactivate, button.btn_deactivate, .btn_deactivate, [data-action="deactivateClass"], [data-action="deactivate"]');
-        if (deactivate) {
-          const ctx = (deactivate.closest('[class*="character"], [class*="Character"], [class*="lass"]')?.outerHTML ?? deactivate.outerHTML).toLowerCase();
-          if (ctx.includes("discoverer") || ctx.includes("explorer")) return "discoverer";
-          if (ctx.includes("collector")) return "collector";
-          if (ctx.includes("general")) return "general";
+      // v0.0.853 — operator 2026-06-06 "新账号的远征种族加成没有" — characterclass
+      // selection 页 (lobby + ingame premium 都可能) 顶栏没渲染 characterClass*
+      // CSS. v0.0.851 猜 `a.btn_deactivate` selector 没命中 (v12 用别的 selector).
+      // 换 TEXT-PROXIMITY: 整页 HTML 里搜 "Deactivate" / "停用" / "Deaktivieren"
+      // 等本地化激活态文本; 命中后取上下文 1500 chars 看 class 关键词. 失败时
+      // 把上下文打 console.warn 让 owner 直接 paste, 不再靠瞎猜.
+      const deactivateRe = /\b(?:Deactivate|停用|停止使用|去除|Deaktivieren|D[ée]sactiver|Disattiva|Desactivar)\b/i;
+      const dm = deactivateRe.exec(html);
+      if (dm) {
+        const idx = dm.index;
+        const lo = Math.max(0, idx - 1500);
+        const hi = Math.min(html.length, idx + 1500);
+        const ctx = html.slice(lo, hi).toLowerCase();
+        // Exclude DM-cost prompts (inactive classes show "Buy for 500,000 DM").
+        // Active class context has Deactivate; we already filtered, but add
+        // sanity: prefer the class name closest to Deactivate (smallest delta).
+        const candidates: Array<{ cls: "discoverer" | "collector" | "general"; idx: number }> = [];
+        for (const cls of ["discoverer", "collector", "general"] as const) {
+          const r = new RegExp(`\\b${cls}\\b`, "gi");
+          let m: RegExpExecArray | null;
+          while ((m = r.exec(ctx)) !== null) candidates.push({ cls, idx: m.index });
         }
-      } catch { /* swallow */ }
-      // Last resort — playerClass cookie / data-attr.
+        if (candidates.length > 0) {
+          const target = ctx.length / 2; // Deactivate is roughly centered in ctx
+          candidates.sort((a, b) => Math.abs(a.idx - target) - Math.abs(b.idx - target));
+          return candidates[0]!.cls;
+        }
+        console.warn(`[OgameX/class] Deactivate found but no class keyword in window. ctx=`, ctx.slice(0, 600));
+      }
+      // Fallback CSS selectors — guess set, will dump if all miss.
+      try {
+        const cand = env.doc.querySelector('[class*="deactivate" i], [class*="active" i][class*="discoverer" i], [class*="active" i][class*="collector" i], [class*="active" i][class*="general" i]');
+        if (cand) {
+          const txt = cand.outerHTML.toLowerCase();
+          if (txt.includes("discoverer") || txt.includes("explorer")) return "discoverer";
+          if (txt.includes("collector")) return "collector";
+          if (txt.includes("general")) return "general";
+        }
+      } catch { /* */ }
+      // Last resort — data attrs.
       try {
         const root = env.doc.documentElement;
         const dataCls = root.getAttribute("data-player-class") ?? root.getAttribute("data-character-class") ?? "";
         const v = dataCls.toLowerCase();
         if (v === "discoverer" || v === "collector" || v === "general") return v;
+      } catch { /* */ }
+      // Diagnostic: when ALL paths miss, dump a fingerprint so we can iterate
+      // with concrete evidence next time instead of guessing CSS selectors.
+      try {
+        const dataCharClassMatches = html.match(/data-[a-z-]*class[a-z-]*="[^"]*"/gi) ?? [];
+        const characterClassMatches = html.match(/character[A-Z]?Class[A-Za-z]*/g) ?? [];
+        const classWordOccurrences: Record<string, number> = {};
+        for (const w of ["Discoverer", "Collector", "General", "Pathfinder", "Reaper", "Crawler"]) {
+          const r = new RegExp(`\\b${w}\\b`, "g");
+          classWordOccurrences[w] = (html.match(r) ?? []).length;
+        }
+        console.warn(`[OgameX/class] detection MISS — fingerprint:`, {
+          deactivate_found: !!dm,
+          dataclass: dataCharClassMatches.slice(0, 5),
+          characterclass: [...new Set(characterClassMatches)].slice(0, 8),
+          word_counts: classWordOccurrences,
+        });
       } catch { /* */ }
       return "unknown";
     } catch { return "unknown"; }
@@ -1358,7 +1400,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.852";
+  const USERSCRIPT_VERSION = "0.0.853";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
