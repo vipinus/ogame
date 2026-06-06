@@ -154,7 +154,13 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
   const lifeformResearch: Record<string, number> = {};
   // Detect species from lifeform tech ID prefix:
   //   111xx = humans  121xx = rocktal  131xx = mechas  141xx = kaelesh
+  // v0.0.851 — operator 2026-06-06 "没有抓到切换种族的事件 / 新账号的远征种族
+  // 加成没有". 老逻辑要求 lvl > 0 才认定 species, 新账号 0 lifeform building
+  // 永远拿不到 species → expedition planner / panel 看不到加成. lfbuildings 页
+  // 渲染的就是 current species 的整套 (即便 L0), 所以 prefix 数最多的就是当前
+  // species. 用 majority-vote 避免单条残留 (跨种族切换后 stale entry) 误判.
   let detectedSpecies: string | null = null;
+  const speciesVote: Record<string, number> = { humans: 0, rocktal: 0, mechas: 0, kaelesh: 0 };
   // Detect current page from <meta name=ogame-version>/<body> isn't reliable —
   // use the global `currentPage` var ogame sets (read via doc.defaultView).
   const docPage = (doc.defaultView as { currentPage?: string } | null)?.currentPage
@@ -166,14 +172,13 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
     const techId = TECH_ID_BY_NAME[id];
     if (techId !== undefined && idKind(techId) === "lifeform_building") {
       lifeformBuildings[id] = lvl;
-      if (lvl > 0 && detectedSpecies === null) {
-        const prefix = Math.floor(techId / 1000);
-        detectedSpecies = prefix === 11 ? "humans"
-          : prefix === 12 ? "rocktal"
-          : prefix === 13 ? "mechas"
-          : prefix === 14 ? "kaelesh"
-          : null;
-      }
+      const prefix = Math.floor(techId / 1000);
+      const sp = prefix === 11 ? "humans"
+        : prefix === 12 ? "rocktal"
+        : prefix === 13 ? "mechas"
+        : prefix === 14 ? "kaelesh"
+        : null;
+      if (sp) speciesVote[sp] += 1;
       continue;
     }
     if (techId !== undefined && idKind(techId) === "lifeform_research") {
@@ -191,6 +196,16 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
     if (entry.kind === "building") buildings[id] = lvl;
     else if (entry.kind === "research") research[id] = lvl;
   }
+  // v0.0.851 — majority vote: lfbuildings 页只渲染 current species 的整套, 票数
+  // 第一位即当前种族 (含 L0). 非 lfbuildings 页时 vote 可能混入跨页残留, 仅在
+  // 票数 >= 2 才相信, 避免单条 stale entry 误判. lfbuildings 页放宽到 >= 1.
+  const voteThreshold = isLfBuildingsPage ? 1 : 2;
+  let topSpecies: string | null = null;
+  let topCount = 0;
+  for (const [sp, n] of Object.entries(speciesVote)) {
+    if (n > topCount) { topSpecies = sp; topCount = n; }
+  }
+  if (topSpecies && topCount >= voteThreshold) detectedSpecies = topSpecies;
   const cur = store.state;
   const patch: Partial<typeof cur> = {};
   // Merge buildings into the currently-active planet, identified by
@@ -325,6 +340,27 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (/characterClassDiscoverer\b/.test(html)) return "discoverer";
       if (/characterClassCollector\b/.test(html)) return "collector";
       if (/characterClassGeneral\b/.test(html)) return "general";
+      // v0.0.851 — operator 2026-06-06 "没有抓到切换种族的事件 / 新账号远征
+      // 加成没有". 新账号停留在 characterclassselection 页时, 顶栏没渲染
+      // characterClass* CSS (那是 in-game header 才有). 但 selection 页里
+      // 当前激活类用 "active" / "btn_deactivate" 标志位区分 inactive.
+      // 查 DOM: a.btn_deactivate 节点祖先里有 collector/general/discoverer 关键词.
+      try {
+        const deactivate = env.doc.querySelector('a.btn_deactivate, button.btn_deactivate, .btn_deactivate, [data-action="deactivateClass"], [data-action="deactivate"]');
+        if (deactivate) {
+          const ctx = (deactivate.closest('[class*="character"], [class*="Character"], [class*="lass"]')?.outerHTML ?? deactivate.outerHTML).toLowerCase();
+          if (ctx.includes("discoverer") || ctx.includes("explorer")) return "discoverer";
+          if (ctx.includes("collector")) return "collector";
+          if (ctx.includes("general")) return "general";
+        }
+      } catch { /* swallow */ }
+      // Last resort — playerClass cookie / data-attr.
+      try {
+        const root = env.doc.documentElement;
+        const dataCls = root.getAttribute("data-player-class") ?? root.getAttribute("data-character-class") ?? "";
+        const v = dataCls.toLowerCase();
+        if (v === "discoverer" || v === "collector" || v === "general") return v;
+      } catch { /* */ }
       return "unknown";
     } catch { return "unknown"; }
   }
@@ -1277,7 +1313,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.850";
+  const USERSCRIPT_VERSION = "0.0.851";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2747,19 +2783,20 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }
         // Detect species from lifeform tech ID prefix:
         //   111xx = humans  121xx = rocktal  131xx = mechas  141xx = kaelesh
+        // v0.0.851 — majority vote on prefix (含 L0). 见 boot.ts L155 同款 fix.
         let detectedSpecies: string | null = null;
+        const speciesVote2: Record<string, number> = { humans: 0, rocktal: 0, mechas: 0, kaelesh: 0 };
         for (const [id, lvl] of Object.entries(techMap)) {
           const techId = TECH_ID_BY_NAME[id];
           if (techId !== undefined && idKind(techId) === "lifeform_building") {
             lifeform_buildings[id] = lvl;
-            if (lvl > 0 && detectedSpecies === null) {
-              const prefix = Math.floor(techId / 1000);
-              detectedSpecies = prefix === 11 ? "humans"
-                : prefix === 12 ? "rocktal"
-                : prefix === 13 ? "mechas"
-                : prefix === 14 ? "kaelesh"
-                : null;
-            }
+            const prefix = Math.floor(techId / 1000);
+            const sp = prefix === 11 ? "humans"
+              : prefix === 12 ? "rocktal"
+              : prefix === 13 ? "mechas"
+              : prefix === 14 ? "kaelesh"
+              : null;
+            if (sp) speciesVote2[sp] += 1;
             continue;
           }
           // v0.0.605 — operator 2026-06-01 "每個星球對應的生命形式科技也是
