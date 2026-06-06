@@ -2635,6 +2635,34 @@ export async function startSidecar(
         const uid = mergerUid || resolvedUid;
         await pgStore!.upsertGoal(uid, row);
       });
+      // v0.0.806 — operator 2026-06-05 "出发月球的 cd 没有 目的也应该没有
+      // 数据库里的是我刷的". JG goal mark completed (无论 ack-driven 还是
+      // v0.0.805 self-detect auto_complete) 时, 同步本地 mirror 双月球
+      // jumpgate_cooldown_sec + jumpgate_harvested_at, 不靠 userscript
+      // overlay 手动 fetch. ogame v12 JG cd ≈ 60min base (受 hyperspaceTech
+      // 影响), 兜底用 3600s; userscript pollEmpire 拿到真值后会 overwrite.
+      if (row.status === "completed" && row.goal.type === "jumpgate") {
+        const tgt = row.goal.target as { source_moon?: string; target_moon?: string; ships?: unknown };
+        const uid = mergerUid;
+        if (uid && (tgt.source_moon || tgt.target_moon)) {
+          const us = userStates.get(uid);
+          if (us) {
+            const planetsMap = us.planets ?? {};
+            const nowMs = Date.now();
+            const fallbackCd = 3600;
+            const markCd = (moonId: string | undefined): void => {
+              if (!moonId) return;
+              const p = planetsMap[moonId] as { jumpgate_cooldown_sec?: number; jumpgate_harvested_at?: number } | undefined;
+              if (!p) return;
+              p.jumpgate_cooldown_sec = fallbackCd;
+              p.jumpgate_harvested_at = nowMs;
+            };
+            markCd(tgt.source_moon);
+            markCd(tgt.target_moon);
+            console.info(`[jg/cd-mirror] uid=${uid.slice(0,8)} mirrored cd=${fallbackCd}s on src=${tgt.source_moon} tgt=${tgt.target_moon} after auto-complete`);
+          }
+        }
+      }
     },
     // Phase 7a — PG primary reader. SQLite reads survived in dist purely as
     // a fallback when DATABASE_URL is unset; if pgStore boots OK, the merger
