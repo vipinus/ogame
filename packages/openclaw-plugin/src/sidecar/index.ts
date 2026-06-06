@@ -443,16 +443,30 @@ export async function startSidecar(
   const lastSeen: { at: number | null } = { at: null };
   const sidecarStartedAt = Date.now();
 
+  // v0.0.860 (Sprint 1) + v0.0.861 (Sprint 2) — per-uid TenantContext
+  // registry. Owns per-tenant Maps that used to be module-level globals
+  // keyed by directive/fleet/goal id with cross-tenant overlap. See
+  // tenant_context.ts for the full field list + persistence notes.
+  // Declared early so the M8.1 healthReporter + state.snapshot handler +
+  // CRUD / provider closures can all close over it.
+  const tenantRegistry = new TenantRegistry();
+
   // Phase 9c.1 — per-user WorldState mirror. state.snapshot handler routes
   // by ALS user_id when present; PriorityMerger / SaveCoord / FailureAgg
   // still operate on the legacy single-tenant stateRef (9c.2/3 will lift
   // those). Read paths (/v1/state with Bearer, /api/me/state in Next.js
   // via Drizzle) already prefer the per-user partition.
-  const userStates = new Map<string, WorldState>();
-  const userLastSeen = new Map<string, number>();
+  //
+  // v0.0.861 — Sprint 2: userStates / userLastSeen retired in favor of
+  // tenantRegistry.get(uid).worldState / .lastSeenAt. Same semantics, just
+  // owned by the per-uid TenantContext bucket. Same applies to the
+  // per-uid debounce slots (worldStatePersist) below.
   /** Lookup a user's latest snapshot, falling back to operator legacy. */
   const getUserState = (userId: string | undefined): WorldState | null => {
-    if (userId && userStates.has(userId)) return userStates.get(userId) ?? null;
+    if (userId) {
+      const ws = tenantRegistry.get(userId).worldState;
+      if (ws) return ws;
+    }
     return stateRef.current;
   };
   void getUserState; // re-export later as we wire read paths
@@ -510,16 +524,18 @@ export async function startSidecar(
   // user A 的 PG row 写成 user B 的 snap (cross-tenant 污染). 顶层修法: per-uid
   // debounce 状态, schedule 时 capture uid + snapshot, fire 时读 captured value
   // 不再读 global.
-  const perUidWriteTimer = new Map<string, NodeJS.Timeout>();
-  const perUidPendingSnap = new Map<string, WorldState>();
+  // v0.0.861 — Sprint 2: per-uid timer + pending live inside TenantContext
+  // (tenantRegistry.get(uid).worldStatePersist). Algorithm unchanged —
+  // we just stopped keeping two parallel Map<uid,…> globals.
   const scheduleWorldStatePersist = (snap: WorldState, uid: string): void => {
     if (!uid) return; // legacy / no-uid: skip persist (matches pre-857 silent path)
-    perUidPendingSnap.set(uid, snap);
-    if (perUidWriteTimer.has(uid)) return;
-    const t = setTimeout(() => {
-      perUidWriteTimer.delete(uid);
-      const pending = perUidPendingSnap.get(uid);
-      perUidPendingSnap.delete(uid);
+    const slot = tenantRegistry.get(uid).worldStatePersist;
+    slot.pending = snap;
+    if (slot.timer) return;
+    slot.timer = setTimeout(() => {
+      slot.timer = null;
+      const pending = slot.pending;
+      slot.pending = null;
       if (!pending) return;
       // v0.0.725 — Phase 6b (task #163, operator 2026-06-03 "sqlite 马上要
       // 放弃了 用PG"): PG-only primary write for world_state. SQLite write
@@ -530,14 +546,10 @@ export async function startSidecar(
         console.warn(`[ogamex/sidecar/pg] upsertWorldState failed (uid=${uid.slice(0,8)}…):`, e instanceof Error ? e.message : e);
       });
     }, WORLD_STATE_DEBOUNCE_MS);
-    perUidWriteTimer.set(uid, t);
   };
   const flushWorldStatePersist = (): void => {
     // Shutdown / explicit flush — drain every per-uid pending snap immediately.
-    for (const [uid, t] of perUidWriteTimer) clearTimeout(t);
-    const drains = Array.from(perUidPendingSnap.entries());
-    perUidWriteTimer.clear();
-    perUidPendingSnap.clear();
+    const drains = tenantRegistry.drainWorldStatePersist();
     if (!pgStore) return;
     for (const [uid, snap] of drains) {
       void pgStore.upsertWorldState(uid, snap).catch((e) => {
@@ -595,22 +607,12 @@ export async function startSidecar(
   // ref so closures stay typesafe; assigned at line ~1055 just after
   // `new PriorityMerger(...)`.
   let priorityMergerRef: PriorityMerger | null = null;
-  // v0.0.860 — Sprint 1 of multi-tenant cleanup: per-uid state held in
-  // TenantRegistry (tenant_context.ts) instead of module-level Maps keyed
-  // by id. Pilot scope = expLastSeen / firedDebrisCheckFor / directiveToGoal.
-  // v0.0.857 used `${uid}::${fid}` prefixed keys on the global Map; that
-  // worked but left the storage shape brittle. Now each uid gets a real
-  // private Map; the on-disk persist file stays in the v0.0.857 shape for
-  // backward compat (serialize/hydrate translate prefix↔registry).
-  //
-  // Per-context fields (see tenant_context.ts for full docs):
-  //   - expLastSeen          : Map<fleetId, { origin, dest, arrival_at, return_at }>
-  //   - firedDebrisCheckFor  : Map<fleetId, Set<"B"|"C">>
-  //   - directiveToGoal      : Map<directiveId, goalId>
-  //
-  // Legacy operator (no Bearer / no ALS uid) → EMPTY_LEGACY_UID bucket,
-  // preserves single-tenant behavior.
-  const tenantRegistry = new TenantRegistry();
+  // v0.0.860 (Sprint 1) + v0.0.861 (Sprint 2) — tenantRegistry now
+  // constructed earlier (above the WorldState mirror block) so the M8.1
+  // healthReporter + per-user state lookups can close over it. See
+  // tenant_context.ts for the per-context field list. Hydrate from
+  // exp_state.json happens here so we can log + retain backward compat
+  // with v0.0.857 bare-fid keys.
   // v0.0.818 — operator 2026-06-05 "2:260:9 远征回来了没有触发自动回收".
   // sidecar restart 期间 expedition return → in-memory expLastSeen 丢 →
   // Signal B miss. 文件持久化, restart 重 load. firedDebrisCheckFor 也持久
@@ -649,7 +651,7 @@ export async function startSidecar(
     // merger → operator's 5 active expeditions queued into daigang's
     // bucket → operator's "没自动发远征".
     const uid = getCurrentUserId();
-    const userState = uid ? userStates.get(uid) : undefined;
+    const userState = uid ? (tenantRegistry.get(uid).worldState ?? undefined) : undefined;
     const state = userState ?? stateRef.current ?? emptyWorldState();
     // v0.0.669 — merger.dispatch is async (Phase 5b). Fire-and-forget
     // with .catch to keep this trigger sync (called from event handlers
@@ -687,11 +689,13 @@ export async function startSidecar(
       stateRef,
       strategyVersion: () => strategyManager.load().version,
       // Phase 9c.1 — multi-tenant snapshot observability.
+      // v0.0.861 — tenant counts come from TenantRegistry helpers now;
+      // userStates / userLastSeen Maps retired.
       multiTenantSnapshot: () => {
-        const tracked = userStates.size;
+        const tracked = tenantRegistry.trackedWorldStateCount();
         let maxAge: number | null = null;
-        if (userLastSeen.size > 0) {
-          const oldest = Math.min(...Array.from(userLastSeen.values()));
+        const oldest = tenantRegistry.oldestLastSeenAt();
+        if (oldest !== null) {
           maxAge = Math.round((Date.now() - oldest) / 1000);
         }
         return {
@@ -849,7 +853,7 @@ export async function startSidecar(
       // seeded, mirroring listGoals' fix to avoid "operator data appears
       // on daigang's first render" race.
       if (uid) {
-        const us = userStates.get(uid);
+        const us = tenantRegistry.get(uid).worldState;
         return us ?? { ok: false, reason: "no snapshot yet for user" };
       }
       return stateRef.current ?? { ok: false, reason: "no snapshot yet" };
@@ -871,11 +875,11 @@ export async function startSidecar(
       // prereq tree was rendering against whichever user most recently pushed
       // state.snapshot (typically the legacy operator on s274), so daigang's
       // s275 colonize tree showed shipyard L12 / robotics L15 — operator's
-      // levels, not daigang's. userStates is the per-tenant mirror populated
-      // by the ws.on("state.snapshot") handler. currentState mirrors the
-      // same per-user routing for every state surface (research levels,
-      // research queue) read inside listGoals.
-      const userState = explicitUid ? userStates.get(explicitUid) : undefined;
+      // levels, not daigang's. tenantRegistry holds the per-tenant mirror
+      // (worldState slot) populated by the ws.on("state.snapshot") handler.
+      // currentState mirrors the same per-user routing for every state
+      // surface (research levels, research queue) read inside listGoals.
+      const userState = explicitUid ? (tenantRegistry.get(explicitUid).worldState ?? undefined) : undefined;
       // 2026-06-05 — operator "每次第一次点开是错的, 再点就对了": when an
       // explicit uid is supplied but state mirror hasn't seeded yet (TM
       // boot race — first /v1/goals fetch beats first state.snapshot push),
@@ -1806,7 +1810,7 @@ export async function startSidecar(
     expeditionProvider: (uid?: string) => {
       // v0.0.840 — operator 2026-06-06 "新账号 TM 远征显示老账号内容": 老逻辑
       // 用 stateRef.current (主号全局), 改取 per-uid state, 没 uid 时 fallback.
-      const stateForUid: WorldState | null = uid ? (userStates.get(uid) ?? null) : (stateRef.current ?? null);
+      const stateForUid: WorldState | null = uid ? (tenantRegistry.get(uid).worldState ?? null) : (stateRef.current ?? null);
       const ready = stateForUid !== null;
       let paused = false;
       try {
@@ -1861,7 +1865,7 @@ export async function startSidecar(
     },
     emergencyProvider: (uid?: string) => {
       // v0.0.840 — per-uid: 跟 expeditionProvider 对称, 不再 stateRef.current 主号.
-      const stateForUid: WorldState | null = uid ? (userStates.get(uid) ?? null) : (stateRef.current ?? null);
+      const stateForUid: WorldState | null = uid ? (tenantRegistry.get(uid).worldState ?? null) : (stateRef.current ?? null);
       // Minimal emergency stub — surfaces hostile incoming events from
       // state.events_incoming as the panel expects. Full attack-save
       // orchestration lives userscript-side; this endpoint is just a read.
@@ -2300,7 +2304,7 @@ export async function startSidecar(
             // 真派殖民 fleet 失败) 才 cancel. operator 2026-06-05 "殖民任务
             // 又消失了" 实证: cascade 的 research:impulseDrive 因 120017
             // crystal 不够 → 整 colonize goal cancelled.
-            const failedAction = directiveToParams.get(m.directive_id)?.action;
+            const failedAction = ackTenant.directiveToParams.get(m.directive_id)?.action;
             const atomicCancelOk =
               (type === "expedition" && failedAction === "expedition") ||
               (type === "colonize"   && failedAction === "colonize") ||
@@ -2351,8 +2355,8 @@ export async function startSidecar(
                 backoffMs = 24 * 3600 * 1000;
                 backoffLabel = "backoff_24h_hardblock";
               } else {
-                const n = (goalFailureCount.get(goalId) ?? 0) + 1;
-                goalFailureCount.set(goalId, n);
+                const n = (ackTenant.goalFailureCount.get(goalId) ?? 0) + 1;
+                ackTenant.goalFailureCount.set(goalId, n);
                 const seconds = Math.min(60 * Math.pow(2, n - 1), 3600);
                 backoffMs = seconds * 1000;
                 backoffLabel = `backoff_${seconds}s`;
@@ -2362,10 +2366,10 @@ export async function startSidecar(
                 // (browser CPU 卡死).
                 try {
                   const nowMs = Date.now();
-                  const lastEmit = lastRefreshEmitAt.get(goalId) ?? 0;
+                  const lastEmit = ackTenant.lastRefreshEmitAt.get(goalId) ?? 0;
                   if (nowMs - lastEmit >= REFRESH_EMIT_COOLDOWN_MS) {
                     emitPostDirectiveRefresh(`fail-recover goal=${goalId.slice(0,12)} n=${n}`);
-                    lastRefreshEmitAt.set(goalId, nowMs);
+                    ackTenant.lastRefreshEmitAt.set(goalId, nowMs);
                     console.info(`[stale-recover] goal=${goalId.slice(0,12)} fail#${n} → data.refresh emitted`);
                   }
                 } catch (e) { console.warn(`[stale-recover] emit threw:`, e); }
@@ -2381,13 +2385,13 @@ export async function startSidecar(
                 // 锁 PARENT goal 24h 但 planner 每次 trigger 仍递归选 fusion
                 // → 派 directive → 120012 → loop. 修: 同时 mark planet×
                 // building 24h, planner.pickEnergyPrereqBuilding 看到则跳过.
-                const params = directiveToParams.get(m.directive_id);
+                const params = ackTenant.directiveToParams.get(m.directive_id);
                 if (params?.planet_id && params?.building) {
                   markFieldsFull(params.planet_id, params.building);
                   console.log(`[hard-block] markFieldsFull ${params.planet_id}:${params.building} for 24h`);
                 }
               }
-              directiveToParams.delete(m.directive_id);
+              ackTenant.directiveToParams.delete(m.directive_id);
               void isFleetPost; // kept for log/diag; treatment unified now
               // v0.0.478: also clear dispatch stamp — directive completed
               // (with failure), so stuck-recovery's "in-flight" gate releases.
@@ -2399,8 +2403,8 @@ export async function startSidecar(
             // v0.0.478: clear dispatch stamp so next leg/level can dispatch.
             priorityMergerRef?.clearDispatched(goalId);
             // v0.0.834 — success ack 清零失败计数, 下次失败从 60s 起重新算.
-            goalFailureCount.delete(goalId);
-            lastRefreshEmitAt.delete(goalId);
+            ackTenant.goalFailureCount.delete(goalId);
+            ackTenant.lastRefreshEmitAt.delete(goalId);
             // ATOMIC actions (expedition / colonize / deploy / transport):
             // ApiExec's success means the fleet launched. Goal is terminal —
             // mark completed immediately. Without this, expedition goals
@@ -2429,7 +2433,7 @@ export async function startSidecar(
             // success means "shipyard L1 built", not "colonize done". Operator
             // 2026-06-05 "还没造殖民船怎么可能完成" 实证 colonize 被 cascade
             // build/shipyard success 误判 completed (没有新 planet 没有 colonyShip).
-            const actionDone = directiveToParams.get(m.directive_id)?.action;
+            const actionDone = ackTenant.directiveToParams.get(m.directive_id)?.action;
             const atomicTypeOk =
               (type === "expedition" && actionDone === "expedition") ||
               (type === "colonize"   && actionDone === "colonize") ||
@@ -2455,7 +2459,7 @@ export async function startSidecar(
               const ships = tgt.ships ?? {};
               const srcId = tgt.source_moon;
               const dstId = tgt.target_moon;
-              const us = userStates.get(lookupUid2);
+              const us = tenantRegistry.get(lookupUid2).worldState;
               if (us && Object.keys(ships).length > 0) {
                 const planetsMap = us.planets ?? {};
                 if (srcId && planetsMap[srcId]) {
@@ -2481,8 +2485,8 @@ export async function startSidecar(
             if (type === "species_discovery" && row) {
               const tgt = row.goal.target as { galaxy?: number; system?: number; position?: number; completed?: string[]; range?: number };
               const completed = Array.isArray(tgt.completed) ? [...tgt.completed] : [];
-              const lastDispatched = directiveToDiscoverCoord.get(m.directive_id);
-              directiveToDiscoverCoord.delete(m.directive_id);
+              const lastDispatched = ackTenant.directiveToDiscoverCoord.get(m.directive_id);
+              ackTenant.directiveToDiscoverCoord.delete(m.directive_id);
 
               // Operator 2026-05-27 "pending it dont drop": frontend ack
               // skipped:"slot_full" means ApiExec hit slot gate AFTER
@@ -2685,7 +2689,9 @@ export async function startSidecar(
           if (d.action !== undefined) entry.action = d.action;
           if (d.params?.building !== undefined) entry.building = d.params.building;
           if (d.params?.planet_id !== undefined) entry.planet_id = d.params.planet_id;
-          directiveToParams.set(d.id, entry);
+          // v0.0.861 — directiveToParams lives per-uid in TenantContext.
+          // dispTenant captured above from dispCtxUid = getCurrentUserId().
+          dispTenant.directiveToParams.set(d.id, entry);
         }
         // species_discovery: stash dispatched coord by directive_id (NOT on
         // the goal row — goalsStore.list returns SQL copies, mutations
@@ -2698,7 +2704,9 @@ export async function startSidecar(
         // counts as attempted (cooldown reset is 7d anyway).
         if (d.action === "discover" && d.goal_id && d.params) {
           const coord = `${d.params.galaxy}:${d.params.system}:${d.params.position}`;
-          directiveToDiscoverCoord.set(d.id, coord);
+          // v0.0.861 — directiveToDiscoverCoord lives per-uid; same
+          // dispTenant capture as directiveToParams above.
+          dispTenant.directiveToDiscoverCoord.set(d.id, coord);
           // Phase 7c.5.c — PG primary discovery optimistic update. send() is
           // sync but lookup + write is fire-and-forget; the next planner
           // tick reads completed[] regardless of when it commits.
@@ -2748,7 +2756,7 @@ export async function startSidecar(
         const tgt = row.goal.target as { source_moon?: string; target_moon?: string; ships?: unknown };
         const uid = mergerUid;
         if (uid && (tgt.source_moon || tgt.target_moon)) {
-          const us = userStates.get(uid);
+          const us = tenantRegistry.get(uid).worldState;
           if (us) {
             const planetsMap = us.planets ?? {};
             const nowMs = Date.now();
@@ -2808,11 +2816,14 @@ export async function startSidecar(
   // freemium throttle: 没 active sub 时 priorityMerger 跳过整 tick. cache
   // per uid 60s (订阅状态变化频率低, 不需 5s). status IN (active, trialing) +
   // current_period_end > NOW() 是 active 判定 (cover stripe/paypal/free_code).
-  const subPauseCache = new Map<string, { paused: boolean; ts: number }>();
+  // v0.0.861 — Sprint 2: subPauseCache moved into TenantContext.subPauseCache.
+  // Key was already uid so this is a 1:1 lift — registry's per-uid bucket
+  // holds the single { paused, ts } entry instead of a global Map<uid,…>.
   priorityMerger.isSubscriptionPausedFn = (uid?: string): boolean => {
     if (!pgStore || !uid) return false;
     const now = Date.now();
-    const hit = subPauseCache.get(uid);
+    const tenantCtx = tenantRegistry.get(uid);
+    const hit = tenantCtx.subPauseCache;
     if (hit && now - hit.ts < 60_000) return hit.paused;
     try {
       void (async () => {
@@ -2820,33 +2831,26 @@ export async function startSidecar(
           const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
           const rows = await sql`SELECT 1 FROM subscriptions WHERE user_id = ${uid} AND status IN ('active','trialing') AND current_period_end > NOW() LIMIT 1`;
           const hasSub = rows.length > 0;
-          subPauseCache.set(uid, { paused: !hasSub, ts: Date.now() });
+          tenantRegistry.get(uid).subPauseCache = { paused: !hasSub, ts: Date.now() };
         } catch (e) { console.warn("[sub-pause] read threw", e); }
       })();
     } catch { /* */ }
     // cold cache → default paused=false 安全侧 (避免初次启动 lag 误锁所有)
     return hit?.paused ?? false;
   };
-  // v0.0.860 — directiveToGoal moved to TenantRegistry per-uid (see
-  // tenant_context.ts). Construct happens at L597-ish alongside the
-  // exp_state.json hydrate; this comment kept as a navigation breadcrumb.
-  // v0.0.764 — directive → params snapshot so 120012 hard-block can call
-  // markFieldsFull(planet_id, building) when the ack lands. operator
-  // 2026-06-04 "船运资源到 4:299:8 就会触发升级一次核电站" loop fix.
-  const directiveToParams = new Map<string, { action?: string; building?: string; planet_id?: string }>();
-  // v0.0.834 — operator 2026-06-06 retry 审计 exponential backoff: 累计失败
-  // 次数, backoff = min(60s * 2^(N-1), 3600s). 60→120→240→480→960→1920→3600
-  // 7 次后封顶 1h. 成功 ack 清零.
-  const goalFailureCount = new Map<string, number>();
-  // v0.0.842 — operator 2026-06-06 "这个版本变得非常卡": v0.0.835 每次 fail 立即
-  // emit data.refresh storm (userscript 全 page poll) 把 browser CPU 拉满. 节流
-  // per-goal cooldown 60s, fail#1 emit 后下次 emit 至少等 60s. 失败爆发时去掉
-  // 重复 push, browser tab 不再卡.
-  const lastRefreshEmitAt = new Map<string, number>();
+  // v0.0.860 (Sprint 1) + v0.0.861 (Sprint 2) — directiveToGoal /
+  // directiveToParams / goalFailureCount / lastRefreshEmitAt /
+  // directiveToDiscoverCoord all live inside TenantContext per-uid (see
+  // tenant_context.ts). Lookups go through tenantRegistry.get(uid).<field>.
+  // Construct happens up at startSidecar() boot alongside the exp_state.json
+  // hydrate; this comment kept as a navigation breadcrumb.
+  //
+  // Field docstrings inline in tenant_context.ts:
+  //   - directiveToParams        : v0.0.764 fields_full retro-mark + v0.0.782 action-type guard.
+  //   - goalFailureCount         : v0.0.834 exponential backoff counter (60→3600s ceiling).
+  //   - lastRefreshEmitAt        : v0.0.842 per-goal 60s data.refresh emit throttle.
+  //   - directiveToDiscoverCoord : species_discovery dispatched-coord stash for ack handler.
   const REFRESH_EMIT_COOLDOWN_MS = 60_000;
-  // species_discovery: stamp dispatched coord per directive_id (NOT on row,
-  // because goalsStore.list() returns SQL copies — mutating one is discarded).
-  const directiveToDiscoverCoord = new Map<string, string>();
 
   // --- SaveCoordinator (operator 2026-05-24 "fsm 可以放后台") ------------
   // Owns per-planet IN_FLIGHT → RECALL_READY → RECALLING bookkeeping.
@@ -2932,12 +2936,14 @@ export async function startSidecar(
     const op = getLegacyOperatorUid();
     return !uid || (op !== "" && uid === op);
   };
-  // Per-user state mirror — userStates is populated by state.snapshot
-  // handler; the manager's stateRef factory reads from it.
+  // Per-user state mirror — tenantRegistry holds the per-uid worldState
+  // slot, populated by the state.snapshot handler; the manager's stateRef
+  // factory reads from it. v0.0.861 — uid captured at mint, slot lookup
+  // via registry replaces the old userStates Map.
   const saveCoordManager = new SaveCoordinatorManager({
     buildOptionsFor: (uid) => ({
       stateRef: {
-        get current() { return userStates.get(uid) ?? null; },
+        get current() { return tenantRegistry.get(uid).worldState ?? null; },
         set current(_v) { /* writes flow through state.snapshot handler */ },
       },
       send: (msg) => {
@@ -2975,7 +2981,7 @@ export async function startSidecar(
     buildDepsFor: (uid) => ({
       strategyManager,
       gemini: geminiClient,
-      getState: () => userStates.get(uid) ?? emptyWorldState(),
+      getState: () => tenantRegistry.get(uid).worldState ?? emptyWorldState(),
       send: (msg: DownstreamMsg) => {
         // Phase 9c.5 — uid bound in closure; explicit so any setTimeout-
         // delivered analyzer message lands in the user's bucket even
@@ -3032,7 +3038,7 @@ export async function startSidecar(
     optimizerHandle = startOptimizer({
       goalsStorePg,
       pgStore,
-      getStateForUid: (uid: string) => userStates.get(uid) ?? null,
+      getStateForUid: (uid: string) => tenantRegistry.get(uid).worldState ?? null,
       loadActiveTenantUids: async (): Promise<string[]> => {
         if (!pgStore) return [];
         try {
@@ -3057,7 +3063,7 @@ export async function startSidecar(
     expeditionHandle = startExpedition({
       goalsStorePg,
       pgStore,
-      getStateForUid: (uid: string) => userStates.get(uid) ?? null,
+      getStateForUid: (uid: string) => tenantRegistry.get(uid).worldState ?? null,
       loadActiveTenantUids: async (): Promise<string[]> => {
         if (!pgStore) return [];
         try {
@@ -3085,8 +3091,11 @@ export async function startSidecar(
     // user is most active — this matches pre-9c semantics).
     const ctxUid = getCurrentUserId();
     if (ctxUid) {
-      userStates.set(ctxUid, msg.snapshot);
-      userLastSeen.set(ctxUid, Date.now());
+      // v0.0.861 — per-uid mirror now lives in TenantContext.worldState /
+      // .lastSeenAt instead of two parallel Map<uid,…> globals.
+      const tenantCtx = tenantRegistry.get(ctxUid);
+      tenantCtx.worldState = msg.snapshot;
+      tenantCtx.lastSeenAt = Date.now();
     }
     const prev = stateRef.current;
     stateRef.current = msg.snapshot;

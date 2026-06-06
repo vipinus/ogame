@@ -1,5 +1,5 @@
 /**
- * Sprint 1 (v0.0.860) — Per-tenant context registry.
+ * Sprint 1 (v0.0.860) + Sprint 2 (v0.0.861) — Per-tenant context registry.
  *
  * Background
  * ----------
@@ -12,20 +12,35 @@
  * delete bugs (v0.0.856, v0.0.857 for expLastSeen / firedDebrisCheckFor).
  *
  * v0.0.857 patched the symptom by prefixing the GLOBAL Map keys with
- * `${uid}::${fid}`. Sprint 1 of the architectural cleanup migrates the
- * 3 worst offenders to real per-uid Maps held inside this TenantContext
- * registry. Same lazy-mint shape as SaveCoordinatorManager.
+ * `${uid}::${fid}`. Sprint 1 of the architectural cleanup migrated the
+ * 3 worst offenders to real per-uid Maps. Sprint 2 extends to the
+ * remaining directive-id / goal-id keyed Maps + the per-uid WorldState
+ * mirror that the rest of the sidecar reads.
  *
- * Scope (Sprint 1 — pilot)
- * ------------------------
+ * Scope (Sprint 1)
+ * ----------------
  * - expLastSeen          : Map<fleetId, { origin, dest, arrival_at, return_at }>
  * - firedDebrisCheckFor  : Map<fleetId, Set<"B" | "C">>
  * - directiveToGoal      : Map<directiveId, goalId>
  *
- * Intentionally NOT migrated this sprint (Sprint 2 PR):
- *   userStates, userLastSeen, goalByKey, subPauseCache, directiveToParams,
- *   goalFailureCount, lastRefreshEmitAt, directiveToDiscoverCoord,
- *   perUidWriteTimer, perUidPendingSnap, optimizer state.
+ * Scope (Sprint 2)
+ * ----------------
+ * - worldState           : WorldState | null              (was userStates[uid])
+ * - lastSeenAt           : number | null                  (was userLastSeen[uid])
+ * - subPauseCache        : { paused, ts } | null          (was subPauseCache[uid])
+ * - directiveToParams    : Map<directiveId, { action?, building?, planet_id? }>
+ * - goalFailureCount     : Map<goalId, number>
+ * - lastRefreshEmitAt    : Map<goalId, number>
+ * - directiveToDiscoverCoord : Map<directiveId, coordStr>
+ * - worldStatePersist    : { timer: NodeJS.Timeout | null; pending: WorldState | null }
+ *                          (was perUidWriteTimer / perUidPendingSnap)
+ *
+ * Intentionally NOT migrated:
+ *   - goalByKey (function-local Map in updateBuildShipsProgress; already
+ *     scoped to a single uid via reader.listActiveByUser(uid))
+ *   - optimizer / save coordinator / failure aggregator / reporter manager
+ *     (already correctly per-tenant via dedicated Manager classes)
+ *   - cpFetchChain (token mutex; intentionally per-tab not per-uid)
  *
  * Backward compat (persistence)
  * -----------------------------
@@ -37,7 +52,12 @@
  * single-tenant operator without a Bearer continues to operate).
  * serialize() re-emits prefixed keys for non-legacy buckets and bare keys
  * for the legacy bucket, so downgrading to v0.0.857 doesn't lose state.
+ *
+ * None of the Sprint 2 additions require persistence — they rebuild from
+ * WS state.snapshot + PG on restart, so no disk-schema changes.
  */
+
+import type { WorldState } from "@ogamex/shared";
 
 /** Per-fleet observation snapshot used by debris-check (Signal B). */
 export interface ExpLastSeenEntry {
@@ -47,9 +67,36 @@ export interface ExpLastSeenEntry {
   readonly return_at: number | null;
 }
 
+/** Directive params snapshot — needed when the ack lands so we can
+ *  retro-mark fields_full on the exact (planet, building) the dispatch
+ *  hit, and to verify `action` matches goal.type before mark-completed. */
+export interface DirectiveParams {
+  action?: string;
+  building?: string;
+  planet_id?: string;
+}
+
+/** subscriptionPause cache value — paused flag + 60s freshness ts.
+ *  Per-uid because subscription status is itself per-uid. */
+export interface SubPauseCacheEntry {
+  paused: boolean;
+  ts: number;
+}
+
+/** WorldState persist coalescer state. v0.0.858 introduced per-uid
+ *  debounce so a state.snapshot push from user A during the 1s window
+ *  can't overwrite user B's pending snap. v0.0.861 just relocates the
+ *  Map<uid,…> pair into TenantContext for consistency — algorithm
+ *  unchanged. */
+export interface WorldStatePersistSlot {
+  timer: NodeJS.Timeout | null;
+  pending: WorldState | null;
+}
+
 /** All per-tenant state owned by the registry. Each bucket is private to
  *  a single uid; the legacy/no-uid caller maps to EMPTY_LEGACY_UID. */
 export interface TenantContext {
+  // --- Sprint 1 (v0.0.860) ---
   /** mission=15 fleet id → last observed origin/dest/arrival/return.
    *  Debris-check Signal B scans this map on each snapshot push. */
   readonly expLastSeen: Map<string, ExpLastSeenEntry>;
@@ -60,6 +107,45 @@ export interface TenantContext {
   /** directive id → goal id. Source of truth for ack→goal mapping.
    *  Trimmed when the success/failure ack arrives. */
   readonly directiveToGoal: Map<string, string>;
+
+  // --- Sprint 2 (v0.0.861) ---
+  /** Per-user WorldState mirror — populated by state.snapshot handler,
+   *  consumed by triggerDispatch / stateProvider / expeditionProvider /
+   *  emergencyProvider / saveCoord factories / optimizer / expedition
+   *  tick. Was `userStates: Map<uid, WorldState>` global. */
+  worldState: WorldState | null;
+  /** Per-user last state.snapshot push timestamp (ms). Surfaced via
+   *  /v1/health multi-tenant snapshot for staleness diagnosis. Was
+   *  `userLastSeen: Map<uid, number>` global. */
+  lastSeenAt: number | null;
+  /** subscription gate cache — { paused, ts }. 60s freshness. Was
+   *  `subPauseCache: Map<uid, …>` global; key was already uid so this
+   *  is a 1:1 lift. */
+  subPauseCache: SubPauseCacheEntry | null;
+  /** directive id → action/building/planet_id snapshot at dispatch.
+   *  v0.0.764 added so 120012 fields_full hard-block can call
+   *  markFieldsFull on the exact (planet, building) the failed POST
+   *  targeted. v0.0.782 added `action` so the ack handler verifies it
+   *  matches goal.type before mark-completed. Was global Map keyed by
+   *  directive id (NOT uid-prefixed) → cross-tenant overwrite hazard. */
+  readonly directiveToParams: Map<string, DirectiveParams>;
+  /** goal id → consecutive failure count for exponential backoff
+   *  (v0.0.834). Was global Map keyed by goal id; opt-* goal ids are
+   *  uid-suffixed but plain `buil-…` prefixes are not, so the global
+   *  shape was cross-tenant-leaky. */
+  readonly goalFailureCount: Map<string, number>;
+  /** goal id → last data.refresh emit ts (v0.0.842 60s throttle). Was
+   *  global Map keyed by goal id; same uid-uniqueness caveat as
+   *  goalFailureCount. */
+  readonly lastRefreshEmitAt: Map<string, number>;
+  /** directive id → discovered coord string (species_discovery). Used
+   *  by the ack handler to revert the optimistic completed[] add when
+   *  ApiExec reports slot_full. Was global Map keyed by directive id. */
+  readonly directiveToDiscoverCoord: Map<string, string>;
+  /** WorldState persist debounce slot. v0.0.858 added per-uid timer +
+   *  pending snap to keep cross-tenant snapshot pushes from corrupting
+   *  each other's PG row. v0.0.861 relocates here unchanged. */
+  readonly worldStatePersist: WorldStatePersistSlot;
 }
 
 /** Legacy / no-uid caller bucket. Operator single-tenant path lands here
@@ -70,9 +156,19 @@ export const EMPTY_LEGACY_UID = "";
 
 function newContext(): TenantContext {
   return {
+    // Sprint 1
     expLastSeen: new Map<string, ExpLastSeenEntry>(),
     firedDebrisCheckFor: new Map<string, Set<"B" | "C">>(),
     directiveToGoal: new Map<string, string>(),
+    // Sprint 2
+    worldState: null,
+    lastSeenAt: null,
+    subPauseCache: null,
+    directiveToParams: new Map<string, DirectiveParams>(),
+    goalFailureCount: new Map<string, number>(),
+    lastRefreshEmitAt: new Map<string, number>(),
+    directiveToDiscoverCoord: new Map<string, string>(),
+    worldStatePersist: { timer: null, pending: null },
   };
 }
 
@@ -96,6 +192,45 @@ export class TenantRegistry {
   }
 
   size(): number { return this.map.size; }
+
+  /** Number of tenants that have received at least one state.snapshot
+   *  push (worldState !== null). Used by multi-tenant health probe;
+   *  replaces the old `userStates.size` scalar (which counted minted
+   *  contexts the same way). */
+  trackedWorldStateCount(): number {
+    let n = 0;
+    for (const ctx of this.map.values()) if (ctx.worldState !== null) n += 1;
+    return n;
+  }
+
+  /** Min of lastSeenAt across all tenants, or null if none have ever
+   *  pushed. Replaces `Math.min(...Array.from(userLastSeen.values()))`. */
+  oldestLastSeenAt(): number | null {
+    let oldest: number | null = null;
+    for (const ctx of this.map.values()) {
+      const t = ctx.lastSeenAt;
+      if (t === null) continue;
+      if (oldest === null || t < oldest) oldest = t;
+    }
+    return oldest;
+  }
+
+  /** Drain every per-uid pending worldStatePersist slot, returning the
+   *  (uid, snap) pairs the caller should flush. Clears timers + slot
+   *  state. Used at shutdown by flushWorldStatePersist. */
+  drainWorldStatePersist(): Array<[string, WorldState]> {
+    const drains: Array<[string, WorldState]> = [];
+    for (const [uid, ctx] of this.map.entries()) {
+      if (ctx.worldStatePersist.timer) {
+        clearTimeout(ctx.worldStatePersist.timer);
+        ctx.worldStatePersist.timer = null;
+      }
+      const pending = ctx.worldStatePersist.pending;
+      ctx.worldStatePersist.pending = null;
+      if (pending) drains.push([uid, pending]);
+    }
+    return drains;
+  }
 }
 
 // ============================================================================
