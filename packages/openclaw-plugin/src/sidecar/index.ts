@@ -41,7 +41,7 @@ import { GoalsStorePg } from "./goals_store_pg.js";
 // Phase 7d — WorldStateStore SQLite class deleted (PG primary).
 import { WorldStateStorePg } from "./world_state_store_pg.js";
 import { getCurrentUserId } from "./user_context.js";
-import { TenantRegistry, hydrate as hydrateTenantRegistry, serialize as serializeTenantRegistry } from "./tenant_context.js";
+import { tenantRegistry, hydrate as hydrateTenantRegistry, serialize as serializeTenantRegistry } from "./tenant_context.js";
 import { GeminiClient } from "./gemini_client.js";
 import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
@@ -443,13 +443,13 @@ export async function startSidecar(
   const lastSeen: { at: number | null } = { at: null };
   const sidecarStartedAt = Date.now();
 
-  // v0.0.860 (Sprint 1) + v0.0.861 (Sprint 2) — per-uid TenantContext
-  // registry. Owns per-tenant Maps that used to be module-level globals
-  // keyed by directive/fleet/goal id with cross-tenant overlap. See
-  // tenant_context.ts for the full field list + persistence notes.
-  // Declared early so the M8.1 healthReporter + state.snapshot handler +
-  // CRUD / provider closures can all close over it.
-  const tenantRegistry = new TenantRegistry();
+  // v0.0.860 (Sprint 1) + v0.0.861 (Sprint 2) + v0.0.862 (Sprint 3) — per-uid
+  // TenantContext registry. Owns per-tenant Maps that used to be module-level
+  // globals keyed by directive/fleet/goal/planet id with cross-tenant overlap.
+  // See tenant_context.ts for the full field list + persistence notes.
+  // v0.0.862 — `tenantRegistry` is now imported as a process-singleton from
+  // tenant_context.ts so planner.ts / expedition.ts (pure-function modules
+  // without a setupSidecar closure) can use the same instance directly.
 
   // Phase 9c.1 — per-user WorldState mirror. state.snapshot handler routes
   // by ALS user_id when present; PriorityMerger / SaveCoord / FailureAgg
@@ -2387,8 +2387,12 @@ export async function startSidecar(
                 // building 24h, planner.pickEnergyPrereqBuilding 看到则跳过.
                 const params = ackTenant.directiveToParams.get(m.directive_id);
                 if (params?.planet_id && params?.building) {
-                  markFieldsFull(params.planet_id, params.building);
-                  console.log(`[hard-block] markFieldsFull ${params.planet_id}:${params.building} for 24h`);
+                  // v0.0.862 — markFieldsFull now per-uid (Sprint 3). ackCtxUid
+                  // resolved above via ALS (ws_server / http_server wrapped this
+                  // handler in runWithUser); legacy/no-uid lands in EMPTY_LEGACY_UID
+                  // bucket which is correct for single-tenant operator.
+                  markFieldsFull(ackCtxUid ?? "", params.planet_id, params.building);
+                  console.log(`[hard-block] markFieldsFull ${params.planet_id}:${params.building} for 24h (uid=${(ackCtxUid ?? "legacy").slice(0, 8)})`);
                 }
               }
               ackTenant.directiveToParams.delete(m.directive_id);

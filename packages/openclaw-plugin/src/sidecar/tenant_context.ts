@@ -1,5 +1,5 @@
 /**
- * Sprint 1 (v0.0.860) + Sprint 2 (v0.0.861) — Per-tenant context registry.
+ * Sprint 1 (v0.0.860) + Sprint 2 (v0.0.861) + Sprint 3 (v0.0.862) — Per-tenant context registry.
  *
  * Background
  * ----------
@@ -34,6 +34,20 @@
  * - directiveToDiscoverCoord : Map<directiveId, coordStr>
  * - worldStatePersist    : { timer: NodeJS.Timeout | null; pending: WorldState | null }
  *                          (was perUidWriteTimer / perUidPendingSnap)
+ *
+ * Scope (Sprint 3)
+ * ----------------
+ * Owner directive 2026-06-06 — "全部用 per-uid，统一架构 避免以后再来回补丁".
+ * Migrate the last 2 surviving module-level Maps in src/sidecar/* into the
+ * registry, then land a CI gate (check-no-module-level-map.sh) with an empty
+ * ALLOW_LIST so future regressions fail prebuild.
+ * - fieldsFullCache              : Map<`${planetId}:${building}`, { until: number }>
+ *                                  (was module-level in planner.ts WITHOUT uid prefix —
+ *                                  real cross-tenant bug; 24h TTL durable suppression)
+ * - expeditionFailureCoolOff     : Map<planetId, number>
+ *                                  (was module-level in expedition.ts keyed by
+ *                                  `${uid}::${planetId}` — v0.0.857 prefix anti-pattern
+ *                                  symptom-fix; now properly per-uid via registry)
  *
  * Intentionally NOT migrated:
  *   - goalByKey (function-local Map in updateBuildShipsProgress; already
@@ -146,6 +160,17 @@ export interface TenantContext {
    *  pending snap to keep cross-tenant snapshot pushes from corrupting
    *  each other's PG row. v0.0.861 relocates here unchanged. */
   readonly worldStatePersist: WorldStatePersistSlot;
+
+  // --- Sprint 3 (v0.0.862) ---
+  /** planet-id × building → fields-full until-timestamp.
+   *  v0.0.862 — was module-level Map keyed by `${planetId}:${building}`
+   *  WITHOUT uid. Real cross-tenant bug — 24h TTL durable suppression.
+   *  See docs/architecture/multi-tenant.md §1. */
+  readonly fieldsFullCache: Map<string, { until: number }>;
+  /** planet-id → last expedition failure cool-off timestamp.
+   *  v0.0.862 — was module-level Map with `${uid}::${planetId}` prefix
+   *  trick (v0.0.857 anti-pattern). Now properly per-uid via registry. */
+  readonly expeditionFailureCoolOff: Map<string, number>;
 }
 
 /** Legacy / no-uid caller bucket. Operator single-tenant path lands here
@@ -169,6 +194,9 @@ function newContext(): TenantContext {
     lastRefreshEmitAt: new Map<string, number>(),
     directiveToDiscoverCoord: new Map<string, string>(),
     worldStatePersist: { timer: null, pending: null },
+    // Sprint 3
+    fieldsFullCache: new Map<string, { until: number }>(),
+    expeditionFailureCoolOff: new Map<string, number>(),
   };
 }
 
@@ -304,3 +332,20 @@ function splitStorageKey(key: string): { uid: string; fid: string } {
   if (sep < 0) return { uid: EMPTY_LEGACY_UID, fid: key };
   return { uid: key.slice(0, sep), fid: key.slice(sep + 2) };
 }
+
+// ============================================================================
+// Singleton instance (Sprint 3, v0.0.862)
+// ============================================================================
+//
+// Sprint 1/2 instantiated TenantRegistry inside setupSidecar() and passed it
+// into dependent closures. Sprint 3 migrates two more module-level Maps
+// (planner.ts:fieldsFullCache, expedition.ts:failureCoolOff) into the
+// registry. Those modules are pure-function modules without a setupSidecar
+// closure to capture — so we expose a process-singleton here that they can
+// import directly. index.ts continues to use the same singleton instead of
+// minting its own, so there's still exactly one registry per process.
+//
+// Owner directive 2026-06-06 — "全部用 per-uid，统一架构 避免以后再来回补丁".
+// Don't add new module-level Maps to bypass this — scripts/check-no-module-
+// level-map.sh blocks regressions at prebuild.
+export const tenantRegistry: TenantRegistry = new TenantRegistry();

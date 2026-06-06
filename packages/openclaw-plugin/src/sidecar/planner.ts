@@ -15,6 +15,8 @@
 import { randomUUID } from "node:crypto";
 import type { Directive, Goal, GoalType, Planet, WorldState, ShipCount } from "@ogamex/shared";
 import { TECH_TREE, nameToId, LIFEFORM_TECH } from "@ogamex/shared";
+import { tenantRegistry } from "./tenant_context.js";
+import { getCurrentUserId } from "./user_context.js";
 
 export type PlanResult = Directive | { blocked: string; auto_complete?: boolean };
 
@@ -156,49 +158,62 @@ export function fusionProduction(level: number, energyTech: number): number {
 // 递归选 fusion. 修复 — 缓存"该 planet 上该 building 最近 120012 fields_full"
 // 24h, planner 看到则跳过 (选另一种 plant or 干脆 return null 让 parent
 // blocked with "fields full")。Module-level cache 跨 dispatch tick 持久.
-interface FieldsFullCache { until: number; }
-const fieldsFullCache = new Map<string, FieldsFullCache>();
-const FIELDS_FULL_TTL_MS = 24 * 3600 * 1000;
+// v0.0.862 (Sprint 3) — fieldsFullCache was module-level `Map<`${planetId}:
+// ${building}`, …>` WITHOUT uid prefix. Planet IDs aren't globally unique
+// across tenants (different universes can share numerics; even within one
+// universe our state model holds multiple tenants' planets in one process),
+// and the 24h TTL made the cross-tenant suppression durable — real bug.
+// Owner directive 2026-06-06: "全部用 per-uid，统一架构 避免以后再来回补丁".
+// All entry points now take `uid` and the Map lives inside TenantContext.
+// See tenant_context.ts §"Sprint 3" + docs/architecture/multi-tenant.md §1.
 function fieldsFullKey(planetId: string, building: string): string {
   return `${planetId}:${building}`;
 }
-export function markFieldsFull(planetId: string, building: string): void {
-  fieldsFullCache.set(fieldsFullKey(planetId, building), { until: Date.now() + FIELDS_FULL_TTL_MS });
+const FIELDS_FULL_TTL_MS = 24 * 3600 * 1000;
+export function markFieldsFull(uid: string, planetId: string, building: string): void {
+  tenantRegistry.get(uid).fieldsFullCache.set(
+    fieldsFullKey(planetId, building),
+    { until: Date.now() + FIELDS_FULL_TTL_MS },
+  );
 }
-export function isFieldsFull(planetId: string, building: string): boolean {
-  const entry = fieldsFullCache.get(fieldsFullKey(planetId, building));
+export function isFieldsFull(uid: string, planetId: string, building: string): boolean {
+  const cache = tenantRegistry.get(uid).fieldsFullCache;
+  const entry = cache.get(fieldsFullKey(planetId, building));
   if (!entry) return false;
   if (entry.until < Date.now()) {
-    fieldsFullCache.delete(fieldsFullKey(planetId, building));
+    cache.delete(fieldsFullKey(planetId, building));
     return false;
   }
   return true;
 }
-export function clearFieldsFull(planetId: string, building: string): void {
-  fieldsFullCache.delete(fieldsFullKey(planetId, building));
+export function clearFieldsFull(uid: string, planetId: string, building: string): void {
+  tenantRegistry.get(uid).fieldsFullCache.delete(fieldsFullKey(planetId, building));
 }
 /** Owner endpoint helpers — list all entries, optionally clear by (planet, building). */
 export interface FieldsFullEntry { planet_id: string; building: string; until_ms: number; remaining_ms: number; }
-export function listFieldsFull(): FieldsFullEntry[] {
+export function listFieldsFull(uid: string): FieldsFullEntry[] {
+  const cache = tenantRegistry.get(uid).fieldsFullCache;
   const out: FieldsFullEntry[] = [];
   const now = Date.now();
-  for (const [k, v] of fieldsFullCache.entries()) {
-    if (v.until < now) { fieldsFullCache.delete(k); continue; }
+  for (const [k, v] of cache.entries()) {
+    if (v.until < now) { cache.delete(k); continue; }
     const [planet_id, building] = k.split(":");
     if (planet_id && building) out.push({ planet_id, building, until_ms: v.until, remaining_ms: v.until - now });
   }
   return out;
 }
-export function clearAllFieldsFull(): number {
-  const n = fieldsFullCache.size;
-  fieldsFullCache.clear();
+export function clearAllFieldsFull(uid: string): number {
+  const cache = tenantRegistry.get(uid).fieldsFullCache;
+  const n = cache.size;
+  cache.clear();
   return n;
 }
 /** Clear by planet only (all buildings) — common after operator builds terraformer. */
-export function clearFieldsFullByPlanet(planetId: string): number {
+export function clearFieldsFullByPlanet(uid: string, planetId: string): number {
+  const cache = tenantRegistry.get(uid).fieldsFullCache;
   let n = 0;
-  for (const k of [...fieldsFullCache.keys()]) {
-    if (k.startsWith(planetId + ":")) { fieldsFullCache.delete(k); n++; }
+  for (const k of [...cache.keys()]) {
+    if (k.startsWith(planetId + ":")) { cache.delete(k); n++; }
   }
   return n;
 }
@@ -268,11 +283,14 @@ export function pickEnergyPrereqBuilding(
   // v0.0.764 — fields_full short-circuit: 如果当前选择的 plant 在 24h 内
   // 在该 planet 上失败过 120012, 切到另一种; 都不行 → return null 让
   // parent goal 走 fields_full blocked 路径 (operator 拆建筑或建 terraformer).
-  if (pickFusion && isFieldsFull(planet.id, "fusionReactor")) {
-    if (!isFieldsFull(planet.id, "solarPlant")) pickFusion = false;
+  // v0.0.862 — uid threaded via ALS (planGoal → planBuild → here runs inside
+  // priorityMerger.dispatch's runWithUser frame, set by ws_server / http_server).
+  const uidForCache = getCurrentUserId() ?? "";
+  if (pickFusion && isFieldsFull(uidForCache, planet.id, "fusionReactor")) {
+    if (!isFieldsFull(uidForCache, planet.id, "solarPlant")) pickFusion = false;
     else return null;
-  } else if (!pickFusion && isFieldsFull(planet.id, "solarPlant")) {
-    if (!isFieldsFull(planet.id, "fusionReactor") && fusionPrereqsMet) pickFusion = true;
+  } else if (!pickFusion && isFieldsFull(uidForCache, planet.id, "solarPlant")) {
+    if (!isFieldsFull(uidForCache, planet.id, "fusionReactor") && fusionPrereqsMet) pickFusion = true;
     else return null;
   }
   // v0.0.738 — solve for min plant level that covers the deficit. Plant
@@ -536,11 +554,12 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
   if (!planet) return { blocked: "lifeform_building: no planet" };
 
   // Phase 11+ (v0.0.785) — fields_full hard-block 路径之前只 cover regular
-  // building (line 2160 index.ts markFieldsFull on 120012 ack); planner
+  // building (index.ts markFieldsFull on 120012 ack); planner
   // 这侧 planBuildGoal 有 isFieldsFull check 防 retry spam, 但
   // planLifeformBuildingGoal 漏了 → antimatterCondenser L49 120012 一直
   // retry (operator 33653036 evidence 21:01-21:07 三次 dispatch). 修对齐.
-  if (isFieldsFull(planet.id, building)) {
+  // v0.0.862 — uid threaded via ALS (priorityMerger.dispatch's runWithUser).
+  if (isFieldsFull(getCurrentUserId() ?? "", planet.id, building)) {
     return { blocked: `fields_full hard-block on ${planet.id}:${building} (24h backoff)` };
   }
 

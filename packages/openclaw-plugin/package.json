@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "check:no-module-level-map": "bash scripts/check-no-module-level-map.sh",
+    "prebuild": "bash scripts/check-no-module-level-map.sh",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --root .",

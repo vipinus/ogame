@@ -1278,10 +1278,13 @@ export class HttpServer {
       if (hook) restoredCount = await hook(uid, newUniverse);
     } catch (e) { console.warn("[server-switch] restore threw", e); }
     // ③ clear fields_full cache (24h TTL 内残留)
+    // v0.0.862 — clearAllFieldsFull now per-uid (Sprint 3): clears only the
+    // switching user's bucket, not all tenants'. Operator's other-uid cache
+    // (if any) stays intact.
     let clearedFieldsFull = 0;
     try {
       const planner = await import("./planner.js");
-      clearedFieldsFull = planner.clearAllFieldsFull();
+      clearedFieldsFull = planner.clearAllFieldsFull(uid);
     } catch (e) { console.warn("[server-switch] clearAllFieldsFull threw", e); }
     // ④ persist event
     try {
@@ -1300,11 +1303,14 @@ export class HttpServer {
   ): Promise<void> {
     const r = await this.resolveBearer(req);
     if (r.kind === "forbidden") { this.writeCorsHeaders(res); res.statusCode = 401; res.end(); return; }
+    // v0.0.862 — per-uid bucket. Legacy bearer (kind="legacy") → "" bucket
+    // (single-tenant operator path). Per-user bearer → r.uid.
+    const uid = r.kind === "legacy" ? "" : r.uid;
     // Lazy import to avoid circular dep at module init.
     const planner = await import("./planner.js");
     this.writeCorsHeaders(res); res.setHeader("Content-Type", "application/json");
     if (method === "GET") {
-      const list = planner.listFieldsFull();
+      const list = planner.listFieldsFull(uid);
       res.statusCode = 200;
       res.end(JSON.stringify({ ok: true, count: list.length, entries: list }));
       return;
@@ -1317,18 +1323,18 @@ export class HttpServer {
       try { parsed = JSON.parse(body); } catch { /* empty body = clear all */ }
     }
     if (parsed.planet_id && parsed.building) {
-      planner.clearFieldsFull(parsed.planet_id, parsed.building);
+      planner.clearFieldsFull(uid, parsed.planet_id, parsed.building);
       res.statusCode = 200;
       res.end(JSON.stringify({ ok: true, action: "clear_single", planet_id: parsed.planet_id, building: parsed.building }));
       return;
     }
     if (parsed.planet_id) {
-      const n = planner.clearFieldsFullByPlanet(parsed.planet_id);
+      const n = planner.clearFieldsFullByPlanet(uid, parsed.planet_id);
       res.statusCode = 200;
       res.end(JSON.stringify({ ok: true, action: "clear_planet", planet_id: parsed.planet_id, cleared: n }));
       return;
     }
-    const n = planner.clearAllFieldsFull();
+    const n = planner.clearAllFieldsFull(uid);
     res.statusCode = 200;
     res.end(JSON.stringify({ ok: true, action: "clear_all", cleared: n }));
   }

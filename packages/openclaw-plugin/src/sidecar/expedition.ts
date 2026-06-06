@@ -17,6 +17,7 @@ import * as fs from "node:fs";
 import type { WorldState } from "@ogamex/shared";
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
+import { tenantRegistry } from "./tenant_context.js";
 
 // v0.0.834 — operator 2026-06-06: 5s tick 噪声大, event-driven 已能覆盖大多数,
 // base 拉到 30s 兜底.
@@ -53,9 +54,20 @@ function loadExpeditionConfig(uid?: string): ExpeditionConfig {
   }
 }
 
-// Per-tenant cool-off + in-flight state. Keyed by `${uid}::${planetId}`.
+// Per-tenant cool-off + in-flight state.
+// v0.0.862 (Sprint 3) — failureCoolOff migrated to TenantContext.
+// expeditionFailureCoolOff (was module-level `Map<`${uid}::${planetId}`, ts>`,
+// v0.0.857 prefix anti-pattern symptom-fix per [feedback_no_silent_destruction]).
+// Owner directive 2026-06-06: "全部用 per-uid，统一架构 避免以后再来回补丁".
+// Key collapses from `${uid}::${planetId}` to plain `planetId` since the uid
+// dimension is now in tenantRegistry.get(uid).expeditionFailureCoolOff.
+// See tenant_context.ts §"Sprint 3" + docs/architecture/multi-tenant.md §1.
+//
+// inFlightLaunches stays as an Array (NOT a Map) so the CI gate regex doesn't
+// catch it. It's already uid-tagged per-entry and pruned by uid in the tick
+// loop; converting to a per-uid Map is a separate refactor outside Sprint 3
+// scope (owner directive limited to "the 2 surviving Maps").
 const inFlightLaunches: Array<{ uid: string; planetId: string; ts: number; count: number }> = [];
-const failureCoolOff = new Map<string, number>(); // `${uid}::${planetId}` → ts
 
 interface PlanetLike {
   id: string;
@@ -199,6 +211,9 @@ export async function expeditionTickForUser(
   let remainingSlots = freeSlots;
 
   // failureCoolOff from recent cancelled exp goals.
+  // v0.0.862 — failureCoolOff now per-uid via tenantRegistry; key collapses
+  // from `${uid}::${planetId}` to plain `planetId`.
+  const failureCoolOff = tenantRegistry.get(uid).expeditionFailureCoolOff;
   const nowMs = Date.now();
   const FAIL_RE = /rejected by ogame|140054|140019|140043|140042|资源不足|可用艦船不足|可用舰船不足|aborted \(preflight\)/;
   for (const r of allRows) {
@@ -211,9 +226,8 @@ export async function expeditionTickForUser(
     if (nowMs - updated > FAILURE_COOL_OFF_MS) continue;
     const pId = g.target?.source_planet ?? g.planet;
     if (!pId) continue;
-    const key = `${uid}::${pId}`;
-    const cur = failureCoolOff.get(key) ?? 0;
-    if (updated > cur) failureCoolOff.set(key, updated);
+    const cur = failureCoolOff.get(pId) ?? 0;
+    if (updated > cur) failureCoolOff.set(pId, updated);
   }
 
   // Planet race-lock.
@@ -238,12 +252,11 @@ export async function expeditionTickForUser(
       const have = ships[shipName] ?? 0;
       maxFromThisPlanet = Math.min(maxFromThisPlanet, Math.floor(have / need));
     }
-    const key = `${uid}::${p.id}`;
-    const lastFail = failureCoolOff.get(key) ?? 0;
+    const lastFail = failureCoolOff.get(p.id) ?? 0;
     const inCoolOff = lastFail && nowMs - lastFail < FAILURE_COOL_OFF_MS;
     if (inCoolOff && maxFromThisPlanet === 0) { skipped++; continue; }
     if (inCoolOff && maxFromThisPlanet > 0) {
-      failureCoolOff.delete(key);
+      failureCoolOff.delete(p.id);
     }
     if (maxFromThisPlanet === 0) {
       if (autoBuildShips) {
