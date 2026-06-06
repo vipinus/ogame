@@ -762,10 +762,18 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                       if (!targetMoonId && body && body.length > 0) {
                         console.log("[OgameXSniff] jumpgate target NOT FOUND, body=" + String(body).slice(0, 400));
                       }
+                      // v0.0.830 — operator 2026-06-06 "事件触发了吗" 真因 trace:
+                      // ogame v12 JG 真跑了同时返 empty error (status:false), sniffer 老逻辑
+                      // hasNotReady 只看 jumpgateNotReady token / status:true, empty error
+                      // 路径漏 → CASE B 不 fire → cd 不 commit. 修: hasNotReady 也覆盖
+                      // executeJump POST 路径自身 (POST 必触发, body 出现意味着是真 click),
+                      // CASE B 用 cp-mutex protected fetchWithCpBypassBusy 不会 abort, 多
+                      // 一次 overlay GET 平均 1 次/小时, 成本可接受换闭环.
+                      const isExecutePost = url.includes("action=executeJump") && method === "POST";
                       window.postMessage({
                         source: "ogamex:jumpgateEvent",
                         sourceMoonId, targetMoonId, cooldownSec: cd, originCoords,
-                        url, hasNotReady: t.includes("jumpgateNotReady") || (jsonResp && (jsonResp.status === true || jsonResp.success === true)),
+                        url, hasNotReady: t.includes("jumpgateNotReady") || (jsonResp && (jsonResp.status === true || jsonResp.success === true)) || isExecutePost,
                       }, window.location.origin);
                     } catch (e) { console.warn("[OgameXSniff] jumpgate parse fail:", e); }
                   }
@@ -1269,7 +1277,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.826";
+  const USERSCRIPT_VERSION = "0.0.830";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;

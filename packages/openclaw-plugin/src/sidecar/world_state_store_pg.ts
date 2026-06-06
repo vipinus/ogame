@@ -76,9 +76,57 @@ export class WorldStateStorePg {
   // ---------------------------------------------------------------------------
 
   async upsertWorldState(userId: string, state: unknown): Promise<void> {
+    // v0.0.831 — operator 2026-06-06 "JG cd 在 NULL/1377 之间震荡" 真因:
+    // 多 ogame tab 同 uid push state.snapshot, 老逻辑 full overwrite, 最后 push
+    // win → 一个 tab 有 JG store (cd=1377) 一个 tab fresh (cd=null) 互相覆盖.
+    // [feedback_preserve_on_uncertainty]: incoming=null/undef 是 "no info"
+    // 不该覆盖 PG 已 positive cd. Merge 策略: per-moon, 仅当 incoming 有
+    // positive cd 或 explicit 0 (READY) 才覆盖, null 时保留 PG 已有.
+    type Patch = { jumpgate_cooldown_sec?: number | null; jumpgate_harvested_at?: number | null; jumpgate_pair_with?: string | null };
+    type StateShape = { planets?: Record<string, Patch & Record<string, unknown>> } | null | undefined;
+    let merged: unknown = state;
+    try {
+      const incoming = state as StateShape;
+      if (incoming && typeof incoming === "object" && incoming.planets) {
+        const existing = await this.sql`SELECT json FROM ogame_world_state WHERE user_id = ${userId}`;
+        if (existing.length > 0) {
+          const ex = existing[0]!.json as StateShape;
+          const exPlanets = ex?.planets ?? {};
+          const inPlanets = incoming.planets;
+          // Start with PG planets so any planet missing from incoming snapshot
+          // is preserved (incoming may have stale tab pushing partial planet
+          // dict that drops moons — observed 17:02:31 PASSTHROUGH log).
+          const mergedPlanets: Record<string, Patch & Record<string, unknown>> = { ...exPlanets };
+          for (const [pid, inP] of Object.entries(inPlanets)) {
+            const exP = exPlanets[pid] ?? {};
+            const inCd = inP.jumpgate_cooldown_sec;
+            const exCd = exP.jumpgate_cooldown_sec;
+            const exHarv = exP.jumpgate_harvested_at;
+            // Preserve PG when incoming = null/undef AND PG has positive cd recent (<2h)
+            const preserveCd = (inCd === null || inCd === undefined)
+              && typeof exCd === "number" && exCd > 0
+              && typeof exHarv === "number" && (Date.now() - exHarv) < 2 * 3600 * 1000;
+            if (preserveCd) {
+              mergedPlanets[pid] = {
+                ...inP,
+                jumpgate_cooldown_sec: exCd,
+                jumpgate_harvested_at: exHarv,
+                jumpgate_pair_with: exP.jumpgate_pair_with ?? inP.jumpgate_pair_with ?? null,
+              };
+            } else {
+              mergedPlanets[pid] = inP;
+            }
+          }
+          merged = { ...incoming, planets: mergedPlanets };
+        }
+      }
+    } catch (e) {
+      // Merge 失败 fallback 老 overwrite — safer than dropping snapshot
+      console.warn(`[world_state_store_pg] JG merge guard threw uid=${userId.slice(0,8)} fallback to overwrite:`, e instanceof Error ? e.message : e);
+    }
     await this.sql`
       INSERT INTO ogame_world_state (user_id, json, updated_at)
-      VALUES (${userId}, ${this.sql.json(state as postgres.JSONValue)}, NOW())
+      VALUES (${userId}, ${this.sql.json(merged as postgres.JSONValue)}, NOW())
       ON CONFLICT (user_id) DO UPDATE
         SET json = EXCLUDED.json, updated_at = EXCLUDED.updated_at
     `;
