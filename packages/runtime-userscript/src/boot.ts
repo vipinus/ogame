@@ -881,6 +881,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
             const p = origFetch.apply(this, arguments);
             p.then(r => {
               try { r.clone().text().then(t => {
+                // v0.0.883 — defer 整个 sniff body 到 macrotask (同 XHR), 让
+                // ogame 先消化 response, 我方再读. 避免抢 UI render 同帧.
+                setTimeout(() => {
                 log("FETCH "+method, url, body, r.status, t.length, t);
                 // Sniff newAjaxToken from ANY ogame JSON response and
                 // refresh dataset/localStorage so ApiExec gets fresh token.
@@ -968,6 +971,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                     } catch (e) { console.warn("[OgameXSniff] jumpgate parse fail:", e); }
                   }
                 } catch (_) {}
+                }, 0); // v0.0.883 setTimeout 闭合
               }); } catch(_){}
             }).catch(()=>{});
             return p;
@@ -984,6 +988,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           xhr.send = function(body) {
             reqBody = body ? (body instanceof URLSearchParams ? body.toString() : (typeof body === "string" ? body : "<form>")) : "";
             xhr.addEventListener("load", () => {
+              // v0.0.883 — owner 2026-06-07 实证 "TM 暂停就好 还是这样" 在
+              // 移 mousedown listener 后 (v0.0.882) 仍卡. 唯一剩下变量 = 我方
+              // XHR/fetch wrap 的 load handler 跟 ogame 自己的 load handler
+              // 同步排队 (同一 task), 我方 sniff/postMessage 跟 ogame 的 UI
+              // render code 抢同一帧 → ogame baseFuelCapacity 读 null 挂.
+              // 修法: setTimeout 0 把整段 sniff 工作 推到下一 macrotask, ogame
+              // 先把这个事件链处理完, 我方再做收集/log/post. 等价于"暂停 TM
+              // 直到 ogame 处理完". 0 行为变化, 只是顺序.
+              setTimeout(() => {
               if (url.includes("/game/index.php")) {
                 try { log("XHR "+method, url, reqBody, xhr.status, (xhr.responseText||"").length, xhr.responseText); } catch(_){}
                 // v0.0.472: operator-initiated cancel via ogame UI XHR →
@@ -1101,6 +1114,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                   } catch(_) {}
                 }
               }
+              }, 0); // v0.0.883 setTimeout 闭合 — 推到 macrotask, 让 ogame 先跑
             });
             return origSend.apply(this, arguments);
           };
@@ -1461,7 +1475,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.882";
+  const USERSCRIPT_VERSION = "0.0.883";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
