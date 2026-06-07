@@ -20,7 +20,7 @@
  * Scope (Sprint 1)
  * ----------------
  * - expLastSeen          : Map<fleetId, { origin, dest, arrival_at, return_at }>
- * - firedDebrisCheckFor  : Map<fleetId, Set<"B" | "C">>
+ * - firedDebrisCheckFor  : Map<fleetId, Set<"A" | "B" | "C">>
  * - directiveToGoal      : Map<directiveId, goalId>
  *
  * Scope (Sprint 2)
@@ -117,7 +117,7 @@ export interface TenantContext {
   /** mission=15 fleet id → dedup set so each (signal, fleetId) fires at
    *  most once. v0.0.677 split into per-signal sets to avoid B/C cross-
    *  blocking each other. */
-  readonly firedDebrisCheckFor: Map<string, Set<"B" | "C">>;
+  readonly firedDebrisCheckFor: Map<string, Set<"A" | "B" | "C">>;
   /** directive id → goal id. Source of truth for ack→goal mapping.
    *  Trimmed when the success/failure ack arrives. */
   readonly directiveToGoal: Map<string, string>;
@@ -183,7 +183,7 @@ function newContext(): TenantContext {
   return {
     // Sprint 1
     expLastSeen: new Map<string, ExpLastSeenEntry>(),
-    firedDebrisCheckFor: new Map<string, Set<"B" | "C">>(),
+    firedDebrisCheckFor: new Map<string, Set<"A" | "B" | "C">>(),
     directiveToGoal: new Map<string, string>(),
     // Sprint 2
     worldState: null,
@@ -272,7 +272,7 @@ export interface SerializedExpState {
    *  non-legacy uids, bare `${fid}` for the legacy bucket. */
   expLastSeen: Array<[string, ExpLastSeenEntry]>;
   /** Flat array of [storageKey, Array<signal>]. Same key convention. */
-  firedDebrisCheckFor: Array<[string, Array<"B" | "C">]>;
+  firedDebrisCheckFor: Array<[string, Array<"A" | "B" | "C">]>;
 }
 
 /** Hydrate the registry from a parsed exp_state.json blob. Accepts both
@@ -283,7 +283,7 @@ export function hydrate(
   registry: TenantRegistry,
   parsed: {
     expLastSeen?: Array<[string, ExpLastSeenEntry]>;
-    firedDebrisCheckFor?: Array<[string, Array<"B" | "C">]>;
+    firedDebrisCheckFor?: Array<[string, Array<"A" | "B" | "C">]>;
   } | null | undefined,
 ): { expLastSeen: number; firedDebrisCheckFor: number } {
   let exp = 0;
@@ -312,7 +312,7 @@ export function hydrate(
  *  downgrade to v0.0.857 still routes correctly. */
 export function serialize(registry: TenantRegistry): SerializedExpState {
   const expLastSeen: Array<[string, ExpLastSeenEntry]> = [];
-  const firedDebrisCheckFor: Array<[string, Array<"B" | "C">]> = [];
+  const firedDebrisCheckFor: Array<[string, Array<"A" | "B" | "C">]> = [];
   for (const [uid, ctx] of registry.entries()) {
     const prefix = uid === EMPTY_LEGACY_UID ? "" : `${uid}::`;
     for (const [fid, entry] of ctx.expLastSeen.entries()) {

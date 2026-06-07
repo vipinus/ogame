@@ -3162,8 +3162,8 @@ export async function startSidecar(
         // 跟原行为兼容). serialize/hydrate 仍然写 `${uid}::${fid}` 形 key 到
         // exp_state.json, downgrade 不丢数据.
         const tenant = tenantRegistry.get(ctxUid);
-        const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string, signal: "B" | "C"): "fired" | "skip-origin" | "noop" => {
-          const firedSignals = tenant.firedDebrisCheckFor.get(fleetId) ?? new Set<"B" | "C">();
+        const fireFor = (fleetId: string, origin: readonly number[], dest: readonly number[], reason: string, signal: "A" | "B" | "C"): "fired" | "skip-origin" | "noop" => {
+          const firedSignals = tenant.firedDebrisCheckFor.get(fleetId) ?? new Set<"A" | "B" | "C">();
           if (firedSignals.has(signal)) return "noop";
           if (!Array.isArray(origin) || origin.length !== 3 || !Array.isArray(dest)) return "noop";
           const originPlanet = findOriginPlanet(origin.join(":"));
@@ -3192,32 +3192,34 @@ export async function startSidecar(
           if (typeof f.id !== "string") continue;
           if (f.mission !== 15) continue;
           currentExpIds.add(f.id);
+          const prevSeen = tenant.expLastSeen.get(f.id);
           tenant.expLastSeen.set(f.id, { origin: f.origin, dest: f.dest, arrival_at: f.arrival_at ?? null, return_at: f.return_at ?? null });
+          // v0.0.873 — owner 2026-06-07: replace Signal B (fleet home) 触发为
+          // Signal A (fleet 首次观察到 return_at !== null = 进入返航阶段). 一次
+          // 成功不重复 — dedup 用 signal letter "A". Signal B 路径下面不再独立
+          // fire (Signal A 已派工; firedDebrisCheckFor 兜底防 same-fleet 重派).
+          // 收益: 节省 ~30min recycler 飞行时间, 战报刚来 recycler 就出门赴 :16.
+          if (f.return_at !== null && (!prevSeen || prevSeen.return_at === null)) {
+            fireFor(f.id, f.origin, f.dest, "fleet entered return phase (Signal A)", "A");
+          }
         }
-        // Signal B: fleet disappeared from outbound. ogame removes mission=15
-        // fleet from /movement when it's HOLDING at :16 (60min) — same
-        // disappearance event as truly returning home. Distinguish:
-        //   - last-seen return_at === null → fleet entered HOLDING, skip
-        //     (debris not yet generated, fleet will reappear as RETURNING)
-        //   - last-seen return_at !== null → fleet was returning, now home
-        //     (fire harvest)
-        // v0.0.574 — operator 2026-06-01 实证: 1:486 fleet 2353595 false-fired
-        // at holding-entry, dedup then blocked real return → no harvest.
-        // v0.0.860 — scan only this tenant's bucket; other users' entries
-        // live in their own buckets and process under their own snapshot.
+        // v0.0.873 — Signal B (fleet disappeared from outbound = fleet home)
+        // 兜底 only: 仅当 Signal A 漏 fire 时才补 (firedDebrisCheckFor 里没"A").
+        // 主路径走 Signal A (return phase 进入时), 节省 30min recycler 飞行.
+        // owner directive: 一次成功不重复, 所以 B 在 A 已 fire 时直接 skip.
         for (const [fid, info] of Array.from(tenant.expLastSeen.entries())) {
           if (currentExpIds.has(fid)) continue;
           if (info.return_at === null) {
             // Holding entry — keep expLastSeen so the next reappearance
-            // (returning phase) can update return_at and Signal A/B will
-            // fire correctly.
+            // (returning phase) can update return_at and Signal A will fire.
             continue;
           }
-          // v0.0.783 — operator 2026-06-05 "回家就派一次不用等30s, 如果失败就
-          // 30s以后重新派一次". 删 +30s settle delay, Signal B 立即 fire. 失败
-          // 重试在 wire.ts handler 里做 (fetch 失败 30s 后 retry same signal),
-          // 不靠 sidecar 多 fire 兜底.
-          const result = fireFor(fid, info.origin, info.dest, "fleet returned home", "B");
+          // Skip if Signal A already fired for this fleet (single-dispatch invariant).
+          const already = tenant.firedDebrisCheckFor.get(fid);
+          if (already?.has("A")) { tenant.expLastSeen.delete(fid); continue; }
+          // Signal A missed — fleet skipped return phase entirely (rare: snapshot gap).
+          // Fire Signal B as backup so debris collection still happens.
+          const result = fireFor(fid, info.origin, info.dest, "fleet returned home (Signal B backup, A missed)", "B");
           if (result === "fired") tenant.expLastSeen.delete(fid);
         }
         // v0.0.567 — GC removed. Operator 2026-06-01 observed 3 mission=8
