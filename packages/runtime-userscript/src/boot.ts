@@ -549,6 +549,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   } catch (err) {
     console.warn("[OgameX/click-lock] sandbox can't construct synthetic MouseEvent — click intercept DISABLED to avoid eating clicks", err);
   }
+  // v0.0.870 — click intercept is now FALLBACK only. defer-before gate in
+  // safe_fetch.ts prevents most cp= fetches during owner activity, and
+  // piggyback fast-path eliminates restore for same-cp fetches. This hook
+  // remains as belt-and-suspenders for: (a) emergency path (bypassBusy=true)
+  // (b) edge cases where owner clicks within ~10ms of an in-flight fetch
+  // starting. Expected fire rate post-v0.0.870: < 1% of clicks.
   // Synchronous prevent + async wait + replay implementation.
   const clickInterceptSync = (e: Event): void => {
     if (!canReplayClick) return; // failsafe — never block clicks we can't replay
@@ -1392,7 +1398,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.869";
+  const USERSCRIPT_VERSION = "0.0.870";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -3060,39 +3066,33 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       void e;
     }
   }
-  // Track user activity — skip background refresh while the operator is
-  // actively interacting with ogame (avoid stealing CPU / interfering
-  // with their clicks). Only real (isTrusted) mouse/keyboard counts.
-  let lastUserActivity = 0;
-  const _markUserActive = (e: Event): void => { if (e.isTrusted) lastUserActivity = Date.now(); };
+  // Track user activity — historically used as a per-callsite skipIfActive
+  // gate. v0.0.870 promoted this to a globalThis mirror so safe_fetch.ts can
+  // read it for the centralized defer-before owner-busy gate (replaces the
+  // local skipIfActive helper). Only real (isTrusted) mouse/keyboard counts.
+  const _markUserActive = (e: Event): void => {
+    if (!e.isTrusted) return;
+    const now = Date.now();
+    (globalThis as { __ogamexLastUserActivity?: number }).__ogamexLastUserActivity = now;
+  };
   env.doc.addEventListener("mousedown", _markUserActive, true);
   env.doc.addEventListener("keydown", _markUserActive, true);
   scheduleBurst(refreshOnePage, 8000);
   // v0.0.731 — operator 2026-06-03 "建造 核融合反應器 L14 (~709m)" 实际 L17
   // 还剩 21min. build_q 在 fetchResources JSON 不带 buildqueue 字段时永远
   // 不刷新 (Scorpius 实测), 只在 boot bursts 那一刻有数据然后永远过期.
-  // periodic force-supplies refresh + chunk-side build queue 抽取 = build_q
-  // 跟 ogame 真值 接近.
   //
-  // v0.0.867 — operator 2026-06-06 "前端操作感觉有点卡". 真因: 老 setInterval
-  // 10s+15s 无脑 fire, 不看 lastUserActivity, 抢 cp mutex 串行 → owner 点击排队
-  // 后面 → 视觉"卡". 老注释"Respects userBusy guard" 早就 outdated (userBusy
-  // L658 永远 false, lastUserActivity tracking 没消费). 修法两路并举:
-  //   1) 频率降: 10s → 30s, 15s → 45s (减 3x);
-  //   2) 真活动门: lastUserActivity < 5s 内有 mousedown/keydown 就跳本轮
-  //      (skipIfActive), build_q 偏差容忍 5-30s 换 UI 流畅.
-  const skipIfActive = (): boolean => {
-    const idleMs = Date.now() - lastUserActivity;
-    return idleMs < 5_000;
-  };
-  setInterval(() => {
-    if (skipIfActive()) return;
-    void refreshOnePage("supplies");
-  }, 30_000);
-  setInterval(() => {
-    if (skipIfActive()) return;
-    void refreshOnePage("facilities");
-  }, 45_000);
+  // v0.0.867 — operator 2026-06-06 "前端操作感觉有点卡". 频率降: 10s→30s,
+  // 15s→45s (减 3x), + 真活动门: lastUserActivity < 5s skipIfActive.
+  //
+  // v0.0.870 — owner "感觉这个逻辑设计的不好". skipIfActive 局部门 deleted.
+  // safe_fetch.ts now has a CENTRALIZED defer-before owner-busy gate that
+  // covers ALL cp= fetches (refreshOnePage, fetchResources, empire polls,
+  // jumpgate overlay, etc), not just these two intervals. fetchWithCp() now
+  // queues itself when owner mousedown/keydown < 5s ago AND not bypassBusy.
+  // refreshOnePage calls fetchWithCp internally, so the defer is automatic.
+  setInterval(() => { void refreshOnePage("supplies"); }, 30_000);
+  setInterval(() => { void refreshOnePage("facilities"); }, 45_000);
 
   // v0.0.635 — owner 2026-06-01 "要持久化 ogame 裏面的所有資料". Sidecar
   // now owns WorldState persistence (better-sqlite3 ogamex-world.db). The

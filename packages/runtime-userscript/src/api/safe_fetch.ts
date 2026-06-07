@@ -106,8 +106,10 @@ function currentOperatorCp(): string | null {
 }
 
 export interface FetchWithCpOpts {
-  /** Skip the userBusy check. RESERVED for emergency.* FS save chain only.
-   *  Anything that visibly bounces the operator UI must NOT use this. */
+  /** Skip the v0.0.870 owner-busy defer gate AND the legacy userBusy check.
+   *  RESERVED for emergency.* FS save chain, sendFleet retry path, jumpgate
+   *  executeJump, and any callsite where deferral would corrupt timing-sensitive
+   *  semantics. Background pollers / refreshers MUST NOT set this. */
   bypassBusy?: boolean;
   /** Skip the post-fetch session-cp restore. Use when you know operatorCp===sourcePID
    *  (no shift happened) or caller will do its own restore. */
@@ -119,6 +121,131 @@ export interface FetchWithCpOpts {
 }
 
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * v0.0.870 — defer-before owner-busy gate.
+ *
+ * Owner 2026-06-06: "感觉这个逻辑设计的不好 有更好的保护cp的方法吗？".
+ *
+ * Old architecture (v0.0.386-v0.0.869) was REACTIVE: every background cp=
+ * fetch fired immediately, then `clickInterceptSync` in boot.ts captured
+ * owner clicks during the in-flight window, awaited cp-idle, and replayed.
+ * Symptoms: owner click → "Syncing…" toast → 1-4s latency → click replays.
+ *
+ * New architecture is PREVENTIVE:
+ *   1. Defer-before gate: if owner mousedown/keydown < 5s ago AND the fetch
+ *      isn't emergency, queue it until idle. No more clicks-during-fetch.
+ *   2. Piggyback fast-path: if cp= target matches current session-cp, the
+ *      cp= URL param is a no-op — skip the restore phase entirely. The
+ *      in-flight window shrinks from "fetch + restore (~500-2000ms)" to
+ *      "fetch (~200ms)".
+ *   3. clickInterceptSync stays as fallback for the < 5s residual race
+ *      window between gate-pass and fetch-start, and for emergency callsites
+ *      (bypassBusy=true) which can't defer.
+ *
+ * Idle-threshold: 5s matches the boot.ts skipIfActive helper (now deleted,
+ * since this gate centralizes the behavior across ALL cp= callsites, not
+ * just refreshOnePage).
+ * ───────────────────────────────────────────────────────────────────── */
+const OWNER_IDLE_THRESHOLD_MS = 5_000;
+const DEFER_POLL_MS = 250;
+const DEFER_QUEUE_CAP = 50;
+const DEFER_DRAIN_GAP_MS = 50;
+const STATS_LOG_INTERVAL_MS = 5 * 60 * 1000;
+
+interface DeferredResolver {
+  resolve: () => void;
+  reject: (e: Error) => void;
+  enqueuedAt: number;
+}
+const deferredQueue: DeferredResolver[] = [];
+let deferDrainTimer: ReturnType<typeof setInterval> | null = null;
+
+function ownerLastActivityMs(): number {
+  const g = globalThis as { __ogamexLastUserActivity?: number };
+  return g.__ogamexLastUserActivity ?? 0;
+}
+
+function ownerIdleMs(): number {
+  const last = ownerLastActivityMs();
+  if (!last) return Number.POSITIVE_INFINITY; // no activity yet → treat as fully idle
+  return Date.now() - last;
+}
+
+function ownerBusyNow(): boolean {
+  return ownerIdleMs() < OWNER_IDLE_THRESHOLD_MS;
+}
+
+function startDrainTimerIfNeeded(): void {
+  if (deferDrainTimer) return;
+  deferDrainTimer = setInterval(() => {
+    if (deferredQueue.length === 0) {
+      if (deferDrainTimer) { clearInterval(deferDrainTimer); deferDrainTimer = null; }
+      return;
+    }
+    if (ownerBusyNow()) return;
+    // Idle — drain one at a time with a small gap to avoid burst.
+    const head = deferredQueue.shift();
+    if (head) head.resolve();
+    if (deferredQueue.length > 0) {
+      // Schedule next drain after a brief gap (re-uses the same interval loop;
+      // the gap is implicit via DEFER_POLL_MS, but we additionally sleep
+      // DEFER_DRAIN_GAP_MS via setTimeout to avoid hammering ogame when
+      // multiple deferred fetches are queued).
+      setTimeout(() => {
+        if (deferredQueue.length > 0 && !ownerBusyNow()) {
+          const next = deferredQueue.shift();
+          if (next) next.resolve();
+        }
+      }, DEFER_DRAIN_GAP_MS);
+    }
+  }, DEFER_POLL_MS);
+  // Don't keep Node-like event loop alive (no-op in browser, defensive for tests).
+  const t = deferDrainTimer as unknown as { unref?: () => void };
+  if (typeof t.unref === "function") t.unref();
+}
+
+async function deferUntilIdle(label: string): Promise<void> {
+  // Queue-full eviction: oldest gets rejected; caller's catch falls through.
+  if (deferredQueue.length >= DEFER_QUEUE_CAP) {
+    const oldest = deferredQueue.shift();
+    if (oldest) {
+      console.warn(`[safe_fetch/defer] queue full (${DEFER_QUEUE_CAP}) — evicting oldest, proceeding ${label} without defer`);
+      oldest.reject(new Error("deferred queue full"));
+    }
+  }
+  return new Promise<void>((resolve, reject) => {
+    deferredQueue.push({ resolve, reject, enqueuedAt: Date.now() });
+    startDrainTimerIfNeeded();
+  });
+}
+
+// v0.0.870 visibility counters — owner can read via window.__ogamexCpStats.
+interface CpStats {
+  fired: number;        // total fetchWithCp invocations that reached the network
+  deferred: number;     // invocations that went through the defer queue
+  piggybacked: number;  // invocations that skipped restore via piggyback
+  restored: number;     // invocations that ran the restore phase
+}
+const cpStats: CpStats = { fired: 0, deferred: 0, piggybacked: 0, restored: 0 };
+function mirrorCpStats(): void {
+  if (!_winRef) return;
+  (_winRef as Window & { __ogamexCpStats?: CpStats }).__ogamexCpStats = cpStats;
+}
+
+// Periodic summary log so owner can grep journalctl / DevTools to verify the
+// new architecture is firing (deferred > 0 proves the gate works).
+let _statsTimerStarted = false;
+function ensureStatsTimer(): void {
+  if (_statsTimerStarted) return;
+  _statsTimerStarted = true;
+  const t = setInterval(() => {
+    if (cpStats.fired === 0) return; // nothing to report yet
+    console.info(`[safe_fetch/stats] fired=${cpStats.fired} deferred=${cpStats.deferred} piggybacked=${cpStats.piggybacked} restored=${cpStats.restored}`);
+  }, STATS_LOG_INTERVAL_MS);
+  const u = t as unknown as { unref?: () => void };
+  if (typeof u.unref === "function") u.unref();
+}
 
 /**
  * Fetch wrapper with AbortController-driven timeout. Happy path: 0 overhead
@@ -172,8 +299,27 @@ export async function fetchWithCp(
   if (!_winRef) {
     throw new Error("[safe_fetch] not initialized — call initSafeFetch() at boot");
   }
+  ensureStatsTimer();
   if (!opts.bypassBusy && userBusyNow()) {
     throw new BusyDeferredError();
+  }
+  // v0.0.870 — defer-before owner-busy gate. If owner mousedown/keydown
+  // happened within OWNER_IDLE_THRESHOLD_MS, queue this fetch instead of
+  // firing immediately. Eliminates the reactive intercept→toast→replay loop
+  // for the bulk of background pollers (build_q refresh, fetchResources,
+  // empire polls, etc). Emergency callsites (bypassBusy=true) bypass this
+  // gate — they cannot defer (FS save, sendFleet retry, JG executeJump).
+  if (!opts.bypassBusy && ownerBusyNow()) {
+    cpStats.deferred += 1;
+    mirrorCpStats();
+    try {
+      await deferUntilIdle(baseUrl.slice(0, 60));
+    } catch (e) {
+      // Queue-full eviction or programmatic reject — log and proceed without
+      // deferral so caller doesn't lose work. The fetch still goes through
+      // acquireCpSlot below; click-intercept fallback covers race window.
+      console.warn(`[safe_fetch/defer] proceeding without defer for ${baseUrl.slice(0, 60)}:`, (e as Error).message ?? e);
+    }
   }
   // v0.0.461: register THIS fetch as in-flight BEFORE acquiring the cp slot.
   // Operator 2026-05-29 "我點選的時候正好去建造也能攔住嗎?" — without
@@ -193,6 +339,16 @@ export async function fetchWithCp(
   const releaseSlot = await acquireCpSlot();
   const operatorCp = currentOperatorCp();
   const sourceStr = String(sourcePID);
+  // v0.0.870 piggyback fast-path — if target sourcePID matches the current
+  // session-cp, the cp= URL param is a no-op for session state. Skipping the
+  // restore phase shrinks the in-flight window from ~500-2000ms to ~200ms.
+  // Edge: owner switching planets MID-fetch flips meta[ogame-planet-id] —
+  // we evaluate at fetch START, which is correct: if owner switched during,
+  // their new view is whatever they chose, so restoring the OLD value would
+  // fight them. Skipping restore is the safe behavior either way.
+  const isPiggyback = operatorCp !== null && operatorCp === sourceStr;
+  cpStats.fired += 1;
+  mirrorCpStats();
   const sep = baseUrl.includes("?") ? "&" : "?";
   const fullUrl = `${baseUrl}${sep}cp=${encodeURIComponent(sourceStr)}`;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
@@ -200,7 +356,13 @@ export async function fetchWithCp(
     return await fetchWithTimeout(fullUrl, init, timeoutMs);
   } finally {
     try {
-      if (!opts.skipRestore && operatorCp && operatorCp !== sourceStr) {
+      if (isPiggyback) {
+        cpStats.piggybacked += 1;
+        mirrorCpStats();
+      }
+      if (!isPiggyback && !opts.skipRestore && operatorCp && operatorCp !== sourceStr) {
+        cpStats.restored += 1;
+        mirrorCpStats();
         // v0.0.457: switched restore endpoint from eventList → overview ajax.
         // Evidence (operator 2026-05-29 morning DevTools probe): fetchEventBox
         // cp=moon does NOT actually switch server session-cp — server fell
