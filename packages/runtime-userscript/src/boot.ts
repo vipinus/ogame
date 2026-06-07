@@ -655,6 +655,35 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     env.doc.addEventListener("click", clickInterceptSync, true);
     env.doc.addEventListener("mousedown", clickInterceptSync, true);
   }
+  // v0.0.872 — owner directive: "加个 MutationObserver 兜底 meta 变化".
+  // planet/moon click 是 owner 真意源头 1, 但 URL bar 直输 / 浏览器回退 /
+  // ogame 自身 programmatic nav 也会改 meta[ogame-planet-id] — 全部走 MO 兜底.
+  // 护栏: cpInFlight > 0 时跳过 (大概率是我方 fetch 切的 meta, 非 owner 意).
+  // 不靠 _lastSelfSetCp 双 source-of-truth, 用 cpInFlight 简单门 + owner click
+  // 路径优先级最高 (planet link click 直接 setOwnerCurrentCp, 不依赖 MO).
+  try {
+    const metaEl = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]');
+    if (metaEl) {
+      const mo = new MutationObserver(() => {
+        const inFlight = (env.win as Window & { __ogamexCpInFlight?: number }).__ogamexCpInFlight ?? 0;
+        if (inFlight > 0) return; // 我方 fetch 切的, 不算 owner 意
+        const v = metaEl.content;
+        if (!v) return;
+        const winOwner = (env.win as Window & { __ogamexOwnerCp?: string }).__ogamexOwnerCp;
+        if (winOwner === v) return; // 已对齐, 跳
+        void (async (): Promise<void> => {
+          try {
+            const { setOwnerCurrentCp } = await import("./api/safe_fetch.js");
+            setOwnerCurrentCp(v);
+            console.info(`[OgameX/owner-cp] MO meta change → ${v} (URL nav / back / programmatic)`);
+          } catch { /* */ }
+        })();
+      });
+      mo.observe(metaEl, { attributes: true, attributeFilter: ["content"] });
+    }
+  } catch (e) {
+    console.warn("[OgameX/owner-cp] MO setup failed:", e);
+  }
   // safe_fetch will keep this mirror count current on each fetch start/end.
   // Polled here as a cheap fallback in case mirror gets out of sync.
   // v0.0.597 — also poll for lifeform-change signal from sniffer (page-world
@@ -1446,7 +1475,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.871";
+  const USERSCRIPT_VERSION = "0.0.872";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
