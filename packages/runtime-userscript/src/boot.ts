@@ -1475,7 +1475,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.883";
+  const USERSCRIPT_VERSION = "0.0.884";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -3168,8 +3168,29 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // jumpgate overlay, etc), not just these two intervals. fetchWithCp() now
   // queues itself when owner mousedown/keydown < 5s ago AND not bypassBusy.
   // refreshOnePage calls fetchWithCp internally, so the defer is automatic.
-  setInterval(() => { void refreshOnePage("supplies"); }, 30_000);
-  setInterval(() => { void refreshOnePage("facilities"); }, 45_000);
+  // v0.0.884 — owner 2026-06-07 "一直暂停 TM 才没问题, 打开就出问题":
+  // 不是点击瞬间, 是常驻背景 cp= fetch 一直跟 ogame fleet UI 抢 session-cp.
+  // ogame UI 期待 session 稳定, 我方 30s/45s 切个不停 → checkTarget POST 用
+  // 错 cp → response 残缺 → baseFuelCapacity null 挂.
+  // 修法 — 在 sensitive page (fleetdispatch 等 ogame UI 状态机敏感的页面)
+  // 整段 skip 背景 cp= fetch. defer-before (v0.0.870) 只防 owner 主动操作期间,
+  // 不防 ogame UI 自己在 idle wait response 时. 这里加 page-aware gate.
+  const isSensitivePage = (): boolean => {
+    const pg = (env.win as { currentPage?: string }).currentPage
+      ?? env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-page"]')?.content
+      ?? "";
+    // fleetdispatch + galaxy: 都用 checkTarget / fetchGalaxyContent, 我方
+    // cp shift 期间 ogame response 会被切到错 planet.
+    return pg === "fleetdispatch" || pg === "galaxy";
+  };
+  setInterval(() => {
+    if (isSensitivePage()) return;
+    void refreshOnePage("supplies");
+  }, 30_000);
+  setInterval(() => {
+    if (isSensitivePage()) return;
+    void refreshOnePage("facilities");
+  }, 45_000);
 
   // v0.0.635 — owner 2026-06-01 "要持久化 ogame 裏面的所有資料". Sidecar
   // now owns WorldState persistence (better-sqlite3 ogamex-world.db). The
