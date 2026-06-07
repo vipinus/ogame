@@ -649,7 +649,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   };
   if (canReplayClick) {
     env.doc.addEventListener("click", clickInterceptSync, true);
-    env.doc.addEventListener("mousedown", clickInterceptSync, true);
+    // v0.0.882 — owner 2026-06-07 实测 "TM 暂停就好 还是这样" v0.0.877 后仍卡.
+    // 唯一变量 = mousedown listener 上的 preventDefault. ogame fleet UI 在
+    // mousedown 阶段 prepare checkTarget POST + ship list 展开等, 我方拦截
+    // mousedown.preventDefault 把这条流截断 → 后续 click 处理时 ogame 状态
+    // 已不一致, checkTarget 卡死. 撤 mousedown 监听, 只保留 click. mousedown
+    // 上的 lastUserActivity tracking 走独立 `_markUserActive` (L3134), 不动.
+    // 老 mousedown 监听是 v0.0.386 "catch early" 的副作用考量, 真实 ogame
+    // dispatch chain 只看 click — 移除安全.
   }
   // v0.0.872 — owner directive: "加个 MutationObserver 兜底 meta 变化".
   // planet/moon click 是 owner 真意源头 1, 但 URL bar 直输 / 浏览器回退 /
@@ -1454,7 +1461,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.880";
+  const USERSCRIPT_VERSION = "0.0.882";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
