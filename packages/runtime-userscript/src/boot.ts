@@ -896,17 +896,8 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                   if (url.includes("cancelEntry") || url.includes("cancelbuildlistEntry")) {
                     try { window.__ogamexPollEmpire && window.__ogamexPollEmpire(); } catch (_) {}
                   }
-                  if (url.includes("action=checkTarget")) {
-                    try {
-                      const j = JSON.parse(t);
-                      if (j && j.shipsData) {
-                        window.postMessage(
-                          { source: "ogamex:shipsData", shipsData: j.shipsData },
-                          window.location.origin
-                        );
-                      }
-                    } catch (_) { /* not JSON */ }
-                  }
+                  // v0.0.877 — fetch branch 同步移除 checkTarget piggyback.
+                  // owner "TM 暂停就好" 实测线索, 详见 XHR branch 注释.
                   // Operator 2026-05-26/27: "發生跳躍事件 從 api 拿到源和目的
                   // 月球的計時時長並開始計時". Robust sniff — broader URL match
                   // + multiple body field candidates + 起始座標 fallback parse.
@@ -993,18 +984,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                 if (url.includes("cancelEntry") || url.includes("cancelbuildlistEntry")) {
                   try { window.__ogamexPollEmpire && window.__ogamexPollEmpire(); } catch(_) {}
                 }
-                // checkTarget shipsData piggyback (same as fetch branch)
-                if (url.includes("action=checkTarget")) {
-                  try {
-                    const j = JSON.parse(xhr.responseText || "{}");
-                    if (j && j.shipsData) {
-                      window.postMessage(
-                        { source: "ogamex:shipsData", shipsData: j.shipsData },
-                        window.location.origin
-                      );
-                    }
-                  } catch(_) {}
-                }
+                // v0.0.877 — owner 2026-06-07 "TM 暂停就好" 实测线索: 我方
+                // postMessage(ogamex:shipsData) 触发 msg-listener → ship_cargo_cache
+                // update, 跟 ogame fleet UI 抢同一帧 → moon checkTarget 244B 错
+                // 响应时 ogame 内部 baseFuelCapacity 读 null 直接挂. 移除 piggyback.
+                // cargo cache 走其他路径 (我方主动 cargo-probe 或 stale-tolerable).
+                // sniffer log 不动, 仍可诊断.
                 // Mirror fetch branch broader URL/field match.
                 if (/jump/i.test(url) || (reqBody && /jump/i.test(reqBody))) {
                   try {
@@ -1469,7 +1454,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.876";
+  const USERSCRIPT_VERSION = "0.0.877";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
