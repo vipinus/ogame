@@ -561,13 +561,23 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   //
   // 比老 awaitCpIdle 快: 不等我方 fetch 完, 主动对齐. 老 hook 留位作 fallback
   // 在新 path 报错时仍走 awaitCpIdle.
-  const isPlanetLink = (target: HTMLElement | null): { cp: string } | null => {
+  // v0.0.874 — owner 2026-06-07: "鼠标点击cp 修复的时候 保存本星球cp的时候
+  // 是否没有区分星球和月球, 出现一个问题 月球上派不出舰队". v0.0.871 selector
+  // `a[href*="cp="]` 太宽 — fleet dispatch 视图里的 intra-page link 也带 cp=
+  // (引用 sibling planet/moon), 被误判为"owner 切星球" → ownerCurrentCp 被
+  // 替换成 sibling 的 cp → 后续 click align 把 session 切到错的星球/月球 →
+  // 月球上派舰队时 session-cp 已被切回 planet → ogame 报"无可用舰船" 类错误.
+  // 修法 — 严格只匹配 ogame 左侧栏 .planetlink / .moonlink (per
+  // extractors/planets.ts 已知 selector). 不命中就不动 ownerCurrentCp, 让
+  // MO (v0.0.872) 兜底.
+  const isPlanetLink = (target: HTMLElement | null): { cp: string; kind: "planet" | "moon" } | null => {
     if (!target) return null;
-    const a = target.closest('a[href*="cp="]') as HTMLAnchorElement | null;
+    const a = target.closest('a.planetlink, a.moonlink') as HTMLAnchorElement | null;
     if (!a) return null;
     const href = a.getAttribute("href") ?? "";
     const m = href.match(/[?&]cp=(\d+)/);
-    return m ? { cp: m[1]! } : null;
+    if (!m) return null;
+    return { cp: m[1]!, kind: a.classList.contains("moonlink") ? "moon" : "planet" };
   };
   const clickInterceptSync = (e: Event): void => {
     if (!canReplayClick) return; // failsafe — never block clicks we can't replay
@@ -582,6 +592,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         try {
           const { setOwnerCurrentCp } = await import("./api/safe_fetch.js");
           setOwnerCurrentCp(planetHit.cp);
+          console.info(`[OgameX/owner-cp] click .${planetHit.kind}link → ${planetHit.cp}`);
         } catch { /* */ }
       })();
       return; // let ogame handle navigation
@@ -1475,7 +1486,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.872";
+  const USERSCRIPT_VERSION = "0.0.874";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
