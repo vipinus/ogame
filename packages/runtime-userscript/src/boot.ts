@@ -549,85 +549,30 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   } catch (err) {
     console.warn("[OgameX/click-lock] sandbox can't construct synthetic MouseEvent — click intercept DISABLED to avoid eating clicks", err);
   }
-  // v0.0.871 — owner directive 2026-06-06 "点击星球或者月球的时候保存当前
-  // 星球或者月球的cp, 其他点击的时候先保存当前cp 先恢复当前星球的cp 然后
-  // 发送点击, 然后再恢复cp". Replaces v0.0.386→v0.0.870 awaitCpIdle wait:
-  //
-  //   planet/moon link click → 提取 cp=X 写 ownerCurrentCp, 放行 (ogame 自切)
-  //   non-planet click:
-  //     1. 若 session-cp 已 = ownerCurrentCp → 放行 (无需对齐)
-  //     2. 否则 preventDefault → snapshot session-cp (= 我方背景 fetch 的 cp)
-  //        → restoreSessionCp(ownerCurrentCp) → replay click → restoreSessionCp(snapshot)
-  //
-  // 比老 awaitCpIdle 快: 不等我方 fetch 完, 主动对齐. 老 hook 留位作 fallback
-  // 在新 path 报错时仍走 awaitCpIdle.
-  // v0.0.874 — owner 2026-06-07: "鼠标点击cp 修复的时候 保存本星球cp的时候
-  // 是否没有区分星球和月球, 出现一个问题 月球上派不出舰队". v0.0.871 selector
-  // `a[href*="cp="]` 太宽 — fleet dispatch 视图里的 intra-page link 也带 cp=
-  // (引用 sibling planet/moon), 被误判为"owner 切星球" → ownerCurrentCp 被
-  // 替换成 sibling 的 cp → 后续 click align 把 session 切到错的星球/月球 →
-  // 月球上派舰队时 session-cp 已被切回 planet → ogame 报"无可用舰船" 类错误.
-  // 修法 — 严格只匹配 ogame 左侧栏 .planetlink / .moonlink (per
-  // extractors/planets.ts 已知 selector). 不命中就不动 ownerCurrentCp, 让
-  // MO (v0.0.872) 兜底.
-  const isPlanetLink = (target: HTMLElement | null): { cp: string; kind: "planet" | "moon" } | null => {
-    if (!target) return null;
-    const a = target.closest('a.planetlink, a.moonlink') as HTMLAnchorElement | null;
-    if (!a) return null;
-    const href = a.getAttribute("href") ?? "";
-    const m = href.match(/[?&]cp=(\d+)/);
-    if (!m) return null;
-    return { cp: m[1]!, kind: a.classList.contains("moonlink") ? "moon" : "planet" };
-  };
+  // v0.0.875 — RVERT v0.0.871-874. owner 2026-06-07 "都发不出去了 你是不是搞反了":
+  // ownerCurrentCp align 路径有 edge case 把 session 切到错星球, 导致月球上点
+  // Send Fleet → session 已被 align 到 planet → 月球派不出舰队 → 全栈受影响.
+  // 紧急回滚到 v0.0.870 的简单 awaitCpIdle wait + replay 模型. defer-before +
+  // piggyback (safe_fetch.ts) 留下来仍然减少 cp 抢占次数, 但 click hook 不再
+  // 主动 align — 等 fetch 完成自然到位再 replay. 慢 (最长 ~4s, v0.0.869 收紧),
+  // 但语义简单, 不会切错星球.
+  // setOwnerCurrentCp / __ogamexOwnerCp / MO 全部移除.
   const clickInterceptSync = (e: Event): void => {
-    if (!canReplayClick) return; // failsafe — never block clicks we can't replay
+    if (!canReplayClick) return;
     if (!e.isTrusted) return;
     const ev = e as Event & { [k: string]: unknown };
     if (ev[REPLAY_FLAG]) return;
-    const target = e.target as HTMLElement | null;
-    // (1) Planet/moon link click — capture owner's new intended planet, pass through.
-    const planetHit = isPlanetLink(target);
-    if (planetHit) {
-      void (async (): Promise<void> => {
-        try {
-          const { setOwnerCurrentCp } = await import("./api/safe_fetch.js");
-          setOwnerCurrentCp(planetHit.cp);
-          console.info(`[OgameX/owner-cp] click .${planetHit.kind}link → ${planetHit.cp}`);
-        } catch { /* */ }
-      })();
-      return; // let ogame handle navigation
-    }
-    // (2) Non-planet click — check alignment.
-    const ownerCp = (env.win as Window & { __ogamexOwnerCp?: string }).__ogamexOwnerCp
-      ?? env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content
-      ?? "";
-    const sessionCp = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
     const inFlight = (env.win as Window & { __ogamexCpInFlight?: number }).__ogamexCpInFlight ?? 0;
-    const aligned = ownerCp && ownerCp === sessionCp;
-    // Fast path: aligned OR nothing in flight → pass through.
-    if (aligned || inFlight === 0) return;
-    // Misaligned + in-flight: realign before dispatch.
+    if (inFlight === 0) return; // pass through
     e.preventDefault();
     e.stopPropagation();
     showSyncToast();
     void (async (): Promise<void> => {
       try {
-        const { restoreSessionCp } = await import("./api/safe_fetch.js");
-        // restore to owner's intended planet
-        if (ownerCp) await restoreSessionCp(ownerCp);
-      } catch (err) {
-        console.warn("[OgameX/click-lock] realign restore failed; fallback awaitCpIdle", err);
-        try {
-          const { awaitCpIdle } = await import("./api/safe_fetch.js");
-          await awaitCpIdle();
-        } catch { /* */ }
-      }
+        const { awaitCpIdle } = await import("./api/safe_fetch.js");
+        await awaitCpIdle();
+      } catch { /* */ }
       hideSyncToast();
-      // Replay the click as a synthetic event with REPLAY_FLAG set.
-      // Note: `view` is intentionally omitted — TM sandbox env.win isn't
-      // accepted as Window for MouseEvent construction. jQuery handlers
-      // and ogame's framework don't rely on .view; bubbles+cancelable
-      // are enough for the click to propagate normally.
       try {
         const target = e.target as HTMLElement | null;
         if (!target) return;
@@ -649,51 +594,11 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       } catch (err) {
         console.warn("[OgameX/click-lock] replay failed (click lost)", err);
       }
-      // v0.0.871 — owner spec step 4 "然后再恢复cp": restore session-cp back
-      // to whatever was running before we realigned (the in-flight fetch's
-      // own cp target). Background fetch's own finally{} would also restore,
-      // but doing it explicitly here keeps the contract crisp: session-cp at
-      // click-end == session-cp at click-start.
-      if (sessionCp && sessionCp !== ownerCp) {
-        try {
-          const { restoreSessionCp } = await import("./api/safe_fetch.js");
-          await restoreSessionCp(sessionCp);
-        } catch { /* */ }
-      }
     })();
   };
   if (canReplayClick) {
     env.doc.addEventListener("click", clickInterceptSync, true);
     env.doc.addEventListener("mousedown", clickInterceptSync, true);
-  }
-  // v0.0.872 — owner directive: "加个 MutationObserver 兜底 meta 变化".
-  // planet/moon click 是 owner 真意源头 1, 但 URL bar 直输 / 浏览器回退 /
-  // ogame 自身 programmatic nav 也会改 meta[ogame-planet-id] — 全部走 MO 兜底.
-  // 护栏: cpInFlight > 0 时跳过 (大概率是我方 fetch 切的 meta, 非 owner 意).
-  // 不靠 _lastSelfSetCp 双 source-of-truth, 用 cpInFlight 简单门 + owner click
-  // 路径优先级最高 (planet link click 直接 setOwnerCurrentCp, 不依赖 MO).
-  try {
-    const metaEl = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]');
-    if (metaEl) {
-      const mo = new MutationObserver(() => {
-        const inFlight = (env.win as Window & { __ogamexCpInFlight?: number }).__ogamexCpInFlight ?? 0;
-        if (inFlight > 0) return; // 我方 fetch 切的, 不算 owner 意
-        const v = metaEl.content;
-        if (!v) return;
-        const winOwner = (env.win as Window & { __ogamexOwnerCp?: string }).__ogamexOwnerCp;
-        if (winOwner === v) return; // 已对齐, 跳
-        void (async (): Promise<void> => {
-          try {
-            const { setOwnerCurrentCp } = await import("./api/safe_fetch.js");
-            setOwnerCurrentCp(v);
-            console.info(`[OgameX/owner-cp] MO meta change → ${v} (URL nav / back / programmatic)`);
-          } catch { /* */ }
-        })();
-      });
-      mo.observe(metaEl, { attributes: true, attributeFilter: ["content"] });
-    }
-  } catch (e) {
-    console.warn("[OgameX/owner-cp] MO setup failed:", e);
   }
   // safe_fetch will keep this mirror count current on each fetch start/end.
   // Polled here as a cheap fallback in case mirror gets out of sync.
@@ -1486,7 +1391,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.874";
+  const USERSCRIPT_VERSION = "0.0.875";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
