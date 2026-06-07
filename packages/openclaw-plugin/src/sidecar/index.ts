@@ -3204,21 +3204,34 @@ export async function startSidecar(
           }
         }
         // v0.0.873 — Signal B (fleet disappeared from outbound = fleet home)
-        // 兜底 only: 仅当 Signal A 漏 fire 时才补 (firedDebrisCheckFor 里没"A").
-        // 主路径走 Signal A (return phase 进入时), 节省 30min recycler 飞行.
-        // owner directive: 一次成功不重复, 所以 B 在 A 已 fire 时直接 skip.
+        // 兜底 only: 仅当 Signal A 漏 fire 时才补.
+        // v0.0.878 — owner 2026-06-07 战报 [3:260:9] aliens "又没派". 实证:
+        // expLastSeen 21 条 ALL return_at=null → Signal A 没 fire → 现行 Signal
+        // B 又 `return_at === null continue` 跳过 → 静默丢失. 原因: 此 fleet
+        // userscript snapshot 错过 return phase 那一瞬间 (return_at 字段在
+        // outbound + holding 时都是 null, 只 return phase 中段才会 != null).
+        // 修法 — time-based 兜底: 不论 return_at, fleet 从 outbound 消失 +
+        // arrival_at 已过 90min (holding 60min + return 30min) → 视为返航, fire.
+        const HOLDING_PLUS_RETURN_MS = 90 * 60 * 1000;
+        const nowMs = Date.now();
         for (const [fid, info] of Array.from(tenant.expLastSeen.entries())) {
           if (currentExpIds.has(fid)) continue;
-          if (info.return_at === null) {
-            // Holding entry — keep expLastSeen so the next reappearance
-            // (returning phase) can update return_at and Signal A will fire.
-            continue;
-          }
           // Skip if Signal A already fired for this fleet (single-dispatch invariant).
           const already = tenant.firedDebrisCheckFor.get(fid);
-          if (already?.has("A")) { tenant.expLastSeen.delete(fid); continue; }
-          // Signal A missed — fleet skipped return phase entirely (rare: snapshot gap).
-          // Fire Signal B as backup so debris collection still happens.
+          if (already?.has("A") || already?.has("B")) { tenant.expLastSeen.delete(fid); continue; }
+          if (info.return_at === null) {
+            // v0.0.878 time-based: arrival_at + 90min < now → fleet 必然已回家
+            // (远超 holding 60min + return 30min 上限). 不是 holding 残留.
+            if (info.arrival_at && (nowMs - info.arrival_at) > HOLDING_PLUS_RETURN_MS) {
+              const result = fireFor(fid, info.origin, info.dest, "fleet missed return phase, > 90min past arrival (Signal B time-based)", "B");
+              if (result === "fired") tenant.expLastSeen.delete(fid);
+              continue;
+            }
+            // Fresh disappearance, return_at null — keep, wait for next snapshot
+            // to observe return phase. (Signal A 主路径) or until 90min 兜底.
+            continue;
+          }
+          // return_at != null + disappeared → fleet returned home. Fire Signal B.
           const result = fireFor(fid, info.origin, info.dest, "fleet returned home (Signal B backup, A missed)", "B");
           if (result === "fired") tenant.expLastSeen.delete(fid);
         }
