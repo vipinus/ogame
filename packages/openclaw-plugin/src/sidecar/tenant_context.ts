@@ -118,6 +118,16 @@ export interface TenantContext {
    *  most once. v0.0.677 split into per-signal sets to avoid B/C cross-
    *  blocking each other. */
   readonly firedDebrisCheckFor: Map<string, Set<"A" | "B" | "C">>;
+  /** v0.0.881 — owner directive D 2026-06-07: track cumulative seen expedition
+   *  fleet IDs per origin coord. fast turnaround (fleet落地+立即起飞) 时,
+   *  Signal A/B 看不到 outbound 消失, 但 seenFleets.size > current count → 一
+   *  定有 fleet 回来了. coord 字符串 "G:S:P" 作 key. 不持久, sidecar restart
+   *  后重新统计 (current outbound 即基线, 不会 spurious fire). */
+  readonly expSeenFleetIdsByOrigin: Map<string, Set<string>>;
+  /** v0.0.881 — coord → 已 fire 过 aggregate debris-check 的 returned 数量.
+   *  当前 returned = seenIds.size - currentOutboundCount; 若大于此值, fire 一次,
+   *  update 为当前. wire.ts 6min dedup 兜底 fire-storm. */
+  readonly expReturnedCountByOrigin: Map<string, number>;
   /** directive id → goal id. Source of truth for ack→goal mapping.
    *  Trimmed when the success/failure ack arrives. */
   readonly directiveToGoal: Map<string, string>;
@@ -197,6 +207,9 @@ function newContext(): TenantContext {
     // Sprint 3
     fieldsFullCache: new Map<string, { until: number }>(),
     expeditionFailureCoolOff: new Map<string, number>(),
+    // v0.0.881 — owner directive D
+    expSeenFleetIdsByOrigin: new Map<string, Set<string>>(),
+    expReturnedCountByOrigin: new Map<string, number>(),
   };
 }
 

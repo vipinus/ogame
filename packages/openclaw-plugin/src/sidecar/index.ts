@@ -3235,6 +3235,40 @@ export async function startSidecar(
           const result = fireFor(fid, info.origin, info.dest, "fleet returned home (Signal B backup, A missed)", "B");
           if (result === "fired") tenant.expLastSeen.delete(fid);
         }
+        // v0.0.881 — owner directive D 2026-06-07: cumulative seen vs current
+        // count. fast turnaround (落地+立即起飞) Signal A/B 都看不到 outbound
+        // 消失. 但 seenFleets.size > currentOutboundCount per origin → 一定
+        // 有 fleet 回家了. fire 一次, wire.ts 6min dedup 兜底防重复.
+        // 不与 Signal A/B 互斥: 同 fleet 多信号 fire 都被 wire dedup squash.
+        const currentMission15CountByOrigin = new Map<string, number>();
+        for (const f of msg.snapshot.fleets_outbound ?? []) {
+          if (typeof f.id !== "string") continue;
+          if (f.mission !== 15) continue;
+          if (!Array.isArray(f.origin) || f.origin.length !== 3) continue;
+          const coord = f.origin.join(":");
+          currentMission15CountByOrigin.set(coord, (currentMission15CountByOrigin.get(coord) ?? 0) + 1);
+          let seen = tenant.expSeenFleetIdsByOrigin.get(coord);
+          if (!seen) { seen = new Set<string>(); tenant.expSeenFleetIdsByOrigin.set(coord, seen); }
+          seen.add(f.id);
+        }
+        for (const [coord, seen] of tenant.expSeenFleetIdsByOrigin) {
+          const curr = currentMission15CountByOrigin.get(coord) ?? 0;
+          const currReturned = seen.size - curr;
+          const prevReturned = tenant.expReturnedCountByOrigin.get(coord) ?? 0;
+          if (currReturned > prevReturned) {
+            const originParts = coord.split(":").map(Number);
+            if (originParts.length !== 3) continue;
+            const originPlanet = findOriginPlanet(coord);
+            if (!originPlanet) continue;
+            // dest 默认 :16 (远征槽), wire.ts 会同时扫 home pos
+            const dest = [originParts[0]!, originParts[1]!, 16] as const;
+            const reason = `aggregate D: seen=${seen.size} current=${curr} returned=${currReturned} (was ${prevReturned})`;
+            const result = fireFor(`agg-${coord}-${currReturned}`, originParts as readonly number[], dest, reason, "C");
+            if (result === "fired" || result === "noop") {
+              tenant.expReturnedCountByOrigin.set(coord, currReturned);
+            }
+          }
+        }
         // v0.0.567 — GC removed. Operator 2026-06-01 observed 3 mission=8
         // fleets dispatched for the SAME expedition return. Root cause: the
         // old GC deleted fid from firedDebrisCheckFor as soon as the fleet
