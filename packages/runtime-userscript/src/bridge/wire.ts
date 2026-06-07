@@ -247,21 +247,9 @@ export async function wireBridge(
     // backwards compat — sidecar's auto-fire from expedition return uses
     // dest_position=16. Ship type follows: pos===16 → pathfinder/explorer,
     // pos∈[1,15] → recycler.
-    // v0.0.879 — owner 2026-06-07 "只 check 本星球废墟". 默认从 :16 (远征槽)
-    // 改为 origin planet 自己的 position (1-15). recycler 处理本家位战斗残骸.
-    // explicit m.position 仍可强制 (manual trigger 兼容).
-    let targetPosition = typeof m.position === "number" && m.position >= 1 && m.position <= 16 ? m.position : 0;
-    if (targetPosition === 0) {
-      try {
-        const winStoreEarly = (window as Window & {
-          __ogamexStore?: { state?: { planets?: Record<string, { coords?: readonly number[] }> } };
-        }).__ogamexStore;
-        const originPlanet = winStoreEarly?.state?.planets?.[origin];
-        const homePos = Array.isArray(originPlanet?.coords) && originPlanet.coords.length >= 3
-          ? Number(originPlanet.coords[2]) : 0;
-        targetPosition = homePos >= 1 && homePos <= 15 ? homePos : 16;
-      } catch { targetPosition = 16; }
-    }
+    // v0.0.880 — owner 2026-06-07 撤 v0.0.879: 两个回收都要 (远征槽 :16 +
+    // 本家位 1-15), 不是二选一. 恢复原默认 16, v0.0.641 二次扫 home 仍跑.
+    let targetPosition = typeof m.position === "number" && m.position >= 1 && m.position <= 16 ? m.position : 16;
     // v0.0.568 — sentinel _CURRENT_ resolves to the operator's currently
     // viewed planet (meta[name=ogame-planet-id]) + its coords via the
     // sidecar-pushed empire snapshot in __ogamexStore.
