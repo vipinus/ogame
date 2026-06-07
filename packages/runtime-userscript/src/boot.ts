@@ -549,31 +549,68 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   } catch (err) {
     console.warn("[OgameX/click-lock] sandbox can't construct synthetic MouseEvent — click intercept DISABLED to avoid eating clicks", err);
   }
-  // v0.0.870 — click intercept is now FALLBACK only. defer-before gate in
-  // safe_fetch.ts prevents most cp= fetches during owner activity, and
-  // piggyback fast-path eliminates restore for same-cp fetches. This hook
-  // remains as belt-and-suspenders for: (a) emergency path (bypassBusy=true)
-  // (b) edge cases where owner clicks within ~10ms of an in-flight fetch
-  // starting. Expected fire rate post-v0.0.870: < 1% of clicks.
-  // Synchronous prevent + async wait + replay implementation.
+  // v0.0.871 — owner directive 2026-06-06 "点击星球或者月球的时候保存当前
+  // 星球或者月球的cp, 其他点击的时候先保存当前cp 先恢复当前星球的cp 然后
+  // 发送点击, 然后再恢复cp". Replaces v0.0.386→v0.0.870 awaitCpIdle wait:
+  //
+  //   planet/moon link click → 提取 cp=X 写 ownerCurrentCp, 放行 (ogame 自切)
+  //   non-planet click:
+  //     1. 若 session-cp 已 = ownerCurrentCp → 放行 (无需对齐)
+  //     2. 否则 preventDefault → snapshot session-cp (= 我方背景 fetch 的 cp)
+  //        → restoreSessionCp(ownerCurrentCp) → replay click → restoreSessionCp(snapshot)
+  //
+  // 比老 awaitCpIdle 快: 不等我方 fetch 完, 主动对齐. 老 hook 留位作 fallback
+  // 在新 path 报错时仍走 awaitCpIdle.
+  const isPlanetLink = (target: HTMLElement | null): { cp: string } | null => {
+    if (!target) return null;
+    const a = target.closest('a[href*="cp="]') as HTMLAnchorElement | null;
+    if (!a) return null;
+    const href = a.getAttribute("href") ?? "";
+    const m = href.match(/[?&]cp=(\d+)/);
+    return m ? { cp: m[1]! } : null;
+  };
   const clickInterceptSync = (e: Event): void => {
     if (!canReplayClick) return; // failsafe — never block clicks we can't replay
     if (!e.isTrusted) return;
     const ev = e as Event & { [k: string]: unknown };
     if (ev[REPLAY_FLAG]) return;
-    // Sync read — must check inFlight count before letting ogame process.
-    // Use a window mirror set by safe_fetch (avoids dynamic import in sync
-    // path). safe_fetch updates window.__ogamexCpInFlight on every fetch.
+    const target = e.target as HTMLElement | null;
+    // (1) Planet/moon link click — capture owner's new intended planet, pass through.
+    const planetHit = isPlanetLink(target);
+    if (planetHit) {
+      void (async (): Promise<void> => {
+        try {
+          const { setOwnerCurrentCp } = await import("./api/safe_fetch.js");
+          setOwnerCurrentCp(planetHit.cp);
+        } catch { /* */ }
+      })();
+      return; // let ogame handle navigation
+    }
+    // (2) Non-planet click — check alignment.
+    const ownerCp = (env.win as Window & { __ogamexOwnerCp?: string }).__ogamexOwnerCp
+      ?? env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content
+      ?? "";
+    const sessionCp = env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
     const inFlight = (env.win as Window & { __ogamexCpInFlight?: number }).__ogamexCpInFlight ?? 0;
-    if (inFlight === 0) return; // pass through
+    const aligned = ownerCp && ownerCp === sessionCp;
+    // Fast path: aligned OR nothing in flight → pass through.
+    if (aligned || inFlight === 0) return;
+    // Misaligned + in-flight: realign before dispatch.
     e.preventDefault();
     e.stopPropagation();
     showSyncToast();
     void (async (): Promise<void> => {
       try {
-        const { awaitCpIdle } = await import("./api/safe_fetch.js");
-        await awaitCpIdle();
-      } catch { /* */ }
+        const { restoreSessionCp } = await import("./api/safe_fetch.js");
+        // restore to owner's intended planet
+        if (ownerCp) await restoreSessionCp(ownerCp);
+      } catch (err) {
+        console.warn("[OgameX/click-lock] realign restore failed; fallback awaitCpIdle", err);
+        try {
+          const { awaitCpIdle } = await import("./api/safe_fetch.js");
+          await awaitCpIdle();
+        } catch { /* */ }
+      }
       hideSyncToast();
       // Replay the click as a synthetic event with REPLAY_FLAG set.
       // Note: `view` is intentionally omitted — TM sandbox env.win isn't
@@ -600,6 +637,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         target.dispatchEvent(synth);
       } catch (err) {
         console.warn("[OgameX/click-lock] replay failed (click lost)", err);
+      }
+      // v0.0.871 — owner spec step 4 "然后再恢复cp": restore session-cp back
+      // to whatever was running before we realigned (the in-flight fetch's
+      // own cp target). Background fetch's own finally{} would also restore,
+      // but doing it explicitly here keeps the contract crisp: session-cp at
+      // click-end == session-cp at click-start.
+      if (sessionCp && sessionCp !== ownerCp) {
+        try {
+          const { restoreSessionCp } = await import("./api/safe_fetch.js");
+          await restoreSessionCp(sessionCp);
+        } catch { /* */ }
       }
     })();
   };
@@ -1398,7 +1446,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.870";
+  const USERSCRIPT_VERSION = "0.0.871";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;

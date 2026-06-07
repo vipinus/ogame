@@ -33,6 +33,44 @@ export function initSafeFetch(deps: SafeFetchDeps): void {
   _store = deps.store;
   _winRef = deps.win;
   _docRef = deps.doc;
+  // v0.0.871 — seed ownerCurrentCp from meta on boot.
+  try {
+    const v = deps.doc.querySelector<HTMLMetaElement>('meta[name="ogame-planet-id"]')?.content ?? "";
+    if (v) _ownerCurrentCp = v;
+  } catch { /* */ }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * v0.0.871 — Owner's intended planet (authoritative source of truth).
+ *
+ * Owner directive 2026-06-06: "点击星球或者月球的时候保存当前星球或者月球的cp，
+ * 其他点击的时候先保存当前cp 先恢复当前星球的cp 然后发送点击，然后再恢复cp".
+ *
+ * Why: meta[name=ogame-planet-id] reflects whatever cp= was set last, including
+ * our background fetches. It's NOT a reliable view of owner's intent. By
+ * explicitly tracking owner's planet/moon clicks, we get a stable signal
+ * separate from session-cp transient state.
+ *
+ * Writers:
+ *   - initSafeFetch (boot): seed from current meta
+ *   - setOwnerCurrentCp (boot.ts click-intercept): on planet/moon link click
+ *   - MutationObserver on meta (optional, future)
+ *
+ * Readers:
+ *   - boot.ts clickInterceptSync: align session-cp before non-planet click
+ *   - safe_fetch's restore phase could optionally prefer this over meta read
+ *     (kept on meta for now to preserve existing restore semantics; the
+ *      align-before-click new path is owner's explicit ask).
+ * ───────────────────────────────────────────────────────────────────── */
+let _ownerCurrentCp: string | null = null;
+export function getOwnerCurrentCp(): string | null { return _ownerCurrentCp; }
+export function setOwnerCurrentCp(cp: string): void {
+  if (!cp) return;
+  if (_ownerCurrentCp === cp) return;
+  _ownerCurrentCp = cp;
+  if (_winRef) {
+    (_winRef as Window & { __ogamexOwnerCp?: string }).__ogamexOwnerCp = cp;
+  }
 }
 
 /** Thrown when fetchWithCp() is called while operator is interacting with ogame.
