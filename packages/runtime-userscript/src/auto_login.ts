@@ -49,38 +49,17 @@ export function maybeAutoLoginFromHub(win: Window): boolean {
   }
   const isLobby = /lobby\.ogame\.gameforge\.com/i.test(win.location.href);
   if (!isLobby) return false;
+  // v0.0.1003 — owner 2026-06-09 "不要限制登录, 你不spam就不会被封":
+  // 撤掉所有 cooldown / kill-switch / per-account counter. owner 自己控制
+  // 不 spam, sidecar 也不会主动循环 (v0.0.1000 节流). 入 lobby = 直接 click
+  // Last Played, 3s URL 不变就 fallback /en_GB/accounts (v0.0.994 兜底).
+  // 显式 kill 仍保留: localStorage.OGAMEX_AUTO_LOGIN_DISABLED=1.
   try {
     if (win.localStorage.getItem(DISABLE_KEY) === "1") {
       console.info("[OgameX/auto-login] DISABLED via OGAMEX_AUTO_LOGIN_DISABLED");
       return false;
     }
   } catch { /* */ }
-  // v0.0.989k 引入 per-account cooldown 用 serverDetails 文本拼 key 后缀.
-  // v0.0.992 修 owner "卡登录页面" 回归: gameforge lobby 是 React SPA, script
-  // run-at=document-end 时 #root 还空 → .serverDetails 不存在 → acctTag=""
-  // → 退回 base CLICKED_KEY → 旧账号写的 base cooldown 卡死新账号.
-  //
-  // 顶层修复: 早期 cooldown check 只在 acctTag 已就绪 (React 渲染完) 时跑
-  // (快路径). React 未渲染时跳过早 check, 全延后到 tick() 里 — tick 找到
-  // button 时 .serverDetails 必然也在 (它们同属 #joinGame 子树), 用最新 tag
-  // 推导 per-account key + check cooldown + mark + click. 闭环.
-  const acctTag = readCurrentServerTag(win);
-  if (acctTag) {
-    const clickedKey = `${CLICKED_KEY}_${acctTag}`;
-    const countKey = `${COUNT_KEY}_${acctTag}`;
-    if (clickCountTooMany(win, countKey)) {
-      console.warn(`[OgameX/auto-login] kill-switch active for ${acctTag}. Run: ` +
-        `localStorage.removeItem("${countKey}"); localStorage.removeItem("${clickedKey}")`);
-      return false;
-    }
-    if (alreadyClickedRecently(win, clickedKey)) {
-      const ageS = Math.round((Date.now() - readNum(win, clickedKey)) / 1000);
-      console.info(`[OgameX/auto-login] cooldown active for ${acctTag} (last click ${ageS}s ago).`);
-      return false;
-    }
-  } else {
-    console.info("[OgameX/auto-login] serverDetails not yet rendered — deferring cooldown check to tick");
-  }
   let savedSelector = "";
   try { savedSelector = win.localStorage.getItem(SELECTOR_KEY) ?? ""; } catch { /* */ }
   runLastPlayClicker(win, savedSelector);
@@ -211,25 +190,9 @@ function runLastPlayClicker(win: Window, customSelector: string): void {
     }
     if (!target) target = findLastPlayButton(win.document);
     if (target) {
-      // v0.0.992 — React 渲染完后 .serverDetails 与 button 同时出现 (同属
-      // #joinGame 子树). 这里 re-read acctTag → per-account key 正确, fresh
-      // 账号不被旧 base CLICKED_KEY cooldown 卡.
-      const acctTagNow = readCurrentServerTag(win);
-      const clickedKey = acctTagNow ? `${CLICKED_KEY}_${acctTagNow}` : CLICKED_KEY;
-      const countKey = acctTagNow ? `${COUNT_KEY}_${acctTagNow}` : COUNT_KEY;
-      if (clickCountTooMany(win, countKey)) {
-        console.warn(`[OgameX/auto-login] kill-switch active for ${acctTagNow || "(no-tag)"}. ` +
-          `Run: localStorage.removeItem("${countKey}"); localStorage.removeItem("${clickedKey}")`);
-        return;
-      }
-      if (alreadyClickedRecently(win, clickedKey)) {
-        const ageS = Math.round((Date.now() - readNum(win, clickedKey)) / 1000);
-        console.info(`[OgameX/auto-login] cooldown active for ${acctTagNow || "(no-tag)"} ` +
-          `(last click ${ageS}s ago). Skip.`);
-        return;
-      }
-      console.info(`[OgameX/auto-login] clicking (acct=${acctTagNow || "(no-tag)"}): ${describe(target)}`);
-      markClicked(win, clickedKey, countKey);
+      // v0.0.1003 — owner "不要限制登录, 你不spam就不会被封": 撤掉 cooldown
+      // / kill-switch / per-account counter, 直接 click.
+      console.info(`[OgameX/auto-login] clicking: ${describe(target)}`);
       const urlBeforeClick = win.location.href;
       try { target.click(); } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
       // v0.0.994 — owner 2026-06-09 "新账号卡登录页面": gameforge React click
