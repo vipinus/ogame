@@ -23,9 +23,17 @@
 
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
-import type { GoalRow } from "./goals_types.js";
 import type { WorldState } from "@ogamex/shared";
 import { mineProdRatio, cumulativeMineCost, buildSecondsForRange } from "./optimizer.js";
+
+/** Closure deps injected by sidecar/index.ts boot — REUSES the existing
+ *  createGoal + setMainGoal pipelines (with dedup + triggerDispatch + uid
+ *  scoping). v0.0.989d — owner 2026-06-08 "不要每次都重做 昨天做好的不能复用吗".
+ *  Old direct upsertGoal path produced custom growth-* prefix that bypassed
+ *  panel tree rendering + planner buil-* cascade conventions. */
+export interface GrowthCreateBuildMainGoal {
+  (uid: string, planet: string, building: string, level: number): Promise<string | null>;
+}
 
 interface PlanetSnapshot {
   id: string;
@@ -167,6 +175,7 @@ export async function runGrowthDaemonOnce(
   getStateForUid: (uid: string) => WorldState | null,
   goalsStorePg: GoalsStorePg,
   worldStateStorePg: WorldStateStorePg,
+  createBuildMainGoal: GrowthCreateBuildMainGoal,
 ): Promise<{ emitted: number; skipped: number }> {
   // v0.0.989a — owner 2026-06-08: in-memory tenantRegistry only hydrates on
   // active WS session; eb990432 silent-skipped first round despite having 3
@@ -200,19 +209,12 @@ export async function runGrowthDaemonOnce(
     const planet = planetRaw as PlanetSnapshot;
     planet.id = planetId;
     // Skip planets that have an explicit main goal (owner manually steering).
-    const hasMainGoal = allRows.some((r: GoalRow) =>
+    const hasMainGoal = allRows.some((r) =>
       (r.goal as { planet?: string }).planet === planetId &&
       (r.goal as { is_main_goal?: boolean }).is_main_goal === true &&
       ["active", "blocked", "pending"].includes(r.status),
     );
     if (hasMainGoal) { skipped++; continue; }
-    // Skip if already have a growth-* active for this planet (dedup).
-    const growthPrefix = `growth-${planetId}-`;
-    const hasGrowthActive = allRows.some((r: GoalRow) =>
-      r.goal.id.startsWith(growthPrefix) &&
-      ["active", "blocked", "pending"].includes(r.status),
-    );
-    if (hasGrowthActive) { skipped++; continue; }
     const pick = pickBestGrowthAction(planet, econSpeed);
     if (!pick || pick.roi < MIN_ROI_VALUE) { skipped++; continue; }
     // v0.0.989c — owner 2026-06-08 "没做到 一个星球一颗树": 单 build 节点不是 tree.
@@ -222,33 +224,20 @@ export async function runGrowthDaemonOnce(
     const buildings = (planet as { buildings?: Record<string, number> }).buildings ?? {};
     const curLvl = buildings[pick.building] ?? 0;
     const treeTargetLvl = curLvl + TREE_HORIZON_LEVELS;
-    const goalId = `growth-${planetId}-${pick.building}-L${treeTargetLvl}`;
-    const now = Date.now();
-    const goal = {
-      id: goalId,
-      type: "build" as const,
-      planet: planetId,
-      target: { building: pick.building, level: treeTargetLvl },
-      status: "pending" as const,
-      priority: 7,
-      is_main_goal: true,
-      current_step: "queued",
-      created_at: now,
-      progress_pct: 0,
-      eta_at: null as number | null,
-    };
+    // v0.0.989d — owner 2026-06-08 "不要每次都重做 昨天做好的不能复用吗".
+    // REUSE createGoal callback (dedup + buil-* id + triggerDispatch) +
+    // setMainGoal (is_main_goal=true + tree render). 不再 upsertGoal 直写.
     try {
-      const row: GoalRow = {
-        goal: goal as unknown as GoalRow["goal"],
-        status: "pending",
-        created_at: now,
-        updated_at: now,
-      };
-      await worldStateStorePg.upsertGoal(uid, row);
-      console.info(`[growth-daemon] uid=${uid.slice(0, 8)} planet=${planetId} EMIT ${pick.building} L${pick.level} ${pick.note}`);
-      emitted += 1;
+      const goalId = await createBuildMainGoal(uid, planetId, pick.building, treeTargetLvl);
+      if (goalId) {
+        console.info(`[growth-daemon] uid=${uid.slice(0, 8)} planet=${planetId} EMIT ${pick.building} L${treeTargetLvl} (curL=${curLvl} +${TREE_HORIZON_LEVELS}) id=${goalId} ${pick.note}`);
+        emitted += 1;
+      } else {
+        console.info(`[growth-daemon] uid=${uid.slice(0, 8)} planet=${planetId} createBuildMainGoal returned null (dedup or unavailable)`);
+        skipped += 1;
+      }
     } catch (e) {
-      console.warn(`[growth-daemon] upsert ${goalId} failed:`, e instanceof Error ? e.message : e);
+      console.warn(`[growth-daemon] createBuildMainGoal failed:`, e instanceof Error ? e.message : e);
     }
   }
   return { emitted, skipped };
@@ -259,6 +248,7 @@ export function startGrowthDaemon(deps: {
   worldStateStorePg: WorldStateStorePg;
   getStateForUid: (uid: string) => WorldState | null;
   loadActiveTenantUids: () => Promise<string[]>;
+  createBuildMainGoal: GrowthCreateBuildMainGoal;
 }): { stop: () => void } {
   const tick = async (): Promise<void> => {
     try {
@@ -266,7 +256,7 @@ export function startGrowthDaemon(deps: {
       let tot = { emitted: 0, skipped: 0 };
       for (const uid of uids) {
         try {
-          const r = await runGrowthDaemonOnce(uid, deps.getStateForUid, deps.goalsStorePg, deps.worldStateStorePg);
+          const r = await runGrowthDaemonOnce(uid, deps.getStateForUid, deps.goalsStorePg, deps.worldStateStorePg, deps.createBuildMainGoal);
           tot.emitted += r.emitted;
           tot.skipped += r.skipped;
         } catch (e) {

@@ -3265,6 +3265,52 @@ export async function startSidecar(
       goalsStorePg,
       worldStateStorePg: pgStore,
       getStateForUid: (uid: string) => tenantRegistry.get(uid).worldState ?? null,
+      // v0.0.989d — inline createGoal+setMainGoal flow (same id format + dedup
+      // shape as the createGoal callback HttpServer wires below); avoids ALS
+      // re-entry since daemon ticks have no ambient uid.
+      createBuildMainGoal: async (uid, planet, building, level) => {
+        try {
+          // dedup: same uid + build + planet + (building,level) active → return existing id
+          if (goalsStorePg) {
+            const allRows = await goalsStorePg.list(uid);
+            const existing = allRows.find((r) => {
+              if (r.goal.type !== "build") return false;
+              if (["completed", "cancelled"].includes(r.status)) return false;
+              if ((r.goal.planet ?? "") !== planet) return false;
+              const rt = r.goal.target as Record<string, unknown> | undefined;
+              return rt?.building === building && rt?.level === level;
+            });
+            if (existing) {
+              if (!(existing.goal as { is_main_goal?: boolean }).is_main_goal) {
+                await pgStore!.setMainGoal(uid, existing.goal.id);
+              }
+              return existing.goal.id;
+            }
+          }
+          const id = `buil-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const now = Date.now();
+          const row: GoalRow = {
+            goal: {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              id, type: "build" as any,
+              target: { building, level },
+              planet,
+              priority: 7,
+              is_main_goal: true,
+              status: "pending", created_at: now,
+              progress_pct: 0, current_step: "queued", eta_at: null,
+            },
+            status: "pending", created_at: now, updated_at: now,
+          };
+          await pgStore!.upsertGoal(uid, row);
+          await pgStore!.setMainGoal(uid, id);
+          triggerDispatch();
+          return id;
+        } catch (e) {
+          console.warn(`[growth-daemon] createBuildMainGoal failed uid=${uid.slice(0,8)} planet=${planet} ${building} L${level}:`, e instanceof Error ? e.message : e);
+          return null;
+        }
+      },
       loadActiveTenantUids: async (): Promise<string[]> => {
         if (!pgStore) return [];
         try {
