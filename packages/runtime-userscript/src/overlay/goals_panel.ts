@@ -4282,11 +4282,22 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         return `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String(tgB?.building ?? ""))}" data-fill-m="${Math.ceil(f.m)}" data-fill-c="${Math.ceil(f.c)}" data-fill-d="${Math.ceil(f.d)}" style="${btnStyle("#205a40", "#408a60")} font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`;
       })();
       // v0.0.1034 — 当前任务 mini-row: 永远显 (即使主行 collapsed), 不参加折叠.
-      // 显 currentStep tech+level + shortage chip + transport button.
-      // cs hoisted to top of renderSingleGoalRow (v0.0.1034b).
-      // v0.0.1035 — owner 2026-06-09 "永远显示不参加折叠" 字面含义: expanded
-      // 时也显. 去掉 !isExpanded gate. 加 "⚡ 当前缺" 跟 header "📦 总缺" 区分.
+      // v0.0.1035 — 去掉 !isExpanded gate. 加 "⚡ 当前缺" 跟 header "📦 总缺" 区分.
+      // v0.0.1036 — owner 2026-06-09 "已经在研究 L5 了 L5 后面不显示缺多少不显示
+      // 运输, 只有等资源的时候才显示": cs 跟 ogame body_build_q 匹配 (in-queue) →
+      // 只显倒计时 ETA, 不显 shortage chip / transport button.
       const currentStepRow = cs ? (() => {
+        const bq = g.body_build_q;
+        const bqMatchesCS = bq && bq.tech === cs.tech && bq.level === cs.level
+          && (bq.ends_at ?? 0) > Date.now();
+        const kindIcon = cs.kind === "research" ? "🧪" : "🏗";
+        if (bqMatchesCS) {
+          const etaSec = Math.max(0, Math.round(((bq!.ends_at ?? 0) - Date.now()) / 1000));
+          return `<div style="margin-top:3px; padding:3px 6px 3px 18px; background:#1a2332; border-left:2px solid #408a60; font-size:11px; color:#cfd6e2; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span>${kindIcon} ${escapeHtml(techName(cs.tech))} <span style="color:#8090a8;">L${cs.level}</span></span>
+            <span style="color:#7cfc00; font-size:10px;">⏱ ${fmtSeconds(etaSec)}</span>
+          </div>`;
+        }
         const csh = cs.shortage;
         const bits = [
           csh.m > 0 ? `${fmtRes2(csh.m)} m` : "",
@@ -4298,7 +4309,6 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         const csBtnHtml = csTotal > 0
           ? `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="background:#205a40; color:#fff; border:1px solid #408a60; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:10px;" title="${escapeHtml(t('auto.154'))}">${escapeHtml(t('auto.274'))}</button>`
           : "";
-        const kindIcon = cs.kind === "research" ? "🧪" : "🏗";
         return `<div style="margin-top:3px; padding:3px 6px 3px 18px; background:#1a2332; border-left:2px solid #408a60; font-size:11px; color:#cfd6e2; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
           <span>${kindIcon} ${escapeHtml(techName(cs.tech))} <span style="color:#8090a8;">L${cs.level}</span></span>
           ${csShortageHtml}${csBtnHtml}

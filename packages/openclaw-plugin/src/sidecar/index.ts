@@ -1365,25 +1365,11 @@ export async function startSidecar(
               // capture only once (deepest leaf reached first in post-order
               // traversal). This is the cost ogame will charge for the very
               // next dispatched directive on this goal.
-              if (currentStep === null) {
-                currentStep = {
-                  tech: techName,
-                  kind,
-                  level: l,
-                  cost: { m: cost.m, c: cost.c, d: cost.d ?? 0 },
-                };
-              }
-              // Operator 2026-05-29: accumulate the level cost into the
-              // chain-wide total BEFORE bank subtraction so the panel can
-              // show "缺 X 资源" regardless of what production trickled in.
-              totalCost.m += cost.m;
-              totalCost.c += cost.c;
-              totalCost.d += cost.d ?? 0;
-              // v0.0.773 — operator 2026-06-04 "糊涂了吧 已经运资源开始建设
-              // 了 你还关注矿干嘛": 这一级如果正在 ogame build_q 里 (已扣
-              // 资源, ogame countdown 是 ground truth), 用 endsAt 短路;
-              // 不再叠 sidecar 悲观 wait (基于 production 算出来的 346d
-              // 跟实际无关, 因为 operator 通过 transport 调资源).
+              // v0.0.1036 — owner 2026-06-09 "已经在研究 L5 了 总资源要减掉当前
+              // 已经进行中的资源": 检查 ogame queue 是否在跑这一级, 是 → 资源已扣
+              // 不计入 totalCost (panel 主行总缺反映"还需要凑多少资源给后续 dispatch").
+              // currentStep 仍 capture 这一级 (status hint "researching L5"), 但
+              // cs.shortage 算 max(0, cost - bank) = 0 (in-queue cost 已扣, 没 shortage).
               let stepOverride: number | null = null;
               if (kind === "building" && planet) {
                 const bq = (planet as { build_q?: { building?: string; level?: number; ends_at?: number } | null }).build_q;
@@ -1396,6 +1382,21 @@ export async function startSidecar(
                 if (rq && rq.tech === techName && rq.level === l && typeof rq.ends_at === "number") {
                   stepOverride = Math.max(0, Math.floor((rq.ends_at - Date.now()) / 1000));
                 }
+              }
+              if (currentStep === null) {
+                currentStep = {
+                  tech: techName,
+                  kind,
+                  level: l,
+                  // v0.0.1036 — in-queue level: cost 0 (已扣) 让 cs.shortage 算 0.
+                  cost: stepOverride !== null ? { m: 0, c: 0, d: 0 } : { m: cost.m, c: cost.c, d: cost.d ?? 0 },
+                };
+              }
+              // v0.0.1036 — in-queue level 资源已扣 → 不累加 totalCost.
+              if (stepOverride === null) {
+                totalCost.m += cost.m;
+                totalCost.c += cost.c;
+                totalCost.d += cost.d ?? 0;
               }
               let wait: number; let build: number;
               if (stepOverride !== null) {
