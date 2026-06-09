@@ -181,6 +181,16 @@ export async function runGrowthDaemonOnce(
     }
   }
   if (!state) return { emitted: 0, skipped: 0 };
+  // v0.0.989b — owner 2026-06-08 "改错了 你又吧约束忘了 天体物理9 以上,
+  // 不考虑 矿和存储罐". planner.ts:isPostExpeditionPhase + optimizer.ts:329
+  // postPhaseSkipMine 都已用 astrophysics>=9 阈值跳过矿/存储 (post-expedition
+  // 经济阶段 transport 接管补给). growth_daemon 必须对齐, 否则同账号 3 处约束
+  // 不拉通.
+  const astro = (state as { research?: { levels?: Record<string, number> } }).research?.levels?.["astrophysics"] ?? 0;
+  if (astro >= 9) {
+    console.info(`[growth-daemon] uid=${uid.slice(0,8)} SKIP-ALL astrophysics=${astro} >=9 (post-expedition phase)`);
+    return { emitted: 0, skipped: 0 };
+  }
   const allRows = await goalsStorePg.list(uid);
   const econSpeed = (state as { server?: { speed?: number } }).server?.speed ?? 1;
   let emitted = 0;
