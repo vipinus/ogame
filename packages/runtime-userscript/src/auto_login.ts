@@ -30,8 +30,13 @@ const CLICKED_KEY = "OGAMEX_AUTO_LOGIN_CLICKED_AT";
 const COUNT_KEY = "OGAMEX_AUTO_LOGIN_CLICK_COUNT";
 const POLL_MS = 1000;
 const TIMEOUT_MS = 60_000;
-const COOLDOWN_MS = 5 * 60_000;
-const MAX_CLICKS_IN_WINDOW = 3;
+// v0.0.1002 — owner 2026-06-09 "新账号没有自动登录": 之前 5min cooldown +
+// 3次/5min kill-switch 太激进, owner 反复尝试登录直接进入"5min 永久 kill"状态
+// (老 localStorage 残留). v0.0.994 fallback 已经处理 click-loop 风险 (3s URL
+// 不变 → 跳 /en_GB/accounts), kill-switch 多余. cooldown 降到 30s 防 ogame
+// rate limit. MAX_CLICKS_IN_WINDOW 大幅放宽到 20 实质等于关闭.
+const COOLDOWN_MS = 30_000;
+const MAX_CLICKS_IN_WINDOW = 20;
 const ABORT_WINDOW_MS = 5 * 60_000;
 
 export function maybeAutoLoginFromHub(win: Window): boolean {
