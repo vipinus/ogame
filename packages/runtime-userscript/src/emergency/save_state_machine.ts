@@ -167,6 +167,33 @@ export class SaveStateMachine {
         this.lastError = e instanceof Error ? e.message : String(e);
         console.error(`[fsm] ❌ RECALLING → FALLBACK  err=${this.lastError}`);
         this.state = "FALLBACK";
+        // v0.0.996 — owner 2026-06-09 "FS 没有自动召回" + "我手动召回了" 实证:
+        // 8 个 FSM 全 FALLBACK (ogame /empire 503 风暴, recall POST 一抛即终态卡死,
+        // owner 手动救火). 加 15s 间隔自动重试, fleet 仍在外 (state=FALLBACK 不 reset
+        // fleetId), 重试上限 6 次 (90s 总窗口). 期间任何手动 recall 把 state 改成
+        // RETURNED 则 retry 自动停 (idempotent guard).
+        let retries = 0;
+        const MAX_RETRIES = 6;
+        const RETRY_MS = 15_000;
+        const retryTick = (): void => {
+          if (this.state !== "FALLBACK") return;
+          if (retries >= MAX_RETRIES) {
+            console.warn(`[fsm] FALLBACK retry give-up after ${MAX_RETRIES} attempts (fleet ${this.fleetId} stays out, owner manual recall needed)`);
+            return;
+          }
+          retries++;
+          console.warn(`[fsm] FALLBACK → RECALLING retry ${retries}/${MAX_RETRIES} fleetId=${this.fleetId}`);
+          this.state = "RECALLING";
+          void this.actions.recallFleet(this.fleetId!)
+            .then(() => console.warn(`[fsm] retry ${retries} recallFleet POST OK fleetId=${this.fleetId}`))
+            .catch((re) => {
+              this.lastError = re instanceof Error ? re.message : String(re);
+              console.error(`[fsm] retry ${retries} ❌ RECALLING → FALLBACK  err=${this.lastError}`);
+              this.state = "FALLBACK";
+              setTimeout(retryTick, RETRY_MS);
+            });
+        };
+        setTimeout(retryTick, RETRY_MS);
       });
   }
 
