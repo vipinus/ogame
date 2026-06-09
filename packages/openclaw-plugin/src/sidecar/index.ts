@@ -2306,6 +2306,26 @@ export async function startSidecar(
     },
   });
   const http = httpServerCtor();
+  // v0.0.1021 Phase 2 — owner "前端和后端做池连接做好持久化": sidecar 端
+  // directive.dispatch PG 持久化 + boot restore. 见 pending_dispatch_store_pg.ts.
+  // DATABASE_URL 不存在则 skip (内存模式), sidecar 重启时 pending dispatch 仍丢
+  // (跟 Phase 1 之前一样), 但 owner 主流场景 (userscript 重连) 已被 in-memory
+  // bucket + WS resend drain 兜住.
+  if (process.env["DATABASE_URL"]) {
+    try {
+      const { PendingDispatchStorePg } = await import("./pending_dispatch_store_pg.js");
+      const pendingStore = new PendingDispatchStorePg({ databaseUrl: process.env["DATABASE_URL"] });
+      // boot restore: SELECT all → bucket queue. 24h 以上的视作 stale, purge.
+      await pendingStore.purgeOlderThan(24 * 60 * 60 * 1000);
+      const restored = await pendingStore.loadAll();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (http as any).restoreFromStore(restored);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (http as any).setPendingStore(pendingStore);
+    } catch (e) {
+      console.warn("[ogamex/sidecar] pending_dispatch_store_pg init threw, fallback to in-memory only:", e instanceof Error ? e.message : e);
+    }
+  }
   // Operator 2026-06-04 — start ONLY http; attach ws to its raw server.
   // Reusing same port avoids cf-router routing + extra-port bookkeeping.
   await http.start();

@@ -268,6 +268,14 @@ interface ResolvedHttpServerOptions {
 export class HttpServer {
   private readonly opts: ResolvedHttpServerOptions;
   private readonly handlers = new Map<string, Set<(msg: UpstreamMsg) => void>>();
+  // v0.0.1021 Phase 2 — sidecar 重启不丢 directive: queueDownstream INSERT
+  // PG row, 投递成功 (poll consume / WS resend) DELETE row. boot 时 SELECT all
+  // 重建内存 bucket. setPendingStore() 由 index.ts 注入 (optional, 没注入则
+  // 退化到老纯内存模式).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private pendingStore: any = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  public setPendingStore(store: any): void { this.pendingStore = store; }
   // Phase 9c.5 — per-user downstream queues. Each bucket has its own
   // queue + waiters so a poll from user A never sees user B's messages.
   // LEGACY_BUCKET holds operator's traffic (global-token poll + send
@@ -439,8 +447,19 @@ export class HttpServer {
     if (q.length >= MAX_QUEUE) {
       const dropped = q.shift();
       console.warn(`[http_server] queue cap ${MAX_QUEUE} hit, dropped ${dropped?.id ?? "?"} (bucket=${uid.slice(0,8)})`);
+      if (this.pendingStore && dropped) {
+        void this.pendingStore.deleteById(dropped.id).catch(() => { /* */ });
+      }
     }
     q.push(entry);
+    // v0.0.1021 Phase 2 — persist 只 persist directive.dispatch (transport 层
+    // 唯一需要 100% reliability 的 msg type). data.refresh / ping 等 transient
+    // msg 丢了无关键损失.
+    if (this.pendingStore && msg.type === "directive.dispatch") {
+      void this.pendingStore.upsert({ id: entry.id, userId: uid, payload: msg, queuedAt: entry.ts }).catch((e: unknown) => {
+        console.warn("[http_server] pendingStore.upsert threw:", e instanceof Error ? e.message : e);
+      });
+    }
     // Wake any waiting long-pollers ON THIS BUCKET only.
     const waiters = this.bucketWaiters.get(uid);
     if (waiters && waiters.length > 0) {
@@ -472,14 +491,34 @@ export class HttpServer {
     const q = this.buckets.get(uid);
     if (!q || q.length === 0) return [];
     const msgs: DownstreamMsg[] = [];
+    const ids: string[] = [];
     for (const e of q) {
-      if (e.msg.type === "directive.dispatch") msgs.push(e.msg);
+      if (e.msg.type === "directive.dispatch") { msgs.push(e.msg); ids.push(e.id); }
     }
     if (msgs.length > 0) {
       console.info(`[http_server] drained ${msgs.length} directive.dispatch from bucket=${uid.slice(0,8)} for WS resend`);
     }
     q.length = 0;
+    // v0.0.1021 Phase 2 — WS resend = delivered, 删 PG row.
+    if (this.pendingStore && ids.length > 0) {
+      for (const id of ids) {
+        void this.pendingStore.deleteById(id).catch(() => { /* */ });
+      }
+    }
     return msgs;
+  }
+
+  /** v0.0.1021 Phase 2 — sidecar boot 时 PG → 内存 bucket 重建. */
+  restoreFromStore(entries: Array<{ id: string; userId: string; payload: DownstreamMsg; queuedAt: number }>): void {
+    let total = 0;
+    for (const e of entries) {
+      const q = this.bucketQueue(e.userId);
+      q.push({ id: e.id, msg: e.payload, ts: e.queuedAt });
+      total++;
+    }
+    if (total > 0) {
+      console.info(`[http_server] restored ${total} pending directive.dispatch from PG (sidecar restart)`);
+    }
   }
 
   on<T extends UpstreamMsg["type"]>(type: T, handler: UpstreamHandler<T>): void {
@@ -1791,6 +1830,15 @@ export class HttpServer {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ messages: messages.map((e) => e.msg) }));
+    // v0.0.1021 Phase 2 — poll consume = delivered (long-poll body sent),
+    // 删 PG row 防 sidecar 重启时 replay 已送达的 msg.
+    if (this.pendingStore && messages.length > 0) {
+      for (const e of messages) {
+        if (e.msg.type === "directive.dispatch") {
+          void this.pendingStore.deleteById(e.id).catch(() => { /* */ });
+        }
+      }
+    }
   }
 }
 

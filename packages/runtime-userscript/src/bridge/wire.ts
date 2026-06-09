@@ -70,10 +70,22 @@ export async function wireBridge(
   // Operator 2026-06-04 "添加信号灯" — expose bridge transport+status on
   // window so panel header can render a colored dot (green/yellow/red).
   let transport: "ws" | "http" = "http";
+  // v0.0.1021 Phase 2 — owner 2026-06-09 "前端和后端做池连接做好持久化": 跟 status
+  // 监 reconnect 跳变 (非 open → open) → 触发 drainPendingAcks 把 localStorage
+  // queue 里上次没送达的 ack 重发. 第一次 status 见到 "open" 也 drain (boot
+  // 时机比 goal_runner 早一拍, 双触发 idempotent — sidecar dedupe).
+  let lastStatus = "init";
   const publishStatus = (): void => {
     try {
       const w = window as Window & { __ogamexBridgeStatus?: { transport: "ws" | "http"; status: string } };
-      w.__ogamexBridgeStatus = { transport, status: client ? client.status() : "disconnected" };
+      const status = client ? client.status() : "disconnected";
+      if (lastStatus !== "open" && status === "open") {
+        void import("../goal_runner.js").then(({ drainPendingAcks }) => {
+          void drainPendingAcks();
+        }).catch((e) => console.warn("[wire] drainPendingAcks lazy import threw", e));
+      }
+      lastStatus = status;
+      w.__ogamexBridgeStatus = { transport, status };
     } catch { /* */ }
   };
   if (opts.client) {
