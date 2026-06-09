@@ -1396,26 +1396,40 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                             // errorbox okFunction=jumpToTarget 把 SPA 切到 target moon,
                             // setTimeout 10s 在 navigate 时被 kill. 改 3 次快重试
                             // (1s/5s/15s), 在 navigate 前打中任一即 commit.
-                            var overlayUrl960 = "/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1&cp=" + jgSrcId;
+                            // v0.0.1005 — owner 2026-06-09 "手工跳跃的时候没有扫
+                            // 双边的cd 导致两个JG级别不同的时候CD出错": 老代码 fetch
+                            // 一边 overlay (cp=src) 拿到 srcCd 直接当双边 commit, 异
+                            // level (src JG L4 / tgt JG L7) 时 tgt 真实 cd 被覆盖.
+                            // 修: parallel 两路 fetch (cp=src + cp=tgt), 各自 regex,
+                            // 拿到 srcCd 和 tgtCd 后调 4-arg __ogamexCommitJgCd 双边
+                            // atomic write (helper v0.0.832 已支持 tgtCdSec).
+                            var overlayUrlSrc = "/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1&cp=" + jgSrcId;
+                            var overlayUrlTgt = "/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1&cp=" + jgTgtId;
                             var jgFetchTry = function(delayMs, attempt) {
                               setTimeout(function() {
-                                fetch(overlayUrl960, {
-                                  credentials: "same-origin",
-                                  headers: { "X-Requested-With": "XMLHttpRequest" }
-                                }).then(function(r) { return r.ok ? r.text() : ""; }).then(function(html) {
-                                  if (!html) return;
-                                  var snip = html.length <= 3500 ? html : html.slice(0, 3500);
-                                  var mSC = html.match(/simpleCountdown\\s*\\([^,]+,\\s*(\\d+)/);
-                                  var cdSec = mSC ? parseInt(mSC[1], 10) : 0;
+                                var pSrc = fetch(overlayUrlSrc, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } })
+                                  .then(function(r) { return r.ok ? r.text() : ""; }).catch(function(){ return ""; });
+                                var pTgt = fetch(overlayUrlTgt, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } })
+                                  .then(function(r) { return r.ok ? r.text() : ""; }).catch(function(){ return ""; });
+                                Promise.all([pSrc, pTgt]).then(function(htmls) {
+                                  var htmlSrc = htmls[0], htmlTgt = htmls[1];
+                                  var mSrc = htmlSrc ? htmlSrc.match(/simpleCountdown\\s*\\([^,]+,\\s*(\\d+)/) : null;
+                                  var mTgt = htmlTgt ? htmlTgt.match(/simpleCountdown\\s*\\([^,]+,\\s*(\\d+)/) : null;
+                                  var srcCd = mSrc ? parseInt(mSrc[1], 10) : 0;
+                                  var tgtCd = mTgt ? parseInt(mTgt[1], 10) : 0;
                                   fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
                                     method: "POST", credentials: "omit",
                                     headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokJ },
-                                    body: JSON.stringify({ tag: "JG-CD-POST-ACK-v0977", text: "attempt=" + attempt + " src=" + jgSrcId + " tgt=" + jgTgtId + " htmlLen=" + html.length + " cdSec=" + cdSec + " snip=" + snip })
+                                    body: JSON.stringify({ tag: "JG-CD-POST-ACK-v1005", text: "attempt=" + attempt + " src=" + jgSrcId + " tgt=" + jgTgtId + " srcCd=" + srcCd + " tgtCd=" + tgtCd + " srcHtmlLen=" + htmlSrc.length + " tgtHtmlLen=" + htmlTgt.length })
                                   }).catch(function(){});
-                                  if (cdSec > 0 && window.__ogamexCommitJgCd) {
-                                    window.__ogamexCommitJgCd(jgSrcId, jgTgtId, cdSec);
+                                  if ((srcCd > 0 || tgtCd > 0) && window.__ogamexCommitJgCd) {
+                                    // 任一 cd 拿到就 commit. 单边失败 (overlay 404 / 503)
+                                    // 时 helper 退回单值复用 (tgtCdSec undefined → 沿用 srcCd).
+                                    var effSrc = srcCd > 0 ? srcCd : tgtCd;
+                                    var effTgt = tgtCd > 0 ? tgtCd : srcCd;
+                                    window.__ogamexCommitJgCd(jgSrcId, jgTgtId, effSrc, effTgt);
                                   }
-                                }).catch(function(){});
+                                });
                               }, delayMs);
                             };
                             jgFetchTry(1000, 1);
@@ -1949,7 +1963,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.1004";
+  const USERSCRIPT_VERSION = "0.0.1005";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
