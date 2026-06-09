@@ -636,7 +636,32 @@ export async function runOptimizerOnce(
       // 永远负电. 用 snapE 兜底: 跟 formulaBudget 取最小, 让真实负电信号也能 fire.
       // 容差 -50: 避免 snapshot 抖动 / 计算延迟造成小负值反复 emit.
       const snapE = (planet as { resources?: { e?: number } }).resources?.e ?? 0;
-      const realBudget = snapE < -50 ? Math.min(formulaBudget, snapE) : formulaBudget;
+      // v0.0.989m — owner 2026-06-09 "不该先补电厂吗 电厂优化又没工作": planner
+      // forward-looking (deut L33 build → snapE -621) trigger plant emit, 但 optimizer
+      // current-only (formulaBudget=+7748) SKIP → planner 没 opt-* 可参 → 死锁.
+      // 修: forward-project snapE — 找该 planet 上 active user goal 中目标更高的
+      // mine/deut/crystal level, 用 mineEnergyConsumption(L_target) - mineEnergyConsumption(L_current)
+      // 总和减去, 看是否真未来会负. snapE 即时 + 目标 build 后增量耗电 = 预测.
+      const planetIdLocal = (planet as { id?: string }).id ?? "";
+      let projectedSnapE = snapE;
+      if (planetIdLocal) {
+        for (const r of allRows) {
+          if (!["active","blocked","pending","dispatched"].includes(r.status)) continue;
+          if ((r.goal as { planet?: string }).planet !== planetIdLocal) continue;
+          const tgt = r.goal.target as { building?: string; level?: number } | undefined;
+          const bld = tgt?.building;
+          const lvl = tgt?.level;
+          if (!bld || typeof lvl !== "number") continue;
+          if (bld !== "metalMine" && bld !== "crystalMine" && bld !== "deuteriumSynth") continue;
+          const curLvl = (planet.buildings as Record<string, number> | undefined)?.[bld] ?? 0;
+          if (lvl <= curLvl) continue;
+          const delta = mineEnergyConsumption(bld, lvl) - mineEnergyConsumption(bld, curLvl);
+          projectedSnapE -= delta;
+        }
+      }
+      const realBudget = projectedSnapE < -50 || snapE < -50
+        ? Math.min(formulaBudget, projectedSnapE, snapE)
+        : Math.min(formulaBudget, projectedSnapE);
       // v0.0.908 撤回 — owner 2026-06-07 "改你的垃圾方法": PROACTIVE_E_BUFFER
       // 是错颗粒度. 真模型 = planner.ts pickEnergyPrereqBuilding (L229+) 已经在
       // 每个矿建造前 pre-flight 检查 extraConsumption vs structuralBudget,
