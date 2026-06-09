@@ -249,6 +249,33 @@ export async function runGrowthDaemonOnce(
       console.warn(`[growth-daemon] createBuildMainGoal failed:`, e instanceof Error ? e.message : e);
     }
   }
+  // v0.0.989h — owner 2026-06-08 "严格执行 一个星球建筑只用一颗树, 两个可以合成
+  // 一个". Audit: per planet, count main-tree-class goals (build/research/LF).
+  // If >1 → log warn (do NOT auto-cancel; owner picks which to keep — no
+  // silent destruction).
+  try {
+    const treeCount = new Map<string, string[]>();
+    for (const r of allRows) {
+      if (!["active","blocked","pending","dispatched"].includes(r.status)) continue;
+      const id = r.goal.id;
+      if (id.startsWith("opt-")) continue;
+      if (id.startsWith("exp-") || id.startsWith("expb-") || id.startsWith("colo-")) continue;
+      const t = r.goal.type;
+      if (t !== "build" && t !== "research" && t !== "lifeform_building" && t !== "lifeform_research") continue;
+      const p = (r.goal as { planet?: string }).planet ?? "";
+      if (!p) continue;
+      const arr = treeCount.get(p) ?? [];
+      arr.push(`${id}(${t})`);
+      treeCount.set(p, arr);
+    }
+    for (const [p, ids] of treeCount.entries()) {
+      if (ids.length > 1) {
+        console.warn(`[growth-daemon/audit] uid=${uid.slice(0,8)} planet=${p} VIOLATION ${ids.length} trees: ${ids.join(", ")} — owner: 严格一星球一树`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[growth-daemon/audit] threw:`, e instanceof Error ? e.message : e);
+  }
   return { emitted, skipped };
 }
 
