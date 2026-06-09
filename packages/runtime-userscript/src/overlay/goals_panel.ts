@@ -4357,28 +4357,12 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // failure) 隐藏. tree 仍是 parent prereq_tree (已通过 v0.0.790 enrich
       // opt-* nodes). buttons 控 parent (id 不变).
       if (depth === 0) {
-        const children = childrenByParent.get(g.id) ?? [];
-        const activeChild = children.find((c) => ["active", "blocked", "pending"].includes(c.status));
-        if (activeChild) {
-          // v0.0.803 — operator 2026-06-05 image #7 实证: parent slot 仍显
-          // "colonizing" (goal.state.{parent.type}). synth 必须 inherit child
-          // 的 type/target 才能让 goalStatusLabel 推出 "building Crystal Mine"
-          // / "waiting resources · X" 橙色 等 contextual action label. id +
-          // priority + planet 保持 parent (buttons 控 parent).
-          const synth: GoalRowFromHttp = {
-            ...g,
-            type: activeChild.type,
-            target: activeChild.target,
-            status: activeChild.status,
-            reason: activeChild.reason,
-            current_step: activeChild.current_step,
-            body_build_q: activeChild.body_build_q,
-            resource_shortage: activeChild.resource_shortage,
-            eta_at: activeChild.eta_at,
-            // prereq_tree keep parent (含 enriched opt-* cascade)
-          } as GoalRowFromHttp;
-          return renderSingleGoalRow(synth);
-        }
+        // v0.0.1031 — owner 2026-06-09 "不会你又建立了第二决策树吧" — v0.0.803
+        // activeChild promote 把 main goal 的 type/target 替换成 child 的 → PG 一套
+        // main target / panel 渲染另一套 → 33620666 main=research astro L9 但 panel
+        // 顶层显 "build Solar Plant 20" 因为 opt-solarPlant promote 上来. 严格按
+        // [[single-decision-tree]]: panel 顶层永远显 PG main goal 真 target, child
+        // status 用 tree node 里 contextual chip 自然表达, 不替顶层.
         return renderSingleGoalRow(g);
       }
       const body = renderSingleGoalRow(g);
