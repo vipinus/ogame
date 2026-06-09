@@ -4289,16 +4289,19 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const targetFillBtnHtml = chipHasValue
         ? `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs && !bqMatchesCS ? cs.tech : String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(chipSrc.m)}" data-fill-c="${Math.ceil(chipSrc.c)}" data-fill-d="${Math.ceil(chipSrc.d)}" style="${btnStyle("#205a40", "#408a60")} font-size:10px; padding:1px 6px; margin-left:4px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`
         : "";
+      // v0.0.1037b — owner 2026-06-09 "title 上 当前任务的下面 加运输按钮":
+      // chip + 运输按钮 挂在 title 行 (status + coord + eta 后, P 之前), 不在 row2.
+      // 切换源: bqMatchesCS → chain sh (📦 总缺), else → cs.shortage (⚡ 当前缺).
       return `
         <div style="border-top: 1px solid #2a3a52; padding: 6px 0;">
           <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? t("auto.257") : t("auto.258")}">
-            <span style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">${chevron}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${coordChip}${etaAtBadge}${awaitingChip}</span>
+            <span style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">${chevron}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${coordChip}${etaAtBadge}${awaitingChip}${targetChipHtml}${targetFillBtnHtml}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
             <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${pauseOrResume}${cancelBtn}</span>
           </div>
           ${isExpanded
-            ? `<div style="margin-top:2px; font-size:11px; display:flex; align-items:center; flex-wrap:wrap;"><span data-action-toggle-expand="${escapeHtml(g.id)}" style="cursor:pointer;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</span>${targetChipHtml}${targetFillBtnHtml}</div>`
-            : (collapsedRow2 ? `<div style="margin-top:2px; font-size:10px; padding-left:16px; display:flex; align-items:center; flex-wrap:wrap;"><span data-action-toggle-expand="${escapeHtml(g.id)}" style="cursor:pointer;">${collapsedRow2}</span>${targetChipHtml}${targetFillBtnHtml}</div>` : "")}
+            ? `<div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer; font-size:11px;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</div>`
+            : (collapsedRow2 ? `<div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer; font-size:10px; padding-left:16px;">${collapsedRow2}</div>` : "")}
           ${detailBlock}
         </div>`;
     };
