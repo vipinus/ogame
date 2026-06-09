@@ -1161,15 +1161,18 @@ async function findOptimizerGoalForParent(parentId) {
 }
 
 
-const EXPEDITION_TEMPLATE_PATH = "/home/ddxs/.openclaw/workspace/ogamex/runtime/ogamex-expedition.json";
-const DEFAULT_EXPEDITION_TEMPLATE = { smallCargo: 1, espionageProbe: 1 };
+// v0.0.1027 — owner 2026-06-09 "是不是有两套模板" + [[single-decision-tree]]:
+// Discord `fleet` / `expedition` 命令历史走 legacy global file (ogamex-expedition.json),
+// 但 sidecar daemon 已 v0.0.840 改成 per-uid (ogamex-expedition-<uid8>.json) — Discord
+// 写 legacy 看似生效, daemon 永远不读 → 第二决策树幽灵. Discord 上下文没有 ALS uid,
+// 没法定 per-uid 文件; 唯一干净修法 = 删 Discord 写/读 path, owner 只走 userscript
+// panel modal (POST /ogamex/v1/expedition/config, 带 Bearer per-user token, 直接落
+// per-uid file).
 function loadExpeditionConfig() {
-  try { return JSON.parse(fs.readFileSync(EXPEDITION_TEMPLATE_PATH, "utf8")); }
-  catch { return { enabled: true, template: DEFAULT_EXPEDITION_TEMPLATE }; }
+  throw new Error("Discord expedition cmd disabled v0.0.1027 — 改 template 请用 userscript panel (modal). [[single-decision-tree]]");
 }
-function saveExpeditionConfig(cfg) {
-  try { fs.writeFileSync(EXPEDITION_TEMPLATE_PATH, JSON.stringify(cfg, null, 2)); }
-  catch (e) { console.warn("[expedition] save cfg failed:", e.message); }
+function saveExpeditionConfig(_cfg) {
+  throw new Error("Discord expedition cmd disabled v0.0.1027 — 改 template 请用 userscript panel (modal). [[single-decision-tree]]");
 }
 
 

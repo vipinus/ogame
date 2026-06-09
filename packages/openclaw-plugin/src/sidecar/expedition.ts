@@ -23,14 +23,14 @@ import { tenantRegistry } from "./tenant_context.js";
 // base 拉到 30s 兜底.
 const EXPEDITION_TICK_MS = 30_000;
 // v0.0.840 — operator 2026-06-06 "远征的舰队设置分开了吗": per-uid 文件路径.
-// 老 EXPEDITION_TEMPLATE_PATH 全局单文件保留作 legacy fallback.
+// v0.0.1027 — owner 2026-06-09 "是不是有两套模板" + [[single-decision-tree]]:
+// 删 legacy fallback. per-uid 文件缺 = ALS / setup 问题, throw fail-fast,
+// 不允许静默 fallback legacy file (legacy 是僵尸 path, Discord `fleet`
+// 命令还写它 → 改 template 看似生效实际没影响 daemon).
 const EXPEDITION_STATE_DIR_EXP = "/home/ddxs/.openclaw/workspace/ogamex/runtime";
-const EXPEDITION_TEMPLATE_PATH_LEGACY = `${EXPEDITION_STATE_DIR_EXP}/ogamex-expedition.json`;
-function templatePathForUid(uid?: string): string {
-  if (!uid) return EXPEDITION_TEMPLATE_PATH_LEGACY;
+function templatePathForUid(uid: string): string {
   return `${EXPEDITION_STATE_DIR_EXP}/ogamex-expedition-${uid.slice(0, 8)}.json`;
 }
-const DEFAULT_EXPEDITION_TEMPLATE: Record<string, number> = { smallCargo: 1, espionageProbe: 1 };
 const FAILURE_COOL_OFF_MS = 15 * 1000;
 const INFLIGHT_TTL_MS = 45_000;
 
@@ -42,16 +42,14 @@ interface ExpeditionConfig {
   auto_build_ships?: boolean;
 }
 
-function loadExpeditionConfig(uid?: string): ExpeditionConfig {
-  const fp = templatePathForUid(uid);
-  try { return JSON.parse(fs.readFileSync(fp, "utf8")) as ExpeditionConfig; }
-  catch {
-    // per-uid 文件缺 → 回 legacy 兼容 (单租户旧装机)
-    if (uid) {
-      try { return JSON.parse(fs.readFileSync(EXPEDITION_TEMPLATE_PATH_LEGACY, "utf8")) as ExpeditionConfig; } catch { /* */ }
-    }
-    return { enabled: true, template: DEFAULT_EXPEDITION_TEMPLATE };
+function loadExpeditionConfig(uid: string): ExpeditionConfig {
+  if (!uid) {
+    throw new Error("loadExpeditionConfig: uid required (no legacy fallback). [[single-decision-tree]]");
   }
+  const fp = templatePathForUid(uid);
+  // 文件不存在或 JSON 烂 → 让 fs.readFileSync / JSON.parse throw, caller
+  // 看见调用栈, owner 修配置. 不再静默 fallback 默认值/legacy file.
+  return JSON.parse(fs.readFileSync(fp, "utf8")) as ExpeditionConfig;
 }
 
 // Per-tenant cool-off + in-flight state.
@@ -143,7 +141,11 @@ export async function expeditionTickForUser(
   }
   planetList.sort((a, b) => (lastExpTs.get(a.id) ?? 0) - (lastExpTs.get(b.id) ?? 0));
 
-  const cfgTemplate: Record<string, number> = cfg.template ?? DEFAULT_EXPEDITION_TEMPLATE;
+  // v0.0.1027 — owner [[single-decision-tree]]: cfg.template 缺 throw, 不 default.
+  if (!cfg.template || typeof cfg.template !== "object" || Object.keys(cfg.template).length === 0) {
+    throw new Error(`expedition: per-uid template missing for uid=${uid.slice(0, 8)} (no default)`);
+  }
+  const cfgTemplate: Record<string, number> = cfg.template;
   const astro = state.research?.levels?.astrophysics ?? 0;
   const serverInfo = (state as { server?: { max_expedition_slots?: number; used_expedition_slots?: number } }).server ?? {};
   const realSlots = serverInfo.max_expedition_slots ?? 0;
