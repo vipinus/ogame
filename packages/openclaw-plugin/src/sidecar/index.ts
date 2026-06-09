@@ -978,16 +978,15 @@ export async function startSidecar(
       const postExpeditionPhase = (currentState?.research?.levels?.astrophysics ?? 0) >= 9;
       function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number }; currentStep: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null } {
         const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
-        // v0.0.1012 — owner 2026-06-09 "总资源缺多少计算错了" 实证:
-        // research goal (planetId=undefined, e.g. opt-energyTech) 老路径 bank
-        // = Object.values(planets)[0] 单 planet 掩盖了真实 shortage. research
-        // 是 global, bank 该取 ALL planets sum.
-        // v0.0.1032 — owner 2026-06-09 再触发: v0.0.1030 createGoal 后 research
-        // goal 字段 planet=<某 planet>, !planetId=false → 走 single-planet bank,
-        // shortage 算错. research 本质 server-global, planet 字段只是 "owner 偏好
-        // 哪 planet 启动 cascade", 不影响 bank — 全改 `rootKind==="research"`
-        // 一律 empire-wide bank. 后续 cascade production/buildtime 仍用 planet.
-        const isGlobalResearch = rootKind === "research";
+        // v0.0.1012 — research goal (planetId=undefined, e.g. opt-energyTech)
+        // 老路径 bank = Object.values(planets)[0] 单 planet 掩盖 shortage →
+        // 改 empire-wide.
+        // v0.0.1032 → v0.0.1035 撤回: owner 2026-06-09 "运多少资源到本星球,就
+        // 可以研究了" — TM-add research 带 planet 字段是 owner 心智"这 planet
+        // 上启动研究, 本 planet 凑/运够就能跑". 3 个 rese-astro 各 planet
+        // 一份 = owner 故意, 想看每 planet 本地凑多少. 回到 v0.0.1012 老逻辑:
+        // 无 planet (opt-energyTech 类) → empire bank; 有 planet → single planet bank.
+        const isGlobalResearch = !planetId && rootKind === "research";
         const bank: { m: number; c: number; d: number } = isGlobalResearch
           ? Object.values(planets).reduce(
               (acc, p) => ({
@@ -2204,6 +2203,9 @@ export async function startSidecar(
           b: bt?.building ?? bt?.tech ?? bt?.ship ?? "",
           l: bt?.level ?? bt?.target_level ?? bt?.amount ?? "",
         });
+        // v0.0.1035 撤回 — owner "运多少资源到本星球, 就可以研究了": research 跨
+        // planet dedup 跟 owner "每 planet 一份 research 自己凑资源" 心智反, 撤回.
+        // 仍 per-planet dedup (建/研究/船/防御 类同款).
         const existing = allRows.find((r) => {
           if (r.goal.type !== body.type) return false;
           if (["completed", "cancelled"].includes(r.status)) return false;
