@@ -209,12 +209,21 @@ export async function runGrowthDaemonOnce(
     const planet = planetRaw as PlanetSnapshot;
     planet.id = planetId;
     // Skip planets that have an explicit main goal (owner manually steering).
-    const hasMainGoal = allRows.some((r) =>
-      (r.goal as { planet?: string }).planet === planetId &&
-      (r.goal as { is_main_goal?: boolean }).is_main_goal === true &&
-      ["active", "blocked", "pending"].includes(r.status),
-    );
-    if (hasMainGoal) { skipped++; continue; }
+    // v0.0.989e — owner 2026-06-08: 同 planet 已有 user-emitted build/research
+    // goal (买家自己加的或 panel 加的) 也算"一棵树",不准再 emit 第二棵. 不能只
+    // check is_main_goal flag — naniteFactory user goal is_main_goal=false 漏判.
+    // 排除 opt-* (accel cascade child) + exp-* (expedition) + expb-* (ship build).
+    const planetHasAnyTree = allRows.some((r) => {
+      if ((r.goal as { planet?: string }).planet !== planetId) return false;
+      if (!["active", "blocked", "pending"].includes(r.status)) return false;
+      const id = r.goal.id;
+      if (id.startsWith("opt-")) return false;
+      if (id.startsWith("exp-")) return false;
+      if (id.startsWith("expb-")) return false;
+      const t = r.goal.type;
+      return t === "build" || t === "research" || t === "lifeform_building" || t === "lifeform_research";
+    });
+    if (planetHasAnyTree) { skipped++; continue; }
     const pick = pickBestGrowthAction(planet, econSpeed);
     if (!pick || pick.roi < MIN_ROI_VALUE) { skipped++; continue; }
     // v0.0.989c — owner 2026-06-08 "没做到 一个星球一颗树": 单 build 节点不是 tree.
