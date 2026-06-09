@@ -13,6 +13,11 @@ export interface WsServerOptions {
    *  user_id tagged on the socket so downstream broadcasts can route per
    *  user. Returns null for unknown tokens. */
   resolveUserToken?: (bearer: string) => Promise<string | null>;
+  /** v0.0.890 — owner 2026-06-07 实证: WS-only userscript (new account) F5
+   *  后 HTTP queue 里有 stale `dir-...` (上次 dispatch 时该 WS 没连), dedup
+   *  挡死之后所有同 action+params 的 emit. WS 重连时主动 flush 自己 uid 的
+   *  HTTP bucket, 让下一 tick merger 重新 emit. 不传 = 跳过 (legacy 兼容). */
+  onUserSocketConnect?: (uid: string) => void;
 }
 
 type Handler<T extends UpstreamMsg["type"]> = (msg: Extract<UpstreamMsg, { type: T }>) => void;
@@ -176,12 +181,35 @@ export class WsServer {
     }
   }
 
-  send(msg: DownstreamMsg): void {
+  send(msg: DownstreamMsg, uid?: string): void {
+    // v0.0.889 — owner 2026-06-07 实证: 新账号 console 收到 operator goal
+    // (life-mq1asp27 / buil-mq2bke9o / exp-mq3k2d88 全是 4baba0e2) →
+    // cpPost cp=33653036 (operator planet) → ogame s275 不认 → HTML fallback →
+    // 永远 fail.
+    // 真凶: 此函数原本全 broadcast 到 this.clients, 无 uid filter. ALS uid
+    // 在 priorityMerger.dispatch send callback 里被解析 (index.ts L2683
+    // getCurrentUserId()) 但没传过来 → WebSocket 漏过, HTTP long-poll 路径
+    // 已经 uid-keyed (dispatchPoll L1669).
+    // 修法 — uid 形参 + 单租户 filter; uid 缺省时退回 broadcast (legacy
+    // operator 全局 token / 启动期 stale-poll 那种 no-tenant 场景保留).
     const payload = JSON.stringify(msg);
+    let sent = 0;
+    let skipped = 0;
+    const skippedReasons: string[] = [];
     for (const ws of this.clients) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(payload);
+      if (ws.readyState !== WebSocket.OPEN) { skipped++; skippedReasons.push(`!open(state=${ws.readyState})`); continue; }
+      if (uid) {
+        const wsUid = this.socketUid.get(ws);
+        if (wsUid !== uid) { skipped++; skippedReasons.push(`uidMismatch(ws=${(wsUid ?? "none").slice(0,8)} want=${uid.slice(0,8)})`); continue; }
       }
+      ws.send(payload);
+      sent++;
+    }
+    // v0.0.894 — diag log for tenant-routed sends (directive.dispatch path) when
+    // 0 sockets received. Lets owner trace "sidecar dispatched but userscript没收到".
+    if (uid && sent === 0) {
+      const t = (msg as { type?: string }).type ?? "?";
+      console.warn(`[ws.send] uid=${uid.slice(0,8)} type=${t} NOT DELIVERED (clients=${this.clients.size}) skipped=[${skippedReasons.join(",")}]`);
     }
   }
 
@@ -244,7 +272,16 @@ export class WsServer {
         if (authResult.uid) {
           this.socketUid.set(ws, authResult.uid);
         }
+        // v0.0.891 — fire connection FIRST so clients.add(ws) happens BEFORE
+        // onUserSocketConnect's triggerDispatch tries to ws.send to this.clients.
+        // v0.0.890 reverse order: onUserSocketConnect ran before clients.add →
+        // ws.send loop didn't see new socket → uid filter dropped everything
+        // → console 0 dispatch-in despite sidecar emitting (实证 owner F5).
         wss.emit("connection", ws, req);
+        if (authResult.uid) {
+          try { this.options.onUserSocketConnect?.(authResult.uid); }
+          catch (e) { console.warn("[ws] onUserSocketConnect threw", e); }
+        }
       });
     })();
   }

@@ -16,8 +16,14 @@ cd "$(dirname "$0")/.."
 ALLOW_LIST=$(cat <<'EOF'
 src/directive_executor.ts:125
 src/directive_executor.ts:562
+src/boot.ts:1361
 EOF
 )
+# v0.0.960 — owner 2026-06-08 "跳跃了没有 cd": sniffer page-world JS
+# (boot.ts template literal) 在 executeJump ack 后 fire overlay refetch +
+# simpleCountdown regex. page-world 无法 import safe_fetch (TM sandbox 跨
+# 边界), 直接 fetch 用 ogame session cookie. 唯一观察 fetch, 不切顶栏,
+# 不写 cp body, owner UI 无感. boot.ts:1316 该行.
 
 # v0.0.855 — operator 2026-06-06 "有没有切cp的调用没有用cp保护通道的?"
 # 扩展 gate 覆盖 POST body 偷塞 cp ([cp body bypass] 老坑 — URL 不带 cp= 但

@@ -20,12 +20,14 @@
 import type { Directive, DownstreamMsg, Goal, WorldState } from "@ogamex/shared";
 import type { GoalRow, GoalStatus } from "./goals_types.js";
 import type { IGoalsStoreReader } from "./goals_store_iface.js";
+import { tenantRegistry } from "./tenant_context.js";
+import { getCurrentUserId } from "./user_context.js";
 
 export interface PriorityMergerDeps {
   // Phase 7c.5.f — store: GoalsStore retired. reader (PG) is the sole read
   // surface, writer (PG) the sole write surface. Boot dispatch with no uid
   // → no-op (handled in dispatch()).
-  planGoal: (goal: Goal, state: WorldState) => Directive | { blocked: string };
+  planGoal: (goal: Goal, state: WorldState, activeRows?: readonly GoalRow[]) => Directive | { blocked: string };
   /** Send a DownstreamMsg via the bridge (WsServer.send or HttpServer.queueDownstream). */
   send: (msg: DownstreamMsg) => void;
   /** Phase 5c — fired AFTER every store.updateStatus mutation so the PG
@@ -75,8 +77,14 @@ export interface DispatchResult {
  *   - "… in flight"                             (fleet already outbound)
  *   - "… production started"                   (shipyard_q has the ship)
  */
+// v0.0.934 — owner 2026-06-07 "我知道修过了, 恢复一下就可以了" + 同类病灶扫
+// 到 4+ 条 nano/crystal/solar/fusion 假完成. 真因: "already upgrading in
+// ogame queue" 表示**正在建**, 不是**建完了** — 自动 complete 是错语义。
+// 移除该 pattern; 队列在建时 planner 仍 return blocked, 但不再被 merger
+// 错当 terminal. 待 ogame 真完成 + state.snapshot 反映 → 自然走 "already at
+// or above target" 路径正常完成。
 const ALREADY_AT_TARGET_RE =
-  /already at or above target|already upgrading in ogame queue|in flight|production started|goal complete|no-op: source body/i;
+  /already at or above target|in flight|production started|goal complete|no-op: source body/i;
 
 function isBlocked(r: Directive | { blocked: string }): r is { blocked: string } {
   return typeof (r as { blocked?: unknown }).blocked === "string";
@@ -98,7 +106,7 @@ function compareRows(a: GoalRow, b: GoalRow): number {
 
 export class PriorityMerger {
   // Phase 7c.5.f — store removed (SQLite GoalsStore retired).
-  private readonly planGoal: (goal: Goal, state: WorldState) => Directive | { blocked: string };
+  private readonly planGoal: (goal: Goal, state: WorldState, activeRows?: readonly GoalRow[]) => Directive | { blocked: string };
   private readonly send: (msg: DownstreamMsg) => void;
   // v0.0.459: pure event-driven gate (operator 2026-05-29 "基本原则就是只用
   // 事件触发"). All timer-based cooldowns / stuck-recovery removed:
@@ -204,10 +212,18 @@ export class PriorityMerger {
       // legacy mirror). currentRow is pinned per-iter so this matches the
       // goal we just wrote.
       if (this.onStatusChange && this.currentRow && this.currentRow.goal.id === goalId) {
+        // v0.0.907 — owner 2026-06-07 "没做完的任务又被删除了". 实证 6 个 build
+        // goal 误标 completed reason="planet not found". 真因: L197 PG UPDATE
+        // 写 status+reason=null 后, 这里合成 row 用 ...this.currentRow spread,
+        // currentRow.reason 是上 tick 的 stale ("planet not found"), reason=
+        // undefined 时旧逻辑保留 stale → onStatusChange→upsertGoal 反 ON CONFLICT
+        // DO UPDATE 用合成 row 把 reason 还原成 "planet not found". 与 L197 的
+        // null 不一致. 修法 — reason 字段显式落地 (undefined → null), 跟 PG 写
+        // 一致, 不再保留 stale.
         const updated: GoalRow = {
           ...this.currentRow,
           status,
-          ...(reason !== undefined ? { reason } : {}),
+          reason: (reason ?? null) as string,
           updated_at: Date.now(),
         };
         try { this.onStatusChange(updated, uid); }
@@ -616,7 +632,29 @@ export class PriorityMerger {
                ?? Object.values(state.planets ?? {}).find((p) => Array.isArray(p.coords) && p.coords.join(":") === srcId))
             : undefined;
           const srcCoordStr = Array.isArray(srcPlanet?.coords) ? srcPlanet.coords.join(":") : "";
+          const srcTypeStr = (srcPlanet as { type?: string } | undefined)?.type ?? "planet";
           const tgtCoordStr = typeof targetParams.target_coords === "string" ? targetParams.target_coords : "";
+          const tgtTypeStr = ((row.goal.target as { target_type?: string }).target_type ?? "planet").toLowerCase();
+          // v0.0.942 — owner 2026-06-07 实证: 手动 deploy 33650372 planet→33652263 moon
+          // 跟 chain leg 2 dispatch 撞 coord+mission, 老 verifier 把 leg 2 false-completed.
+          // 加 (a) origin_type/dest_type match (同 v0.0.941 planner.ts 修法)
+          //    (b) ship payload subset match — owner 手动 fleet 跟 chain dispatch payload 必差
+          // take_all 模式 goal.target.ships 是空(planner.ts 在 dispatch 时才 sweep),
+          // expectedShipKeys 空 → 跳过 ship-match, 只靠 type+coord+dispatchedAt 守门.
+          const expectedShipKeys: Array<[string, number]> = [];
+          const goalShips = (row.goal.target as { ships?: unknown }).ships;
+          if (goalShips && typeof goalShips === "object" && !Array.isArray(goalShips)) {
+            for (const [k, v] of Object.entries(goalShips as Record<string, unknown>)) {
+              if (typeof v === "number" && v > 0) expectedShipKeys.push([k, v]);
+            }
+          }
+          const normFleetType = (t: unknown): string => {
+            if (typeof t === "string") return t.toLowerCase();
+            if (t === 1) return "planet";
+            if (t === 2) return "debris";
+            if (t === 3) return "moon";
+            return "";
+          };
           const myOutbound = (state.fleets_outbound ?? []).filter((f) => {
             if (f.mission !== expectedMission) return false;
             const orig = Array.isArray(f.origin) ? f.origin.join(":") : "";
@@ -625,16 +663,25 @@ export class PriorityMerger {
               const dst = Array.isArray(f.dest) ? f.dest.join(":") : "";
               if (dst !== tgtCoordStr) return false;
             }
+            // v0.0.942 — type-aware: 防 same-coord 跨 type 误撞 (planet↔moon 同坐标)
+            if (srcTypeStr && normFleetType((f as { origin_type?: unknown }).origin_type) !== srcTypeStr) return false;
+            if (tgtTypeStr && normFleetType((f as { dest_type?: unknown }).dest_type) !== tgtTypeStr) return false;
+            // v0.0.942 — ship subset: owner 手动 fleet 跟 chain payload 必有 count 差
+            // f.ships 空 (recall fleet 等) → 当 0, 不可能 >= expected → 不匹配, 拦掉
+            const fShips = (f.ships ?? {}) as Record<string, number>;
+            for (const [name, want] of expectedShipKeys) {
+              if ((fShips[name] ?? 0) < want) return false;
+            }
             return true;
           });
-          // v0.0.828 — operator 2026-06-06 "Leg 1 起飞成功以后就标记完成, 这样
-          // 不可能发生重复发送". ogame 偶尔 503/HTML 让 userscript ack 返
-          // success=false, sidecar 等不到 success→ stuck-recovery 重派, 但
-          // fleets_outbound 已真有 fleet (ogame 真接收). fleets_outbound 才是
-          // ground truth — fleet 在飞就视作起飞成功, goal completed. ack 路径
-          // 仍可以正常 success 时也 mark completed (duplicate safe).
-          if (myOutbound.length > 0) {
-            await this.updateStatusAndMirror(row.goal.id, "completed", `fleet airborne mission=${expectedMission} ${srcCoordStr}→${tgtCoordStr || "?"} (outbound matched)`);
+          // v0.0.828 — operator 2026-06-06 "Leg 1 起飞成功以后就标记完成".
+          // 用 outbound fleet 兜底 ack 防 503/HTML lost-ack 重派.
+          // v0.0.925 — owner 2026-06-07 "回航 LEG 4 又没了": dispatchedAt.has 闸
+          // 拦 owner 手工 fleet (无 sidecar dispatch 历史).
+          // v0.0.942 — owner 手动 fleet 同源同终同 mission 同 type 同 ship payload
+          // 撞型概率极低; type+payload 双重 match 兜住 leg 2 false-complete.
+          if (myOutbound.length > 0 && this.dispatchedAt.has(row.goal.id)) {
+            await this.updateStatusAndMirror(row.goal.id, "completed", `fleet airborne mission=${expectedMission} ${srcCoordStr}→${tgtCoordStr || "?"} (outbound matched, sidecar-dispatched)`);
             this.dispatchedAt.delete(row.goal.id);
             skipped_terminal += 1;
             continue;
@@ -716,7 +763,9 @@ export class PriorityMerger {
         if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
         continue;
       }
-      const result = this.planGoal(row.goal, state);
+      // v0.0.938 — owner "不要维护三个决策引擎": 把 active rows 一并传进
+      // planner, planner 的 picker 路径就读 optimizer 派的 opt-* 当真理.
+      const result = this.planGoal(row.goal, state, this.allRowsForChain);
       if (isBlocked(result)) {
         // v0.0.805 — operator 2026-06-05 "跳跃成功了 还卡在这里 是自动跳完
         // 刷新不到结果". planner 返 auto_complete 标记 (e.g. JG self-detect
@@ -728,9 +777,25 @@ export class PriorityMerger {
           continue;
         }
         if (ALREADY_AT_TARGET_RE.test(result.blocked)) {
-          await this.updateStatusAndMirror(row.goal.id, "completed");
-          skipped_terminal += 1;
+          // v0.0.985 — owner 2026-06-08 "改策略不许后台自动删除，除非完成了":
+          // 老 v0.0.928 30s consensus 还是会因为 state.snapshot 漂值误判 →
+          // 任务被自动 completed 但真态没到 (33674107 deuteriumSynth L14 但
+          // goal 反复被 completed at L33 target). 撤回 auto-complete:
+          // - 即便 planner 真说 "already at" 也 keep goal blocked, 不动 status
+          // - owner 看到 reason 自己判断是否真完成, 手动 cancel
+          // 老 30s consensus + alreadyAtTargetSince Map 全删
+          await this.updateStatusAndMirror(row.goal.id, "blocked", result.blocked);
+          blocked.push({ goal_id: row.goal.id, reason: result.blocked });
+          if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
+          continue;
         } else {
+          // Different blocked reason → clear any prior "already at" sighting
+          const uidClear = getCurrentUserId() ?? "";
+          const tenantClear = tenantRegistry.get(uidClear);
+          if (tenantClear.alreadyAtTargetSince.has(row.goal.id)) {
+            tenantClear.alreadyAtTargetSince.delete(row.goal.id);
+          }
+          // fall through to existing reason-normalization block
           // v0.0.838 — operator 2026-06-06 "是状态在不停切换? 还有同样的问题".
           // 真因: 老逻辑每 tick 无条件写 status=blocked, reason 含倒计时数字
           // (waiting 463s for resources) 每秒掉 → PG 写 → panel 看到 status 反复

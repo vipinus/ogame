@@ -37,11 +37,17 @@ const buildings: Record<string, LifeformBuildingEntry> = {
   },
   vortexChamber: {
     id: "vortexChamber",
-    display_name_zh: "漩渦室",
+    display_name_zh: "渦流室",
     display_name_en: "Vortex Chamber",
-    requires: { sanctuary: 1 },
+    // v0.0.988 — VERIFIED via api_executor v0.0.987 probe (2026-06-09 00:00:34
+    // journal tag TECHNOLOGYTREE-v0987): live `technologytree?technologyId=14103&ajax=1`
+    // returns columns_2 graph, depth0 = vortexChamber L1 (notBuilt target),
+    // depth1 = sanctuary L20 + antimatterCondenser L21. BOTH required.
+    // (Previously v0.0.987 抄 supraRefractor 树里 AMC L21 但漏了 sanctuary L20,
+    //  v0.0.988 rollback to sanctuary L1 → probe fired → confirmed ground truth.)
+    requires: { sanctuary: 20, antimatterCondenser: 21 },
     cost_at: pow(30_000, 1.4),
-    verified_against_live: false,
+    verified_against_live: true,
   },
   // v0.0.742 — operator 2026-06-04 pasted ogame technologytree HTML for
   // Kaelesh supraRefractor view (data-id="6a20dc7042e54"). Extracted 12

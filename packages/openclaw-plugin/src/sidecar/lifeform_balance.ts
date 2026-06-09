@@ -49,13 +49,18 @@ export function needsFoodCascade(
   current: number,
   targetLevel: number,
 ): { rule: PopulationFoodRule; currentFoodLevel: number } | null {
-  // Operator 2026-06-05 stack overflow fix: 必须 current < targetLevel
-  // (unmet) 才 emit. 否则 antimatterCondenser 之 requires {sanctuary:1}
-  // 又递归到 sanctuary L1 (met) → food gate 再 trigger → 死循环.
+  // Sanity gate against pathological self-recursion: catalog 可能有
+  // antimatterCondenser.requires:{sanctuary:1} 之类回链, 当 sanctuary current
+  // == targetLevel 时不再 emit, 避免 simulate prereq tree 死循环.
   if (current >= targetLevel) return null;
   const rule = POPULATION_FOOD_BY_SPECIES[species];
   if (!rule) return null;
   if (!rule.population.includes(techName)) return null;
+  // v0.0.988 — owner 2026-06-08 "去看以前的正确的代码，不要重复造轮子".
+  // 回 6198be4 (May 22) 原始逻辑: 资源数比较,不是 building level 推 lockstep.
+  // owner 原话 "主要升级居住区域，若生活空间大于酒足饭饱了就升级生物农场":
+  //   living_space (housing capacity) > well_fed (food capacity) → 补食物
+  // v0.0.971/972 错误尝试用 building level 推 lockstep, 撤销.
   const livingSpace = lifeformResources?.living_space ?? null;
   const wellFed = lifeformResources?.well_fed ?? null;
   if (livingSpace === null || wellFed === null) return null;

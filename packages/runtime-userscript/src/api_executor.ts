@@ -376,9 +376,50 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       maxAttempts: 4,
       skipRestore: false,
     });
+    // v0.0.952 — owner 2026-06-08 "手动可以升级": LF build 100001 持续拒, ogame
+    // 端无 bug. 抓自动 POST raw 跟手动比 (sniffer 自然抓手动). 仅 LF 路径
+    // (component=lfbuildings) forensic, 避免噪.
+    if (component === "lfbuildings" || component === "lfresearch") {
+      try {
+        const ctxWinF = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+        const bridgeF = ctxWinF.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+        const tokFor = ctxWinF.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+        const rawResp = (typeof res.raw === "string" ? res.raw : "").slice(0, 600);
+        void fetch(`${bridgeF.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tokFor}` },
+          body: JSON.stringify({ tag: "LF-AUTO-POST-v0952", text: `component=${component} target=${targetName} techId=${numericId} cp=${planetId} status=${res.status} jsonStr=${JSON.stringify(res.json)} raw=${rawResp}` }),
+        }).catch(() => { /* */ });
+      } catch { /* */ }
+    }
     if (res.json && ((res.json as { success?: boolean }).success === false || (res.json as { status?: string }).status === "failure")) {
       const errs = (res.json as { errors?: unknown; error?: unknown }).errors ?? (res.json as { error?: unknown }).error;
-      throw new Error(`${component}:${targetName} rejected: ${JSON.stringify(errs)}`);
+      // v0.0.987 — owner 2026-06-08 "派的任务, 自动生成的tree不对": 120020
+      // "條件未滿足" → 自动 fetch ogame technologytree?techId=N 抓真 prereq DOM
+      // → forensic 给 sidecar. 一次性 dump 救场, 不依赖 catalog placeholder.
+      // 仅 LF 路径 (lfbuildings/lfresearch), 仅 120020, 不污染.
+      const errsStr = JSON.stringify(errs);
+      if ((component === "lfbuildings" || component === "lfresearch") && /120020/.test(errsStr)) {
+        try {
+          const { fetchWithCpBypassBusy: ttFetch } = await import("./api/safe_fetch.js");
+          const ttUrl = `/game/index.php?page=ajax&component=technologytree&technologyId=${numericId}&ajax=1`;
+          const ttRes = await ttFetch(
+            ttUrl,
+            { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+            planetId,
+          );
+          const ttHtml = ttRes.status === 200 ? await ttRes.text() : "";
+          const ctxWinTT = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+          const bridgeTT = ctxWinTT.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+          const tokTT = ctxWinTT.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+          void fetch(`${bridgeTT.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+            method: "POST", credentials: "omit",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tokTT}` },
+            body: JSON.stringify({ tag: "TECHNOLOGYTREE-v0987", text: `techId=${numericId} target=${targetName} planet=${planetId} htmlLen=${ttHtml.length} html=${ttHtml.slice(0, 4500)}` }),
+          }).catch(() => { /* */ });
+        } catch (e) { console.warn(`[ApiExec/${component}] 120020 technologytree probe threw:`, e); }
+      }
+      throw new Error(`${component}:${targetName} rejected: ${errsStr}`);
     }
     // v0.0.555 — accept BOTH ogame v12 success shapes:
     //   {success: true, ...}        (older / fleetdispatch endpoint)
@@ -392,6 +433,11 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       const snippet = res.raw.slice(0, 240).replace(/\s+/g, " ");
       throw new Error(`${component}:${targetName} rejected (non-success response HTTP ${res.status}): ${snippet}`);
     }
+    // v0.0.961 (post-success refreshOnePage 自动 fire) → v0.0.984 撤回.
+    // 真态: owner 2026-06-08 "建造的时候没以前流程, 建完一个会卡一会, 以前
+    // 都可以连上的". v0.0.961 refresh 抢 cpMutex (cp shift + chunk fetch) →
+    // 下一个 directive cp 阻塞 → 串联建造卡. 老 60s backoff + token rotation
+    // 已能处理"refresh 没及时" 导致的 1 次 100001 spam, 不需要 refresh.
     return { action: directive.action, clicked: true };
   }
 
@@ -730,13 +776,81 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         } catch { /* */ }
         throw new Error(`jumpgate rejected: cd_active ${cdFromOverlay}s (sync'd to store)`);
       }
-      const errMsg = String(resp.message ?? JSON.stringify(resp.errors ?? "") ?? jgRes.raw.slice(0, 200));
+      const errMsg = String(resp.message ?? JSON.stringify(resp.errors ?? "") ?? jgRes.raw.slice(0, 200)).trim();
+      // v0.0.920 — owner 2026-06-07 "JG 空错误 = 在 cd 中, 等 cd 结束". 之前 fall
+      // through 直接 throw 空字符串 → planner 误判 fatal. 改: 空 errMsg → 默认
+      // v0.0.921 — owner 2026-06-07 "v12 数据和以前版本不同, 你的公式可能是错的".
+      // 撤掉 v0.0.920 的 `3600/level` 兜底 — 老 ogame 公式 v12 不适用. 不再
+      // 瞎猜兜底 cd, 改：fetch overlay 重试一次拿真 cd; 还拿不到 → 抛错让
+      // planner 走默认 retry 路径, 而不是写错误 cd 误导决策.
+      const errMsgTrimmed = errMsg.replace(/^"+|"+$/g, "").trim();
+      if (errMsgTrimmed === "" || errMsgTrimmed === "{}" || errMsgTrimmed === "[]") {
+        try {
+          const { fetchWithCpBypassBusy: retryOverlay } = await import("./api/safe_fetch.js");
+          const retryRes = await retryOverlay(
+            overlayUrl,
+            { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+            sourceMoonId,
+          );
+          if (retryRes.status === 200) {
+            const html = await retryRes.text();
+            // v0.0.955 — forensic POST raw HTML for ghost-reject path too
+            try {
+              const ctxWin1 = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+              const bridgeBase1 = ctxWin1.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+              const tokG = ctxWin1.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+              void fetch(`${bridgeBase1.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+                method: "POST", credentials: "omit",
+                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tokG}` },
+                body: JSON.stringify({ tag: "JG-CD-GHOST-v0955", text: `src=${sourceMoonId} tgt=${targetMoonId} htmlLen=${html.length} snip=${html.slice(0, 3000)}` }),
+              }).catch(() => { /* */ });
+            } catch { /* */ }
+            // v0.0.955 — simpleCountdown 是 ogame UI 自带 countdown init JS,
+            // overlay HTML cd-state 段包含 `simpleCountdown(_, N)` (N = 秒).
+            // 是 v0.0.946 sniffer DOM scrape `<p id=cooldown>` 的 server-side
+            // 真值同源. 优先 match; 兜底旧 field-name regex 保留兼容.
+            const mSC = html.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
+            const mOld = html.match(/(?:nextJumpAt|cooldown|nextActionAt)["'\s:=]+(\d+)/i);
+            const rawN = mSC ? mSC[1] : (mOld ? mOld[1] : null);
+            if (rawN !== null) {
+              const v = Number(rawN);
+              if (Number.isFinite(v) && v > 0) {
+                const realCd = v > 1e10 ? Math.max(0, Math.floor((v - Date.now()) / 1000)) : v;
+                if (realCd > 0) {
+                  const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, c: number) => void }).__ogamexCommitJgCd;
+                  if (typeof commit === "function") commit(sourceMoonId, targetMoonId, realCd);
+                  throw new Error(`jumpgate rejected: empty error → overlay re-fetch gave cd=${realCd}s (sync'd to store, src=${mSC ? "simpleCountdown" : "legacyField"})`);
+                }
+              }
+            }
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message.startsWith("jumpgate")) throw e;
+        }
+        throw new Error(`jumpgate rejected: empty error and overlay re-fetch yielded no cd — leaving cd unset (sniffer / next state.snapshot will fill if real)`);
+      }
       throw new Error(`jumpgate rejected: ${errMsg.slice(0, 200)}`);
     }
     if (errsArr.length > 0) {
       throw new Error(`jumpgate ghost-ack: success flag set but errors=${JSON.stringify(errsArr).slice(0, 200)}`);
     }
     console.info(`[ApiExec/jumpgate] OK src=${sourceMoonId} → tgt=${targetMoonId} cooldown=${resp.cooldown ?? resp.nextActionAt ?? "?"}s`);
+    // v0.0.943 — owner 2026-06-07 "拿真实的返回值, 不要猜": v12 response 字段
+    // 跟我们认知不同, 之前 multi-field guess 被 owner 撤回. 这里**只 POST
+    // raw response** 到 sidecar /debug/log, **不改 field name, 不改 regex**.
+    // 下次 JG 命中 → owner ssh europa 看 [debug-log:JG-RESP-v0943] 行,
+    // 拿到 v12 真 schema → 写外科手术级 field 解析.
+    try {
+      const ctxWin0 = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+      const bridgeBase0 = ctxWin0.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+      const tok0 = ctxWin0.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+      const rawStr = JSON.stringify(resp).slice(0, 800);
+      void fetch(`${bridgeBase0.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+        method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tok0}` },
+        body: JSON.stringify({ tag: "JG-RESP-v0943", text: `src=${sourceMoonId} tgt=${targetMoonId} resp=${rawStr}` }),
+      }).catch(() => { /* */ });
+    } catch { /* */ }
     // v0.0.755 — operator "用 api / 事件驱动 不要扫网页". executeJump JSON
     // 自带 cooldown (or nextActionAt). 直接调 __ogamexCommitJgCd 写双边 store,
     // 0 HTML 扫描 0 race. 取代 v0.0.753 postMessage→CASE B 重抓 overlay regex
@@ -752,53 +866,60 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         }
       } catch (e) { console.warn(`[ApiExec/jumpgate] commit threw:`, e); }
     } else {
-      console.warn(`[ApiExec/jumpgate] response had no cooldown/nextActionAt — JG cd not committed, fallback overlay fetch`);
-      // v0.0.832 — operator 2026-06-06: 同级单边 fetch 写双边, 异级双边 fetch
-      // 各写各的 cd. 服务器 cd 真值, 不假设 3600.
-      const parseCd = (html: string): number | null => {
-        const m = html.match(/(?:nextJumpAt|cooldown|nextActionAt)["'\s:=]+(\d+)/i);
-        if (m && m[1]) {
-          const v = Number(m[1]);
-          if (Number.isFinite(v) && v > 0) {
-            return v > 1e10 ? Math.max(0, Math.floor((v - Date.now()) / 1000)) : v;
-          }
-        }
-        return null;
-      };
+      // v0.0.954 — owner 2026-06-08 "没拿到cd": chain JG 不开 widget, DOM scrape
+      // 不触发 → cd 永远 null. 补 api_executor 程序化 overlay fetch + 解析
+      // ogame 自带的 inline JS `simpleCountdown(..., N)` (N = 剩余秒).
+      // 这不是猜 — simpleCountdown 是 ogame UI countdown 初始化函数, ogame
+      // overlay HTML 在 cd-state 包含此调用, N 就是 server-rendered cd.
+      // (跟 v0.0.946 sniffer DOM scrape 同源真值, 只是这里 server-side render
+      //  替代 owner UI render — 给 chain JG auto-commit cd.)
       try {
-        const storeRef = (this.win as Window & { __ogamexStore?: { state: { planets?: Record<string, { buildings?: Record<string, number> }> } } }).__ogamexStore;
-        const srcLvl = storeRef?.state?.planets?.[sourceMoonId]?.buildings?.["jumpgate"] ?? 0;
-        const tgtLvl = storeRef?.state?.planets?.[targetMoonId]?.buildings?.["jumpgate"] ?? 0;
-        const sameLevel = srcLvl > 0 && tgtLvl > 0 && srcLvl === tgtLvl;
-        // v0.0.832 operator "如果需要 cp 就走 cp 保护, 不要直跑" — fetchWithCpBypassBusy
-        // 走 safe_fetch.ts mutex + restore + click_intercept (架构 docs/architecture/
-        // cp-token-protected-access.md), 不裸 cp= URL 绕过.
         const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
-        const srcRes = await fetchWithCpBypassBusy(
-          overlayUrl,
-          { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-          sourceMoonId,
-        );
-        const srcCd = srcRes.status === 200 ? parseCd(await srcRes.text()) : null;
-        let tgtCd: number | null = null;
-        if (!sameLevel) {
-          // 异级: 抓 tgt overlay 拿 tgt 自己的 cd
-          const tgtRes = await fetchWithCpBypassBusy(
-            overlayUrl,
-            { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-            targetMoonId,
-          );
-          tgtCd = tgtRes.status === 200 ? parseCd(await tgtRes.text()) : null;
-        }
-        if (srcCd !== null && srcCd > 0) {
-          const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, sc: number, tc?: number) => void }).__ogamexCommitJgCd;
-          if (typeof commit === "function") {
-            const tgtCdArg = (!sameLevel && tgtCd !== null && tgtCd > 0) ? tgtCd : undefined;
-            commit(sourceMoonId, targetMoonId, srcCd, tgtCdArg);
-            console.info(`[ApiExec/jumpgate] overlay-parsed src=${srcCd}s tgt=${tgtCd ?? "same"} (srcLvl=${srcLvl} tgtLvl=${tgtLvl} sameLevel=${sameLevel})`);
+        // v0.0.982 — owner 2026-06-08 "4leg chain 没拿到 CD" 实证: api_executor
+        // 立即 fetch htmlLen=0 (ogame 还没准备好 / cp shift race). 跟 sniffer 路径
+        // v0.0.977 同款 3 attempt retry (1s/5s/15s), 任一拿到即 commit.
+        const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+        const tokF = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+        const tryFetchCd = async (attempt: number, delayMs: number): Promise<boolean> => {
+          await new Promise((r) => setTimeout(r, delayMs));
+          let srcHtml = "";
+          try {
+            const srcRes = await fetchWithCpBypassBusy(
+              overlayUrl,
+              { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+              sourceMoonId,
+            );
+            srcHtml = srcRes.status === 200 ? await srcRes.text() : "";
+          } catch (e) { console.warn(`[ApiExec/jumpgate] attempt=${attempt} fetch threw:`, e); }
+          const m = srcHtml.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
+          const srcCd = m ? parseInt(m[1], 10) : 0;
+          try {
+            void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+              method: "POST", credentials: "omit",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tokF}` },
+              body: JSON.stringify({ tag: "JG-CD-OVERLAY-v0982", text: `attempt=${attempt} src=${sourceMoonId} tgt=${targetMoonId} htmlLen=${srcHtml.length} cdSec=${srcCd} snip=${srcHtml.slice(0, 1500)}` }),
+            }).catch(() => { /* */ });
+          } catch { /* */ }
+          if (srcCd > 0) {
+            const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, c: number) => void }).__ogamexCommitJgCd;
+            if (typeof commit === "function") {
+              commit(sourceMoonId, targetMoonId, srcCd);
+              console.info(`[ApiExec/jumpgate] cd parsed attempt=${attempt} ${srcCd}s src=${sourceMoonId} tgt=${targetMoonId}`);
+              return true;
+            }
           }
-        }
-      } catch (e) { console.warn(`[ApiExec/jumpgate] overlay fetch threw:`, e); }
+          return false;
+        };
+        // 3 attempts: 1s / 5s / 15s. Fire-and-forget so 父 dispatch ack 不被 block.
+        void (async () => {
+          if (await tryFetchCd(1, 1000)) return;
+          if (await tryFetchCd(2, 4000)) return;
+          await tryFetchCd(3, 10000);
+        })();
+      } catch (e) {
+        console.warn(`[ApiExec/jumpgate] overlay retry chain threw:`, e);
+      }
     }
     // v0.0.546 — operator 2026-05-31 "跳躍以後要立刻刷新艦隊數量". Old code
     // fired one pollEmpire force, but ogame's empire endpoint can return

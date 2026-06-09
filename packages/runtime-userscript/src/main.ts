@@ -74,7 +74,14 @@ function readConfig(key: string, def: string, injected?: string): string {
 // version). Diagnostic invariant — always-on by design.
 console.info(`[OgameX] script-entry url=${window.location.href}`);
 const _inIframe = window.self !== window.top;
-const _isGamePage = !!document.querySelector('meta[name="ogame-universe-speed"]');
+// v0.0.983 — owner 2026-06-08 "移动版 TM 不显示": mobile ogame (?isMobile=1)
+// 可能不渲染 ogame-universe-speed meta → 老 check false → 跳过 boot.
+// 放宽: meta 或 ogame-planet-id meta 或 URL 含 page=ingame 任一 → 算 game page.
+const _hasUniMeta = !!document.querySelector('meta[name="ogame-universe-speed"]');
+const _hasPlanetMeta = !!document.querySelector('meta[name="ogame-planet-id"]');
+const _urlIngame = /[?&]page=ingame\b/i.test(window.location.href);
+const _isGamePage = _hasUniMeta || _hasPlanetMeta || _urlIngame;
+console.info(`[OgameX] game-page check: uniMeta=${_hasUniMeta} planetMeta=${_hasPlanetMeta} urlIngame=${_urlIngame} → ${_isGamePage}`);
 const _isLobby = /lobby\.ogame\.gameforge\.com/i.test(window.location.href);
 if (_inIframe) {
   console.info("[OgameX] running inside iframe — skipping boot (parent frame handles state)");

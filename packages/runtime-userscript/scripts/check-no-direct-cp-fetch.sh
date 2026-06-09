@@ -31,16 +31,17 @@ cd "$(dirname "$0")/.."
 
 # --- Bucket 1: INFRASTRUCTURE (permanent allow, doc'd in §4 table) -----
 ALLOW_LIST_INFRA=$(cat <<'EOF'
-src/boot.ts:1186
-src/boot.ts:1198
-src/boot.ts:1216
-src/boot.ts:1360
-src/boot.ts:2060
-src/boot.ts:2361
-src/boot.ts:2623
-src/boot.ts:2845
-src/boot.ts:3764
-src/boot.ts:3971
+src/boot.ts:1566
+src/boot.ts:1578
+src/boot.ts:1596
+src/boot.ts:1671
+src/boot.ts:1795
+src/boot.ts:2539
+src/boot.ts:2850
+src/boot.ts:3112
+src/boot.ts:3334
+src/boot.ts:4278
+src/boot.ts:4485
 EOF
 )
 
@@ -54,8 +55,8 @@ EOF
 #   that held the last 2 direct bypasses. ALLOW_LIST_DIRECTIVE now empty.
 ALLOW_LIST_DIRECTIVE=$(cat <<'EOF'
 src/api_executor.ts:141
-src/api_executor.ts:777
-src/api_executor.ts:786
+src/api_executor.ts:405
+src/api_executor.ts:888
 EOF
 )
 

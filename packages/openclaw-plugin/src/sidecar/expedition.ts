@@ -162,14 +162,18 @@ export async function expeditionTickForUser(
   const outbound = outboundCount > 0 ? outboundCount : (typeof scrapedUsed === "number" ? scrapedUsed : 0);
 
   if (outbound >= slotCap) {
-    // Cancel any active expedition goal (slots full).
+    // v0.0.907 — owner 2026-06-07 "没做完的任务又被删除了 4:299:8" 实证 daemon
+    // 槽满时把 active exp goal 全 cancel → 任务从面板消失 + 槽空后还要 owner
+    // 重建. 改 blocked + 同 reason: 槽空后下次 daemon tick / merger 自动 dispatch,
+    // 不需要 owner 干预. atomic goal cancel-on-fail 政策只覆盖 ack handler 真态
+    // ogame 拒, 不该覆盖 sidecar 自家槽满 preflight.
     for (const r of allRows) {
       const g = r.goal as unknown as GoalLike;
       if (g.type !== "expedition") continue;
-      if (["completed", "cancelled"].includes(r.status)) continue;
+      if (["completed", "cancelled", "blocked"].includes(r.status)) continue;
       try {
-        await pgStore.updateGoalStatus(uid, g.id, "cancelled", "expedition: slots full (scraped)");
-      } catch (e) { console.warn(`[expedition] cancel ${g.id} failed:`, e instanceof Error ? e.message : e); }
+        await pgStore.updateGoalStatus(uid, g.id, "blocked", "expedition: slots full — waiting for slot");
+      } catch (e) { console.warn(`[expedition] block ${g.id} failed:`, e instanceof Error ? e.message : e); }
     }
     return { launched: 0, skipped: planetList.length };
   }

@@ -343,100 +343,8 @@ function openEmergencySettings(doc: Document): void {
 
 // M2 — expedition settings modal. Reads the on-disk config via sidecar
 // `GET /v1/expedition/config` and writes back via POST. Now split into two
-// v0.0.639 — operator audit modal. Surfaces the sidecar's persistent
-// events table (event.emergency / event.daily_failure / directive.dispatch
-// / directive.completed) in a scrollable panel, with a type filter and
-// refresh button. Backs the 📋 button in the main panel header — gives
-// operator a single-click view of "what did the sidecar do recently"
-// without dropping into curl.
-function openAuditModal(
-  doc: Document,
-  baseUrl: string,
-  fetchFn: typeof fetch,
-): void {
-  interface EventRow {
-    id: number;
-    type: string;
-    payload: unknown;
-    created_at: number;
-  }
-  const initialBody = `
-    <div style="display:flex; gap:6px; align-items:center; padding-bottom:8px; border-bottom:1px solid #1a2030; flex-wrap:wrap;">
-      <label style="color:#a0a8b8; font-size:11px;">type</label>
-      <select data-audit-type style="background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:2px 6px; font-size:11px;">
-        <option value="">(all)</option>
-        <option value="directive.dispatch">directive.dispatch</option>
-        <option value="directive.completed">directive.completed</option>
-        <option value="event.emergency">event.emergency</option>
-        <option value="event.daily_failure">event.daily_failure</option>
-      </select>
-      <label style="color:#a0a8b8; font-size:11px;">limit</label>
-      <input data-audit-limit type="number" min="1" max="500" value="100"
-        style="background:#0a1018; color:#e0e8f0; border:1px solid #2a3a52; border-radius:3px; padding:2px 6px; width:60px; font-size:11px;"/>
-      <button data-audit-refresh style="background:#1a2438; color:#7cfc00; border:1px solid #2a3a52; border-radius:3px; cursor:pointer; font-size:11px; padding:2px 10px;">🔄 refresh</button>
-      <span data-audit-meta style="color:#7080a0; font-size:10px; margin-left:auto;"></span>
-    </div>
-    <div data-audit-rows style="padding-top:8px; max-height:60vh; overflow:auto; font-family:monospace; font-size:11px; line-height:1.5; color:#d0d8e0;">
-      loading…
-    </div>`;
-  openSettingsModal(doc, "audit", t("modal.audit.title"), initialBody, (modal) => {
-    const rowsEl = modal.querySelector<HTMLElement>("[data-audit-rows]")!;
-    const metaEl = modal.querySelector<HTMLElement>("[data-audit-meta]")!;
-    const typeEl = modal.querySelector<HTMLSelectElement>("[data-audit-type]")!;
-    const limitEl = modal.querySelector<HTMLInputElement>("[data-audit-limit]")!;
-    const refreshBtn = modal.querySelector<HTMLElement>("[data-audit-refresh]")!;
-
-    const fetchEvents = async (): Promise<void> => {
-      rowsEl.innerHTML = `<div style="color:#7080a0;">loading…</div>`;
-      const type = typeEl.value;
-      const limit = Math.max(1, Math.min(500, parseInt(limitEl.value || "100", 10) || 100));
-      const qs = new URLSearchParams();
-      qs.set("limit", String(limit));
-      if (type) qs.set("type", type);
-      try {
-        const res = await fetchFn(`${baseUrl}/ogamex/v1/events?${qs.toString()}`);
-        if (!res.ok) {
-          rowsEl.innerHTML = `<div style="color:#ff9b9b;">HTTP ${res.status}</div>`;
-          return;
-        }
-        const data = await res.json() as { events?: EventRow[] };
-        const events = data.events ?? [];
-        metaEl.textContent = `${events.length} rows`;
-        if (events.length === 0) {
-          rowsEl.innerHTML = `<div style="color:#7080a0;">(no events match)</div>`;
-          return;
-        }
-        const fmtTs = (ms: number): string => {
-          const d = new Date(ms);
-          const pad = (n: number): string => String(n).padStart(2, "0");
-          return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-        };
-        const typeColor = (t: string): string => {
-          if (t.startsWith("directive.")) return "#80c0ff";
-          if (t === "event.emergency") return "#ff8080";
-          if (t === "event.daily_failure") return "#ffcc40";
-          return "#a0a8b8";
-        };
-        rowsEl.innerHTML = events.map((e) => {
-          const payloadStr = JSON.stringify(e.payload);
-          const truncated = payloadStr.length > 240 ? `${payloadStr.slice(0, 240)}…` : payloadStr;
-          return `<div style="padding:4px 0; border-bottom:1px solid #1a2030; display:flex; gap:8px;">
-            <span style="color:#506070; flex-shrink:0;">${fmtTs(e.created_at)}</span>
-            <span style="color:${typeColor(e.type)}; flex-shrink:0; min-width:160px;">${escapeHtml(e.type)}</span>
-            <span style="color:#d0d8e0; word-break:break-all;" title="${escapeHtml(payloadStr)}">${escapeHtml(truncated)}</span>
-          </div>`;
-        }).join("");
-      } catch (e) {
-        rowsEl.innerHTML = `<div style="color:#ff9b9b;">fetch failed: ${escapeHtml(String(e))}</div>`;
-      }
-    };
-
-    typeEl.addEventListener("change", () => { void fetchEvents(); });
-    limitEl.addEventListener("change", () => { void fetchEvents(); });
-    refreshBtn.addEventListener("click", () => { void fetchEvents(); });
-    void fetchEvents();
-  });
-}
+// v0.0.937 — owner 2026-06-07 "取消TM 标题栏的折叠和审计, 删除tm里对应的代码":
+// openAuditModal 函数整段删除. 📋 按钮跟 handler 都已删, 不再有调用者.
 
 // tabs (operator 2026-05-29: "改成兩個 tab"): t("auto.121") (per-planet
 // checkboxes for opt-in source pool) and t("auto.122") (per-ship-type number
@@ -839,12 +747,38 @@ function openDiscoverySettings(
       const baseSystem = coords[1] ?? 0;
       if (status) { status.textContent = "creating…"; status.style.color = "#7080a0"; }
       try {
+        const _bodyStr = JSON.stringify({ source_planet: pid, galaxy, base_system: baseSystem, range });
+        // v0.0.977 — owner 2026-06-08 "HTTP 400" diagnostic: 抓真 POST body
+        try {
+          const _winF = window as Window & { localStorage?: Storage };
+          const _bU = _winF.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+          const _tk = _winF.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+          void fetch(`${_bU.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+            method: "POST", credentials: "omit",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${_tk}` },
+            body: JSON.stringify({ tag: "DISCOVERY-PANEL-POST-v0977", text: `pid=${pid} galaxy=${galaxy} baseSystem=${baseSystem} range=${range} planet=${JSON.stringify(planet || null)} body=${_bodyStr}` }),
+          }).catch(() => { /* */ });
+        } catch { /* */ }
         const r = await fetchFn(`${baseUrl}/ogamex/v1/discovery/create`, {
           method: "POST",
           headers: authHeadersGlobal({ "Content-Type": "application/json" }),
-          body: JSON.stringify({ source_planet: pid, galaxy, base_system: baseSystem, range }),
+          body: _bodyStr,
         });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        if (!r.ok) {
+          const respText = await r.text().catch(() => "");
+          // forensic 失败响应内容
+          try {
+            const _winF2 = window as Window & { localStorage?: Storage };
+            const _bU2 = _winF2.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+            const _tk2 = _winF2.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+            void fetch(`${_bU2.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+              method: "POST", credentials: "omit",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${_tk2}` },
+              body: JSON.stringify({ tag: "DISCOVERY-PANEL-RESP-v0977", text: `status=${r.status} resp=${respText.slice(0,400)}` }),
+            }).catch(() => { /* */ });
+          } catch { /* */ }
+          throw new Error(`HTTP ${r.status}: ${respText.slice(0,80)}`);
+        }
         const j = await r.json() as { ok?: boolean; reason?: string };
         if (!j.ok) throw new Error(j.reason ?? "create rejected");
         if (status) { status.textContent = "✓ created"; status.style.color = "#7cfc00"; }
@@ -2867,7 +2801,7 @@ function openTransportSettings(
         </div>`)}
       ${sectionCard(t("auto.149"),
         `<label style="cursor:pointer; color:#d0d8e0; font-size:11px; display:block;">
-          <input type="checkbox" data-tr-jg-take-all checked/>
+          <input type="checkbox" data-tr-moon-take-all checked/>
           <span style="margin-left:4px;">${escapeHtml(t('auto.220'))}</span>
           <span style="color:#7080a0; font-size:10px; display:block; margin-left:20px; margin-top:2px;">${escapeHtml(t('auto.221'))}<br/>${escapeHtml(t('auto.222'))}</span>
         </label>`)}
@@ -3220,11 +3154,10 @@ function openTransportSettings(
       const targetPlanet = planetsMap[target];
       const targetCoords = (targetPlanet?.coords ?? []).join(":");
       const jgEnabled = (m.querySelector<HTMLInputElement>("[data-tr-jg-enable]")?.checked) ?? false;
-      // v0.0.468: operator-controlled take_all per chain (operator 2026-05-30
-      // "預設勾選"). Modal checkbox → checked=true means JG hop legs do dynamic
-      // ship sweep on dispatch; unchecked means JG hop carries only configured
-      // ships count. Default checked.
-      const jgTakeAll = (m.querySelector<HTMLInputElement>("[data-tr-jg-take-all]")?.checked) ?? true;
+      // v0.0.921 — owner 2026-06-07 "扩展到所有从月球出发的任务". Renamed
+      // jgTakeAll → moonTakeAll, applies to every leg whose source body type
+      // is "moon" (not only JG hop). Default checked.
+      const moonTakeAll = (m.querySelector<HTMLInputElement>("[data-tr-moon-take-all]")?.checked) ?? true;
       // Build the chain: depending on (source vs resource) and (JG) we emit
       // 1-3 goals with a shared chain id + priority ladder so the planner
       // dispatches them in order as ships arrive at each waypoint.
@@ -3244,6 +3177,12 @@ function openTransportSettings(
         };
         const res = (p as { resources?: { m?: number; c?: number; d?: number } }).resources;
         if (res) base.resources = res;
+        // v0.0.946 — owner 2026-06-07 "应该 2leg 不是 4leg": findSiblingMoon
+        // 现在 require jumpgateLevel > 0. 月球无 JG → 退回直送 sublight.
+        const buildings = (p as { buildings?: Record<string, number> }).buildings;
+        if (buildings && typeof buildings.jumpgate === "number") {
+          base.jumpgateLevel = buildings.jumpgate;
+        }
         return base;
       };
       const ppSource = toPlannerPlanet(planetsMap[source]);
@@ -3265,7 +3204,7 @@ function openTransportSettings(
         ships,
         cargo: { m: cargoM, c: cargoC, d: cargoD },
         jgEnabled,
-        jgTakeAll,
+        moonTakeAll,
         allPlanets: ppAll,
         chainId,
       });
@@ -3508,6 +3447,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   // Local-storage helpers — persist position + collapse state across page
   // reloads so the operator's preferred layout sticks.
   const LS_POS_KEY = "ogamex.panel.pos";
+  // v0.0.938 — owner "TM 删错折叠了, 恢复": 折叠功能恢复, 删的是树 toggle.
   const LS_COLLAPSED_KEY = "ogamex.panel.collapsed";
   function loadJSON<T>(key: string, fallback: T): T {
     try {
@@ -3894,13 +3834,46 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     return `${d}d${(h % 24).toString().padStart(2,"0")}h`;
   }
 
-  function renderTreeNode(n: PrereqTreeNode, depth = 0): string {
+  // v0.0.916 — renderTreeNode 接 ctx: 若 ctx.currentStep 匹配本节点 tech+level,
+  // 在该行追加 shortage 数字 + 右对齐的 運輸 按钮.
+  // v0.0.917 — owner "当前任务不要折叠": forceExpandKeys 集合包含 current-step
+  // 节点 + 到 root 的所有 ancestor key, 这些节点 collapsed 强制 false.
+  type RenderTreeCtx = {
+    goalId: string;
+    goalPlanet?: string | undefined;
+    currentStep?: { tech: string; level: number; shortage: { m: number; c: number; d: number }; kind?: string; cost?: unknown } | null | undefined;
+    bodyBuildQ?: { tech?: string | undefined; level?: number | null | undefined; ends_at?: number | undefined; queue?: string | undefined } | null | undefined;
+    bypassFillBtn?: boolean | undefined;
+    forceExpandKeys?: Set<string> | undefined;
+  };
+  // 预扫描 tree 找出 current-step 节点到 root 的路径上所有 key, 让这些节点
+  // 不被 treeExpanded 集合的"折叠默认"影响.
+  function collectCurrentStepPath(root: PrereqTreeNode, cs: { tech: string; level: number } | null | undefined): Set<string> {
+    const keys = new Set<string>();
+    if (!cs) return keys;
+    const stack: string[] = [];
+    const walk = (n: PrereqTreeNode): boolean => {
+      stack.push(treeKey(n));
+      if (n.tech === cs.tech && n.targetLevel === cs.level) {
+        for (const k of stack) keys.add(k);
+        return true;
+      }
+      for (const c of n.children) {
+        if (walk(c)) return true;
+      }
+      stack.pop();
+      return false;
+    };
+    walk(root);
+    return keys;
+  }
+  function renderTreeNode(n: PrereqTreeNode, depth = 0, ctx?: RenderTreeCtx): string {
     const indent = depth * 14;
     const hasChildren = n.children.length > 0;
     const key = treeKey(n);
-    // v0.0.526 預設折疊; v0.0.738 root 强制展开; v0.0.740 全局 treeExpandAll
-    // toggle 覆盖所有判断 (一键展开 / 一键收回).
-    const collapsed = !treeExpandAll && depth > 0 && !treeExpanded.has(key);
+    // v0.0.917 — owner "当前任务不要折叠": 路径上的 key 强制展开.
+    const onCurrentPath = ctx?.forceExpandKeys?.has(key) === true;
+    const collapsed = !treeExpandAll && depth > 0 && !treeExpanded.has(key) && !onCurrentPath;
     const chev = hasChildren
       ? `<span data-tree-toggle="${escapeHtml(key)}" style="display:inline-block; width:12px; cursor:pointer; color:#8090a8; user-select:none;">${collapsed ? "▸" : "▾"}</span>`
       : `<span style="display:inline-block; width:12px;"></span>`;
@@ -3912,25 +3885,52 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const kindIcon = n.kind === "research" ? "🧪" : "🏗";
     const levelStr = `${n.currentLevel}/${n.targetLevel}`;
     const techColor = n.met ? "#7080a8" : "#d8e0ec";
-    // Per-node ETA badge — show subtree total (rolled-up) on parents and
-    // self ETA on leaves. Hidden when the node is met (no work left).
     const subtreeEta = n.subtree_eta_seconds ?? 0;
     const etaBadge = (n.met || subtreeEta <= 0)
       ? ""
       : `<span style="color:#8090a8; font-size:10px; margin-left:4px;" title="time to complete this branch (serial)">⏱ ${fmtSeconds(subtreeEta)}</span>`;
-    // v0.0.791 — queue label badge ([R1]/[B2]) 显示 ogame 真实执行序.
-    // research_q 全局 single, build_q per-tree single (cascade 通常同 planet).
     const qlbl = n.queue_label
       ? `<span style="color:#9ab; font-size:10px; background:#1a2332; padding:1px 4px; border-radius:3px; margin-right:3px;" title="ogame 执行序: ${n.queue_label.startsWith("R") ? "research_q" : "build_q"}">${escapeHtml(n.queue_label)}</span>`
       : "";
+    // v0.0.916 — current-step inline chip + right-aligned 運輸 button
+    let csChipHtml = "";
+    let csBtnHtml = "";
+    if (ctx?.currentStep && ctx.currentStep.tech === n.tech && ctx.currentStep.level === n.targetLevel) {
+      const cs = ctx.currentStep;
+      const csh = cs.shortage;
+      const bqMatchesCS = ctx.bodyBuildQ
+        && ctx.bodyBuildQ.tech === cs.tech
+        && ctx.bodyBuildQ.level === cs.level
+        && (ctx.bodyBuildQ.ends_at ?? 0) > Date.now();
+      if (bqMatchesCS) {
+        const etaMin = Math.max(0, Math.round(((ctx.bodyBuildQ!.ends_at ?? 0) - Date.now()) / 60_000));
+        csChipHtml = `<span style="color:#7cfc00; font-size:10px; margin-left:6px;">~${etaMin}m</span>`;
+      } else {
+        const fmtRes = (x: number): string => x >= 1_000_000 ? `${(x/1_000_000).toFixed(1)}M` : x >= 1_000 ? `${(x/1_000).toFixed(0)}K` : String(Math.round(x));
+        const bits = [
+          csh.m > 0 ? `${fmtRes(csh.m)} m` : "",
+          csh.c > 0 ? `${fmtRes(csh.c)} c` : "",
+          csh.d > 0 ? `${fmtRes(csh.d)} d` : "",
+        ].filter(Boolean).join(" · ");
+        if (bits) csChipHtml = `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;">${escapeHtml(t('auto.289'))} ${bits}</span>`;
+        const csTotal = csh.m + csh.c + csh.d;
+        if (csTotal > 0 && !ctx.bypassFillBtn) {
+          // inline button style (btnStyle is scoped to render() at L3996,
+          // renderTreeNode is hoisted above it).
+          const btnInline = "background:#205a40; color:#fff; border:1px solid #408a60; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:10px;";
+          csBtnHtml = `<button data-action-fill-shortage="${escapeHtml(ctx.goalId)}" data-fill-target="${escapeHtml(ctx.goalPlanet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnInline}" title="${escapeHtml(t('auto.154'))}">${escapeHtml(t('auto.274'))}</button>`;
+        }
+      }
+    }
     const me = `
       <div style="padding:2px 0 2px ${indent}px; font-size:11px; color:${techColor}; display:flex; align-items:center; gap:4px;">
         ${chev}<span>${kindIcon}</span>
-        ${qlbl}<span style="flex:1;">${escapeHtml(techName(n.tech))} <span style="color:#8090a8;">(${levelStr})</span>${etaBadge}</span>
+        ${qlbl}<span style="flex:1;">${escapeHtml(techName(n.tech))} <span style="color:#8090a8;">(${levelStr})</span>${etaBadge}${csChipHtml}</span>
         ${statusBadge}
+        ${csBtnHtml}
       </div>`;
     const kids = hasChildren && !collapsed
-      ? n.children.map((c) => renderTreeNode(c, depth + 1)).join("")
+      ? n.children.map((c) => renderTreeNode(c, depth + 1, ctx)).join("")
       : "";
     return me + kids;
   }
@@ -4102,7 +4102,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const renderSingleGoalRow = (g: GoalRowFromHttp): string => {
       const targetStr = fmtTarget(g.type, g.target as Record<string, unknown>);
       const paused = isPaused(g);
-      const isMain = g.is_main_goal === true;
+      // v0.0.916 — isMain UI 已删 (owner "删掉主要任务"); 字段在 PG 仍存在
+      // 仅 panel 不再渲染 mainStar/mainBtn/mainBg.
       const derived = deriveDisplayStatus(g, goals);
       const displayStatus = derived.label;
       const color = derived.color;
@@ -4134,15 +4135,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const cancelBtn = canAct
         ? `<button data-action-cancel="${escapeHtml(g.id)}" style="${btnStyle("#5a2020", "#8a4040")}">${escapeHtml(t("panel.action.cancel"))}</button>`
         : "";
-      // Set/unset Main button — only on non-terminal goals.
-      const mainBtn = canAct
-        ? (isMain
-            ? `<button data-action-unset-main="${escapeHtml(g.id)}" style="${btnStyle("#3a3a5a", "#6a6a8a")}" title="${escapeHtml(t("panel.action.unset_main_tooltip"))}">${escapeHtml(t("panel.action.unset_main"))}</button>`
-            : `<button data-action-set-main="${escapeHtml(g.id)}" style="${btnStyle("#5a5a20", "#8a8a40")}" title="${escapeHtml(t("panel.action.set_main_tooltip"))}">${escapeHtml(t("panel.action.set_main"))}</button>`)
-        : "";
-      // Row background tint for the main goal so it pops visually.
-      const mainBg = isMain ? "background:rgba(218,165,32,0.08); " : "";
-      const mainStar = isMain ? `<span style="color:#ffd700; font-size:12px;" title="main objective">⭐</span> ` : "";
+      // v0.0.916 — "主要任务" UI 删除 (mainBtn / mainStar / mainBg / isMain
+      // 引用全部去掉). PG schema 仍保留 is_main_goal 字段, 仅 UI 层不再渲染.
       // Auto-optimizer-managed goal (id starts with "opt-") gets a 🔧 marker
       // so the operator can distinguish it from manually-added goals.
       const optIcon = g.id?.startsWith("opt-") ? `<span style="color:#7cfc00; font-size:11px;" title="auto-optimizer managed">🔧</span> ` : "";
@@ -4178,82 +4172,58 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
             const shortageNumbersHtml = sh && (sh.m + sh.c + sh.d) > 0
               ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title=t("auto.152")>${escapeHtml(t('auto.289'))} ${sh.m > 0 ? `${fmtRes(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes(sh.d)} d` : ""}</span>`
               : "";
-            // v0.0.784 — operator 2026-06-05 "运输界面自动填的资源不对": 主行
-            // → 運輸 按钮之前用 sh (chain total shortage, 累计整链), 与 csLine
-            // 显示的 csh (current_step deepest-leaf shortage, 当下一步) 不一致.
-            // 操作员看 "缺 20.6M c" 是 csh, 期望点按钮就填这个数. 切换源到 csh
-            // 跟 stepFillBtn (line 4091) 同源, 一致.
-            const fillSrc = csForCmp?.shortage ?? sh ?? { m: 0, c: 0, d: 0 };
+            // v0.0.940 — owner 2026-06-07 "没有总资源, 和总资源的运输按钮": sidecar 送了 total_cost (链总成本)
+            // 但 panel 没渲染, owner 看到的"缺"是 cost - bank, 跟 B2 当前步骤
+            // 一致 (因为 bank 覆盖了 crystalMine 部分) → owner 误以为只显当前 building.
+            // 修: etaHeader 加 "总" 显示链 total_cost, 跟"缺" 并列, owner 一眼看出
+            // 全链成本 vs 真实需运输的短缺差.
+            const tc = g.total_cost;
+            const totalCostHtml = tc && (tc.m + tc.c + tc.d) > 0
+              ? `<span style="color:#a0c0e8; font-size:10px; margin-left:6px;" title="链路全部成本(不扣bank)">总 ${tc.m > 0 ? `${fmtRes(tc.m)} m` : ""}${tc.c > 0 ? `${tc.m > 0 ? " · " : ""}${fmtRes(tc.c)} c` : ""}${tc.d > 0 ? `${(tc.m + tc.c) > 0 ? " · " : ""}${fmtRes(tc.d)} d` : ""}</span>`
+              : "";
+            // v0.0.784 — 操作员当时显示是 csh, 期望按钮填 csh.
+            // v0.0.899 — owner 2026-06-07 实证: 当前主行 shortageNumbersHtml
+            // 显示的是 `sh` (chain total = 整链累计 e.g. 80.4M m), 但 fillSrc=csh
+            // 只填 current_step (e.g. 15.6M m). 显示跟填值不符 owner 报错.
+            // 修法 — 主行按钮跟主行显示同源: 用 sh 填 (链总). step 行按钮维持
+            // csh (line 4247 stepFillBtn). 两个按钮两种语义清晰: 主行 = "运够
+            // 整条链", step 行 = "运够当前一步".
+            const fillSrc = sh ?? csForCmp?.shortage ?? { m: 0, c: 0, d: 0 };
             const shortageBtnHtml = (fillSrc.m + fillSrc.c + fillSrc.d) > 0
               ? `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(fillSrc.m)}" data-fill-c="${Math.ceil(fillSrc.c)}" data-fill-d="${Math.ceil(fillSrc.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`
               : "";
-            const shortageChip = samePrereqShortage
-              ? shortageBtnHtml   // 只保留按钮, 数字让 csLine 显示
-              : `${shortageNumbersHtml}${shortageBtnHtml}`;
-            // v0.0.456: decouple shortageChip from totalEta — moons return
-            // ETA=∞ (no local production for deuterium etc.), JSON serializes
-            // to null, ?? 0 collapses to 0, fallback path was hiding the
-            // shortage chip + 運輸 button. Render shortage whenever it's
-            // positive regardless of whether ETA is computable.
+            // v0.0.916 — etaHeader 拆 left/right: 文本+缺资源数字左, 運輸按钮右
+            // (owner 2026-06-07 "运输按钮居右"). csLine 块整段删除, 当前步骤
+            // 的 shortage + 運輸 chip 由 renderTreeNode 在匹配节点上 inline.
             const hasShortage = sh && (sh.m + sh.c + sh.d) > 0;
-            // v0.0.486 — if body's build_q is currently building the
-            // deepest-unmet step (current_step), no need to show "awaiting
-            // transport" or shortage chip — that step's resources have
-            // already been paid. Replace with "building <step>" + ETA from
-            // ogame queue.
             const cs2 = g.current_step;
             const bqMatchesCS_outer = cs2 && g.body_build_q
               && g.body_build_q.tech === cs2.tech
               && g.body_build_q.level === cs2.level
               && g.body_build_q.ends_at > Date.now();
-            const etaHeader = bqMatchesCS_outer
+            const etaLeftHtml = bqMatchesCS_outer
               ? `<span style="color:#7cfc00;">building ${escapeHtml(cs2.tech)} L${cs2.level} (~${fmtSeconds(Math.floor((g.body_build_q!.ends_at - Date.now())/1000))})</span>`
               : totalEta > 0
-                ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${shortageChip}`
+                ? `<span style="color:#ffd700;">ETA ≈ ${fmtSeconds(totalEta)}</span>${totalCostHtml}${shortageNumbersHtml}`
                 : hasShortage
-                  ? `<span style="color:#ffaa55;">awaiting transport (ETA n/a — moon local prod = 0)</span>${shortageChip}`
-                  : `<span style="color:#7cfc00;">${escapeHtml(t("panel.prereq.all_met"))}</span>`;
-            // v0.0.461: current-step row — "↳ ${escapeHtml(t('auto.234'))}: lunarBase L4 缺 ..."
-            // separate line below the chain summary so operator sees what
-            // the bot is RIGHT NOW trying to fire, and how short on cash.
-            const cs = g.current_step;
-            const csLine = cs ? (() => {
-              const csh = cs.shortage;
-              const csTotal = csh.m + csh.c + csh.d;
-              const stepLabel = `${cs.tech} L${cs.level}`;
-              // v0.0.486 — operator 2026-05-30: jumpgate L1 已在 build_q,
-              // current_step 還說"缺 X 資源"是邏輯錯。 當 body_build_q 跟
-              // current_step 同 tech+level → 這級錢已付, 不再 emit 缺口,
-              // 改顯示"在造中, ~Xm 後完工"。
-              const bqMatchesCS = g.body_build_q
-                && g.body_build_q.tech === cs.tech
-                && g.body_build_q.level === cs.level
-                && g.body_build_q.ends_at > Date.now();
-              if (bqMatchesCS) {
-                const etaMin = Math.max(0, Math.round((g.body_build_q!.ends_at - Date.now()) / 60_000));
-                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ ${escapeHtml(t('auto.288'))}: ${escapeHtml(stepLabel)} ${escapeHtml(t('auto.290', { eta: etaMin }))}</div>`;
-              }
-              if (csTotal === 0) {
-                return `<div style="font-size:10px; color:#7cfc00; margin-bottom:2px;">↳ ${escapeHtml(t('auto.288'))}: ${escapeHtml(stepLabel)} ${escapeHtml(t('auto.291'))}</div>`;
-              }
-              const shortageBits = [
-                csh.m > 0 ? `${fmtRes(csh.m)} m` : "",
-                csh.c > 0 ? `${fmtRes(csh.c)} c` : "",
-                csh.d > 0 ? `${fmtRes(csh.d)} d` : "",
-              ].filter(Boolean).join(" · ");
-              // v0.0.700 — 重复时, 主行已经显示按钮, 此处省略 stepFillBtn
-              const stepFillBtn = samePrereqShortage
-                ? ""
-                : `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="${btnStyle("#205a40", "#408a60")} margin-left:6px; font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.154'))}">${escapeHtml(t('auto.274'))}</button>`;
-              return `<div style="font-size:10px; color:#ffaa55; margin-bottom:2px;">↳ ${escapeHtml(t('auto.288'))}: ${escapeHtml(stepLabel)} ${escapeHtml(t('auto.289'))} ${shortageBits}${stepFillBtn}</div>`;
-            })() : "";
-            // v0.0.527 — operator 2026-05-31 "前置鏈都要歸入主鏈 tree".
-            // 去掉獨立 "prereq chain" label, etaHeader 直接掛在 tree 頂部,
-            // 整段就是這一個 goal 的主鏈 (前置 + 當前 step + 自身).
+                  ? `<span style="color:#ffaa55;">awaiting transport (ETA n/a — moon local prod = 0)</span>${totalCostHtml}${shortageNumbersHtml}`
+                  : `<span style="color:#7cfc00;">${escapeHtml(t("panel.prereq.all_met"))}</span>${totalCostHtml}`;
+            const etaHeader = `<div style="font-size:10px; color:#8090a8; margin-bottom:2px; display:flex; justify-content:space-between; align-items:center; gap:6px;">
+              <span>${etaLeftHtml}</span>
+              <span>${shortageBtnHtml}</span>
+            </div>`;
+            // v0.0.527 — 前置鏈都歸入主鏈 tree; etaHeader 直接掛在 tree 顶部.
+            // v0.0.916 — csLine 删除, 当前步骤的 shortage+按钮渲染到 tree 节点上.
             return `<div style="margin-top:6px; padding:4px 0 2px; border-top:1px dashed #2a3a52;">
-              <div style="font-size:10px; color:#8090a8; margin-bottom:2px;">${etaHeader}</div>
-              ${csLine}
-              ${renderTreeNode(g.prereq_tree)}
+              ${etaHeader}
+              ${renderTreeNode(g.prereq_tree, 0, {
+                goalId: g.id,
+                goalPlanet: g.planet,
+                currentStep: g.current_step,
+                bodyBuildQ: g.body_build_q,
+                bypassFillBtn: samePrereqShortage,
+                forceExpandKeys: collectCurrentStepPath(g.prereq_tree, g.current_step ?? null),
+              })}
             </div>`;
           })()
         : "";
@@ -4288,12 +4258,17 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const collapsedRow2 = (lvlForRow2 || g.planet)
         ? `<span style="color:#8090a8;">${lvlForRow2 ? escapeHtml(lvlForRow2) : ""}${lvlForRow2 && g.planet ? " " : ""}${g.planet ? `@${escapeHtml(g.planet)}` : ""}</span>`
         : "";
+      // v0.0.916 — owner 2026-06-07 panel spec:
+      //   ① 标题 always show @coords (collapsed + expanded);
+      //   ② 删除"主要任务" (mainBtn / mainStar / mainBg / isMain UI);
+      //   ③ csLine 进树 — current step shortage 显示在树里匹配节点上, 不再
+      //   独立行 (renderTreeNode 内做 chip).
       return `
-        <div style="${mainBg}border-top: 1px solid #2a3a52; padding: 6px 0;">
+        <div style="border-top: 1px solid #2a3a52; padding: 6px 0;">
           <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? t("auto.257") : t("auto.258")}">
-            <span>${chevron}${mainStar}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${etaAtBadge}${awaitingChip}</span>
+            <span>${chevron}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${coordChip}${etaAtBadge}${awaitingChip}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
-            <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${mainBtn}${pauseOrResume}${cancelBtn}</span>
+            <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${pauseOrResume}${cancelBtn}</span>
           </div>
           ${isExpanded
             ? `<div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer; font-size:11px;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</div>`
@@ -4543,8 +4518,6 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         <span style="display:flex; gap:4px; align-items:center;">
           ${globalPauseBtn}
           ${updateBtn}
-          <button data-action="tree-toggle-all" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="${escapeHtml(treeExpandAll ? "tree: collapse all" : "tree: expand all")}">${treeExpandAll ? "📚" : "📖"}</button>
-          <button data-action="open-audit" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:13px; padding:0 4px;" title="${escapeHtml(t("panel.btn.audit"))}">📋</button>
           <button data-action="collapse" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${escapeHtml(collapsed ? t("panel.btn.collapse_expand") : t("panel.btn.collapse_collapse"))}">${collapsed ? "▸" : "▾"}</button>
           <button data-action="close" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${escapeHtml(t("panel.btn.close"))}">×</button>
         </span>
@@ -5153,13 +5126,8 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const closeBtn = panel.querySelector<HTMLElement>("[data-action=\"close\"]");
     closeBtn?.addEventListener("click", () => stop());
 
-    // v0.0.639 — 📋 audit modal opener. Fetches /v1/events from sidecar
-    // and renders rows in a scrollable filter modal.
-    const auditBtn = panel.querySelector<HTMLElement>("[data-action=\"open-audit\"]");
-    auditBtn?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openAuditModal(doc, baseUrl, fetchFn);
-    });
+    // v0.0.937 — owner 2026-06-07 "取消TM 标题栏的 折叠和审计，删除tm里对应的代码":
+    // audit (📋) + collapse (▸/▾) 按钮 + handler 都删, openAuditModal 死代码同步删.
 
     // v0.0.765 — operator "暂停所有 TM 动作" global pause toggle.
     const globalPauseBtnEl = panel.querySelector<HTMLElement>("[data-action=\"global-pause-toggle\"]");
@@ -5186,15 +5154,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       if (lastGoals) render(lastGoals);
     });
 
-    // v0.0.740 — operator "tree 不要一个一个点 一键展开和收回". Global
-    // toggle for tree expand/collapse-all. Flips treeExpandAll flag and
-    // forces a panel re-render using the last cached goals payload.
-    const treeToggleAllBtn = panel.querySelector<HTMLElement>("[data-action=\"tree-toggle-all\"]");
-    treeToggleAllBtn?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      treeExpandAll = !treeExpandAll;
-      if (lastGoals) render(lastGoals);
-    });
+    // v0.0.938 — owner "TM 删错折叠了, 删的是📚 那个": tree-toggle-all
+    // 按钮 + handler 删除. tree 展开通过 force-expand 当前任务路径 + 用户点
+    // 单 chevron 控制, 不需要全局 toggle.
 
     // Operator 2026-05-29: Update runtime button. Hidden by default; the
     // poll loop below (every 60s) sets window.__ogamexLatestVersion and
@@ -5216,7 +5178,6 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     collapseBtn?.addEventListener("click", () => {
       collapsed = !collapsed;
       saveJSON(LS_COLLAPSED_KEY, collapsed);
-      // Avoid full refetch — toggle body display + chevron in place.
       const bodyEl = panel!.querySelector<HTMLElement>("[data-ogamex-body=\"1\"]");
       if (bodyEl) bodyEl.style.display = collapsed ? "none" : "block";
       collapseBtn!.textContent = collapsed ? "▸" : "▾";

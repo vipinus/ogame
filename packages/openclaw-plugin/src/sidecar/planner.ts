@@ -60,12 +60,11 @@ export const ENERGY_GATED_BUILDINGS: ReadonlySet<string> = new Set([
 //       is event-driven via fleet-landing events.
 function isPostExpeditionPhase(state: WorldState): boolean {
   // v0.0.697 — operator 2026-06-03 "astro >= 4 这个合理".
-  // astro 是 capability 的第一性源头 (research level, 单调递增, 不依赖
-  // class detection / 公式 / state push 链路). floor(sqrt(4)) = 2 = 首次解锁
-  // 远征槽位的临界点。max_expedition_slots 是 derived, 上游漏算 class bonus
-  // 就会失真。读 research.levels.astrophysics 直击根因。
+  // v0.0.931 — owner 2026-06-07 "改成 9": astro=4 只解锁 1 远征槽, 太早就
+  // 不算矿/存储罐的产能 wait, post-phase skip 过激进; astro>=9 = floor(sqrt(9))
+  // =3 槽, 远征经济才真正起飞, transport 周期稳定能补给 — 这时 skip 才合理.
   const astro = state.research?.levels?.["astrophysics"] ?? 0;
-  return astro >= 4;
+  return astro >= 9;
 }
 
 // Pre-phase storage strategy: when resource bottleneck is crystal or deuterium
@@ -126,16 +125,20 @@ export function mineEnergyConsumption(building: string, level: number): number {
 }
 
 // ogame v12 vanilla — power plant production (per hour, universe speed cancels
-// in delta comparisons). Mirrors daemon's solarProduction / fusionProduction.
-//   solarPlant:    base 20 * L * 1.1^L
-//   fusionReactor: base 50 * L * 1.1^L * (1 + 0.02 * energyTech)
+// in delta comparisons). Mirrors daemon's solarProduction.
+//   solarPlant:    20 * L * 1.1^L                            (ogame wiki v12)
+//   fusionReactor: 30 * L * (1.05 + 0.01 * energyTech)^L     (ogame wiki v12)
+// v0.0.911 — fusion 公式由 owner 2026-06-07 "公式肯定有问题" 触发审计修复:
+// 旧式 `50 * L * 1.1^L * (1 + 0.02*e)` 跟 ogame 真公式不对 (L=15 e=12 时
+// 3885 vs 真 4742, 误差 ~20%), 早期实现拍脑袋写的, 没人 check; planner +
+// simulate 双端读这函数 → 偏低 → fusion pick / deficit 都会被低估.
 export function solarProduction(level: number): number {
   if (level <= 0) return 0;
   return 20 * level * Math.pow(1.1, level);
 }
 export function fusionProduction(level: number, energyTech: number): number {
   if (level <= 0) return 0;
-  return 50 * level * Math.pow(1.1, level) * (1 + 0.02 * energyTech);
+  return 30 * level * Math.pow(1.05 + 0.01 * energyTech, level);
 }
 
 // v0.0.737 — operator 2026-06-04 "补电厂的逻辑是有的, 不要重复写代码, 复用".
@@ -169,7 +172,9 @@ export function fusionProduction(level: number, energyTech: number): number {
 function fieldsFullKey(planetId: string, building: string): string {
   return `${planetId}:${building}`;
 }
-const FIELDS_FULL_TTL_MS = 24 * 3600 * 1000;
+// v0.0.958 — owner 2026-06-08 "fields_full 也 60s 一次": flat retry, owner
+// 自己/ogame 自愈, planner 别假设 24h 不可恢复.
+const FIELDS_FULL_TTL_MS = 60 * 1000;
 export function markFieldsFull(uid: string, planetId: string, building: string): void {
   tenantRegistry.get(uid).fieldsFullCache.set(
     fieldsFullKey(planetId, building),
@@ -226,95 +231,225 @@ export function clearFieldsFullByPlanet(uid: string, planetId: string): number {
 // Earlier iterations: v0.0.675/737 used projectedEnergy<0 (mathematically the
 // same as below); a -BUFFER tolerance was tried and rejected. Bootstrap branch
 // (no plant at all) stays — there's no operator decision to preserve.
+export type EnergyPrereqPick =
+  | { kind: "build"; building: "fusionReactor" | "solarPlant"; level: number; targetLevel: number }
+  | { kind: "research"; tech: "energyTech"; level: number; targetLevel: number };
+
+// v0.0.914 — shared 4-way decision helper. Single source of truth for the
+// energy-fix candidate enumeration. Used by planner.ts pickEnergyPrereqBuilding
+// (synchronous cascade gate) AND optimizer.ts energy-guard (60s post-hoc
+// tick). Both callers only differ in how they DISPATCH the winning candidate
+// (planner returns PlanResult, optimizer emits PG rows); the DECISION is
+// identical, owner 2026-06-07 "optimizer/cascade gate/post-hoc tick 不能合并吗"
+// 拉通点.
+export type EnergyFixCandidate =
+  | { kind: "solar"; level: number; cost: number }
+  | { kind: "fusion"; level: number; cost: number }
+  | { kind: "energy"; level: number; cost: number }
+  | { kind: "combo"; fL: number; eL: number; cost: number };
+
+// v0.0.931 — owner 2026-06-07 "维护三套代码 改个参数会很容易出错". per-build
+// helper 把 input prep (extraConsumption, deficit, snapE, fusionPrereqsMet)
+// 全封在内部, 3 caller 不再各算各的 → 不再 drift. simulate v0.0.929/930
+// 翻车命中的就是 input 算口径不一致(单步 vs 全程), 这层 entry 杜绝.
+export function pickEnergyFixForBuildLevel(input: {
+  planet: Planet;
+  building: string;
+  currentLevel: number;
+  nextLevel: number;
+  energyTech: number;
+  solarBlocked?: boolean;
+  fusionBlocked?: boolean;
+}): EnergyFixCandidate[] {
+  const { planet, building, currentLevel, nextLevel, energyTech } = input;
+  const solar = planet.buildings?.["solarPlant"] ?? 0;
+  const fusion = planet.buildings?.["fusionReactor"] ?? 0;
+  const dSynth = planet.buildings?.["deuteriumSynth"] ?? 0;
+  const fusionPrereqsMet = dSynth >= 5 && energyTech >= 3;
+  const snapE = (planet.resources as { e?: number } | undefined)?.e ?? 0;
+  const extraConsumption = mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, currentLevel);
+  const deficit = Math.max(0, extraConsumption - snapE, -snapE);
+  return pickEnergyFixCandidates({
+    deficit, solar, fusion, energyTech, fusionPrereqsMet,
+    solarBlocked: !!input.solarBlocked,
+    fusionBlocked: !!input.fusionBlocked,
+  });
+}
+
+export function pickEnergyFixCandidates(input: {
+  deficit: number;
+  solar: number;
+  fusion: number;
+  energyTech: number;
+  fusionPrereqsMet: boolean;
+  solarBlocked?: boolean;   // e.g. fields_full
+  fusionBlocked?: boolean;
+}): EnergyFixCandidate[] {
+  const { deficit, solar, fusion, energyTech, fusionPrereqsMet } = input;
+  const solarBlocked = !!input.solarBlocked;
+  const fusionBlocked = !!input.fusionBlocked;
+  const solarCostFn = TECH_TREE.solarPlant?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
+  const fusionCostFn = TECH_TREE.fusionReactor?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
+  const energyCostFn = TECH_TREE.energyTech?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
+  const cumCost = (costFn: ((l: number) => { m: number; c: number; d?: number }) | undefined, fromL: number, toL: number): number => {
+    if (!costFn) return Number.POSITIVE_INFINITY;
+    let total = 0;
+    for (let l = fromL + 1; l <= toL; l++) {
+      const c = costFn(l);
+      total += c.m + c.c + (c.d ?? 0);
+    }
+    return Math.round(total);
+  };
+  const candidates: EnergyFixCandidate[] = [];
+  // solar single-axis
+  if (!solarBlocked) {
+    let lvl: number | null = null;
+    for (let l = solar + 1; l <= solar + 30; l++) {
+      if (solarProduction(l) - solarProduction(solar) >= deficit) { lvl = l; break; }
+      lvl = l;
+    }
+    if (lvl !== null) candidates.push({ kind: "solar", level: lvl, cost: cumCost(solarCostFn, solar, lvl) });
+  }
+  // fusion single-axis
+  if (fusionPrereqsMet && !fusionBlocked) {
+    const baseFusionOut = fusionProduction(fusion, energyTech);
+    let lvl: number | null = null;
+    for (let l = fusion + 1; l <= fusion + 30; l++) {
+      if (fusionProduction(l, energyTech) - baseFusionOut >= deficit) { lvl = l; break; }
+      lvl = l;
+    }
+    if (lvl !== null) candidates.push({ kind: "fusion", level: lvl, cost: cumCost(fusionCostFn, fusion, lvl) });
+  }
+  // energyTech-alone (research) — needs existing fusion reactor
+  if (fusionPrereqsMet && fusion > 0) {
+    const baseFusionOut = fusionProduction(fusion, energyTech);
+    let lvl: number | null = null;
+    for (let l = energyTech + 1; l <= energyTech + 10; l++) {
+      if (fusionProduction(fusion, l) - baseFusionOut >= deficit) { lvl = l; break; }
+      lvl = l;
+    }
+    if (lvl !== null) candidates.push({ kind: "energy", level: lvl, cost: cumCost(energyCostFn, energyTech, lvl) });
+  }
+  // fusion + energyTech combo
+  if (fusionPrereqsMet && fusion > 0 && !fusionBlocked) {
+    const baseFusionOut = fusionProduction(fusion, energyTech);
+    let best: { fL: number; eL: number; cost: number } | null = null;
+    for (let fL = fusion + 1; fL <= fusion + 5; fL++) {
+      for (let eL = energyTech + 1; eL <= energyTech + 5; eL++) {
+        if (fusionProduction(fL, eL) - baseFusionOut < deficit) continue;
+        const total = cumCost(fusionCostFn, fusion, fL) + cumCost(energyCostFn, energyTech, eL);
+        if (!best || total < best.cost) best = { fL, eL, cost: total };
+      }
+    }
+    if (best) candidates.push({ kind: "combo", fL: best.fL, eL: best.eL, cost: best.cost });
+  }
+  candidates.sort((a, b) => a.cost - b.cost);
+  return candidates;
+}
+
 export function pickEnergyPrereqBuilding(
   building: string,
   current: number,
   nextLevel: number,
   planet: Planet,
   energyTech: number,
-): { building: "fusionReactor" | "solarPlant"; level: number; targetLevel: number } | null {
+  /** v0.0.938 — owner 2026-06-07 "不要维护三个决策引擎". 若提供 activeRows,
+   *  直接读 optimizer 已派的 opt-* 作为决策真理, 完全跳过本地 4 路 enum.
+   *  drift 架构性消除. 不提供时仍走旧 helper 路径 (back-compat). */
+  activeRows?: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[],
+  uidForOptLookup?: string,
+): EnergyPrereqPick | null {
   if (!ENERGY_GATED_BUILDINGS.has(building)) return null;
   if (building === "solarPlant" || building === "fusionReactor") return null;
+  // v0.0.985 — owner 2026-06-08 "建完就负电了, 部署预测模式": planner 老逻辑
+  // 用 snapE (当前) + extra (本次升级 delta) 检查, 漏看 build_q 已 queued 的
+  // 同 building 升级 — 那个 build 完成后 snapE 实际已下降. 改用 predict mode:
+  //   projectedSnapE = snapE - 已 queued 升级的耗电 delta (从 current 到 q.level)
+  //   实际本次 dispatch 后 energy = projectedSnapE - extra (nextLevel - q.level)
+  // 若 q.level >= nextLevel 说明已在排队中 (planner 跨 tick 重复 pick), 不动作
+  const planetBuildQ = (planet as { build_q?: { building?: string; level?: number } | null }).build_q;
+  const qLvl = (planetBuildQ && planetBuildQ.building === building && typeof planetBuildQ.level === "number")
+    ? planetBuildQ.level : current;
+  const projectedCurrent = Math.max(current, qLvl);
+  const queuedConsumeDelta = mineEnergyConsumption(building, projectedCurrent) - mineEnergyConsumption(building, current);
+  // v0.0.938 — sole-decider path: 读 opt-* 真理, 跳过本地 picker.
+  if (activeRows && uidForOptLookup) {
+    const snapE0Raw = (planet.resources as { e?: number } | undefined)?.e ?? 0;
+    const snapE0 = snapE0Raw - queuedConsumeDelta;  // 预测 post-queue balance
+    const extra0 = mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, projectedCurrent);
+    if (extra0 <= snapE0 && !((planet.buildings?.["solarPlant"] ?? 0) === 0 && (planet.buildings?.["fusionReactor"] ?? 0) === 0)) {
+      return null; // 能源够用 (post-queue projected), 不需要补
+    }
+    const opt = findActiveEnergyOpt(activeRows, uidForOptLookup, planet.id);
+    if (!opt) return null; // optimizer 还没派 → planner 这一拍不动手, 等 60s 后下次 tick
+    // v0.0.985 — owner 2026-06-08 "查清原因" 真态: opt-* goal 落后于 PG 真态,
+    // 仍要求 solarPlant Lxxx 但 planet 实际已 Lxxx. 老代码递归 planBuild 命中
+    // "already at target" → 字面冒泡到 ALREADY_AT_TARGET_RE → 30s consensus →
+    // 误删 ORIGINAL deuteriumSynth L33 goal (33674107 实证 18:05-18:06).
+    // 修: 源头不返已达 level 的 prereq, 返 null 让 planner 继续主路径.
+    if (opt.kind === "build" && opt.building) {
+      const curOpt = planet.buildings?.[opt.building] ?? 0;
+      if (curOpt >= opt.level) return null;
+      return { kind: "build", building: opt.building, level: opt.level, targetLevel: opt.level };
+    }
+    if (opt.kind === "research") {
+      const curTech = energyTech;
+      if (curTech >= opt.level) return null;
+    }
+    return { kind: "research", tech: "energyTech", level: opt.level, targetLevel: opt.level };
+  }
+  // v0.0.931 — owner 2026-06-07 "维护三套代码 改个参数会很容易出错". input
+  // prep (snapE / extraConsumption / deficit / fusionPrereqsMet) 搬进 helper,
+  // planner caller 收缩到几行。
   const solar = planet.buildings?.["solarPlant"] ?? 0;
   const fusion = planet.buildings?.["fusionReactor"] ?? 0;
-  const extraConsumption =
-    mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, current);
-  // 2026-06-05 — operator 实证: snapshot.resources.e 在 fleet 降落 / 偶发
-  // sniffer 过渡帧里会瞬间报 0, planner 信了就误触发补电厂 (2:75:7 12:15:09
-  // curEnergy 1秒内 2770→0). 按 [feedback_compute_dont_scrape] 改成
-  // structural 公式: structuralBudget = solarOutput(solar) +
-  // fusionOutput(fusion) - sum(mineEnergyConsumption(b, currentL)). 不再
-  // 读 snapshot 的瞬时 e, snapshot artifact 无法骗到 gate.
-  const mineKeys = ["metalMine", "crystalMine", "deuteriumSynth"] as const;
-  let mineDraw = 0;
-  for (const mk of mineKeys) {
-    const lv = planet.buildings?.[mk] ?? 0;
-    mineDraw += mineEnergyConsumption(mk, lv);
+  // v0.0.985 — 预测模式: snapE 减 queue 已计划的 mine 升级耗电, extra 从
+  // projectedCurrent (queue level) 算起, 不是 PG 当下 current.
+  const snapE = ((planet.resources as { e?: number } | undefined)?.e ?? 0) - queuedConsumeDelta;
+  const extraConsumption = mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, projectedCurrent);
+  const needsPowerPlant = (solar === 0 && fusion === 0) || extraConsumption > snapE;
+  if (!needsPowerPlant) return null;
+  if (solar === 0 && fusion === 0) {
+    return { kind: "build", building: "solarPlant", level: 1, targetLevel: 1 };
   }
-  const solarOut = solarProduction(solar);
-  const fusionOut = fusionProduction(fusion, energyTech);
-  const structuralBudget = solarOut + fusionOut - mineDraw;
-  const needsPowerPlant =
-    (solar === 0 && fusion === 0)
-    || extraConsumption > structuralBudget;
-  // probe log retained: structural budget vs snapshot's reported e so we
-  // can spot future artifacts without re-debugging from scratch.
-  const snapE = (planet.resources as { e?: number } | undefined)?.e ?? 0;
+  const uidForCache = getCurrentUserId() ?? "";
+  const candidates = pickEnergyFixForBuildLevel({
+    planet, building, currentLevel: current, nextLevel, energyTech,
+    solarBlocked: isFieldsFull(uidForCache, planet.id, "solarPlant"),
+    fusionBlocked: isFieldsFull(uidForCache, planet.id, "fusionReactor"),
+  });
   console.info(
     `[ogamex/planner/energy-gate] planet=${planet.id} building=${building} ${current}->${nextLevel} ` +
-    `structural=${Math.round(structuralBudget)} (solarOut=${Math.round(solarOut)} ` +
-    `fusionOut=${Math.round(fusionOut)} mineDraw=${Math.round(mineDraw)}) ` +
-    `snapE=${snapE} extra=${Math.round(extraConsumption)} (solar=${solar} fusion=${fusion}) ` +
-    `trigger=${needsPowerPlant}`,
+    `snapE=${snapE} extra=${Math.round(extraConsumption)} ` +
+    `picks=[${candidates.map(c => `${c.kind}:${c.cost}`).join(",")}]`,
   );
-  if (!needsPowerPlant) return null;
-  const solarCostFn = TECH_TREE.solarPlant?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
-  const fusionCostFn = TECH_TREE.fusionReactor?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
-  const solarCost = solarCostFn ? solarCostFn(solar + 1) : { m: 0, c: 0, d: 0 };
-  const fusionCost = fusionCostFn ? fusionCostFn(fusion + 1) : { m: 0, c: 0, d: 0 };
-  const dSynth = planet.buildings?.["deuteriumSynth"] ?? 0;
-  const planetD = (planet.resources as { d?: number } | undefined)?.d ?? 0;
-  const fusionPrereqsMet = dSynth >= 5 && energyTech >= 3;
-  const fusionAffordable = planetD >= (fusionCost.d ?? 0);
-  const fusionViable = fusionPrereqsMet && fusionAffordable;
-  const solarTotal = solarCost.m + solarCost.c + (solarCost.d ?? 0);
-  const fusionTotal = fusionCost.m + fusionCost.c + (fusionCost.d ?? 0);
-  let pickFusion = fusionViable && fusionTotal < solarTotal;
-  // v0.0.764 — fields_full short-circuit: 如果当前选择的 plant 在 24h 内
-  // 在该 planet 上失败过 120012, 切到另一种; 都不行 → return null 让
-  // parent goal 走 fields_full blocked 路径 (operator 拆建筑或建 terraformer).
-  // v0.0.862 — uid threaded via ALS (planGoal → planBuild → here runs inside
-  // priorityMerger.dispatch's runWithUser frame, set by ws_server / http_server).
-  const uidForCache = getCurrentUserId() ?? "";
-  if (pickFusion && isFieldsFull(uidForCache, planet.id, "fusionReactor")) {
-    if (!isFieldsFull(uidForCache, planet.id, "solarPlant")) pickFusion = false;
-    else return null;
-  } else if (!pickFusion && isFieldsFull(uidForCache, planet.id, "solarPlant")) {
-    if (!isFieldsFull(uidForCache, planet.id, "fusionReactor") && fusionPrereqsMet) pickFusion = true;
-    else return null;
+  const winner = candidates[0];
+  if (!winner) return null;
+  // v0.0.985 — 同 v0.0.985 路径 1 修法: 若 picker 推荐已达 level, 不要返
+  // (会被递归 planBuild 误判 already at → 冒泡到 ALREADY_AT_TARGET_RE → 误删 goal)
+  if (winner.kind === "solar") {
+    if (solar >= winner.level) return null;
+    return { kind: "build", building: "solarPlant", level: winner.level, targetLevel: winner.level };
   }
-  // v0.0.738 — solve for min plant level that covers the deficit. Plant
-  // production at picked level must reach (current plant prod) + deficit.
-  // Cap search at +20 levels to bound. 2026-06-05 — deficit is now derived
-  // from structural budget (above) not snapshot e, so transient snapshot
-  // artifacts no longer over-size the chosen plant.
-  const deficit = Math.max(0, extraConsumption - structuralBudget);
-  const baseProd = pickFusion ? fusionProduction(fusion, energyTech) : solarProduction(solar);
-  const startLvl = pickFusion ? fusion + 1 : solar + 1;
-  let chosenLvl = startLvl;
-  for (let l = startLvl; l <= startLvl + 20; l++) {
-    const prod = pickFusion ? fusionProduction(l, energyTech) : solarProduction(l);
-    if (prod - baseProd >= deficit) {
-      chosenLvl = l;
-      break;
-    }
-    chosenLvl = l;  // record latest in case loop exits without satisfaction
+  if (winner.kind === "fusion") {
+    if (fusion >= winner.level) return null;
+    return { kind: "build", building: "fusionReactor", level: winner.level, targetLevel: winner.level };
   }
-  return {
-    building: pickFusion ? "fusionReactor" : "solarPlant",
-    level: startLvl,       // next level to dispatch (planner affordability check)
-    targetLevel: chosenLvl, // min level to fully cover deficit (simulate tree depth)
-  };
+  if (winner.kind === "energy") {
+    if (energyTech >= winner.level) return null;
+    return { kind: "research", tech: "energyTech", level: winner.level, targetLevel: winner.level };
+  }
+  // combo: greedy first step — emit the cheaper kick-off (energyTech research
+  // is typically cheaper than first fusion bump at mid-game). next-tick re-eval
+  // dispatches the remaining half once state advances.
+  {
+    const fusionCostFn = TECH_TREE.fusionReactor?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
+    const energyCostFn = TECH_TREE.energyTech?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
+    const fFirst = fusionCostFn ? (() => { const c = fusionCostFn(fusion + 1); return c.m + c.c + (c.d ?? 0); })() : Number.POSITIVE_INFINITY;
+    const eFirst = energyCostFn ? (() => { const c = energyCostFn(energyTech + 1); return c.m + c.c + (c.d ?? 0); })() : Number.POSITIVE_INFINITY;
+    if (eFirst <= fFirst) return { kind: "research", tech: "energyTech", level: winner.eL, targetLevel: winner.eL };
+    return { kind: "build", building: "fusionReactor", level: winner.fL, targetLevel: winner.fL };
+  }
 }
 
 // Ogame v12 — list of buildings that can physically exist on a moon. Anything
@@ -376,25 +511,66 @@ interface PlanCtx {
   rootGoal: Goal;
   depth: number;
   sourcePlanetId: string;
+  /** v0.0.938 — owner 2026-06-07 "不要维护三个决策引擎, 改架构". 把 active
+   *  goals 透传进 planner, pickEnergyPrereqBuilding 不再自跑 helper, 改读
+   *  optimizer 已 emit 的 opt-* 作为唯一决策权威. drift 架构性消除. */
+  activeRows?: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[] | undefined;
 }
 
-export function planGoal(goal: Goal, state: WorldState): PlanResult {
+/** v0.0.938 — 读 optimizer 已派的 opt-{fusionReactor,solarPlant,energyTech}
+ *  作为该 planet 的"能源决策"。optimizer 60s tick 是 sole decider, planner
+ *  + simulate 都 follow 这条 emit, drift 不可能。
+ *  返回 null = optimizer 当前没派, 调用方应 fallback 到 block "waiting upstream". */
+export function findActiveEnergyOpt(
+  rows: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[],
+  uid: string,
+  planetId: string,
+): { kind: "build" | "research"; building?: "fusionReactor" | "solarPlant"; tech?: "energyTech"; level: number; goalId: string } | null {
+  const tail = uid.slice(0, 8);
+  for (const r of rows) {
+    if (!["pending", "active", "blocked"].includes(r.status)) continue;
+    const id = r.goal.id;
+    if (!id.endsWith(tail)) continue;
+    const tgt = r.goal.target as { building?: string; tech?: string; level?: number };
+    const lvl = tgt?.level ?? 0;
+    if (id.startsWith("opt-fusionReactor-L")) {
+      if (r.goal.planet !== planetId) continue;
+      return { kind: "build", building: "fusionReactor", level: lvl, goalId: id };
+    }
+    if (id.startsWith("opt-solarPlant-L")) {
+      if (r.goal.planet !== planetId) continue;
+      return { kind: "build", building: "solarPlant", level: lvl, goalId: id };
+    }
+    if (id.startsWith("opt-energyTech-L")) {
+      // research 是 global, 不绑 planet
+      return { kind: "research", tech: "energyTech", level: lvl, goalId: id };
+    }
+  }
+  return null;
+}
+
+export function planGoal(
+  goal: Goal,
+  state: WorldState,
+  /** v0.0.938 — owner 直传 active goals 进 planner, picker 路径读 opt-* */
+  activeRows?: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[],
+): PlanResult {
   switch (goal.type) {
     case "research":
-      return planResearchGoal(goal, state);
+      return planResearchGoal(goal, state, activeRows);
     case "build":
-      return planBuildGoal(goal, state);
+      return planBuildGoal(goal, state, activeRows);
     case "build_ships":
-      return planBuildShipsGoal(goal, state);
+      return planBuildShipsGoal(goal, state, activeRows);
     case "expedition":
       return planExpeditionGoal(goal, state);
     case "colonize":
-      return planColonizeGoal(goal, state);
+      return planColonizeGoal(goal, state, activeRows);
     case "deploy":
     case "transport":
       return planFleetSendGoal(goal, state);
     case "lifeform_building":
-      return planLifeformBuildingGoal(goal, state);
+      return planLifeformBuildingGoal(goal, state, activeRows);
     case "lifeform_research":
       return planLifeformResearchGoal(goal, state);
     case "species_discovery":
@@ -495,7 +671,7 @@ function planSpeciesDiscoveryGoal(goal: Goal, state: WorldState): PlanResult {
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: goal.priority,
+    priority: typeof goal.priority === "number" ? goal.priority : 5,
     action: "discover",
     // goal_id MUST be at top level (per Directive type + sidecar handlers
     // that read d.goal_id directly). Earlier version placed it in params
@@ -540,7 +716,11 @@ const LF_BUILDING_ALIASES: Record<string, string> = {
 // shared helper. planner 跟 simulate 同源 (operator memory SOP).
 import { needsFoodCascade } from "./lifeform_balance.js";
 
-function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
+function planLifeformBuildingGoal(
+  goal: Goal,
+  state: WorldState,
+  activeRows?: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[],
+): PlanResult {
   const target = goal.target as { building?: string; level?: number; planet?: string };
   let building = target.building ?? "";
   const level = target.level ?? 0;
@@ -585,14 +765,16 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
   // upgrade running (ours invisible because we matched only buildQ.item==
   // sanctuary, not lf_build_q.building==sanctuary).
   const lfBuildQ = (planet as { lf_build_q?: { building?: string; ends_at?: number } }).lf_build_q;
-  const buildQ2 = (planet as { build_q?: { building?: string; ends_at?: number } }).build_q;
   if (lfBuildQ && lfBuildQ.building === building && (lfBuildQ.ends_at ?? 0) > Date.now()) {
     return { blocked: `${building} already in lf_build_q (ends ${new Date(lfBuildQ.ends_at!).toISOString()})` };
   }
-  if (buildQ2 && (buildQ2.ends_at ?? 0) > Date.now()) {
-    // Any other queued item also blocks (ogame allows 1 build at a time).
-    return { blocked: `another build active in queue (${buildQ2.building}, ends ${new Date(buildQ2.ends_at!).toISOString()})` };
-  }
+  // v0.0.978 — owner 2026-06-08 "LF 还没动静": planner 老代码也 block 任何
+  // regular build_q 占用 → LF dispatch 被卡. 但 memory feedback_one_build_goal_per_planet
+  // 真态: ogame 有 4 独立槽位 (常规 build / LF build / shipyard / global research),
+  // LF 不应被 regular build_q 阻挡. 删 regular build_q gate, 仅保留 LF queue gate.
+  // v0.0.979 robotics/nanite gate → v0.0.980 owner 2026-06-08 "取消约束".
+  // 因为长任务 (e.g. naniteFactory L7) 会全程锁死 LF dispatch — 接受不了.
+  // 现 LF 不 care regular build_q, 完全 parallel 跑.
 
   // Population/Food balance — auto-build food when housing grows (sanctuary
   // → antimatterCondenser for kaelesh; residentialSector etc → biosphereFarm
@@ -629,8 +811,8 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
       const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD }, state.server?.speed ?? 1);
       if (storUp) {
         const curLvl = planet.buildings?.[storUp] ?? 0;
-        const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;
-        const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id };
+        const elevatedRoot = { ...goal, priority: Math.min(10, (typeof goal.priority === "number" ? goal.priority : 5) + 3) } as Goal;
+        const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id, activeRows };
         return planBuild(storUp, curLvl + 1, planet.id, ctx);
       }
       // Else: production-rate wait ETA in reason
@@ -658,7 +840,7 @@ function planLifeformBuildingGoal(goal: Goal, state: WorldState): PlanResult {
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: goal.priority,
+    priority: typeof goal.priority === "number" ? goal.priority : 5,
     action: "build",
     params: { building, technology_id: techId, target_level: current + 1, planet_id: planet.id },
     preconds: [],
@@ -700,7 +882,7 @@ function planLifeformResearchGoal(goal: Goal, state: WorldState): PlanResult {
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: goal.priority,
+    priority: typeof goal.priority === "number" ? goal.priority : 5,
     action: "lifeform_research",
     params: {
       planet_id: planet.id,
@@ -719,7 +901,11 @@ function planLifeformResearchGoal(goal: Goal, state: WorldState): PlanResult {
 // research
 // ────────────────────────────────────────────────────────────────────────────
 
-function planResearchGoal(goal: Goal, state: WorldState): PlanResult {
+function planResearchGoal(
+  goal: Goal,
+  state: WorldState,
+  activeRows?: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[],
+): PlanResult {
   const target = goal.target as { tech?: unknown; level?: unknown };
   const tech = typeof target.tech === "string" ? target.tech : "";
   const level = typeof target.level === "number" ? target.level : 0;
@@ -758,6 +944,20 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
   const current = ctx.state.research.levels[tech] ?? 0;
   if (current >= targetLevel) {
     return { blocked: `already at or above target level (${current} >= ${targetLevel}) for ${tech}` };
+  }
+
+  // v0.0.896 — owner 2026-06-07 "research:energyTech rejected 100001" 实证:
+  // ogame 研究队列是 GLOBAL 1 个, 我方 combustion 在跑 cascade 还 emit
+  // energyTech → ogame 全局拒. state.research.queue 实际有数 (PG 验过),
+  // 之前 planResearch 只 gate researchLab building 升级, 漏 research queue
+  // 本身 — 11 轮一直在 spam 100001.
+  const rq = ctx.state.research?.queue;
+  if (rq && (rq.ends_at ?? 0) > Date.now()) {
+    const etaS = Math.max(0, Math.round(((rq.ends_at ?? 0) - Date.now()) / 1000));
+    if (rq.tech === tech) {
+      return { blocked: `${tech} already in ogame research queue (~${etaS}s) — wait for completion` };
+    }
+    return { blocked: `research queue busy: ${rq.tech} ~${etaS}s — global queue, ogame allows 1 research at a time` };
   }
 
   // v0.0.789 — owner directive "研究的时候可以继续建筑除了研究所" 反向: 任何
@@ -822,7 +1022,7 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
     const proactive = pickStorageUpgrade(labPlanet, { m: 1, c: 1, d: 1 }, ctx.state.server?.speed ?? 1);
     if (proactive) {
       const curLvl = labPlanet.buildings?.[proactive] ?? 0;
-      const elevatedRoot = { ...ctx.rootGoal, priority: Math.min(10, ctx.rootGoal.priority + 3) } as Goal;
+      const elevatedRoot = { ...ctx.rootGoal, priority: Math.min(10, (typeof ctx.rootGoal.priority === "number" ? ctx.rootGoal.priority : 5) + 3) } as Goal;
       return planBuild(proactive, curLvl + 1, labPlanet.id, { ...ctx, rootGoal: elevatedRoot, depth: ctx.depth + 1 });
     }
   }
@@ -840,7 +1040,7 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
       const storUp = pickStorageUpgrade(labPlanet, { m: sM, c: sC, d: sD }, ctx.state.server?.speed ?? 1);
       if (storUp) {
         const curLvl = labPlanet.buildings?.[storUp] ?? 0;
-        const elevatedRoot = { ...ctx.rootGoal, priority: Math.min(10, ctx.rootGoal.priority + 3) } as Goal;
+        const elevatedRoot = { ...ctx.rootGoal, priority: Math.min(10, (typeof ctx.rootGoal.priority === "number" ? ctx.rootGoal.priority : 5) + 3) } as Goal;
         return planBuild(storUp, curLvl + 1, labPlanet.id, { ...ctx, rootGoal: elevatedRoot, depth: ctx.depth + 1 });
       }
       const prod = labPlanet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
@@ -861,7 +1061,7 @@ function makeResearchDirective(tech: string, nextLevel: number, ctx: PlanCtx): D
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: ctx.rootGoal.priority,
+    priority: typeof ctx.rootGoal.priority === "number" ? ctx.rootGoal.priority : 5,
     action: "research",
     params: {
       tech,
@@ -880,7 +1080,11 @@ function makeResearchDirective(tech: string, nextLevel: number, ctx: PlanCtx): D
 // build
 // ────────────────────────────────────────────────────────────────────────────
 
-function planBuildGoal(goal: Goal, state: WorldState): PlanResult {
+function planBuildGoal(
+  goal: Goal,
+  state: WorldState,
+  activeRows?: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[],
+): PlanResult {
   const target = goal.target as { building?: unknown; level?: unknown; planet?: unknown };
   const building = typeof target.building === "string" ? target.building : "";
   const level = typeof target.level === "number" ? target.level : 0;
@@ -917,6 +1121,7 @@ function planBuildGoal(goal: Goal, state: WorldState): PlanResult {
     rootGoal: goal,
     depth: 0,
     sourcePlanetId: planet.id,
+    activeRows,
   };
 
   return planBuild(building, level, planet.id, ctx);
@@ -1017,7 +1222,19 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   if (buildQ && (buildQ.ends_at ?? 0) > Date.now()) {
     const etaS = Math.max(0, Math.round(((buildQ.ends_at ?? 0) - Date.now()) / 1000));
     if (buildQ.building === building) {
-      return { blocked: `${building} already upgrading in ogame queue on ${planetId} (~${etaS}s)` };
+      // v0.0.933 — owner 2026-06-07 "纳米7 任务也被删掉了". 旧 emit "already
+      // upgrading" 文案匹配 priority_merger ALREADY_AT_TARGET_RE → 错误
+      // mark completed, **不区分 buildQ.level 是否 ≥ targetLevel**. 例:
+      // 33674107 nano target=7, current=3, buildQ=building L4 → 旧逻辑当
+      // 完成 mark goal completed, 而真态只到 L4 还差 3 级.
+      // 修: 只有当 buildQ.level >= targetLevel 时才用 "already upgrading"
+      // (会自动 complete 是 by-design), 否则用 "queue busy" 文案不匹配 regex
+      // → 单纯 blocked 等本 level 完成, 下次 tick 真 dispatch 下个 level.
+      const bqLvl = buildQ.level ?? 0;
+      if (bqLvl >= targetLevel) {
+        return { blocked: `${building} already upgrading in ogame queue on ${planetId} (~${etaS}s)` };
+      }
+      return { blocked: `${building} L${bqLvl} in ogame queue on ${planetId} (~${etaS}s) — wait then dispatch next level (target L${targetLevel})` };
     }
     return { blocked: `planet ${planetId} build queue busy: ${buildQ.building} (~${etaS}s) — building serial` };
   }
@@ -1054,45 +1271,41 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
     nextLevel,
     planet,
     ctx.state.research?.levels?.["energyTech"] ?? 0,
+    ctx.activeRows,
+    getCurrentUserId() ?? "",
   );
   if (energyPick) {
-    const pickCostFn = TECH_TREE[energyPick.building]?.cost_at as
+    // v0.0.913 — energyPick is now discriminated union (build | research).
+    // research path: dispatch via planResearch; afford handled inside it
+    // (research costs c+d only, no m). build path: existing afford logic.
+    const pickTechKey = energyPick.kind === "build" ? energyPick.building : energyPick.tech;
+    const pickCostFn = TECH_TREE[pickTechKey]?.cost_at as
       | ((l: number) => { m: number; c: number; d?: number })
       | undefined;
     const pickCost = pickCostFn ? pickCostFn(energyPick.level) : { m: 0, c: 0, d: 0 };
-    // v0.0.676 — break the deuteriumSynth → solar → metalMine → solar
-    // infinite-recursion cycle observed in production (planet 33639762
-    // deuteriumSynth L32 blocked with "recursion depth exceeded while
-    // planning build solarPlant"). When the chosen power plant is itself
-    // unaffordable, we used to recurse into a mine upgrade — that mine
-    // re-triggered the energy gate, looped back to the power plant, hit
-    // recursion ceiling. Bail out so the original mine's cost check below
-    // returns the "waiting for resources" message.
     const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
     const pickAffordable =
       r.m >= pickCost.m &&
       r.c >= pickCost.c &&
       r.d >= (pickCost.d ?? 0);
     if (pickAffordable) {
-      const bumped = Math.min(10, ctx.rootGoal.priority + 5);
+      const bumped = Math.min(10, (typeof ctx.rootGoal.priority === "number" ? ctx.rootGoal.priority : 5) + 5);
       const elevCtx: PlanCtx = {
         ...ctx,
         depth: ctx.depth + 1,
         rootGoal: { ...ctx.rootGoal, priority: bumped },
       };
-      return planBuild(energyPick.building, energyPick.level, planetId, elevCtx);
+      if (energyPick.kind === "build") {
+        return planBuild(energyPick.building, energyPick.level, planetId, elevCtx);
+      }
+      return planResearch(energyPick.tech, energyPick.level, elevCtx);
     }
-    // v0.0.826 — operator 2026-06-06 "电已经变负数了, 还在建金属矿". 老逻辑
-    // 注释假设 "mine block", 但 mine afford 时下面 cost check 直接过, 仍 dispatch
-    // metalMine 让 e 更负. 真因 fix: solarPlant 不 afford 时, mine 也禁止 dispatch
-    // (升 mine 让 e 越负, 不修电就是错). block 带 deficit 让 owner 看见, 等
-    // resources 自然回流 (transport / production) 后 solarPlant afford 再走.
+    // v0.0.826 — solarPlant 不 afford 时, mine 也禁止 dispatch. block 带 deficit
+    // 让 owner 看见, 等 resources 自然回流后 plant afford 再走.
     const sM = Math.max(0, pickCost.m - r.m);
     const sC = Math.max(0, pickCost.c - r.c);
     const sD = Math.max(0, (pickCost.d ?? 0) - r.d);
-    // v0.0.849 — operator 2026-06-06 "新账号金属满了 没有触发建存储罐". 之前 energy
-    // 不 afford 直接 block, 永远到不了下面 cost check 的 storage upgrade 分支.
-    // 若任意资源已接近 cap 而我们在等更多 → 升 storage 是合理优先动作.
+    // v0.0.849 — afford 不上 m 可能是 cap 满了, 优先 storage upgrade.
     if (!isPostExpeditionPhase(ctx.state)) {
       const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD }, ctx.state.server?.speed ?? 1);
       if (storUp) {
@@ -1100,7 +1313,8 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
         return planBuild(storUp, curLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
       }
     }
-    return { blocked: `energy negative — need ${energyPick.building} L${energyPick.level} first (short m=${sM} c=${sC} d=${sD})` };
+    const pickLabel = energyPick.kind === "build" ? energyPick.building : energyPick.tech;
+    return { blocked: `energy negative — need ${pickLabel} L${energyPick.level} first (short m=${sM} c=${sC} d=${sD})` };
   }
 
   for (const [reqTech, reqLevel] of Object.entries(entry.requires)) {
@@ -1169,7 +1383,7 @@ function makeBuildDirective(building: string, nextLevel: number, planetId: strin
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: ctx.rootGoal.priority,
+    priority: typeof ctx.rootGoal.priority === "number" ? ctx.rootGoal.priority : 5,
     action: "build",
     params: {
       building,
@@ -1188,7 +1402,11 @@ function makeBuildDirective(building: string, nextLevel: number, planetId: strin
 // build_ships
 // ────────────────────────────────────────────────────────────────────────────
 
-function planBuildShipsGoal(goal: Goal, state: WorldState): PlanResult {
+function planBuildShipsGoal(
+  goal: Goal,
+  state: WorldState,
+  activeRows?: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[],
+): PlanResult {
   const target = goal.target as { ship?: unknown; amount?: unknown; planet?: unknown };
   const ship = typeof target.ship === "string" ? target.ship : "";
   const amount = typeof target.amount === "number" ? target.amount : 0;
@@ -1221,6 +1439,7 @@ function planBuildShipsGoal(goal: Goal, state: WorldState): PlanResult {
       rootGoal: goal,
       depth: 0,
       sourcePlanetId: planet.id,
+      activeRows,
     };
     for (const [reqTech, reqLevel] of Object.entries(shipEntry.requires)) {
       const reqEntry = TECH_TREE[reqTech];
@@ -1243,57 +1462,60 @@ function planBuildShipsGoal(goal: Goal, state: WorldState): PlanResult {
     }
   }
 
-  // Resource shortfall → auto-upgrade the bottleneck mine. Without this the
-  // ship build sits at ogame "資源不足" forever waiting on natural accumulation.
+  // v0.0.897 — owner 2026-06-07 "10个大运可以一个一个造不要一起造，资源够
+  // 一个就造一个". 旧逻辑 totalCost = cost × amount 一次性算全量, 不够就
+  // block. 改: 算单艘 cost, 算 max_affordable = min(amount, floor(资源/cost)),
+  // ≥1 就 dispatch amount=max_affordable, 不够 1 才 block. 造船+造防御同
+  // 颗粒度. Owner: "资源够一个就造一个", 不再等齐全。
   const cost = shipEntry?.cost_at ? shipEntry.cost_at(1) : null;
+  let dispatchAmount = amount;
   if (cost) {
-    const totalCost = { m: cost.m * amount, c: cost.c * amount, d: cost.d * amount, e: cost.e * amount };
     const r = planet.resources ?? { m: 0, c: 0, d: 0, e: 0 };
-    const affordable = r.m >= totalCost.m && r.c >= totalCost.c && r.d >= totalCost.d;
-    if (!affordable) {
-      const sM = Math.max(0, totalCost.m - r.m), sC = Math.max(0, totalCost.c - r.c), sD = Math.max(0, totalCost.d - r.d);
+    // 单艘 affordable check
+    const oneShipOk = r.m >= cost.m && r.c >= cost.c && r.d >= cost.d;
+    if (!oneShipOk) {
+      const sM = Math.max(0, cost.m - r.m), sC = Math.max(0, cost.c - r.c), sD = Math.max(0, cost.d - r.d);
       if (isPostExpeditionPhase(state)) {
-        return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short)` };
+        return { blocked: `waiting for resources (m=${sM} c=${sC} d=${sD} short for 1 ${ship})` };
       }
       const storUp = pickStorageUpgrade(planet, { m: sM, c: sC, d: sD }, state.server?.speed ?? 1);
       if (storUp) {
         const curLvl = (planet.buildings as Record<string, number>)[storUp] ?? 0;
-        const elevatedRoot = { ...goal, priority: Math.min(10, goal.priority + 3) } as Goal;
-        const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id };
+        const elevatedRoot = { ...goal, priority: Math.min(10, (typeof goal.priority === "number" ? goal.priority : 5) + 3) } as Goal;
+        const ctx: PlanCtx = { state, rootGoal: elevatedRoot, depth: 0, sourcePlanetId: planet.id, activeRows };
         return planBuild(storUp, curLvl + 1, planet.id, ctx);
       }
       const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
-      // v0.0.726 — operator 2026-06-03 "建造 重氫合成器 32 时间评估错误 实际
-      // 时间是27分钟" (panel showed 11h12m ≈ 24× over). Root cause: 服务器
-      // 经济倍率没乘进 wait formula. ogame's prod field is base per-second
-      // before universe economy speed (server.speed, typically 1-10). Real
-      // hourly rate = prod * 3600 * server.speed. Skipping server.speed
-      // makes wait ETA scale with reciprocal of speed (speed=8 → wait 8×
-      // too high; combined with bonus drift → operator's observed 24×).
       const econSpeed = state.server?.speed ?? 1;
       const tM = (prod.m_h ?? 0) > 0 ? sM / ((prod.m_h ?? 1) * econSpeed) * 3600 : (sM > 0 ? 999999 : 0);
       const tC = (prod.c_h ?? 0) > 0 ? sC / ((prod.c_h ?? 1) * econSpeed) * 3600 : (sC > 0 ? 999999 : 0);
       const tD = (prod.d_h ?? 0) > 0 ? sD / ((prod.d_h ?? 1) * econSpeed) * 3600 : (sD > 0 ? 999999 : 0);
       const wait = Math.round(Math.max(tM, tC, tD));
-      return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short)` };
+      return { blocked: `waiting ${wait}s for resources (m=${sM} c=${sC} d=${sD} short for 1 ${ship})` };
     }
+    // 单艘够 → 看资源最多能造几艘, 上限 = goal.target.amount
+    const affordM = cost.m > 0 ? Math.floor(r.m / cost.m) : amount;
+    const affordC = cost.c > 0 ? Math.floor(r.c / cost.c) : amount;
+    const affordD = cost.d > 0 ? Math.floor(r.d / cost.d) : amount;
+    const maxAffordable = Math.min(affordM, affordC, affordD);
+    dispatchAmount = Math.max(1, Math.min(amount, maxAffordable));
   }
 
   return {
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: goal.priority,
+    priority: typeof goal.priority === "number" ? goal.priority : 5,
     action: "build_ships",
     params: {
       ship,
-      amount,
+      amount: dispatchAmount,
       planet_id: planet.id,
       technology_id: nameToId(ship),
     },
     preconds: [],
     expires_at: Date.now() + DIRECTIVE_TTL_MS,
-    reason: `build ${amount}× ${ship} on ${planet.id}`,
+    reason: `build ${dispatchAmount}/${amount}× ${ship} on ${planet.id}`,
     goal_id: goal.id,
   };
 }
@@ -1329,7 +1551,7 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: goal.priority,
+    priority: typeof goal.priority === "number" ? goal.priority : 5,
     action: "expedition",
     params: {
       planet_id: planet.id,
@@ -1353,7 +1575,11 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
 // colonize
 // ────────────────────────────────────────────────────────────────────────────
 
-function planColonizeGoal(goal: Goal, state: WorldState): PlanResult {
+function planColonizeGoal(
+  goal: Goal,
+  state: WorldState,
+  activeRows?: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[],
+): PlanResult {
   const target = goal.target as {
     target_coords?: unknown;
     source_planet?: unknown;
@@ -1449,7 +1675,7 @@ function planColonizeGoal(goal: Goal, state: WorldState): PlanResult {
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: goal.priority,
+    priority: typeof goal.priority === "number" ? goal.priority : 5,
     action: "colonize",
     params,
     preconds: [],
@@ -1513,8 +1739,22 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
 
   // v0.0.* — take_all substitution: pull the body's full live ship inventory
   // at dispatch time. Filter zero counts so the directive payload stays lean.
+  // v0.0.926 — owner 2026-06-07 "月球上的舰队小于派出的舰队 等待 不一定是LG
+  // 有可能派 SC". 加 per-ship-type 期望比对 — target.ships 是 chain 上游
+  // 承诺送来的量 (任意 type), source 上 <expected 任一类 → block 等 upstream.
   if (takeAll) {
     const onBody = (sourcePlanet.ships ?? {}) as Record<string, number | undefined>;
+    const expectedShips = (target.ships && typeof target.ships === "object" && !Array.isArray(target.ships))
+      ? target.ships as Record<string, number>
+      : {};
+    for (const [name, expectedN] of Object.entries(expectedShips)) {
+      const exp = expectedN as number;
+      if (!Number.isFinite(exp) || exp <= 0) continue;
+      const have = onBody[name] ?? 0;
+      if ((have as number) < exp) {
+        return { blocked: `${goal.type} (take_all) waiting upstream: source ${sourcePlanet.id} has ${have}× ${name}, chain expects ≥${exp}` };
+      }
+    }
     const swept: ShipCount = {} as ShipCount;
     for (const [name, n] of Object.entries(onBody)) {
       if ((n ?? 0) > 0) (swept as Record<string, number>)[name] = n as number;
@@ -1552,14 +1792,31 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
   // For chain legs, "fleet in flight" means WAIT (transient), NOT done.
   // Drop the "already at or above target" prefix so the regex doesn't match
   // and the goal stays blocked (will retry when fleet clears outbound).
+  //
+  // v0.0.941 — 2026-06-07 owner chain txc-mq4apypy-li2b leg 4 (moon@3:279:7
+  // → planet@3:279:7) false-blocked by a planet→planet recall phantom at the
+  // same coord. Pre-emption check was coord+mission only; add origin_type /
+  // dest_type match so moon-source legs aren't blocked by planet-source
+  // phantoms at the same coord (and vice versa). Normalize both sides to
+  // "planet"|"moon"|"debris" because schema is divergent: extractFleetMovements
+  // writes number codes (1/2/3) while recordFleetLaunch syn-XXX writes strings.
   const srcKey = sourcePlanet.coords.join(":");
+  const normType = (t: unknown): string => {
+    if (typeof t === "string") return t;
+    if (t === 1) return "planet";
+    if (t === 2) return "debris";
+    if (t === 3) return "moon";
+    return "";
+  };
   for (const f of state.fleets_outbound ?? []) {
     if (
       f.mission === mission &&
       f.origin.join(":") === srcKey &&
-      f.dest.join(":") === targetCoords
+      f.dest.join(":") === targetCoords &&
+      normType((f as { origin_type?: unknown }).origin_type) === sourceType &&
+      normType((f as { dest_type?: unknown }).dest_type) === targetType
     ) {
-      return { blocked: `${goal.type} pre-empted by existing fleet (mission ${mission} ${srcKey}→${targetCoords}); waiting for clear outbound` };
+      return { blocked: `${goal.type} pre-empted by existing fleet (mission ${mission} ${srcKey} ${sourceType}→${targetCoords} ${targetType}); waiting for clear outbound` };
     }
   }
 
@@ -1577,7 +1834,7 @@ function planFleetSendGoal(goal: Goal, state: WorldState): PlanResult {
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: goal.priority,
+    priority: typeof goal.priority === "number" ? goal.priority : 5,
     action: goal.type, // "deploy" | "transport"
     params: {
       target_coords: targetCoords,
@@ -1683,6 +1940,20 @@ function planJumpgateGoal(goal: Goal, state: WorldState): PlanResult {
   let ships: ShipCount;
   if (takeAll) {
     const onMoonAll = srcMoon.ships ?? {};
+    // v0.0.926 — owner 2026-06-07 "月球上的舰队小于派出的舰队 等待 不一定是
+    // LG 有可能派 SC". 每种 ship type 的 chain 期望必须先到齐再 sweep, 防止
+    // 上游 JG/ferry 还没到货时 take_all 抢走 stale 残料.
+    const expectedJgShips = (target.ships && typeof target.ships === "object" && !Array.isArray(target.ships))
+      ? target.ships as Record<string, number>
+      : {};
+    for (const [name, expectedN] of Object.entries(expectedJgShips)) {
+      const exp = expectedN as number;
+      if (!Number.isFinite(exp) || exp <= 0) continue;
+      const have = (onMoonAll as Record<string, number | undefined>)[name] ?? 0;
+      if ((have as number) < exp) {
+        return { blocked: `jumpgate (take_all) waiting upstream: source_moon ${sourceMoonId} has ${have}× ${name}, chain expects ≥${exp}` };
+      }
+    }
     ships = {} as ShipCount;
     for (const [name, n] of Object.entries(onMoonAll)) {
       if ((n ?? 0) > 0) (ships as Record<string, number>)[name] = n as number;
@@ -1711,7 +1982,7 @@ function planJumpgateGoal(goal: Goal, state: WorldState): PlanResult {
     id: `dir-${randomUUID()}`,
     source: "goal",
     method: "ui",
-    priority: goal.priority,
+    priority: typeof goal.priority === "number" ? goal.priority : 5,
     action: "jumpgate",
     params: {
       planet_id: sourceMoonId,            // session-cp source for the POST

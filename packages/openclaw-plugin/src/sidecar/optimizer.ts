@@ -18,7 +18,7 @@ import { buildingSec as sharedBuildingSec, TECH_TREE } from "@ogamex/shared";
 import type { WorldState } from "@ogamex/shared";
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
-import { mineEnergyConsumption, solarProduction, fusionProduction } from "./planner.js";
+import { mineEnergyConsumption, solarProduction, fusionProduction, pickEnergyFixCandidates } from "./planner.js";
 
 interface TechCost {
   kind: "research" | "building" | "ship" | "defense";
@@ -324,7 +324,9 @@ export function computeOptimizationForGoal(state: WorldState, main: OptimizableG
   // 冲突. 拉通修法: post-phase 只跳"资源加速器" (mine cascade, 因 transport
   // 接管资源 supply), 仍算"建造加速器" (robotics/nanite/researchLab/shipyard),
   // 给 operator 决策颗粒度. mine skip 用 closure 变量, 主循环判断.
-  const postPhaseSkipMine = astro >= 4;
+  // v0.0.931 — owner 2026-06-07 "改成 9": post-phase skip mine 阈值跟
+  // planner.ts:isPostExpeditionPhase 对齐, 同源单一改点.
+  const postPhaseSkipMine = astro >= 9;
   const planetsMap = state.planets ?? {};
   const MOON_ONLY = new Set(["lunarBase", "sensorPhalanx", "jumpgate"]);
   const findPlanet = (ref: string | undefined): { id?: string; type?: string; coords?: readonly number[]; resources?: { m?: number; c?: number; d?: number; e?: number }; production?: { m_h?: number; c_h?: number; d_h?: number }; buildings?: Record<string, number> } | null => {
@@ -519,6 +521,13 @@ export async function runOptimizerOnce(
       skipped++;
       continue; // current best already queued
     }
+    // v0.0.903 — owner 2026-06-07 "同一星球都显示在一个树里面" — 不是 skip
+    // emit, 是 emit 时挂 parent. opt-* 已通过 parent_goal_id 机制挂到 g.id
+    // (loop's main goal). 这里再增 fallback: 如果 g 是 opt-* 派生 (parent is
+    // also opt-*), 寻同 planet 真 user root 改挂, 防止 2 棵 opt- 互相挂出 2 tree.
+    // v0.0.901/902 skip-emit 撤回 — 撤掉 opt-* 不 emit 会让 user cascade 真出
+    // solarPlant build 但 priority 不够高, owner 反馈 panel 想要"看到加速器"
+    // 又要"在一棵树里". 答案=保留 emit + 强 parent 链.
     const optRow = {
       goal: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -563,6 +572,46 @@ export async function runOptimizerOnce(
     const planetsMap = state.planets ?? {};
     const energyTech = state.research?.levels?.["energyTech"] ?? 0;
     const mineKeys = ["metalMine", "crystalMine", "deuteriumSynth"] as const;
+    // v0.0.918 — owner 2026-06-07 "这么有一个单独的 能源技术 L13" — opt-energyTech
+    // 的 parent (e.g. crystalMine goal) 中途 complete 后, panel filter 不到
+    // parent → 该 research goal 沦为 standalone top-level row 让 owner 困惑.
+    // sweep: 任何 active opt-energyTech 若 parent_goal_id 指向 completed/cancelled
+    // 的 goal, 改挂到当前第一个 active non-opt root; 若无 candidate, 视为 stale 直接 cancel.
+    {
+      const orphans = allRows.filter((r) => {
+        if (!r.goal.id.startsWith("opt-energyTech-L")) return false;
+        if (!r.goal.id.endsWith(uid.slice(0, 8))) return false;
+        if (!["pending", "active", "blocked"].includes(r.status)) return false;
+        const pid = (r.goal as { parent_goal_id?: string }).parent_goal_id;
+        if (!pid) return false;
+        const alive = allRows.some((p) => p.goal.id === pid && ["pending", "active", "blocked"].includes(p.status));
+        return !alive;
+      });
+      for (const orphan of orphans) {
+        const newRoot = allRows.find((r) => {
+          if (!["pending", "active", "blocked"].includes(r.status)) return false;
+          const id = r.goal.id;
+          if (id.startsWith("opt-") || id.startsWith("exp-") || id.startsWith("expb-")) return false;
+          return true;
+        });
+        if (newRoot) {
+          try {
+            const merged = { ...orphan, goal: { ...orphan.goal, parent_goal_id: newRoot.goal.id }, updated_at: Date.now() };
+            await pgStore.upsertGoal(uid, merged);
+            console.info(`[optimizer/energy-guard/orphan] uid=${uid.slice(0, 8)} re-parent ${orphan.goal.id}: dead-parent → ${newRoot.goal.id}`);
+          } catch (e) {
+            console.warn(`[optimizer/energy-guard/orphan] re-parent ${orphan.goal.id} threw:`, e instanceof Error ? e.message : e);
+          }
+        } else {
+          try {
+            await pgStore.updateGoalStatus(uid, orphan.goal.id, "cancelled", "orphan opt-energyTech — no active root to re-attach");
+            console.info(`[optimizer/energy-guard/orphan] uid=${uid.slice(0, 8)} cancel ${orphan.goal.id} (no active root)`);
+          } catch (e) {
+            console.warn(`[optimizer/energy-guard/orphan] cancel ${orphan.goal.id} threw:`, e instanceof Error ? e.message : e);
+          }
+        }
+      }
+    }
     for (const planet of Object.values(planetsMap)) {
       if ((planet as { type?: string }).type !== "planet") continue;
       const b = (planet as { buildings?: Record<string, number> }).buildings ?? {};
@@ -588,35 +637,59 @@ export async function runOptimizerOnce(
       // 容差 -50: 避免 snapshot 抖动 / 计算延迟造成小负值反复 emit.
       const snapE = (planet as { resources?: { e?: number } }).resources?.e ?? 0;
       const realBudget = snapE < -50 ? Math.min(formulaBudget, snapE) : formulaBudget;
-      if (realBudget >= 0) continue;
+      // v0.0.908 撤回 — owner 2026-06-07 "改你的垃圾方法": PROACTIVE_E_BUFFER
+      // 是错颗粒度. 真模型 = planner.ts pickEnergyPrereqBuilding (L229+) 已经在
+      // 每个矿建造前 pre-flight 检查 extraConsumption vs structuralBudget,
+      // 不够就 cascade 进电厂. energy-guard 只是 post-hoc 兜底.
+      if (realBudget >= 0) {
+        // v0.0.915 — owner 2026-06-07 "3:279:7 不缺电为什么也补电厂?" — 旧
+        // opt-* emit 时 snapE 是负, 后来自然回正 (transport/production) 但
+        // opt-* 一直 blocked 卡 panel. 现在 sweep 时若 realBudget >= 0, cancel
+        // 该 planet 的 pending/blocked opt-solarPlant + opt-fusionReactor stale
+        // goal. active 不动 (in-flight 真的在建). opt-energyTech 是 global
+        // research 不绑 planet, 也不动 (单条 goal 服务所有负电星球).
+        // v0.0.936 — owner 2026-06-07 "能源恢复了会自动取消?" / "错了" 实证:
+        // v0.0.935 撤掉是我之前 Q 描述方向反了的误操作, 立刻恢复 v0.0.915.
+        const planetIdForCleanup = (planet as { id?: string }).id ?? "";
+        if (planetIdForCleanup) {
+          const stales = allRows.filter((r) => {
+            const id = r.goal.id;
+            const isEnergyOpt = id.startsWith("opt-solarPlant-L") || id.startsWith("opt-fusionReactor-L");
+            if (!isEnergyOpt) return false;
+            if (!id.endsWith(uid.slice(0, 8))) return false;
+            if (r.goal.planet !== planetIdForCleanup) return false;
+            if (!["pending", "blocked"].includes(r.status)) return false;
+            return true;
+          });
+          for (const stale of stales) {
+            try {
+              await pgStore.updateGoalStatus(uid, stale.goal.id, "cancelled", `energy recovered (snapE=${snapE}, realBudget=${Math.round(realBudget)}) — no longer needed`);
+              console.info(`[optimizer/energy-guard/cleanup] uid=${uid.slice(0, 8)} planet=${planetIdForCleanup} cancel ${stale.goal.id} (energy recovered)`);
+              actioned++;
+            } catch (e) {
+              console.warn(`[optimizer/energy-guard/cleanup] cancel ${stale.goal.id} threw:`, e instanceof Error ? e.message : e);
+            }
+          }
+        }
+        continue;
+      }
       const inflightMine = bq && mineKeys.includes(bq.building as typeof mineKeys[number]) ? `${bq.building} L${bq.level} in-flight` : "current levels";
       const deficit = -realBudget;
-      // pick min solarPlant L that closes deficit (solar 优先, fusion 需 dSynth>=5 + energyTech>=3)
-      let chosenLvl = solar + 1;
-      for (let l = solar + 1; l <= solar + 30; l++) {
-        const extra = solarProduction(l) - solarProduction(solar);
-        if (extra >= deficit) { chosenLvl = l; break; }
-        chosenLvl = l;
-      }
+      // v0.0.914 — owner 2026-06-07 "optimizer/cascade gate/post-hoc tick
+      // 不能合并吗" — 4 路 enum 抽到 planner.pickEnergyFixCandidates (shared
+      // helper). 这里只剩"嫁接 winner 到 PG row"的 dispatch 逻辑.
+      const deutSynth = projectedLvl("deuteriumSynth");
+      const fusionPrereqOk = deutSynth >= 5 && energyTech >= 3;
+      const candidates = pickEnergyFixCandidates({
+        deficit, solar, fusion, energyTech,
+        fusionPrereqsMet: fusionPrereqOk,
+      });
+      const winner = candidates[0];
+      if (!winner) continue;
       const planetId = (planet as { id?: string }).id ?? "";
       if (!planetId) continue;
-      const optId = `opt-solarPlant-L${chosenLvl}-${uid.slice(0, 8)}`;
-      // 跳过已 active 同 planet 同 building (任何 level >= chosenLvl)
-      const exists = allRows.find((r) => {
-        if (!r.goal.id.startsWith(`opt-solarPlant-L`)) return false;
-        if (!r.goal.id.endsWith(uid.slice(0, 8))) return false;
-        if (r.goal.planet !== planetId) return false;
-        if (!["active", "blocked", "pending"].includes(r.status)) return false;
-        const lvl = (r.goal.target as { level?: number })?.level ?? 0;
-        return lvl >= chosenLvl;
-      });
-      if (exists) continue;
-      // v0.0.866 — operator 2026-06-06 "新加的电厂为什么没有挂到树里面, 而是
-      // 单独一个". v0.0.790 同款架构: opt-* 必带 parent_goal_id 让 panel cascade
-      // merge 进 root tree. 上面 mine/build accelerator 走 g.id (loop's main goal);
-      // energy-guard 是 planet-scoped 独立扫描, 没 g.id 上下文 — 找同 planet 最高优
-      // active root (跳 opt-/exp-/expb- 子目标) 作 parent. 无 root 时仍 emit
-      // standalone (殖民地刚开荒只有 opt-* 时仍想要修电).
+      console.info(`[optimizer/energy-guard/compare] uid=${uid.slice(0,8)} planet=${planetId} deficit=${Math.round(deficit)} picks=[${candidates.map(c => `${c.kind}:${c.cost}`).join(",")}] → pick ${winner.kind}`);
+      // sameRoot — find non-opt root goal on planet so cascade nests under it
       const sameRoot = allRows.find((r) => {
         if (r.goal.planet !== planetId) return false;
         if (!["active", "blocked", "pending"].includes(r.status)) return false;
@@ -624,31 +697,60 @@ export async function runOptimizerOnce(
         if (id.startsWith("opt-") || id.startsWith("exp-") || id.startsWith("expb-")) return false;
         return true;
       });
-      const energyOptRow = {
-        goal: {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          id: optId, type: "build" as any,
-          target: { building: "solarPlant", level: chosenLvl } as Record<string, unknown>,
-          planet: planetId,
-          priority: 9,
-          is_main_goal: false,
+      const parentField = sameRoot ? { parent_goal_id: sameRoot.goal.id } : {};
+      // emitOpt — uid/level dedup + upsert single goal row
+      const emitOpt = async (kind: "build" | "research", target: Record<string, unknown>, optId: string, levelForDedup: number, optKindKey: string): Promise<void> => {
+        const exists = allRows.find((r) => {
+          if (!r.goal.id.startsWith(`opt-${optKindKey}-L`)) return false;
+          if (!r.goal.id.endsWith(uid.slice(0, 8))) return false;
+          if (kind === "build" && r.goal.planet !== planetId) return false;
+          if (!["active", "blocked", "pending"].includes(r.status)) return false;
+          const lvl = (r.goal.target as { level?: number })?.level ?? 0;
+          return lvl >= levelForDedup;
+        });
+        if (exists) return;
+        const row = {
+          goal: {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            id: optId, type: kind as any,
+            target,
+            ...(kind === "build" ? { planet: planetId } : {}),
+            priority: 9,
+            is_main_goal: false,
+            status: "pending" as const,
+            created_at: Date.now(),
+            progress_pct: 0,
+            current_step: "queued",
+            eta_at: null,
+            ...parentField,
+          },
           status: "pending" as const,
           created_at: Date.now(),
-          progress_pct: 0,
-          current_step: "queued",
-          eta_at: null,
-          ...(sameRoot ? { parent_goal_id: sameRoot.goal.id } : {}),
-        },
-        status: "pending" as const,
-        created_at: Date.now(),
-        updated_at: Date.now(),
+          updated_at: Date.now(),
+        };
+        try {
+          await pgStore.upsertGoal(uid, row);
+          console.log(`[optimizer/energy-guard] uid=${uid.slice(0, 8)} planet=${planetId} realBudget=${Math.round(realBudget)} (${inflightMine}) → emit ${optId}`);
+          actioned++;
+        } catch (e) {
+          console.warn(`[optimizer/energy-guard] upsert ${optId} threw:`, e instanceof Error ? e.message : e);
+        }
       };
-      try {
-        await pgStore.upsertGoal(uid, energyOptRow);
-        console.log(`[optimizer/energy-guard] uid=${uid.slice(0, 8)} planet=${planetId} formulaBudget=${Math.round(formulaBudget)} snapE=${snapE} realBudget=${Math.round(realBudget)} (${inflightMine}) → emit ${optId}`);
-        actioned++;
-      } catch (e) {
-        console.warn(`[optimizer/energy-guard] upsert ${optId} threw:`, e instanceof Error ? e.message : e);
+      // dispatch by winning candidate
+      if (winner.kind === "solar") {
+        const optId = `opt-solarPlant-L${winner.level}-${uid.slice(0, 8)}`;
+        await emitOpt("build", { building: "solarPlant", level: winner.level }, optId, winner.level, "solarPlant");
+      } else if (winner.kind === "fusion") {
+        const optId = `opt-fusionReactor-L${winner.level}-${uid.slice(0, 8)}`;
+        await emitOpt("build", { building: "fusionReactor", level: winner.level }, optId, winner.level, "fusionReactor");
+      } else if (winner.kind === "energy") {
+        const optId = `opt-energyTech-L${winner.level}-${uid.slice(0, 8)}`;
+        await emitOpt("research", { tech: "energyTech", level: winner.level }, optId, winner.level, "energyTech");
+      } else if (winner.kind === "combo") {
+        const fOptId = `opt-fusionReactor-L${winner.fL}-${uid.slice(0, 8)}`;
+        const eOptId = `opt-energyTech-L${winner.eL}-${uid.slice(0, 8)}`;
+        await emitOpt("build", { building: "fusionReactor", level: winner.fL }, fOptId, winner.fL, "fusionReactor");
+        await emitOpt("research", { tech: "energyTech", level: winner.eL }, eOptId, winner.eL, "energyTech");
       }
     }
   } catch (e) {

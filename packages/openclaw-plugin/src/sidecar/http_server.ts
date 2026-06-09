@@ -463,6 +463,25 @@ export class HttpServer {
     if (n > 0) console.warn(`[http_server] flushed ${n} stale queued messages on reconnect (bucket=${uid.slice(0,8)})`);
   }
 
+  // v0.0.893 — owner 2026-06-07 实证: v0.0.890 onUserSocketConnect 用
+  // flushQueue 把 stale HTTP queue 直接丢, 32 条 dir-* 没人收 → goal 永远
+  // 等 stuck-recovery timeout. 新策略 — drainBucketForWsResend: 把 bucket
+  // 里 directive.dispatch 返回出来交给 WS 投递, 投递后再 clear bucket. 等
+  // 价于"换 transport 不丢消息".
+  drainBucketForWsResend(uid: string): DownstreamMsg[] {
+    const q = this.buckets.get(uid);
+    if (!q || q.length === 0) return [];
+    const msgs: DownstreamMsg[] = [];
+    for (const e of q) {
+      if (e.msg.type === "directive.dispatch") msgs.push(e.msg);
+    }
+    if (msgs.length > 0) {
+      console.info(`[http_server] drained ${msgs.length} directive.dispatch from bucket=${uid.slice(0,8)} for WS resend`);
+    }
+    q.length = 0;
+    return msgs;
+  }
+
   on<T extends UpstreamMsg["type"]>(type: T, handler: UpstreamHandler<T>): void {
     let set = this.handlers.get(type);
     if (!set) { set = new Set(); this.handlers.set(type, set); }
@@ -753,7 +772,11 @@ export class HttpServer {
           try {
             const parsed = JSON.parse(body) as { tag?: string; text?: string };
             const tag = typeof parsed.tag === "string" ? parsed.tag : "unknown";
-            const text = typeof parsed.text === "string" ? parsed.text : "";
+            // v0.0.945 — owner 2026-06-07 "overlay HTML 在 journald 被截":
+            // forensic raw 经常含 \n \r \t, journald 在第一个 newline 截行.
+            // 单行化让 grep / journalctl 看到全文.
+            const textRaw = typeof parsed.text === "string" ? parsed.text : "";
+            const text = textRaw.replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
             console.log(`[debug-log:${tag}] ${text}`);
           } catch { console.log(`[debug-log:parse-fail] ${body.slice(0, 500)}`); }
           this.writeCorsHeaders(res);

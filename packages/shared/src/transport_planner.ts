@@ -25,6 +25,11 @@ export interface PlannerPlanet {
   type: "planet" | "moon";
   coords: [number, number, number];
   resources?: { m?: number; c?: number; d?: number };
+  /** v0.0.946 — owner 2026-06-07 "应该2leg 不是4leg" — chain builder
+   *  把没建 JG 的月球当 sibling, 误以为可以 JG hop → 多生成 leg.
+   *  这里读 store.planets[id].buildings.jumpgate; 0 (无 JG) 时 findSiblingMoon
+   *  跳过, 退回直送 sublight (2-leg). */
+  jumpgateLevel?: number;
 }
 
 export interface PlanTransportInput {
@@ -39,7 +44,14 @@ export interface PlanTransportInput {
   /** Operator cargo input — m/c/d in resources, BEFORE moon adjustments. */
   cargo: { m: number; c: number; d: number };
   jgEnabled: boolean;
-  jgTakeAll: boolean;
+  /** v0.0.921 — owner 2026-06-07 "扩展到所有从月球出发的任务". 旧 jgTakeAll
+   *  只作用 JG hop + post-JG unload; 现在改成 moonTakeAll 语义: 任何 from.type
+   *  === "moon" 的 leg (JG hop / moon→planet unload / direct sublight 从月球
+   *  起飞 / same-coord 月球→行星) 都带 take_all=true 时 sweep 月球全 ships.
+   *  字段名保留 jgTakeAll 也接受作 alias 防止外部调用方破坏 (deprecated). */
+  moonTakeAll?: boolean;
+  /** @deprecated alias of moonTakeAll; v0.0.921 owner generalized semantic. */
+  jgTakeAll?: boolean;
   /** Full planet/moon roster for sibling-moon resolution. */
   allPlanets: PlannerPlanet[];
   /** Caller-provided chain id (e.g. `txc-<base36ts>-<rand>`). */
@@ -67,11 +79,15 @@ function coordKey(p: PlannerPlanet): string {
 
 function findSiblingMoon(p: PlannerPlanet, all: PlannerPlanet[]): PlannerPlanet | undefined {
   const key = coordKey(p);
-  return all.find(q => q.type === "moon" && coordKey(q) === key && q.id !== p.id);
+  // v0.0.946 — require JG built on the moon. owner 2026-06-07 实证: chain
+  // 给了月球但月球没建 JG → 4-leg 错; 应该回落直送 2-leg.
+  return all.find(q => q.type === "moon" && coordKey(q) === key && q.id !== p.id && (q.jumpgateLevel ?? 0) > 0);
 }
 
 export function planTransportChain(input: PlanTransportInput): PlanTransportOutput {
-  const { source, resource: resourceInput, target, stopover, ships, cargo, jgEnabled, jgTakeAll, allPlanets, chainId } = input;
+  const { source, resource: resourceInput, target, stopover, ships, cargo, jgEnabled, allPlanets, chainId } = input;
+  // v0.0.921 — moonTakeAll preferred; jgTakeAll kept as alias for backward compat.
+  const moonTakeAll = input.moonTakeAll ?? input.jgTakeAll ?? true;
   const resource = resourceInput ?? source;
 
   // Moon buffer adjustments — happen BEFORE chain planning, applied once.
@@ -112,6 +128,8 @@ export function planTransportChain(input: PlanTransportInput): PlanTransportOutp
           source_planet: from.id,
           chain_id: chainId,
           chain_phase: `${phasePrefix}_local`,
+          // v0.0.921 — moon-origin → sweep all ships when moonTakeAll
+          ...(from.type === "moon" && moonTakeAll ? { take_all: true } : {}),
         },
         planet: from.id,
         priority: basePriority,
@@ -151,7 +169,7 @@ export function planTransportChain(input: PlanTransportInput): PlanTransportOutp
           source_moon: fromMoon.id,
           target_moon: toMoon.id,
           ships,
-          take_all: jgTakeAll,
+          take_all: moonTakeAll,
           chain_id: chainId,
           chain_phase: `${phasePrefix}_hop`,
         },
@@ -174,7 +192,7 @@ export function planTransportChain(input: PlanTransportInput): PlanTransportOutp
             source_planet: toMoon.id,
             chain_id: chainId,
             chain_phase: `${phasePrefix}_unload`,
-            take_all: jgTakeAll,
+            take_all: moonTakeAll,
           },
           planet: toMoon.id,
           priority: basePriority - 2,
@@ -183,7 +201,8 @@ export function planTransportChain(input: PlanTransportInput): PlanTransportOutp
       return legs;
     }
 
-    // Direct sublight hop.
+    // Direct sublight hop. v0.0.921 — when from is a moon, honor moonTakeAll
+    // so direct (non-JG) ferries from moon also sweep all ships.
     return [{
       type: finalLegType,
       target: {
@@ -194,6 +213,7 @@ export function planTransportChain(input: PlanTransportInput): PlanTransportOutp
         source_planet: from.id,
         chain_id: chainId,
         chain_phase: `${phasePrefix}_direct`,
+        ...(from.type === "moon" && moonTakeAll ? { take_all: true } : {}),
       },
       planet: from.id,
       priority: basePriority,

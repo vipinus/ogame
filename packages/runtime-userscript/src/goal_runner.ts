@@ -48,20 +48,20 @@ const REQUIRED_FIELDS: readonly (keyof Directive)[] = [
 ];
 
 function isValidDirective(d: unknown): d is Directive {
-  if (!d || typeof d !== "object") return false;
+  if (!d || typeof d !== "object") { console.warn("[GoalRunner/validate] not object", d); return false; }
   const rec = d as Record<string, unknown>;
   for (const f of REQUIRED_FIELDS) {
-    if (!(f in rec)) return false;
+    if (!(f in rec)) { console.warn(`[GoalRunner/validate] missing field "${f}"`, rec); return false; }
   }
-  if (typeof rec["id"] !== "string") return false;
-  if (typeof rec["source"] !== "string") return false;
-  if (typeof rec["method"] !== "string") return false;
-  if (typeof rec["priority"] !== "number") return false;
-  if (typeof rec["action"] !== "string") return false;
-  if (!rec["params"] || typeof rec["params"] !== "object") return false;
-  if (!Array.isArray(rec["preconds"])) return false;
-  if (typeof rec["expires_at"] !== "number") return false;
-  if (typeof rec["reason"] !== "string") return false;
+  if (typeof rec["id"] !== "string") { console.warn(`[GoalRunner/validate] id type=${typeof rec["id"]}`, rec); return false; }
+  if (typeof rec["source"] !== "string") { console.warn(`[GoalRunner/validate] source type=${typeof rec["source"]} val=${String(rec["source"])}`, rec); return false; }
+  if (typeof rec["method"] !== "string") { console.warn(`[GoalRunner/validate] method type=${typeof rec["method"]} val=${String(rec["method"])}`, rec); return false; }
+  if (typeof rec["priority"] !== "number") { console.warn(`[GoalRunner/validate] priority type=${typeof rec["priority"]} val=${String(rec["priority"])}`, rec); return false; }
+  if (typeof rec["action"] !== "string") { console.warn(`[GoalRunner/validate] action type=${typeof rec["action"]}`, rec); return false; }
+  if (!rec["params"] || typeof rec["params"] !== "object") { console.warn(`[GoalRunner/validate] params type=${typeof rec["params"]}`, rec); return false; }
+  if (!Array.isArray(rec["preconds"])) { console.warn(`[GoalRunner/validate] preconds not array, type=${typeof rec["preconds"]} val=${JSON.stringify(rec["preconds"])}`, rec); return false; }
+  if (typeof rec["expires_at"] !== "number") { console.warn(`[GoalRunner/validate] expires_at type=${typeof rec["expires_at"]} val=${String(rec["expires_at"])}`, rec); return false; }
+  if (typeof rec["reason"] !== "string") { console.warn(`[GoalRunner/validate] reason type=${typeof rec["reason"]} val=${String(rec["reason"])}`, rec); return false; }
   return true;
 }
 

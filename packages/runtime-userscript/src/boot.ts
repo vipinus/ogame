@@ -822,6 +822,21 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         const log = (kind, url, body, status, respLen, respText) => {
           const u = String(url).replace(/^.*\\/game\\//, "/game/");
           console.log("[OgameXSniff]", kind, status||"", u, body ? "body="+String(body).slice(0,300) : "", respLen?("resp="+respLen+"B"):"");
+          // v0.0.974 — owner 2026-06-08 "LF 还没动静" diagnose: scheduleEntry POST
+          // 总 100001, 不知 ogame 端到底拒啥. 截 owner 手动 click "Improve" 真 POST
+          // → 直接 forensic 到 sidecar journal. 比对 auto 跟 manual 的真 body 差异.
+          // 仅 scheduleEntry (LF/常规建造/造船 同 endpoint), 不污染其他流量.
+          if (/scheduleEntry/i.test(u)) {
+            try {
+              var bUrlS = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://ogame.anyfq.com";
+              var tokS = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
+              fetch(bUrlS.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                method: "POST", credentials: "omit",
+                headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokS },
+                body: JSON.stringify({ tag: "SCHEDULE-ENTRY-SNIFF-v0974", text: kind + " status=" + (status||"") + " url=" + u.slice(0,200) + " body=" + String(body||"").slice(0,300) + " resp=" + String(respText||"").slice(0,400) }),
+              }).catch(function(){});
+            } catch (_) {}
+          }
           // Persist only non-trivial (with body OR with action/modus URL OR
           // any URL/body containing "jump" — captures jumpgate overlay GET
           // which has neither body nor action/modus params but IS critical).
@@ -873,9 +888,25 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           } catch (e) { console.warn("dump failed", e); return []; }
         };
         const origFetch = window.fetch;
+        // v0.0.886 — owner 2026-06-07 "还是要暂停 PM" 第 4 次. 不是单个
+        // setInterval / data.refresh 的事 (v0.0.882-885 已分别 gate),
+        // 是 fetch/XHR wrap 自身 干扰 ogame fleetdispatch UI: 即便 setTimeout 0
+        // defer (v0.0.883), 我方 r.clone().text() / addEventListener('load')
+        // 仍跟 ogame 的 response read 同源争抢 → baseFuelCapacity null crash.
+        // 修法 — fleetdispatch 页 sniffer wrap 整段 bypass, 直 apply(orig*).
+        // 颗粒度上提一级: 不是 wrap-internal 加 gate, 是 wrap entry 直接绕开.
+        // sniffer 在该页静默 (cargo cache / token / jumpgate 都不在此页触发).
+        const isOgameFleetUIPage = function() {
+          try { return (location.search || "").indexOf("component=fleetdispatch") >= 0; }
+          catch (_) { return false; }
+        };
         window.fetch = function(input, init) {
           const url = typeof input === "string" ? input : (input && input.url) || "";
           const method = (init && init.method) || (typeof input !== "string" && input.method) || "GET";
+          // v0.0.886 fleetdispatch bypass — sniffer 整段不跑.
+          if (isOgameFleetUIPage()) {
+            return origFetch.apply(this, arguments);
+          }
           if (url.includes("/game/index.php")) {
             const body = init && init.body ? (init.body instanceof URLSearchParams ? init.body.toString() : (typeof init.body === "string" ? init.body : "<form>")) : "";
             const p = origFetch.apply(this, arguments);
@@ -883,7 +914,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               try { r.clone().text().then(t => {
                 // v0.0.883 — defer 整个 sniff body 到 macrotask (同 XHR), 让
                 // ogame 先消化 response, 我方再读. 避免抢 UI render 同帧.
-                setTimeout(() => {
+                // v0.0.942 — owner 2026-06-07 "JG CD 没有显示, 以前都是好的,
+                // 重构的时候删掉了?" 实证: executeJump 触发 ogame 页 navigate,
+                // setTimeout(0) defer 让 JG sniffer 落在 navigate 之后跑 →
+                // 事件直接丢失. 修: JG-class URL 同步跑 (落 message + sync
+                // localStorage), 其他类 (token / build cancel) 保持 defer.
+                const _sniffBody = () => {
                 log("FETCH "+method, url, body, r.status, t.length, t);
                 // Sniff newAjaxToken from ANY ogame JSON response and
                 // refresh dataset/localStorage so ApiExec gets fresh token.
@@ -968,10 +1004,32 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                         sourceMoonId, targetMoonId, cooldownSec: cd, originCoords,
                         url, hasNotReady: t.includes("jumpgateNotReady") || (jsonResp && (jsonResp.status === true || jsonResp.success === true)) || isExecutePost,
                       }, window.location.origin);
+                      // v0.0.944 — owner 2026-06-07 "拿真实的返回值": owner 手动
+                      // 点 JG 走 sniffer 路径不经 api_executor, forensic 漏空.
+                      // 这里 POST raw response 到 /debug/log, 拿 v12 真 schema.
+                      // 0 parsing 0 fallback, 只落 raw.
+                      try {
+                        var bUrlF = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://ogame.anyfq.com";
+                        var tokF = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
+                        var rawTxt = (typeof t === "string" ? t : "<not-string>").slice(0, 800);
+                        var rawBody = (typeof body === "string" ? body : "<form>").slice(0, 300);
+                        fetch(bUrlF.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                          method: "POST", credentials: "omit",
+                          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokF },
+                          body: JSON.stringify({ tag: "JG-SNIFF-FETCH-v0944", text: "src=" + sourceMoonId + " tgt=" + targetMoonId + " parsedCd=" + cd + " url=" + url.slice(0,120) + " body=" + rawBody + " resp=" + rawTxt }),
+                        }).catch(function(){});
+                      } catch(_){}
                     } catch (e) { console.warn("[OgameXSniff] jumpgate parse fail:", e); }
                   }
                 } catch (_) {}
-                }, 0); // v0.0.883 setTimeout 闭合
+                }; // v0.0.942 _sniffBody 闭合
+                // v0.0.942 — JG 同步跑 (executeJump → page navigate race),
+                // 其他保持 v0.0.883 defer 行为.
+                if (/jump|executeJump/i.test(url) || (body && /jump/i.test(body))) {
+                  _sniffBody();
+                } else {
+                  setTimeout(_sniffBody, 0);
+                }
               }); } catch(_){}
             }).catch(()=>{});
             return p;
@@ -987,6 +1045,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           const origSend = xhr.send.bind(xhr);
           xhr.send = function(body) {
             reqBody = body ? (body instanceof URLSearchParams ? body.toString() : (typeof body === "string" ? body : "<form>")) : "";
+            // v0.0.886 — fleetdispatch bypass: 不挂 load listener, 直接 send.
+            // 配合 fetch wrap 同 page check, sniffer 整段静默 → 跟 ogame UI
+            // 无任何 response stream / event 排队竞争.
+            if (isOgameFleetUIPage()) {
+              return origSend.apply(this, arguments);
+            }
             xhr.addEventListener("load", () => {
               // v0.0.883 — owner 2026-06-07 实证 "TM 暂停就好 还是这样" 在
               // 移 mousedown listener 后 (v0.0.882) 仍卡. 唯一剩下变量 = 我方
@@ -996,7 +1060,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               // 修法: setTimeout 0 把整段 sniff 工作 推到下一 macrotask, ogame
               // 先把这个事件链处理完, 我方再做收集/log/post. 等价于"暂停 TM
               // 直到 ogame 处理完". 0 行为变化, 只是顺序.
-              setTimeout(() => {
+              // v0.0.942 — owner 2026-06-07 "JG CD 没有显示, 以前都是好的,
+              // 重构的时候删掉了?" 实证: executeJump POST 触发 ogame 页 navigate,
+              // setTimeout(0) 把整段 sniff body 推到 navigate 之后跑 → JG
+              // sync localStorage 写 + postMessage 全失. 修: JG-class URL
+              // 同步跑 (落 message + sync localStorage 在 navigate 前必然
+              // 落盘), 其他类保持 defer.
+              const _sniffBody = () => {
               if (url.includes("/game/index.php")) {
                 try { log("XHR "+method, url, reqBody, xhr.status, (xhr.responseText||"").length, xhr.responseText); } catch(_){}
                 // v0.0.472: operator-initiated cancel via ogame UI XHR →
@@ -1081,11 +1151,30 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                     if (!targetMoonId && reqBody && reqBody.length > 0) {
                       console.log("[OgameXSniff] XHR jumpgate target NOT FOUND, body=" + String(reqBody).slice(0, 400));
                     }
+                    // v0.0.919 — owner 2026-06-07 "跳跃门 CD 没拿到" 真因: XHR 路径
+                    // hasNotReady 漏 isExecutePost fallback (fetch 路径 L985 有).
+                    // ogame v12 用 XHR 跳 JG 时 jsonResp 不带 status:true → hasNotReady
+                    // false → CASE B 不 fire → overlay 不 re-fetch → cd 一直 null.
+                    // 加 isExecutePostXhr 跟 fetch 路径完全对齐.
+                    const isExecutePostXhr = url.includes("action=executeJump") && method === "POST";
                     window.postMessage({
                       source: "ogamex:jumpgateEvent",
                       sourceMoonId, targetMoonId, cooldownSec: cd, originCoords,
-                      url, hasNotReady: t.includes("jumpgateNotReady") || (jsonResp && (jsonResp.status === true || jsonResp.success === true)),
+                      url, hasNotReady: t.includes("jumpgateNotReady") || (jsonResp && (jsonResp.status === true || jsonResp.success === true)) || isExecutePostXhr,
                     }, window.location.origin);
+                    // v0.0.944 — owner manual JG 走 XHR 路径同样落 forensic raw.
+                    // 0 parsing 0 fallback 只落 raw, 拿 v12 schema 真值.
+                    try {
+                      var bUrlX = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://ogame.anyfq.com";
+                      var tokX = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
+                      var rawTxtX = (typeof t === "string" ? t : "<not-string>").slice(0, 800);
+                      var rawBodyX = (typeof reqBody === "string" ? reqBody : "<form>").slice(0, 300);
+                      fetch(bUrlX.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                        method: "POST", credentials: "omit",
+                        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokX },
+                        body: JSON.stringify({ tag: "JG-SNIFF-XHR-v0944", text: "src=" + sourceMoonId + " tgt=" + targetMoonId + " parsedCd=" + cd + " url=" + url.slice(0,120) + " body=" + rawBodyX + " resp=" + rawTxtX }),
+                      }).catch(function(){});
+                    } catch(_){}
                     // 2026-05-27 operator: 點確認對話框 = page navigate target moon,
                     // sandbox async overlay re-fetch 來不及跑完就被 abort. 這裏同步
                     // 寫 localStorage (blocking) — navigate 前必然落盤. boot 時
@@ -1114,7 +1203,13 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                   } catch(_) {}
                 }
               }
-              }, 0); // v0.0.883 setTimeout 闭合 — 推到 macrotask, 让 ogame 先跑
+              }; // v0.0.942 _sniffBody 闭合
+              // v0.0.942 — JG 同步 (executeJump navigate race), 其他保持 v0.0.883 defer.
+              if (/jump|executeJump/i.test(url) || (reqBody && /jump/i.test(reqBody))) {
+                _sniffBody();
+              } else {
+                setTimeout(_sniffBody, 0);
+              }
             });
             return origSend.apply(this, arguments);
           };
@@ -1146,7 +1241,292 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           }, true);
           console.log("[OgameXSniff] form-submit listener installed");
         } catch (e) { console.warn("[OgameXSniff] form listener install failed", e); }
-        console.log("[OgameXSniff] installed — fetch + XHR + form-submit wrapped, logging /game/index.php calls");
+        // v0.0.945 — owner 2026-06-07 "点了 sniffer 还是 0 抓": ogame v12
+        // jQuery 在 sniffer 之前 load, cache 原生 XMLHttpRequest, 绕过 wrap.
+        // 顶层抓: button click capture phase 直接抓 url+form body 落 forensic.
+        // jQuery.ajax 也 wrap 一次, 拿 response data.
+        try {
+          document.addEventListener("click", function(e) {
+            try {
+              var t = e.target;
+              if (!t || !t.classList) return;
+              var isJg = t.classList.contains("js_executeJumpButton")
+                      || (t.closest && t.closest(".js_executeJumpButton"));
+              if (!isJg) return;
+              var btn = t.classList.contains("js_executeJumpButton") ? t : t.closest(".js_executeJumpButton");
+              var url = btn.getAttribute("data-url") || "";
+              var form = btn.closest("form") || document.getElementById("jumpgateForm");
+              var bodyStr = "";
+              if (form) {
+                try { bodyStr = new URLSearchParams(new FormData(form)).toString(); } catch(_){}
+              }
+              var bUrlC = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://ogame.anyfq.com";
+              var tokC = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
+              fetch(bUrlC.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                method: "POST", credentials: "omit",
+                headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokC },
+                body: JSON.stringify({ tag: "JG-CLICK-v0945", text: "url=" + url + " body=" + bodyStr.slice(0, 400) }),
+              }).catch(function(){});
+              console.log("[OgameXSniff] JG-CLICK captured url=" + url.slice(0,100) + " body=" + bodyStr.slice(0,200));
+            } catch(_){}
+          }, true);
+          console.log("[OgameXSniff] JG button click listener installed (capture phase)");
+        } catch (e) { console.warn("[OgameXSniff] JG click listener install failed", e); }
+        // v0.0.945 — wrap window.jQuery.ajax if present. Cache by ogame
+        // bypasses our XMLHttpRequest wrap; jQuery is global, we can hook
+        // its ajax method post-hoc.
+        try {
+          var hookJQ = function() {
+            var jq = window.jQuery || window.$;
+            if (!jq || !jq.ajax || jq.__ogamexAjaxWrapped) return false;
+            var origAjax = jq.ajax;
+            jq.ajax = function(opts) {
+              try {
+                var u = (typeof opts === "string") ? opts : (opts && opts.url) || "";
+                if (/jump|executeJump/i.test(u)) {
+                  var optsObj = (typeof opts === "object") ? opts : { url: u };
+                  var origDone = optsObj.success;
+                  var origError = optsObj.error;
+                  var origAlways = optsObj.complete;
+                  var bodyRaw = optsObj.data ? (typeof optsObj.data === "string" ? optsObj.data : new URLSearchParams(optsObj.data).toString()) : "";
+                  optsObj.success = function(data, status, xhr) {
+                    try {
+                      var bUrlJ = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://ogame.anyfq.com";
+                      var tokJ = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
+                      var respStr = typeof data === "string" ? data : JSON.stringify(data);
+                      fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                        method: "POST", credentials: "omit",
+                        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokJ },
+                        body: JSON.stringify({ tag: "JG-JQ-AJAX-v0945", text: "url=" + u.slice(0,120) + " body=" + bodyRaw.slice(0,200) + " resp=" + respStr.slice(0,800) }),
+                      }).catch(function(){});
+                      // v0.0.946 — owner 2026-06-07 "扫网页解析 注意 i18 / 特殊的地方要写文档":
+                      // v12 cd 不在 executeJump response (实证), 在 rendered DOM
+                      // <p id="cooldown">.textContent. 用 window.LocalizationStrings.timeunits.short
+                      // 当 i18n 真值源 (ogame 自己暴露的 locale chars). 详见 docs/architecture/jg-cd-v12-capture.md
+                      if (/executeJump/i.test(u)) {
+                        var tgtMatch = bodyRaw.match(/targetSpaceObjectId=(\\d+)/);
+                        if (tgtMatch) sessionStorage.setItem("OGAMEX_JG_LAST_TGT", tgtMatch[1]);
+                        // v0.0.950 — owner 2026-06-08 "src=tgt 自指 bug": 同时缓存
+                        // 当时的 source moon (meta ogame-planet-id), 否则跳完
+                        // navigate 到 target 后 meta=tgt, 加 sessionStorage tgt
+                        // 也=tgt → 自指. 缓存 src 后, widget 解析时判断
+                        // meta == cached_tgt 则 real src = cached_src.
+                        try {
+                          var srcCache = document.querySelector("meta[name='ogame-planet-id']").getAttribute("content") || "";
+                          if (srcCache) sessionStorage.setItem("OGAMEX_JG_LAST_SRC", srcCache);
+                          // v0.0.970 — owner 2026-06-08 "这个跳跃的页面提交的时候是
+                          // 可以拿到对端的坐标的": executeJump body 含 真 partner,
+                          // 写 per-moon 配对 (双向). 老 LAST_SRC/LAST_TGT 单 entry
+                          // 跨多 JG 复用 → 不同 moon 的 widget 拿错 partner.
+                          // 改: OGAMEX_JG_PARTNER:{moonId} = partnerId, 双向写.
+                          // 任意 moon widget 开时 lookup 自己 partner, 永不混淆.
+                          if (srcCache && tgtMatch) {
+                            sessionStorage.setItem("OGAMEX_JG_PARTNER:" + srcCache, tgtMatch[1]);
+                            sessionStorage.setItem("OGAMEX_JG_PARTNER:" + tgtMatch[1], srcCache);
+                          }
+                        } catch(_){}
+                        // v0.0.960 — owner 2026-06-08 "跳跃了没有 cd": v0.0.949
+                        // MutationObserver 装在 widget open (overlay=1 ack), 5s
+                        // timeout 死翘翘. owner 流程 = open → 思考 (>5s) → click
+                        // jump → ack → ogame 渲染 cd, 此时 observer 已 disconnect.
+                        // 修: executeJump ack success 后, 主动 overlay refetch +
+                        // simpleCountdown regex (同 v0.0.955 api_executor 路径),
+                        // 不依赖 owner 再次开 widget DOM 渲染.
+                        try {
+                          var jgSrcId = sessionStorage.getItem("OGAMEX_JG_LAST_SRC") || "";
+                          var jgTgtId = sessionStorage.getItem("OGAMEX_JG_LAST_TGT") || "";
+                          // v0.0.966 — owner 2026-06-08 "JG 跳了没 CD" 实证: v0.0.960
+                          // 的 data 直接 status check 失败 (jq 可能传 raw text 不 parse).
+                          // 容 string + object 两种形态, parse 失败 fallback regex 探 status.
+                          var dataObj = data;
+                          if (typeof data === "string") {
+                            try { dataObj = JSON.parse(data); } catch (_) { dataObj = null; }
+                          }
+                          var rawRespStr = typeof data === "string" ? data : JSON.stringify(data);
+                          var ackOk = (dataObj && (dataObj.status === true || dataObj.status === "success"))
+                                      || /"status"\\s*:\\s*true/.test(rawRespStr);
+                          // 落 forensic 不管 ackOk, 确认代码到位
+                          try {
+                            fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                              method: "POST", credentials: "omit",
+                              headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokJ },
+                              body: JSON.stringify({ tag: "JG-POST-ACK-ENTRY-v0966", text: "ackOk=" + ackOk + " src=" + jgSrcId + " tgt=" + jgTgtId + " dataType=" + (typeof data) + " hasStatus=" + (dataObj && "status" in dataObj) }),
+                            }).catch(function(){});
+                          } catch (_) {}
+                          if (ackOk && jgSrcId && jgTgtId) {
+                            // v0.0.977 — owner 2026-06-08 "还是没有CD": ogame ack 后
+                            // errorbox okFunction=jumpToTarget 把 SPA 切到 target moon,
+                            // setTimeout 10s 在 navigate 时被 kill. 改 3 次快重试
+                            // (1s/5s/15s), 在 navigate 前打中任一即 commit.
+                            var overlayUrl960 = "/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1&cp=" + jgSrcId;
+                            var jgFetchTry = function(delayMs, attempt) {
+                              setTimeout(function() {
+                                fetch(overlayUrl960, {
+                                  credentials: "same-origin",
+                                  headers: { "X-Requested-With": "XMLHttpRequest" }
+                                }).then(function(r) { return r.ok ? r.text() : ""; }).then(function(html) {
+                                  if (!html) return;
+                                  var snip = html.length <= 3500 ? html : html.slice(0, 3500);
+                                  var mSC = html.match(/simpleCountdown\\s*\\([^,]+,\\s*(\\d+)/);
+                                  var cdSec = mSC ? parseInt(mSC[1], 10) : 0;
+                                  fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                                    method: "POST", credentials: "omit",
+                                    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokJ },
+                                    body: JSON.stringify({ tag: "JG-CD-POST-ACK-v0977", text: "attempt=" + attempt + " src=" + jgSrcId + " tgt=" + jgTgtId + " htmlLen=" + html.length + " cdSec=" + cdSec + " snip=" + snip })
+                                  }).catch(function(){});
+                                  if (cdSec > 0 && window.__ogamexCommitJgCd) {
+                                    window.__ogamexCommitJgCd(jgSrcId, jgTgtId, cdSec);
+                                  }
+                                }).catch(function(){});
+                              }, delayMs);
+                            };
+                            jgFetchTry(1000, 1);
+                            jgFetchTry(5000, 2);
+                            jgFetchTry(15000, 3);
+                          }
+                        } catch(_){}
+                      }
+                      if (/overlay=1/.test(u)) {
+                        // v0.0.968 — owner 2026-06-08 "跳了没 cd" 实证 v0.0.967
+                        // attempt 1/2 setTimeout 都没 fire (ogame navigate 后 starve).
+                        // 真闭环: overlay GET response 本身就是 ogame 渲染好的 HTML,
+                        // 含 simpleCountdown(_, N). 直接 regex respStr 拿 cd.
+                        // 这是 owner 下次开 widget 时**必然 fire**, 不依赖时序.
+                        try {
+                          var mSCOverlay = respStr.match(/simpleCountdown\\s*\\([^,]+,\\s*(\\d+)/);
+                          if (mSCOverlay) {
+                            var cdSecOverlay = parseInt(mSCOverlay[1], 10);
+                            // v0.0.970 — owner 2026-06-08 owner insight: per-moon
+                            // partner cache 是真值源 (写于 executeJump POST time).
+                            // 单边 fallback 退化为 v0.0.969 行为 (partner 没记录时).
+                            var metaIdO = "";
+                            try { metaIdO = document.querySelector("meta[name='ogame-planet-id']").getAttribute("content") || ""; } catch(_){}
+                            var partnerO = metaIdO ? (sessionStorage.getItem("OGAMEX_JG_PARTNER:" + metaIdO) || "") : "";
+                            fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                              method: "POST", credentials: "omit",
+                              headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokJ },
+                              body: JSON.stringify({ tag: "JG-CD-OVERLAY-RESP-v0970", text: "src=" + metaIdO + " partner=" + partnerO + " cdSec=" + cdSecOverlay + " (partner from executeJump body, not stale guess)" }),
+                            }).catch(function(){});
+                            if (cdSecOverlay > 0 && metaIdO && window.__ogamexCommitJgCd) {
+                              // partner 非空 → 双边 commit; partner 空 → 单边 (老 v0.0.969 fallback)
+                              window.__ogamexCommitJgCd(metaIdO, partnerO, cdSecOverlay);
+                            }
+                          }
+                        } catch (_) {}
+                        // v0.0.949 — owner 2026-06-08 "setTimeout": setTimeout 500ms
+                        // 是猜的, ogame jQuery render 时机不固定. 改 MutationObserver
+                        // 事件驱动: 看到 #cooldown 出现立即触发 (不等不猜).
+                        // 5 秒 safety timeout 防止 observer 永远挂.
+                        try {
+                          var jgObserverFired = false;
+                          var handleCdReady = function(triggerSource) {
+                            if (jgObserverFired) return;
+                            var cdEl = document.getElementById("cooldown");
+                            var txt = cdEl ? (cdEl.textContent || "").trim() : "";
+                            // 等到 textContent 真有内容才算 ready (ogame jQuery
+                            // 可能 mount 空 el 再填 text — 两步动作)
+                            if (!txt) return;
+                            jgObserverFired = true;
+                            jgObserver.disconnect();
+                            clearTimeout(jgFallbackTimer);
+                            var lu = window.LocalizationStrings && window.LocalizationStrings.timeunits && window.LocalizationStrings.timeunits.short;
+                            var metaId = "";
+                            try { metaId = document.querySelector("meta[name='ogame-planet-id']").getAttribute("content") || ""; } catch(_){}
+                            var cachedSrc = sessionStorage.getItem("OGAMEX_JG_LAST_SRC") || "";
+                            var cachedTgt = sessionStorage.getItem("OGAMEX_JG_LAST_TGT") || "";
+                            // v0.0.950 — 真 src/tgt 配对: meta = current session moon.
+                            // 若 meta == cachedTgt → 在 target 月球看 widget, real src = cachedSrc
+                            // 若 meta == cachedSrc → 在 source 月球看 widget, real tgt = cachedTgt
+                            // 否则 meta 不属任一缓存 → 老路径, 单边 commit (tgt 留 cached, 可能错)
+                            var srcId, tgtId;
+                            if (metaId && metaId === cachedTgt && cachedSrc) {
+                              srcId = cachedSrc; tgtId = metaId;
+                            } else if (metaId && metaId === cachedSrc && cachedTgt) {
+                              srcId = metaId; tgtId = cachedTgt;
+                            } else {
+                              srcId = metaId; tgtId = cachedTgt;
+                            }
+                            var hStr = "0", mStr = "0", sStr = "0", total = 0;
+                            if (lu && lu.hour && lu.minute && lu.second) {
+                              var esc = function(s) { return s.replace(/[\\.\\*\\+\\?\\(\\)\\[\\]\\\\\\/\\^\\$]/g, "\\\\$&"); };
+                              var mH = txt.match(new RegExp("(\\\\d+)\\\\s*" + esc(lu.hour)));
+                              var mM = txt.match(new RegExp("(\\\\d+)\\\\s*" + esc(lu.minute)));
+                              var mS = txt.match(new RegExp("(\\\\d+)\\\\s*" + esc(lu.second)));
+                              hStr = mH ? mH[1] : "0";
+                              mStr = mM ? mM[1] : "0";
+                              sStr = mS ? mS[1] : "0";
+                              total = parseInt(hStr,10)*3600 + parseInt(mStr,10)*60 + parseInt(sStr,10);
+                            }
+                            fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                              method: "POST", credentials: "omit",
+                              headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokJ },
+                              body: JSON.stringify({ tag: "JG-CD-DOM-v0950", text: "trigger=" + triggerSource + " meta=" + metaId + " cachedSrc=" + cachedSrc + " cachedTgt=" + cachedTgt + " resolved src=" + srcId + " tgt=" + tgtId + " text=\\"" + txt + "\\" total=" + total + "s" }),
+                            }).catch(function(){});
+                            if (total > 0 && srcId && tgtId) {
+                              // v0.0.951 — owner 2026-06-08 "异 level 两边 fetch":
+                              // sniffer 只 postMessage cd (page-world 不能用 safe_fetch).
+                              // 异 level 抓对面 cd 的逻辑放 TM-isolated context handler
+                              // (有 fetchWithCpBypassBusy, cp-mutex 保护不 shift owner).
+                              window.postMessage({
+                                source: "ogamex:jumpgateEvent",
+                                sourceMoonId: srcId,
+                                targetMoonId: tgtId,
+                                cooldownSec: total,
+                                currentMeta: metaId,
+                                originCoords: null,
+                                url: u,
+                                hasNotReady: true,
+                              }, window.location.origin);
+                            }
+                          };
+                          // 启动 observer 监听整个 document.body 子树变化
+                          var jgObserver = new MutationObserver(function() { handleCdReady("observer"); });
+                          jgObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+                          // 也立刻 check 一次 — 可能 DOM 在 sniffer 跑前就已经渲染好
+                          handleCdReady("immediate");
+                          // 5s safety — observer 没命中就发 MISSING forensic 收场
+                          var jgFallbackTimer = setTimeout(function() {
+                            if (jgObserverFired) return;
+                            jgObserverFired = true;
+                            jgObserver.disconnect();
+                            var cdEl2 = document.getElementById("cooldown");
+                            fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                              method: "POST", credentials: "omit",
+                              headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokJ },
+                              body: JSON.stringify({ tag: "JG-CD-DOM-v0949-TIMEOUT", text: "5s 内 #cooldown 未出现 cdEl=" + (cdEl2 ? "found-but-empty" : "MISSING") }),
+                            }).catch(function(){});
+                          }, 5000);
+                        } catch(e) {
+                          try {
+                            fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
+                              method: "POST", credentials: "omit",
+                              headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokJ },
+                              body: JSON.stringify({ tag: "JG-CD-DOM-v0949-ERR", text: String(e && e.message || e) }),
+                            }).catch(function(){});
+                          } catch(_){}
+                        }
+                      }
+                    } catch(_){}
+                    if (typeof origDone === "function") return origDone.apply(this, arguments);
+                  };
+                  return origAjax.call(jq, optsObj);
+                }
+              } catch(_){}
+              return origAjax.apply(jq, arguments);
+            };
+            jq.__ogamexAjaxWrapped = true;
+            console.log("[OgameXSniff] jQuery.ajax wrapped");
+            return true;
+          };
+          if (!hookJQ()) {
+            // jQuery not loaded yet — retry on next macrotask
+            var jqAttempts = 0;
+            var jqTimer = setInterval(function() {
+              if (hookJQ() || ++jqAttempts > 30) clearInterval(jqTimer);
+            }, 100);
+          }
+        } catch (e) { console.warn("[OgameXSniff] jQuery.ajax wrap install failed", e); }
+        console.log("[OgameXSniff] installed — fetch + XHR + form-submit + click + jQuery.ajax wrapped, logging /game/index.php calls");
       } catch (e) { console.warn("[OgameXSniff] install failed", e); }
     })();
   `;
@@ -1269,8 +1649,62 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // Sniffer 監聽 component=jumpgate POST/GET response, post message 含
       // sourceMoonId / targetMoonId / cooldownSec → 寫 store, ticker 自動倒計時.
       if (data.source === "ogamex:jumpgateEvent") {
-        const e = data as unknown as { sourceMoonId?: string; targetMoonId?: string; cooldownSec?: number | null; hasNotReady?: boolean; originCoords?: string };
+        // v0.0.951 — owner 2026-06-08 "异 level 两边各 fetch": 新加
+        // targetCooldownSec 字段. 同 level → 单 cd 双写 (老路径), 异 level →
+        // 缓存 tgt 单独 cd, commit 各写各的. currentMeta = sniffer 拿的 owner
+        // 当前月球, 后面用来判断"对面是哪个". async fetch 对面 overlay 拿 cd.
+        const e = data as unknown as { sourceMoonId?: string; targetMoonId?: string; cooldownSec?: number | null; targetCooldownSec?: number | null; currentMeta?: string; hasNotReady?: boolean; originCoords?: string; url?: string };
         const cd = e.cooldownSec ?? null;
+        const tgtCdOverride = (typeof e.targetCooldownSec === "number" && e.targetCooldownSec > 0) ? e.targetCooldownSec : null;
+        const currentMetaVal = e.currentMeta ?? "";
+        // 异 level 检查 + async 对面 fetch — 仅 DOM-scrape 第一次 (无 tgtCdOverride) 才触发
+        if (e.sourceMoonId && e.targetMoonId && currentMetaVal && cd && cd > 0 && tgtCdOverride === null) {
+          const srcLvl = (store.state.planets[e.sourceMoonId]?.buildings as Record<string, number> | undefined)?.["jumpgate"] ?? 0;
+          const tgtLvl = (store.state.planets[e.targetMoonId]?.buildings as Record<string, number> | undefined)?.["jumpgate"] ?? 0;
+          if (srcLvl > 0 && tgtLvl > 0 && srcLvl !== tgtLvl) {
+            const otherMoonId = (currentMetaVal === e.sourceMoonId) ? e.targetMoonId : e.sourceMoonId;
+            const myMoonId = currentMetaVal;
+            const myCd = cd;
+            void (async () => {
+              try {
+                const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
+                const r = await fetchWithCpBypassBusy(
+                  `/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1`,
+                  { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
+                  otherMoonId,
+                );
+                const html = r.status === 200 ? await r.text() : "";
+                const m = html.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
+                const otherCd = m ? parseInt(m[1], 10) : 0;
+                try {
+                  const bUrlJ2 = window.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+                  const tokJ2 = window.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+                  void fetch(`${bUrlJ2.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+                    method: "POST", credentials: "omit",
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tokJ2}` },
+                    body: JSON.stringify({ tag: "JG-CD-OTHER-v0951", text: `myMoon=${myMoonId} myCd=${myCd}s otherMoon=${otherMoonId} parsed=${otherCd}s htmlSnip=${html.slice(0, 600)}` }),
+                  }).catch(() => { /* */ });
+                } catch { /* */ }
+                if (otherCd > 0) {
+                  const srcSideCd = (myMoonId === e.sourceMoonId) ? myCd : otherCd;
+                  const tgtSideCd = (myMoonId === e.targetMoonId) ? myCd : otherCd;
+                  window.postMessage({
+                    source: "ogamex:jumpgateEvent",
+                    sourceMoonId: e.sourceMoonId,
+                    targetMoonId: e.targetMoonId,
+                    cooldownSec: srcSideCd,
+                    targetCooldownSec: tgtSideCd,
+                    originCoords: null,
+                    url: e.url,
+                    hasNotReady: true,
+                  }, window.location.origin);
+                }
+              } catch (err) {
+                console.warn("[OgameX/jumpgate-event] 异 level cross-fetch failed:", err);
+              }
+            })();
+          }
+        }
         const ts = Date.now();
         // Fallback — if sourceMoonId regex missed, find moon by originCoords
         let resolvedSourceId = e.sourceMoonId;
@@ -1312,8 +1746,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               // v0.0.525 — operator 2026-05-31: target 月球也進 cooldown
               // (ogame 物理: JG 跳完兩邊都"充能中"). 寫 cd_sec + harvested_at
               // 到目的月球, 不僅寫 pair_with.
+              // v0.0.951 — 异 JG level 时 src/tgt cd 不同, 用 tgtCdOverride.
               patch[pairTgt] = {
-                jumpgate_cooldown_sec: cdSec,
+                jumpgate_cooldown_sec: tgtCdOverride ?? cdSec,
                 jumpgate_harvested_at: Date.now(),
                 jumpgate_pair_with: pairSrc,
               };
@@ -1384,18 +1819,19 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                 }
               }
               if (parsedCd === null) {
-                // Dump cooldown-keyword vicinity for next-iter regex refinement.
+                // v0.0.922 — owner "v12 数据和以前版本不同, 公式可能错". 不再
+                // 用 3600 兜底 — L1 公式 v12 不适用; 留 cd 为空, 下次 sniffer
+                // 抓到 response.cooldown 才写真值. 仍 dump 上下文便于 regex 调试.
                 const cdIdx = html.toLowerCase().indexOf("cooldown");
                 if (cdIdx >= 0) {
                   console.warn(`[OgameX/jumpgate-event] overlay regex all missed — context: ${html.slice(Math.max(0, cdIdx - 100), cdIdx + 300)}`);
                 }
-                parsedCd = 3600;
-                console.warn(`[OgameX/jumpgate-event] using fallback cooldown=3600s (60min default for level-1 jumpgate)`);
+                console.warn(`[OgameX/jumpgate-event] overlay no cd parsed — NOT writing fallback (v12 formula unknown); leaving cd null`);
+                return;
               }
               commitCooldown(resolvedSourceId, parsedCd);
             } catch (err) {
-              console.warn(`[OgameX/jumpgate-event] overlay re-fetch failed, fallback 3600s:`, err);
-              commitCooldown(resolvedSourceId, 3600);
+              console.warn(`[OgameX/jumpgate-event] overlay re-fetch failed — NOT writing fallback (v12 formula unknown):`, err);
             }
           })();
         }
@@ -1475,7 +1911,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.884";
+  const USERSCRIPT_VERSION = "0.0.988";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -1961,6 +2397,49 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       ((globalThis as { unsafeWindow: Window }).unsafeWindow as Window & { __ogamexDumpLfRequires?: () => Promise<void> }).__ogamexDumpLfRequires = dumpLfRequiresFn;
     }
   } catch { /* */ }
+
+  // v0.0.988 — owner 2026-06-08 "前天已经做好的东西今天又重新做一遍".
+  // Full-species technologytree sweep: 接收 species 字符串, 遍历 LIFEFORM_TECH
+  // 该族 buildings + research, 每节点 fetch /technologytree?technologyId=N&ajax=1,
+  // 全部 POST 到 sidecar journal tagged LF-TREE-SWEEP-v0988. owner 一次拿全
+  // ground truth, 一次 patch 完同族未 verified entries. 参见 [[lf-catalog-verify-on-unlock]].
+  const lfTreeSweepFn = async (species: string): Promise<void> => {
+    const catalog = (LIFEFORM_TECH as Record<string, { buildings?: Record<string, unknown>; research?: Record<string, unknown> }>)[species];
+    if (!catalog) { console.warn(`[OgameX/lf-tree-sweep] unknown species: ${species}`); return; }
+    const winLts = env.win as Window & { localStorage?: Storage };
+    const bridgeLts = winLts.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+    const tokLts = winLts.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+    const names = [...Object.keys(catalog.buildings ?? {}), ...Object.keys(catalog.research ?? {})];
+    console.info(`[OgameX/lf-tree-sweep] species=${species} nodes=${names.length}, fetching technologytree per node...`);
+    let ok = 0, miss = 0;
+    for (const name of names) {
+      const techId = (TECH_ID_BY_NAME as Record<string, number>)[name];
+      if (!techId) { miss += 1; console.warn(`[OgameX/lf-tree-sweep] ${name}: no tech_id mapping`); continue; }
+      try {
+        const r = await env.win.fetch(`/game/index.php?page=ajax&component=technologytree&technologyId=${techId}&ajax=1`, {
+          credentials: "same-origin",
+          headers: { "X-Requested-With": "XMLHttpRequest" },
+        });
+        const html = r.status === 200 ? await r.text() : "";
+        void fetch(`${bridgeLts.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tokLts}` },
+          body: JSON.stringify({ tag: "LF-TREE-SWEEP-v0988", text: `species=${species} name=${name} techId=${techId} httpStatus=${r.status} htmlLen=${html.length} html=${html.slice(0, 5000)}` }),
+        }).catch(() => { /* */ });
+        ok += 1;
+        await new Promise(res => env.win.setTimeout(res, 250));
+      } catch (e) {
+        console.warn(`[OgameX/lf-tree-sweep] ${name}(${techId}) fetch failed:`, e);
+      }
+    }
+    console.info(`[OgameX/lf-tree-sweep] DONE species=${species} ok=${ok} miss=${miss}, see sidecar journal tag LF-TREE-SWEEP-v0988`);
+  };
+  (env.win as Window & { __ogamexLfTreeSweep?: (species: string) => Promise<void> }).__ogamexLfTreeSweep = lfTreeSweepFn;
+  try {
+    if (typeof (globalThis as { unsafeWindow?: Window }).unsafeWindow !== "undefined") {
+      ((globalThis as { unsafeWindow: Window }).unsafeWindow as Window & { __ogamexLfTreeSweep?: (species: string) => Promise<void> }).__ogamexLfTreeSweep = lfTreeSweepFn;
+    }
+  } catch { /* */ }
   scheduleBurst(() => { void harvestSlotsFromMovement(); }, 2000);
   // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed the 10s
   // setInterval. Triggers that refresh /movement now:
@@ -2203,14 +2682,18 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // tgtCdSec undefined 退回旧行为 = 两边同 cd (向后兼容).
   (env.win as Window & { __ogamexCommitJgCd?: (src: string, tgt: string, srcCdSec: number, tgtCdSec?: number) => void }).__ogamexCommitJgCd =
     (src: string, tgt: string, srcCdSec: number, tgtCdSec?: number): void => {
-      if (!src || !tgt || !Number.isFinite(srcCdSec) || srcCdSec <= 0) return;
+      // v0.0.969 — owner 2026-06-08 "不要猜对端星球": 允许 tgt="" 单边 commit.
+      // overlay HTML 只 expose 本月球 cd, 对端没真值时不写 partner — 让 partner
+      // moon 的 cd 等 owner 在那边开 widget 时单边 commit. 避免错填坐标.
+      if (!src || !Number.isFinite(srcCdSec) || srcCdSec <= 0) return;
       const tgtCd = (typeof tgtCdSec === "number" && Number.isFinite(tgtCdSec) && tgtCdSec > 0) ? tgtCdSec : srcCdSec;
       const now = Date.now();
       const patch: Record<string, Partial<typeof store.state.planets[string]>> = {};
       if (store.state.planets[src]) {
-        patch[src] = { jumpgate_cooldown_sec: srcCdSec, jumpgate_harvested_at: now, jumpgate_pair_with: tgt };
+        patch[src] = { jumpgate_cooldown_sec: srcCdSec, jumpgate_harvested_at: now };
+        if (tgt) (patch[src] as Record<string, unknown>).jumpgate_pair_with = tgt;
       }
-      if (store.state.planets[tgt]) {
+      if (tgt && store.state.planets[tgt]) {
         patch[tgt] = { jumpgate_cooldown_sec: tgtCd, jumpgate_harvested_at: now, jumpgate_pair_with: src };
       }
       if (Object.keys(patch).length > 0) {
@@ -2228,8 +2711,14 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // 到 unsafeWindow 让 operator 能 console 直接救现状 (例如历史死锁未被
   // v0.0.747 arrival hook 救到的 stale moon ships).
   try {
-    const pwExp = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & { __ogamexRefreshPlanetResources?: (pid: string) => Promise<void> };
+    const pwExp = (typeof unsafeWindow !== "undefined" ? unsafeWindow : env.win) as Window & { __ogamexRefreshPlanetResources?: (pid: string) => Promise<void>; __ogamexCommitJgCd?: (src: string, tgt: string, srcCdSec: number, tgtCdSec?: number) => void };
     pwExp.__ogamexRefreshPlanetResources = refreshSourcePlanetResources;
+    // v0.0.981 — owner 2026-06-08 实证 v0.0.977 attempt=1 命中 simpleCountdown=1595
+    // 但 PG 0 commit 因为 sniffer (page-world) 调 window.__ogamexCommitJgCd 是
+    // page-world window, 老代码只挂 env.win (TM sandbox window) → page world
+    // 看不到 → 跳过 commit. dual-expose 修复.
+    const commitFn = (env.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, src: number, tgt?: number) => void }).__ogamexCommitJgCd;
+    if (commitFn) pwExp.__ogamexCommitJgCd = commitFn;
   } catch { /* sandbox might forbid cross-world expose */ }
   // v0.0.733 — operator 2026-06-03 "synthetic.return_at = launch+90min 这个
   // 没用就删了吧". Pre-v0.0.733 pruneExpiredFleets() + 60s setInterval +
@@ -2856,6 +3345,24 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         return;
       }
       console.info(`[OgameX/refreshOnePage] ${page}: ${useChunk ? "chunk" : "full"} ${html.length}B`);
+      // v0.0.962 — owner 2026-06-08 实证: lf_build_q 没 hydrate; lfbuildings
+      // parser selector 'li.technology[data-status="active"]' 不命中 v12 chunk
+      // 的真 queue 标记. forensic dump 拿真 schema 来写对 selector.
+      if (page === "lfbuildings" || page === "lfresearch") {
+        try {
+          const ctxWinR = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+          const bridgeR = ctxWinR.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+          const tokR = ctxWinR.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+          // 抓 queue 相关上下文: 找 "active" / "building" / "Residential" / "constructing" 的片段
+          const queueIdx = html.search(/(data-status="active"|queueitem|under construction|countdown|inProgress)/i);
+          const snip = queueIdx >= 0 ? html.slice(Math.max(0, queueIdx - 100), queueIdx + 1500) : html.slice(0, 1500);
+          void fetch(`${bridgeR.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+            method: "POST", credentials: "omit",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tokR}` },
+            body: JSON.stringify({ tag: "LF-CHUNK-SCHEMA-v0962", text: `page=${page} pid=${planetId} htmlLen=${html.length} queueIdx=${queueIdx} snip=${snip}` }),
+          }).catch(() => { /* */ });
+        } catch { /* */ }
+      }
       // Parse via DOMParser into a detached document; reuse the same
       // extractors that run on env.doc by SWAPPING `env.doc` temporarily?
       // No — extractors close over env.doc. Run them inline against the
@@ -3155,6 +3662,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   env.doc.addEventListener("mousedown", _markUserActive, true);
   env.doc.addEventListener("keydown", _markUserActive, true);
   scheduleBurst(refreshOnePage, 8000);
+  // v0.0.965 — silent audio keep-alive (v0.0.963) 紧急下线. owner 2026-06-08
+  // "卡的动不了" 联合 v0.0.959 sweep 冻结浏览器. 后台 throttle 痛点改日重设计.
+  // v0.0.965 — owner 2026-06-08 "卡的动不了": v0.0.959/964 LF sweep + v0.0.963
+  // silent audio loop 联合导致浏览器冻结. 紧急回滚, 全部关掉. LF data hydrate
+  // 退回原 8s refresh cycle 自然机制 (owner 切到该 planet 时刷 lfbuildings).
+  // 新账号 cold-start 33620666 只能等 owner 手动访问一次 LF page. 改稳为主.
   // v0.0.731 — operator 2026-06-03 "建造 核融合反應器 L14 (~709m)" 实际 L17
   // 还剩 21min. build_q 在 fetchResources JSON 不带 buildqueue 字段时永远
   // 不刷新 (Scorpius 实测), 只在 boot bursts 那一刻有数据然后永远过期.
@@ -3172,16 +3685,17 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // 不是点击瞬间, 是常驻背景 cp= fetch 一直跟 ogame fleet UI 抢 session-cp.
   // ogame UI 期待 session 稳定, 我方 30s/45s 切个不停 → checkTarget POST 用
   // 错 cp → response 残缺 → baseFuelCapacity null 挂.
-  // 修法 — 在 sensitive page (fleetdispatch 等 ogame UI 状态机敏感的页面)
-  // 整段 skip 背景 cp= fetch. defer-before (v0.0.870) 只防 owner 主动操作期间,
-  // 不防 ogame UI 自己在 idle wait response 时. 这里加 page-aware gate.
+  // v0.0.885 — v0.0.884 用 currentPage / meta 检测失效 (TM sandbox 不暴露 +
+  // meta name 不对), 改用 location.search 直读 (跟 cargo-probe L1167 同模式,
+  // 已知 work). Owner 实证: v0.0.884 deploy 后 console 仍打 supplies/facilities
+  // refresh + ogame baseFuelCapacity null → 检测路径错.
   const isSensitivePage = (): boolean => {
-    const pg = (env.win as { currentPage?: string }).currentPage
-      ?? env.doc.querySelector<HTMLMetaElement>('meta[name="ogame-page"]')?.content
-      ?? "";
-    // fleetdispatch + galaxy: 都用 checkTarget / fetchGalaxyContent, 我方
-    // cp shift 期间 ogame response 会被切到错 planet.
-    return pg === "fleetdispatch" || pg === "galaxy";
+    try {
+      const search = env.win.location?.search ?? env.doc.location?.search ?? "";
+      // fleetdispatch + galaxy: 都用 checkTarget / fetchGalaxyContent, 我方
+      // cp shift 期间 ogame response 会被切到错 planet.
+      return search.includes("component=fleetdispatch") || search.includes("component=galaxy");
+    } catch { return false; }
   };
   setInterval(() => {
     if (isSensitivePage()) return;

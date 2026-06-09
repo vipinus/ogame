@@ -181,7 +181,37 @@ export interface TenantContext {
    *  v0.0.862 — was module-level Map with `${uid}::${planetId}` prefix
    *  trick (v0.0.857 anti-pattern). Now properly per-uid via registry. */
   readonly expeditionFailureCoolOff: Map<string, number>;
+  /** v0.0.928 — owner 2026-06-07 "任务又被自动删掉了". priority_merger:741
+   *  marks goal completed on first sighting of ALREADY_AT_TARGET_RE
+   *  planner-blocked reason. Transient sniffer/snapshot glitches (planet
+   *  level momentarily reports too high) silently erase real goals.
+   *  goalId → first-sighting timestamp; require 30s of continuous
+   *  "already at" reports before actually completing. Cleared when goal
+   *  transitions away from already-at reason (or on status change). */
+  readonly alreadyAtTargetSince: Map<string, number>;
+  /** v0.0.921 → v0.0.922 — fleet ack post-verify queue (JG + deploy +
+   *  transport). goal_id → before-snapshot of src/tgt body ships +
+   *  dispatched ships count. Populated when onStatusChange marks fleet
+   *  goal completed; periodic verifier diff's against live worldState
+   *  to detect ogame silent rejection. On mismatch reverts goal to
+   *  blocked + clears prematurely-written cd (JG only). */
+  readonly pendingFleetVerify: Map<string, FleetVerifyEntry>;
 }
+
+export type FleetVerifyEntry = {
+  goalId: string;
+  goalType: "jumpgate" | "deploy" | "transport";
+  srcBodyId: string;
+  /** target body id may be absent if dispatch target is resolved by
+   *  coord only. JG: always present. Deploy/transport: present when
+   *  the target coord maps to a known body in worldState. */
+  tgtBodyId: string | null;
+  srcShipsBefore: Record<string, number>;
+  tgtShipsBefore: Record<string, number>;
+  dispatchedShips: Record<string, number>;
+  ackTs: number;
+  deadline: number;
+};
 
 /** Legacy / no-uid caller bucket. Operator single-tenant path lands here
  *  when ALS hasn't resolved a Bearer to a PG user (e.g. operator's own
@@ -207,6 +237,8 @@ function newContext(): TenantContext {
     // Sprint 3
     fieldsFullCache: new Map<string, { until: number }>(),
     expeditionFailureCoolOff: new Map<string, number>(),
+    pendingFleetVerify: new Map<string, FleetVerifyEntry>(),
+    alreadyAtTargetSince: new Map<string, number>(),
     // v0.0.881 — owner directive D
     expSeenFleetIdsByOrigin: new Map<string, Set<string>>(),
     expReturnedCountByOrigin: new Map<string, number>(),

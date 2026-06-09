@@ -64,7 +64,11 @@ const TOKEN_INVALID_RE = /invalid token|csrf|session expired/i;
 // (cpPostWithRetry rotates newAjaxToken between attempts). If 4 retries all
 // fail, falls through to caller. Most observed 100001 cases have resolved
 // on attempt 2.
-const TRANSIENT_RACE_RE = /140043|100001|請稍後再試|請稍後再試|稍後再試|未知的錯誤|未知的錯誤|try again later/i;
+// v0.0.975 — owner 2026-06-08 "点第一次报错马上点第二次ok" 实证 token rotation
+// 真态: 第一次 ack 带新 token, 第二次用新 token 通. 老 regex 卡英文 message
+// "A previously unknown error has occurred..." (不含数字"100001"字样) → 不
+// retry → 单次 dispatch 死. 加英文 + 真 error code 数字检查 (errors[0].error).
+const TRANSIENT_RACE_RE = /140043|100001|請稍後再試|請稍後再試|稍後再試|未知的錯誤|未知的錯誤|try again later|previously unknown error|couldn[`'']t be executed/i;
 // Operator 2026-05-28: ogame 140028 "倉存容量不足!" — DEST-SIDE complement
 // to case_decider.ts's source-side cargo sizing (commit c8d2ead, 2026-05-24:
 // case_decider sizes cargo ≤ FLEET capacity using ship_cargo_capacity).
@@ -203,6 +207,22 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
     let json: Record<string, unknown> | null;
     try { json = JSON.parse(raw) as Record<string, unknown>; } catch { json = null; }
     console.log(`[cpPost/${opts.action}] attempt=${attempt} HTTP ${r.status} json=${json ? JSON.stringify(json).slice(0, 200) : "<non-JSON>"} raw[0:200]=${raw.slice(0, 200)}`);
+    // v0.0.986 — owner 2026-06-08 "max fields > 260 不可能满, 查真因": page-world
+    // sniffer 漏抓 fusion attempts. 加 cpPost (sandbox) 层 forensic, 不依赖
+    // page-world wrap. 仅 scheduleEntry endpoint, 不污染.
+    if (/scheduleEntry/i.test(opts.endpoint)) {
+      try {
+        const ctxWinCP = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+        const bridgeCP = ctxWinCP.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+        const tokCP = ctxWinCP.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+        const bodyStrCp = body ? body.toString().replace(/token=[^&]+/, "token=***") : "<no body>";
+        void fetch(`${bridgeCP.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tokCP}` },
+          body: JSON.stringify({ tag: "CPPOST-SCHEDULE-v0986", text: `action=${opts.action} attempt=${attempt} cp=${opts.sourcePlanetId} HTTP=${r.status} body=${bodyStrCp.slice(0,300)} raw=${raw.slice(0,500)}` }),
+        }).catch(() => { /* */ });
+      } catch { /* */ }
+    }
     // Non-JSON (overlay HTML etc) → return as-is to caller.
     if (!json) return { json: null, raw, status: r.status };
     // v0.0.555 — accept "status":"success" string form too (ogame v12
@@ -217,7 +237,7 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
       if (typeof newToken === "string" && opts.token) opts.token.set(newToken);
       return { json, raw, status: r.status };
     }
-    const errsField = (json as { errors?: Array<{ message?: string }> }).errors;
+    const errsField = (json as { errors?: Array<{ message?: string; error?: number }> }).errors;
     const errMsgRaw = (json as { message?: unknown }).message;
     const errMsg = (typeof errMsgRaw === "string" ? errMsgRaw : null)
       ?? (Array.isArray(errsField) && errsField[0]?.message)
@@ -235,7 +255,12 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
       }
       continue;
     }
-    if (TRANSIENT_RACE_RE.test(errMsg) && attempt < maxAttempts) {
+    // v0.0.975 — 同时检查 errors[0].error 数字 code (belt-and-suspenders).
+    // ogame v12 有时 message 是英文/翻译, 数字 error code 是 ground truth.
+    const errCodeNum = Array.isArray(errsField) && typeof errsField[0]?.error === "number"
+      ? (errsField[0] as unknown as { error: number }).error : 0;
+    const isTransientByCode = errCodeNum === 100001 || errCodeNum === 140043;
+    if ((TRANSIENT_RACE_RE.test(errMsg) || isTransientByCode) && attempt < maxAttempts) {
       const backoffMs = 200 * attempt;
       console.warn(`[cpPost/${opts.action}] attempt=${attempt} transient race (${errMsg.slice(0, 80)}) — backoff ${backoffMs}ms`);
       const newToken = (json as { newAjaxToken?: unknown }).newAjaxToken;
@@ -487,7 +512,7 @@ async function sendFleetInner(
     // Surface as much of the raw body as possible so the operator can see
     // what ogame actually said. Cap at 300 chars to keep error messages
     // readable in panel/Discord; full body is in console log above.
-    const errsField = (json as { errors?: Array<{ message?: string }> }).errors;
+    const errsField = (json as { errors?: Array<{ message?: string; error?: number }> }).errors;
     const errMsg = json.message
       ?? (Array.isArray(errsField) && errsField[0]?.message)
       ?? `success=${json.success} raw=${rawText.slice(0, 200)}`;
@@ -653,7 +678,7 @@ async function recallFleetInner(fleetId: number, ctx: SendFleetCtx): Promise<voi
     // Surface full message + errors[] + raw — operator 2026-05-27 evidence:
     // recall POST fails silently with "recall failed" default. Need the real
     // ogame body to identify wrong endpoint/field-name.
-    const errsField = (json as { errors?: Array<{ message?: string }> }).errors;
+    const errsField = (json as { errors?: Array<{ message?: string; error?: number }> }).errors;
     const errMsg = json.message
       ?? (Array.isArray(errsField) && errsField[0]?.message)
       ?? `success=${json.success} raw=${rawText.slice(0, 200)}`;

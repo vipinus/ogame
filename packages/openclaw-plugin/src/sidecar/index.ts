@@ -40,12 +40,12 @@ import { GoalsStorePg } from "./goals_store_pg.js";
 // resolveDbMode removed in Phase 7a — no more mode switch.
 // Phase 7d — WorldStateStore SQLite class deleted (PG primary).
 import { WorldStateStorePg } from "./world_state_store_pg.js";
-import { getCurrentUserId } from "./user_context.js";
-import { tenantRegistry, hydrate as hydrateTenantRegistry, serialize as serializeTenantRegistry } from "./tenant_context.js";
+import { getCurrentUserId, runWithUser } from "./user_context.js";
+import { tenantRegistry, hydrate as hydrateTenantRegistry, serialize as serializeTenantRegistry, EMPTY_LEGACY_UID } from "./tenant_context.js";
 import { GeminiClient } from "./gemini_client.js";
 import { parseGoalFromNL } from "../tools/add_goal.js";
 import { PriorityMerger } from "./priority_merger.js";
-import { planGoal, pickEnergyPrereqBuilding, solarProduction, fusionProduction, mineEnergyConsumption, ENERGY_GATED_BUILDINGS, markFieldsFull } from "./planner.js";
+import { planGoal, pickEnergyPrereqBuilding, pickEnergyFixForBuildLevel, findActiveEnergyOpt, solarProduction, fusionProduction, mineEnergyConsumption, ENERGY_GATED_BUILDINGS, markFieldsFull } from "./planner.js";
 import { buildHealthReport } from "./health.js";
 import { DebugBuffer } from "./debug_buffer.js";
 import {
@@ -285,6 +285,19 @@ async function updateBuildShipsProgress(
       const prevCount = (prevShips as Record<string, number | undefined>)[ship] ?? 0;
       const delta = newCount - prevCount;
       if (delta <= 0) continue;
+      // v0.0.895 — owner 2026-06-07 "为什么第一颗星球任务消失" 实证: web-eb9904
+      // 新账号 largeCargo×10 在 0 真船被造的情况下被错标 completed. 真因:
+      // userscript 偶尔把 cargo CAPACITY (25000) 推进 ships count 字段, 或
+      // galaxy slot harvest 错读对家船数, delta 暴跳 >> target → newRemaining
+      // 负 → mark completed.
+      // 修法 — sanity cap: delta 必 ≤ target.amount * 2 (容 ogame UI 一次 build
+      // 命中多个数因为 amount=1 时也用得到, 留 2 倍冗余). 大于这个倍数等价 0
+      // (跳过本 tick), 让 ogame 真实 build_q 完成事件主导, 不靠 ship-count 推断.
+      const sanityCap = (goalByKey.get(`${planetId}::${ship}`)?.remaining ?? 0) * 2 + 1;
+      if (delta > sanityCap && sanityCap > 0) {
+        console.warn(`[ship-progress] suspicious delta planet=${planetId} ship=${ship} delta=${delta} cap=${sanityCap} — skip auto-complete`);
+        continue;
+      }
       // Try planet-id key first, then coord key, then unscoped (no planet).
       const coordKey = planet.coords.join(":");
       const candidates = [
@@ -335,6 +348,29 @@ export async function startSidecar(
   // -------------------------------------------------------------------------
 
   const workspaceDir = defaultWorkspaceDir();
+
+  // v0.0.988 — owner 2026-06-08 "前天已经做好的东西今天又重新做一遍". boot 时
+  // 一次性列 LIFEFORM_TECH 里 verified_against_live: false 的红榜, owner 看
+  // 一眼就知道下一次 LF goal 卡哪族哪节点未 verified, 主动 sweep 不要等 120020.
+  // 参见 [[lf-catalog-verify-on-unlock]].
+  try {
+    const unverified: string[] = [];
+    for (const [species, catalog] of Object.entries(LIFEFORM_TECH)) {
+      const cat = catalog as { buildings?: Record<string, { verified_against_live?: boolean }>; research?: Record<string, { verified_against_live?: boolean }> };
+      const bldUnv = Object.entries(cat.buildings ?? {}).filter(([, e]) => !e.verified_against_live).map(([k]) => k);
+      const resUnv = Object.entries(cat.research ?? {}).filter(([, e]) => !e.verified_against_live).map(([k]) => k);
+      if (bldUnv.length || resUnv.length) {
+        unverified.push(`  ${species}: buildings unverified=[${bldUnv.join(",")}] research unverified=[${resUnv.join(",")}]`);
+      }
+    }
+    if (unverified.length) {
+      console.warn(`[lf-catalog-audit] UNVERIFIED LF entries (run __ogamexLfTreeSweep("<species>") on operator side):\n${unverified.join("\n")}`);
+    } else {
+      console.log(`[lf-catalog-audit] all species buildings + research verified_against_live=true ✓`);
+    }
+  } catch (e) {
+    console.warn(`[lf-catalog-audit] scan failed:`, e instanceof Error ? e.message : e);
+  }
 
   const strategyRepoDir = config.strategyRepoDir ?? path.join(workspaceDir, "ogamex-strategy");
   const goalsDbPath = config.goalsDbPath ?? path.join(workspaceDir, "ogamex-goals.db");
@@ -586,6 +622,24 @@ export async function startSidecar(
   const ws = new WsServer({
     port: config.wsPort,
     token: config.bridgeToken,
+    onUserSocketConnect: (uid: string) => {
+      // v0.0.893 — owner 2026-06-07 实证 v0.0.890 用 flushQueue 把 32 条
+      // stale dir 直接丢的事故. 改 drainBucketForWsResend: 把 HTTP queue 里
+      // 等投递的 directive.dispatch 取出来,改投 WS,再 clear bucket.
+      // "换 transport 不丢消息" — owner 离线时 HTTP queue 累积,在线后 WS 立刻
+      // 取走. 配合 ws.send(msg, uid) 严格 filter 不漏租户.
+      try {
+        const pending = http.drainBucketForWsResend(uid);
+        for (const m of pending) {
+          try { ws.send(m, uid); }
+          catch (e) { console.warn("[ws] resend threw", e); }
+        }
+      } catch (e) { console.warn("[ws] drainBucketForWsResend threw", e); }
+      // 同时 kick 一次 dispatch tick, 让 merger 把 在我离线时被 gate 阻塞的
+      // 新 logical work 重新评估 (active goal dispatchedAt 也可能过 timeout).
+      try { runWithUser(uid, () => triggerDispatch()); }
+      catch (e) { console.warn("[ws] triggerDispatch threw", e); }
+    },
     ...(pgStore ? {
       resolveUserToken: async (bearer: string): Promise<string | null> => {
         if (!bearer) return null;
@@ -919,7 +973,8 @@ export async function startSidecar(
       // global stateRef → 决定 wait_sec 是否 skip 错串号. astro 18 (daigang)
       // 拿到 astro 0 (新账号 fallback) → wait_sec 不该 skip → simulate ETA
       // 膨胀 (operator L32 11h40m 怀疑案). 改 currentState 拿真正 tenant.
-      const postExpeditionPhase = (currentState?.research?.levels?.astrophysics ?? 0) >= 4;
+      // v0.0.931 — astro 阈值 4→9 跟 planner.ts:isPostExpeditionPhase + optimizer.ts:postPhaseSkipMine 对齐
+      const postExpeditionPhase = (currentState?.research?.levels?.astrophysics ?? 0) >= 9;
       function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number }; currentStep: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null } {
         const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
         // Initial bank — REAL planet resources at this moment.
@@ -1003,7 +1058,11 @@ export async function startSidecar(
         // Walk and build the tree node objects. Each node gets eta_seconds
         // = its contribution (wait + build for its own levels), and
         // subtree_eta_seconds = total time from start through this node.
-        function buildAndSimulate(techName: string, targetLevel: number, kind: "research" | "building", currentOverride?: number): PrereqTreeNode | null {
+        // v0.0.927 — owner 2026-06-07 "B3 不该有 和 B1 一样的". root 调用时
+        // cascade 已经表达完整自建序列, 外层 wrapper (current=cur, target=tgt)
+        // 跟标题 + 第一行 target 重复. 给个 isRoot 标志, root + cascade 唯一
+        // 子树时直接返 cascade, 去 wrapper.
+        function buildAndSimulate(techName: string, targetLevel: number, kind: "research" | "building", currentOverride?: number, isRoot: boolean = false, ancestorReqs: Record<string, number> = {}): PrereqTreeNode | null {
           let tech: { kind?: string; requires?: Record<string, number>; cost_at?: (l: number) => { m: number; c: number; d?: number; e?: number } } | undefined;
           let current = 0;
           let costFn: ((l: number) => { m: number; c: number; d?: number; e?: number }) | undefined;
@@ -1065,11 +1124,19 @@ export async function startSidecar(
           // it emits interleaved children + does its own self-level work.
           // Skips the regular self loop below to avoid double-counting.
           let energyGateHandled = false;
+          // v0.0.942 — owner 2026-06-07 "新账号 LF 建筑 tree 不对" 实证:
+          // 累积 ancestor requires 沿树下传, food cascade emit 时若 ancestor
+          // 已 cover 同建筑 ≥ cascade level → 当前节点 skip food cascade child,
+          // 避免 panel 显两个 biosphereFarm (L7 + L22) 撕裂 owner 心智.
+          const childAncestorReqs: Record<string, number> = { ...ancestorReqs };
+          for (const [k, v] of Object.entries(tech?.requires ?? {})) {
+            if ((childAncestorReqs[k] ?? 0) < v) childAncestorReqs[k] = v;
+          }
           for (const [req, lvl] of Object.entries(tech?.requires ?? {})) {
             const subKind = useTreeBuilder === "lifeform"
               ? "building"
               : ((TECH_TREE as Record<string, { kind?: string }>)[req]?.kind === "research" ? "research" : "building");
-            const node = buildAndSimulate(req, lvl, subKind);
+            const node = buildAndSimulate(req, lvl, subKind, undefined, false, childAncestorReqs);
             if (node) children.push(node);
           }
           // v0.0.785 — operator 2026-06-05 "酒足饭饱 小于 生活空间的时候 建
@@ -1086,8 +1153,16 @@ export async function startSidecar(
             const lfr = (planet as { lifeform_resources?: { living_space?: number | null; well_fed?: number | null } } | null)?.lifeform_resources ?? null;
             const foodCheck = needsFoodCascade(techName, species, lfBldg2, lfr, current, targetLevel);
             if (foodCheck) {
-              const foodChild = buildAndSimulate(foodCheck.rule.food, foodCheck.currentFoodLevel + 1, "building");
-              if (foodChild) children.push(foodChild);
+              // v0.0.942 — food cascade redundancy gate. residentialSector 自己
+              // 没 catalog 前置, food cascade 想 emit biosphereFarm L7; 但 root
+              // researchCentre.requires.biosphereFarm = 22 已经躺 ancestorReqs.
+              // L22 >= L7 → biosphereFarm 已在祖先链 cover, skip 子 cascade.
+              const foodTargetLvl = foodCheck.currentFoodLevel + 1;
+              const ancestorFoodLvl = ancestorReqs[foodCheck.rule.food] ?? 0;
+              if (ancestorFoodLvl < foodTargetLvl) {
+                const foodChild = buildAndSimulate(foodCheck.rule.food, foodTargetLvl, "building", undefined, false, ancestorReqs);
+                if (foodChild) children.push(foodChild);
+              }
             }
           }
           // v0.0.737 — operator 2026-06-04 "补电厂的逻辑是有的, 已经自动建
@@ -1120,21 +1195,38 @@ export async function startSidecar(
             const energyTechL = currentState?.research?.levels?.["energyTech"] ?? 0;
             const fusionStart = planet.buildings?.["fusionReactor"] ?? 0;
             const solarStart = planet.buildings?.["solarPlant"] ?? 0;
-            const dSynth = planet.buildings?.["deuteriumSynth"] ?? 0;
-            const planetD = (planet.resources as { d?: number } | undefined)?.d ?? 0;
-            // Pick fusion vs solar ONCE (same algorithm as helper): based on
-            // start-state cost compare + fusion viability. Then use that
-            // type for all per-level bumps.
-            const fusionPickCostFn = (TECH_TREE as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)["fusionReactor"]?.cost_at;
-            const solarPickCostFn = (TECH_TREE as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)["solarPlant"]?.cost_at;
-            const fusionCost0 = fusionPickCostFn ? fusionPickCostFn(fusionStart + 1) : { m: 0, c: 0, d: 0 };
-            const solarCost0 = solarPickCostFn ? solarPickCostFn(solarStart + 1) : { m: 0, c: 0, d: 0 };
-            const fusionPrereqsMet = dSynth >= 5 && energyTechL >= 3;
-            const fusionAffordable = planetD >= (fusionCost0.d ?? 0);
-            const fusionViable = fusionPrereqsMet && fusionAffordable;
-            const fusionTotal = fusionCost0.m + fusionCost0.c + (fusionCost0.d ?? 0);
-            const solarTotal = solarCost0.m + solarCost0.c + (solarCost0.d ?? 0);
-            const pickFusion = fusionViable && fusionTotal < solarTotal;
+            // v0.0.938 — owner 2026-06-07 "不要维护三个决策引擎": simulate 不
+            // 再跑自己的 picker, 改为读 optimizer 已 emit 的 opt-*. 跟 planner
+            // 同源 (priority_merger.dispatch 也走 findActiveEnergyOpt 路径),
+            // drift 架构性消除 (同样 PG state → 同样 opt-* row → 同样 winner).
+            // 若 opt-* 还没派 (optimizer 还没 60s tick 到) → fallback 到
+            // 本地 helper 防 cascade 显空, 但 fallback 期间不会 drift 因为
+            // 这一拍内 input 同一 snapshot.
+            const sourceUidForOpt = (explicitUid ?? pgUserId ?? "") as string;
+            const optDecision = findActiveEnergyOpt(sourceRows, sourceUidForOpt, planet.id);
+            type LocalCand = { kind: "solar" | "fusion" | "energy" | "combo"; level?: number; fL?: number; eL?: number; cost: number };
+            let sharedWinner: LocalCand | undefined;
+            if (optDecision) {
+              if (optDecision.kind === "build" && optDecision.building === "fusionReactor") sharedWinner = { kind: "fusion", level: optDecision.level, cost: 0 };
+              else if (optDecision.kind === "build" && optDecision.building === "solarPlant") sharedWinner = { kind: "solar", level: optDecision.level, cost: 0 };
+              else if (optDecision.kind === "research") sharedWinner = { kind: "energy", level: optDecision.level, cost: 0 };
+            } else {
+              const sharedCandidates = pickEnergyFixForBuildLevel({
+                planet, building: techName,
+                currentLevel: current, nextLevel: current + 1,
+                energyTech: energyTechL,
+              });
+              sharedWinner = sharedCandidates[0] as LocalCand | undefined;
+            }
+            // pickFusion: helper-aligned. solar 或 fusion winner 决定;
+            // energy/combo winner 时, fall back 到 fusion (combo first half)
+            // 或 solar (energy alone — 没 plant 选, 走原 self loop 等同
+            // "无 plant 期"). owner 看到的"一段时间没发电厂"是 energy-only
+            // 路径生效的时候 — 这是 by-design, 因为 helper 真选了 research.
+            const pickFusion = sharedWinner
+              ? (sharedWinner.kind === "fusion" || sharedWinner.kind === "combo")
+              : false;
+            const skipPlantInsert = sharedWinner?.kind === "energy";
             const plantBuilding: "fusionReactor" | "solarPlant" = pickFusion ? "fusionReactor" : "solarPlant";
             const prodFn = (lvl: number): number => pickFusion ? fusionProduction(lvl, energyTechL) : solarProduction(lvl);
             // Per-level iteration: virtual energy + virtual plant level
@@ -1151,12 +1243,18 @@ export async function startSidecar(
               type Step = { tech: string; current: number; target: number; kind: "building"; eta: number };
               const steps: Step[] = [];
               let cumulativeEta = 0;
+              // v0.0.932 — owner 2026-06-07 "显示了两个 能量13": 之前 v0.0.929
+              // 在这里 push energyTech step 进 cascade, 但 optimizer/planner
+              // 早已 emit opt-energyTech-L13 作为 cascade-child goal, panel
+              // 把那条 child goal 单独渲染 → 树里两条 energyTech 重复。撤掉
+              // 这块 emit, 父 tree 仅展开 mine cascade; energyTech 由 child
+              // goal 自己的 prereq_tree (含 researchLab) 单独展示, 不再重复。
               for (let l = current + 1; l <= targetLevel; l++) {
                 const delta = mineEnergyConsumption(techName, l) - mineEnergyConsumption(techName, l - 1);
                 let projected = virtualEnergy - delta;
-                let firstBumpForced = fusionStart === 0 && solarStart === 0 && l === current + 1 && virtualPlantLvl === 0;
+                let firstBumpForced = !skipPlantInsert && fusionStart === 0 && solarStart === 0 && l === current + 1 && virtualPlantLvl === 0;
                 let safetyCap = 25;
-                while ((projected < 0 || firstBumpForced) && safetyCap-- > 0) {
+                while (!skipPlantInsert && (projected < 0 || firstBumpForced) && safetyCap-- > 0) {
                   const nextPlantLvl = virtualPlantLvl + 1;
                   const baseProd = prodFn(virtualPlantLvl);
                   const newProd = prodFn(nextPlantLvl);
@@ -1313,6 +1411,12 @@ export async function startSidecar(
               else if (techName === "researchLab")  levels.lab = l;
             }
           }
+          // v0.0.927 — root + 唯一 cascade 子 → 去掉重复的 root wrapper.
+          // cascade 自己的 top step 已表达"建到 target" 语义, 标题/header
+          // 也已显示 target, B3 wrapper 是 owner 看到的视觉重复。
+          if (isRoot && energyGateHandled && children.length === 1) {
+            return children[0]!;
+          }
           return {
             tech: techName, targetLevel, currentLevel: current, kind,
             met: current >= targetLevel,
@@ -1321,7 +1425,7 @@ export async function startSidecar(
             subtree_eta_seconds: Math.round(total),
           };
         }
-        const tree = buildAndSimulate(rootTechName, rootTargetLevel, rootKind);
+        const tree = buildAndSimulate(rootTechName, rootTargetLevel, rootKind, undefined, true);
         // v0.0.465: moon-fields-aware lunarBase prereq surface (operator
         // 2026-05-29 "free 1 的时候就必须是月球基地"). When goal targets a
         // moon body and current free fields <= 1, the next build MUST be
@@ -2053,6 +2157,41 @@ export async function startSidecar(
           return { ok: true, goal_id: existing.goal.id, reason: `${body.type} already active on planet ${targetPlanet}` };
         }
       }
+      // v0.0.904 — owner 2026-06-07 "同一星球还是显示了两个树" / "不能放一起吗".
+      // 实证 planet 3:194:8 同时有 2 个 buil-crystalMine-L30 user goal (昨天+今天
+      // 各创一次). 加 dedup: 同 user_id + 同 planet + 同 target (building+level OR
+      // tech+level OR ship+amount) 已存 active/blocked/pending → 返 existing,
+      // 不再新建. 覆盖 build / research / lifeform_building / lifeform_research
+      // / build_ships 类 — 都有显式 target 字段, 重复语义清晰.
+      if (
+        goalsStorePg &&
+        (body.type === "build" || body.type === "research"
+          || body.type === "lifeform_building" || body.type === "lifeform_research"
+          || body.type === "build_ships" || body.type === "build_defense")
+      ) {
+        const allRows = await goalsStorePg.list(createUid);
+        const targetPlanet = body.planet ?? "";
+        const bt = body.target as Record<string, unknown> | undefined;
+        const sig = JSON.stringify({
+          b: bt?.building ?? bt?.tech ?? bt?.ship ?? "",
+          l: bt?.level ?? bt?.target_level ?? bt?.amount ?? "",
+        });
+        const existing = allRows.find((r) => {
+          if (r.goal.type !== body.type) return false;
+          if (["completed", "cancelled"].includes(r.status)) return false;
+          if ((r.goal.planet ?? "") !== targetPlanet) return false;
+          const rt = r.goal.target as Record<string, unknown> | undefined;
+          const rsig = JSON.stringify({
+            b: rt?.building ?? rt?.tech ?? rt?.ship ?? "",
+            l: rt?.level ?? rt?.target_level ?? rt?.amount ?? "",
+          });
+          return rsig === sig;
+        });
+        if (existing) {
+          console.log(`[goal/create] dedup ${body.type} planet=${targetPlanet} target=${sig} → return existing ${existing.goal.id}`);
+          return { ok: true, goal_id: existing.goal.id, reason: `same ${body.type} goal already active on planet ${targetPlanet}` };
+        }
+      }
       const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const nowTs = Date.now();
       const addedRow: GoalRow = {
@@ -2074,12 +2213,18 @@ export async function startSidecar(
       return { ok: true, goal_id: id };
     },
     createDiscoveryGoal: async (body) => {
-      const planet = stateRef.current?.planets?.[body.source_planet];
-      if (!planet) return { ok: false, reason: `unknown planet ${body.source_planet}` };
+      // v0.0.977 — owner 2026-06-08 "第一次成功换个星球第二次出错": 老 legacy
+      // stateRef.current 单 ref, 被最新 push 的 uid 的 worldstate 覆盖 → 跨租户
+      // 污染. 改 per-uid lookup: createUid 先解析, 再去 tenantRegistry 取对应
+      // worldstate, 该 uid 真 planets 列表里查 source_planet.
       const createUid = getCurrentUserId() ?? (getLegacyOperatorUid() || pgUserId || undefined);
       if (!pgStore || !goalsStorePg || !createUid) {
         return { ok: false, reason: "pg unavailable or no user context" };
       }
+      const tenantCtx = tenantRegistry.get(createUid);
+      const planet = tenantCtx.worldState?.planets?.[body.source_planet]
+        ?? stateRef.current?.planets?.[body.source_planet]; // legacy fallback
+      if (!planet) return { ok: false, reason: `unknown planet ${body.source_planet} (uid=${createUid.slice(0,8)})` };
       // Block second active discovery for same planet (operator panel UX).
       const allRows = await goalsStorePg.list(createUid);
       const existing = allRows.find((r) =>
@@ -2274,7 +2419,21 @@ export async function startSidecar(
             // overload 典型 ack message. Titania OGame 服器过载 / non-success
             // HTTP 200 (response 不是 JSON 是 HTML 错误页) 是 transient, 跟
             // 100001 同等待遇, 进 exponential backoff 队列.
-            const TRANSIENT_RE = /140043|140028|140019|100001|120017|未知錯誤|未知错误|未知的錯誤|未知的错误|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|insufficient resources|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum|previously unknown error|non-success response HTTP|HTTP 503|Service Temporarily Unavailable|Service Unavailable|Titania OGame|rejected: non-JSON response/i;
+            // v0.0.900 — owner 2026-06-07 "任务列表里的任务在没完成最终任务之前
+            // 被删除". 实证 expedition slot full 时 api_executor 抛
+            // "expedition aborted (exp slot gate): used_expedition_slots=6 >="
+            // 字符串没匹配 TRANSIENT_RE (只有 'slots full' verbatim), atomicCancelOk
+            // 触发 → goal 直接 cancelled → 任务列表消失. 加 'exp slot gate'
+            // 和 'expedition aborted' 都进 TRANSIENT 兜底, 让 slot 满时 goal
+            // 留 blocked 等下次 slot 空再 dispatch.
+            // 同时 '您同時指揮過多的遠征探險艦隊了' (ogame 同语义错误) 加上.
+            // v0.0.949 — owner 2026-06-08 chain leg 2 cancelled by "可用艦船不足"
+            // (ogame v12 zh-TW). chain 并行 dispatch 起 leg 2 早于 leg 1 fleet 到港,
+            // 源星球当时没船 → ogame 拒. 这是 transient (等 leg 1 到了就够船), 不该
+            // cancel. 加 "可用艦船不足|可用舰船不足|available ships" 进 TRANSIENT_RE
+            // → isTransient=true → blocked 等船到, 不是 cancelled 终结.
+            // 已对齐: expedition.ts:222 FAIL_RE 同样有此字串.
+            const TRANSIENT_RE = /140043|140028|140019|100001|120017|未知錯誤|未知错误|未知的錯誤|未知的错误|請稍後再試|请稍后再试|稍後再試|try again later|cannot dispatch fleet|slots full|early skip, not queued|exp slot gate|expedition aborted|您同時指揮過多的遠征|您同时指挥过多的远征|too many expeditions|倉存容量不足|仓存容量不足|storage.*insufficient|insufficient.*storage|insufficient resources|已達艦隊數上限|已达舰队数上限|fleet count limit|maximum.*fleets|already.*maximum|previously unknown error|non-success response HTTP|HTTP 503|Service Temporarily Unavailable|Service Unavailable|Titania OGame|rejected: non-JSON response|可用艦船不足|可用舰船不足|insufficient available ships|already occupied|建造中|planet.*already|已經在建/i;
             const isTransient = TRANSIENT_RE.test(reason);
             // v0.0.738 — operator 2026-06-04 "supplies:fusionReactor rejected
             // 該行星已沒空間了 120012 这个报错". Permanent error: planet's
@@ -2282,7 +2441,11 @@ export async function startSidecar(
             // build terraformer to free space. ogame state won't self-resolve.
             // Use long backoff (24h) instead of 60s so auto-retry doesn't
             // burn token / spam logs every minute.
-            const HARD_BLOCK_RE = /120012|該行星已沒空間了|该行星已没空间|no space left|fields full|no field/i;
+            // v0.0.976 — owner 2026-06-08 "应该是建造中": 120012 双重含义.
+            // 老 regex 匹配 numeric "120012" 会把 "already occupied" (queue 占)
+            // 也误判 hardblock. 改: 只在含 fields/no-space message 时 hardblock,
+            // numeric 单独检查需要伴随 fields_full message 才算 hardblock.
+            const HARD_BLOCK_RE = /該行星已沒空間了|该行星已没空间|no space left|fields full|no field|fields_full_planet/i;
             const isHardBlock = HARD_BLOCK_RE.test(reason);
             // Phase 7c.3.c (2026-06-05) — PG-first lookup, SQLite fallback.
             // webtx-* (web POST → PG only) absent from goalsStore.list();
@@ -2347,19 +2510,19 @@ export async function startSidecar(
                // + stuck-recovery 60s, race risk is acceptable for auto-recovery.
               // v0.0.738 — hard-block errors (120012 fields full) use 24h
               // backoff: needs operator demolish/terraformer, won't self-resolve.
-              // v0.0.834 — exponential backoff. failureCount 累计, 每次失败
-              // backoff = min(60s * 2^(N-1), 3600s). hardblock 走 24h 单独路径.
+              // v0.0.834 exponential → v0.0.957 flat 60s (transient) → v0.0.958
+              // owner 2026-06-08 "fields_full hard-block 24h 也改 60s 一次":
+              // 即便 ogame 报 hardblock (fields_full/120020 等), 也用 60s 节奏
+              // retry. owner 心智: ogame 端会自愈/owner 手动救场, agent 别假设
+              // 不可恢复就长退避. failureCount 仍累计 (telemetry).
               let backoffMs: number;
               let backoffLabel: string;
-              if (isHardBlock) {
-                backoffMs = 24 * 3600 * 1000;
-                backoffLabel = "backoff_24h_hardblock";
-              } else {
+              {
                 const n = (ackTenant.goalFailureCount.get(goalId) ?? 0) + 1;
                 ackTenant.goalFailureCount.set(goalId, n);
-                const seconds = Math.min(60 * Math.pow(2, n - 1), 3600);
+                const seconds = 60;
                 backoffMs = seconds * 1000;
-                backoffLabel = `backoff_${seconds}s`;
+                backoffLabel = isHardBlock ? `backoff_${seconds}s_hardblock_flat` : `backoff_${seconds}s`;
                 console.info(`[backoff] goal=${goalId.slice(0,12)} failureCount=${n} → ${seconds}s`);
                 // v0.0.835 + v0.0.842 节流: 任何失败 emit data.refresh, 但 per-goal
                 // 60s cooldown — 失败 storm 不再每秒触发 userscript 全 page poll
@@ -2379,7 +2542,7 @@ export async function startSidecar(
                 priorityMergerRef?.clearAwaiting(goalId, backoffLabel);
               }, backoffMs).unref();
               if (isHardBlock) {
-                console.log(`[hard-block] goal ${goalId.slice(0, 12)} ${reason.slice(0, 80)} — 24h backoff, operator action required`);
+                console.log(`[hard-block] goal ${goalId.slice(0, 12)} ${reason.slice(0, 80)} — 60s backoff (v0.0.958 flat), owner expects self-heal/manual fix`);
                 // v0.0.764 — operator 2026-06-04 "船运资源到 4:299:8 就会触
                 // 发升级一次核电站, 能量已经足够". 120012 fields_full hits
                 // 锁 PARENT goal 24h 但 planner 每次 trigger 仍递归选 fusion
@@ -2402,6 +2565,17 @@ export async function startSidecar(
               priorityMergerRef?.clearDispatched(goalId);
             }
           } else if (result?.success === true) {
+            // v0.0.988 — owner 2026-06-08: goal_runner.ts:342 重复 dispatch 时
+            // ack {success:true, result:{skipped:"duplicate"}}. 那不是真成功,
+            // 不能清 failureCount 否则 fail#1 死循环 (实证 life-mq4cybz researchCentre).
+            // skipped="slot_full" 已有 separate handler (L2643+), 这里专门 short-circuit
+            // duplicate.
+            const skipKind = (result as { result?: { skipped?: string } })?.result?.skipped;
+            if (skipKind === "duplicate") {
+              // No-op: leave failureCount + awaiting state untouched. Next refresh
+              // cycle will re-evaluate the goal naturally.
+              return;
+            }
             // Success → clear any awaiting set so next dispatch can fire.
             priorityMergerRef?.clearAwaiting(goalId);
             // v0.0.478: clear dispatch stamp so next leg/level can dispatch.
@@ -2452,35 +2626,14 @@ export async function startSidecar(
                 await pgStore.updateGoalStatus(lookupUid2, goalId, "completed", null);
               }
             }
-            // v0.0.796 — operator 2026-06-05 "跳跃成功了 但是卡住了". JG ack
-            // 完成后 source moon ship -= ships, target moon += ships, 本地
-            // mirror; chain leg 2 source ship gate (priority_merger.ts:471-481)
-            // 立刻通过, 不等 pollFetchResources 5s+ cross-planet snapshot lag.
-            // 失败 (r?.success === false) 不动 inventory, 让 ogame 真态主导.
-            const innerResult = (m.result as { success?: boolean })?.success === true;
-            if (innerResult && type === "jumpgate" && actionDone === "jumpgate" && row && lookupUid2) {
-              const tgt = row.goal.target as { source_moon?: string; target_moon?: string; ships?: Record<string, number> };
-              const ships = tgt.ships ?? {};
-              const srcId = tgt.source_moon;
-              const dstId = tgt.target_moon;
-              const us = tenantRegistry.get(lookupUid2).worldState;
-              if (us && Object.keys(ships).length > 0) {
-                const planetsMap = us.planets ?? {};
-                if (srcId && planetsMap[srcId]) {
-                  const src = planetsMap[srcId] as { ships?: Record<string, number> };
-                  const srcShips: Record<string, number> = { ...(src.ships ?? {}) };
-                  for (const [k, v] of Object.entries(ships)) srcShips[k] = Math.max(0, (srcShips[k] ?? 0) - v);
-                  (planetsMap[srcId] as { ships?: Record<string, number> }).ships = srcShips;
-                }
-                if (dstId && planetsMap[dstId]) {
-                  const dst = planetsMap[dstId] as { ships?: Record<string, number> };
-                  const dstShips: Record<string, number> = { ...(dst.ships ?? {}) };
-                  for (const [k, v] of Object.entries(ships)) dstShips[k] = (dstShips[k] ?? 0) + v;
-                  (planetsMap[dstId] as { ships?: Record<string, number> }).ships = dstShips;
-                }
-                console.info(`[jg/local-mirror] uid=${lookupUid2.slice(0,8)} src=${srcId} dst=${dstId} ships=${JSON.stringify(ships)} — chain leg 2 unblocked`);
-              }
-            }
+            // v0.0.952 — fallbackCd=3600 hardcode + v0.0.953 [jg/local-mirror]
+            // 两段 stale-fallback 都删. JG ack success 后不再 mirror inventory,
+            // 不再 写 fallbackCd, 真态由 userscript state.snapshot 主导.
+            // chain leg gate 等真态 (5s pollFetchResources delay 可接受).
+            // JG cd 真值由 boot.ts:1300 sniffer DOM scrape (owner 开 widget) 触发.
+            // 详 docs/architecture/jg-cd-v12-capture.md
+            //     memory feedback_no_math_max_stale_fallback (跨源对冲禁)
+            //     memory feedback_no_guessing
             // species_discovery: ApiExec success = ONE coord done. Append to
             // target.completed[] so planner picks next coord on next tick.
             // Goal stays "active" until all coords attempted (planner emits
@@ -2626,13 +2779,23 @@ export async function startSidecar(
   // Solve by periodically broadcasting data.refresh while stateRef is stale
   // and there's a TM connected. Stops once a fresh snapshot lands.
   const STATE_REFRESH_INTERVAL_MS = 30_000;
+  // v0.0.973 — owner 2026-06-08 "B. WS keep-alive ping, 前端活跃的时候暂停":
+  // per-uid 维度跑 refresh push. 前台 TM 推 state.snapshot 高频 → tenantCtx
+  // .lastSeenAt 持续 fresh → skip 该 uid. 后台 TM setInterval 被 chrome 节流,
+  // state.snapshot 不再 push → lastSeenAt 老 → 这边 push data.refresh, TM
+  // fetch (不被节流) 立即 harvest + push, 后台 tab 跟着 sidecar 节奏跑.
+  // 老逻辑全局 stateRef.last_update 单点检查 → 多账号下任一 uid fresh 即误判
+  // 全员 fresh, 背景账号永远不被 refresh. 现按 uid 独立判定.
   const stateRefreshTimer: NodeJS.Timeout = setInterval(() => {
-    const last = stateRef.current?.last_update ?? 0;
-    const ageMs = Date.now() - last;
-    if (last > 0 && ageMs < 60_000) return;  // fresh enough
-    const msg = { type: "data.refresh" as const, scope: "all" as const, reason: "stale-state-poll" };
-    try { ws.send(msg); } catch (e) { console.warn("[ogamex/sidecar] stale-poll ws.send threw", e); }
-    try { http.queueDownstream(msg); } catch (e) { console.warn("[ogamex/sidecar] stale-poll http.queue threw", e); }
+    const now = Date.now();
+    for (const [uid, ctx] of tenantRegistry.entries()) {
+      if (!uid || uid === EMPTY_LEGACY_UID) continue;
+      const last = ctx.lastSeenAt ?? 0;
+      if (last > 0 && (now - last) < 60_000) continue; // foreground (fresh push), skip
+      const msg = { type: "data.refresh" as const, scope: "all" as const, reason: "bg-keep-alive" };
+      try { ws.send(msg, uid); } catch (e) { console.warn(`[bg-keep-alive] ws.send uid=${uid.slice(0,8)} threw`, e); }
+      try { http.queueDownstream(msg, uid); } catch (e) { console.warn(`[bg-keep-alive] http.queue uid=${uid.slice(0,8)} threw`, e); }
+    }
   }, STATE_REFRESH_INTERVAL_MS);
   stateRefreshTimer.unref();
 
@@ -2729,10 +2892,15 @@ export async function startSidecar(
           })().catch((e) => console.warn("[discover/optimistic] threw:", e instanceof Error ? e.message : e));
         }
       }
-      ws.send(msg);
+      // v0.0.889 — pass uid for WS-side tenant filter (mirror of
+      // http.queueDownstream's explicitUid path). Without it, send()
+      // broadcasts to ALL WS clients → operator goals leak to new
+      // tenant userscript console (实证 2026-06-07).
+      const dispUidForSend = getCurrentUserId();
+      ws.send(msg, dispUidForSend);
       // HTTP-side consumers (long-poll) also need the directive — queue it
       // so a polling userscript receives the dispatch.
-      http.queueDownstream(msg);
+      http.queueDownstream(msg, dispUidForSend);
     },
     // v0.0.670 — Phase 5c: mirror every merger-driven status mutation to
     // the PG shadow writer. The 11 in-loop updateStatus call sites were
@@ -2750,31 +2918,59 @@ export async function startSidecar(
         const uid = mergerUid || resolvedUid;
         await pgStore!.upsertGoal(uid, row);
       });
-      // v0.0.806 — operator 2026-06-05 "出发月球的 cd 没有 目的也应该没有
-      // 数据库里的是我刷的". JG goal mark completed (无论 ack-driven 还是
-      // v0.0.805 self-detect auto_complete) 时, 同步本地 mirror 双月球
-      // jumpgate_cooldown_sec + jumpgate_harvested_at, 不靠 userscript
-      // overlay 手动 fetch. ogame v12 JG cd ≈ 60min base (受 hyperspaceTech
-      // 影响), 兜底用 3600s; userscript pollEmpire 拿到真值后会 overwrite.
-      if (row.status === "completed" && row.goal.type === "jumpgate") {
-        const tgt = row.goal.target as { source_moon?: string; target_moon?: string; ships?: unknown };
+      // v0.0.921 → v0.0.922 — fleet ack post-verify. owner 2026-06-07
+      // 实证: api_executor 接 ogame status:true 假象 → goal completed →
+      // 实际 ships 没移动 (JG 撒谎, 或 deploy take_all 拿了陈年残货). Map
+      // covers JG + deploy + transport: 入队 pendingFleetVerify, 30s tick
+      // diff src/tgt ship counts vs ack 前快照. verified → 完成 (JG 写
+      // cd-mirror); 60s 无 delta → revert blocked + 清 cd; 5min timeout
+      // → 默认完成 (lost snapshot fallback).
+      const fleetTypes = new Set(["jumpgate", "deploy", "transport"]);
+      if (row.status === "completed" && fleetTypes.has(row.goal.type)) {
+        const tgt = row.goal.target as {
+          source_moon?: string; target_moon?: string;
+          source_planet?: string; target_coords?: string;
+          ships?: unknown;
+        };
         const uid = mergerUid;
-        if (uid && (tgt.source_moon || tgt.target_moon)) {
-          const us = tenantRegistry.get(uid).worldState;
+        const srcBodyId = tgt.source_moon ?? tgt.source_planet ?? null;
+        if (uid && srcBodyId) {
+          const tenant = tenantRegistry.get(uid);
+          const us = tenant.worldState;
           if (us) {
-            const planetsMap = us.planets ?? {};
-            const nowMs = Date.now();
-            const fallbackCd = 3600;
-            const markCd = (moonId: string | undefined): void => {
-              if (!moonId) return;
-              const p = planetsMap[moonId] as { jumpgate_cooldown_sec?: number; jumpgate_harvested_at?: number } | undefined;
-              if (!p) return;
-              p.jumpgate_cooldown_sec = fallbackCd;
-              p.jumpgate_harvested_at = nowMs;
-            };
-            markCd(tgt.source_moon);
-            markCd(tgt.target_moon);
-            console.info(`[jg/cd-mirror] uid=${uid.slice(0,8)} mirrored cd=${fallbackCd}s on src=${tgt.source_moon} tgt=${tgt.target_moon} after auto-complete`);
+            const planetsMap = (us.planets ?? {}) as Record<string, unknown>;
+            const srcBody = planetsMap[srcBodyId] as { ships?: Record<string, number> } | undefined;
+            // Resolve target body: JG uses target_moon directly; deploy/
+            // transport resolve target_coords to a known body if any.
+            let tgtBodyId: string | null = null;
+            if (tgt.target_moon) {
+              tgtBodyId = tgt.target_moon;
+            } else if (tgt.target_coords) {
+              const tgtType = (row.goal.target as { target_type?: string }).target_type ?? "planet";
+              for (const [pid, pUnk] of Object.entries(planetsMap)) {
+                const p = pUnk as { coords?: readonly number[]; type?: string };
+                const coordStr = (p.coords ?? []).join(":");
+                if (coordStr === tgt.target_coords && (p.type ?? "planet") === tgtType) {
+                  tgtBodyId = pid;
+                  break;
+                }
+              }
+            }
+            const tgtBody = tgtBodyId ? planetsMap[tgtBodyId] as { ships?: Record<string, number> } | undefined : undefined;
+            const dispatched = (tgt.ships && typeof tgt.ships === "object" && !Array.isArray(tgt.ships)) ? tgt.ships as Record<string, number> : {};
+            const now = Date.now();
+            tenant.pendingFleetVerify.set(row.goal.id, {
+              goalId: row.goal.id,
+              goalType: row.goal.type as "jumpgate" | "deploy" | "transport",
+              srcBodyId,
+              tgtBodyId,
+              srcShipsBefore: { ...(srcBody?.ships ?? {}) },
+              tgtShipsBefore: { ...(tgtBody?.ships ?? {}) },
+              dispatchedShips: { ...dispatched },
+              ackTs: now,
+              deadline: now + 5 * 60_000,
+            });
+            console.info(`[fleet/verify] uid=${uid.slice(0,8)} queue ${row.goal.id} type=${row.goal.type} src=${srcBodyId} tgt=${tgtBodyId ?? "(coord-only)"} dispatched=${JSON.stringify(dispatched)}`);
           }
         }
       }
@@ -3082,6 +3278,100 @@ export async function startSidecar(
     });
   }
   void expeditionHandle;
+
+  // v0.0.921 → v0.0.922 — fleet ack post-verify worker. 30s tick scans
+  // pendingFleetVerify per tenant for JG + deploy + transport goals; diff's
+  // src/tgt ships vs ack snapshot. JG verified → write cd-mirror (3600s
+  // fallback). Deploy/transport verified → just dequeue. Silent rejection
+  // (60s no delta) → revert goal blocked + clear cd (JG). 5min deadline →
+  // assume completed (lost snapshot).
+  let fleetVerifierHandle: { stop: () => void } | null = null;
+  if (pgStore) {
+    // v0.0.924 — owner 2026-06-07 "v12 数据和以前版本不同". v0.0.923 用
+    // `3600/level` 是老 ogame 公式, v12 改了. **本质不同的方案**: sidecar
+    // 不再瞎猜兜底 cd, 让 sniffer (userscript v0.0.919 XHR/fetch 抓 JG
+    // response.cooldown) 是 cd 唯一 source of truth. verifier 只确认 ack
+    // 真实性 (ship delta), 不再写 cd-mirror. sniffer 没抓到 → cd 显 NULL,
+    // 下次 planner JG check 看不到 cd 直接尝试 dispatch, ogame 真在 cd
+    // 中会返 empty error → v0.0.920 userscript 路径假设 cd 兜底 (那边
+    // 看 jumpgate level 公式, 也是临时的, 但是 v0.0.919 真值路径优先).
+    const NO_DELTA_REVERT_AFTER_MS = 60_000;
+    const clearCdMirror = (planetsMap: Record<string, unknown>, srcId: string, tgtId: string): void => {
+      for (const id of [srcId, tgtId]) {
+        const p = planetsMap[id] as { jumpgate_cooldown_sec?: number | null; jumpgate_harvested_at?: number | null; jumpgate_pair_with?: string | null } | undefined;
+        if (!p) continue;
+        p.jumpgate_cooldown_sec = null;
+        p.jumpgate_harvested_at = null;
+        p.jumpgate_pair_with = null;
+      }
+    };
+    const tick = async (): Promise<void> => {
+      try {
+        for (const [uid, tenant] of tenantRegistry.entries()) {
+          if (tenant.pendingFleetVerify.size === 0) continue;
+          const us = tenant.worldState;
+          if (!us) continue;
+          const planetsMap = (us.planets ?? {}) as Record<string, unknown>;
+          const now = Date.now();
+          const toRemove: string[] = [];
+          for (const entry of tenant.pendingFleetVerify.values()) {
+            const srcBody = planetsMap[entry.srcBodyId] as { ships?: Record<string, number> } | undefined;
+            const tgtBody = entry.tgtBodyId ? planetsMap[entry.tgtBodyId] as { ships?: Record<string, number> } | undefined : undefined;
+            if (!srcBody) {
+              if (now > entry.deadline) toRemove.push(entry.goalId);
+              continue;
+            }
+            const srcNow = srcBody.ships ?? {};
+            const tgtNow = tgtBody?.ships ?? {};
+            let allShipsVerified = true;
+            let anyDelta = false;
+            for (const [shipName, nVal] of Object.entries(entry.dispatchedShips)) {
+              const n = nVal as number;
+              if (!Number.isFinite(n) || n <= 0) continue;
+              const srcDrop = (entry.srcShipsBefore[shipName] ?? 0) - (srcNow[shipName] ?? 0);
+              // Only require src drop when target body unknown (coord-only
+              // deploy/transport — can't verify destination gain).
+              const tgtGain = entry.tgtBodyId ? ((tgtNow[shipName] ?? 0) - (entry.tgtShipsBefore[shipName] ?? 0)) : n;
+              if (srcDrop > 0 || tgtGain > 0) anyDelta = true;
+              if (srcDrop < n || tgtGain < n) allShipsVerified = false;
+            }
+            const dispatchedCount = Object.keys(entry.dispatchedShips).length;
+            if (allShipsVerified && dispatchedCount > 0) {
+              // v0.0.924 — 不再写 cd-mirror; sniffer 是 cd 唯一真值源.
+              console.info(`[fleet/verify] uid=${uid.slice(0,8)} VERIFIED ${entry.goalId} type=${entry.goalType}`);
+              toRemove.push(entry.goalId);
+            } else if (now > entry.deadline) {
+              console.warn(`[fleet/verify] uid=${uid.slice(0,8)} TIMEOUT ${entry.goalId} type=${entry.goalType} after 5min — assume completed (lost snapshot)`);
+              toRemove.push(entry.goalId);
+            } else if (now - entry.ackTs > NO_DELTA_REVERT_AFTER_MS && !anyDelta) {
+              try {
+                const reason = entry.goalType === "jumpgate"
+                  ? "JG ack mismatch — ogame silently rejected (ship counts unchanged); will retry"
+                  : `${entry.goalType} ack mismatch — ship counts unchanged (dispatched payload didn't move); will retry`;
+                await pgStore.updateGoalStatus(uid, entry.goalId, "blocked", reason);
+                if (entry.goalType === "jumpgate" && entry.tgtBodyId) {
+                  clearCdMirror(planetsMap, entry.srcBodyId, entry.tgtBodyId);
+                }
+                console.warn(`[fleet/verify] uid=${uid.slice(0,8)} REVERT ${entry.goalId} type=${entry.goalType} — silent rejection, status→blocked`);
+                toRemove.push(entry.goalId);
+              } catch (e) {
+                console.warn(`[fleet/verify] revert ${entry.goalId} threw:`, e instanceof Error ? e.message : e);
+              }
+            }
+          }
+          for (const id of toRemove) tenant.pendingFleetVerify.delete(id);
+        }
+      } catch (e) {
+        console.warn("[fleet/verify] outer tick threw:", e instanceof Error ? e.message : e);
+      }
+    };
+    const t = setInterval(() => { void tick(); }, 30_000);
+    if (typeof (t as unknown as { unref?: () => void }).unref === "function") {
+      (t as unknown as { unref: () => void }).unref();
+    }
+    fleetVerifierHandle = { stop: () => clearInterval(t) };
+  }
+  void fleetVerifierHandle;
 
   // -------------------------------------------------------------------------
   // Upstream handlers — registered ONCE against the wrapped on, which the

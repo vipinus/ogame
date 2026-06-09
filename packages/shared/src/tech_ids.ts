@@ -81,7 +81,11 @@ export const LIFEFORM_BUILDING_IDS = {
   skyscraper: 11109,
   biotechLab: 11110,
   metropolis: 11111,
-  plantationOfMostBenevolentBeing: 11112,
+  // v0.0.939 — owner 2026-06-07 实证 ogame v12 technologytree HTML:
+  // tech 11112 = "Planetary Shield" (data-tech-id=11112 data-tech-name="Planetary Shield"),
+  // 不是 catalog 早期猜的 plantationOfMostBenevolentBeing. ogame v12 把 humans
+  // T6 重命名了。修 11112 → 真名 planetaryShield.
+  planetaryShield: 11112,
   // Rocktal 121xx — IDs need sniffer verification before use.
   meditationEnclave: 12101,
   crystalFarm: 12102,
