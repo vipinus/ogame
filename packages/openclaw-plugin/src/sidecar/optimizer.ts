@@ -480,6 +480,19 @@ export async function runOptimizerOnce(
     console.info(`[optimizer/dbg] uid=${uid.slice(0, 8)} goal=${rawGoal.id} type=${rawGoal.type} cands=${r.candidates.length} top3=[${top3}]`);
     const best = r.candidates[0];
     if (!best || best.savings < AUTO_SAVINGS_THRESHOLD_SEC) { skipped++; continue; }
+    // v0.0.997 — owner 2026-06-09 "新账号负电还在建矿": optimizer 在负电星球
+    // 上 emit opt-mine 是 root cause. 加 gate: 当前 e<0 + best.mine 是三种矿
+    // (metalMine/crystalMine/deuteriumSynth) → skip mine emit, 等 energy 回正.
+    // opt-solar/fusion/energyTech 等 energy-fix 不受影响 (best.mine 不是矿类).
+    // 非矿 accel (robotics/nano/shipyard/lab) 也不受影响 — 它们 emit 不直接耗电.
+    const planetIdForGate = (r.planet as { id?: string })?.id ?? g.planet ?? "";
+    const planetE = (r.planet as { resources?: { e?: number } })?.resources?.e ?? 0;
+    const isMineAccel = best.mine === "metalMine" || best.mine === "crystalMine" || best.mine === "deuteriumSynth";
+    if (planetE < 0 && isMineAccel) {
+      console.info(`[optimizer/skip-mine] uid=${uid.slice(0,8)} planet=${planetIdForGate} e=${planetE} < 0, skip ${best.mine} L${best.L_new} (energy-fix in progress)`);
+      skipped++;
+      continue;
+    }
     // Found a worthwhile accelerator. Upsert opt-<accel>-L<new> goal.
     const optId = `opt-${best.mine}-L${best.L_new}-${uid.slice(0, 8)}`;
     const planetId = (r.planet as { id?: string })?.id ?? g.planet ?? "";
