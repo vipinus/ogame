@@ -777,13 +777,49 @@ export class PriorityMerger {
           continue;
         }
         if (ALREADY_AT_TARGET_RE.test(result.blocked)) {
-          // v0.0.985 — owner 2026-06-08 "改策略不许后台自动删除，除非完成了":
-          // 老 v0.0.928 30s consensus 还是会因为 state.snapshot 漂值误判 →
-          // 任务被自动 completed 但真态没到 (33674107 deuteriumSynth L14 但
-          // goal 反复被 completed at L33 target). 撤回 auto-complete:
-          // - 即便 planner 真说 "already at" 也 keep goal blocked, 不动 status
-          // - owner 看到 reason 自己判断是否真完成, 手动 cancel
-          // 老 30s consensus + alreadyAtTargetSince Map 全删
+          // v0.0.985 → v0.0.995 — owner 2026-06-09 "root 任务完成就标记完成,
+          // 任务名称和等级": v0.0.985 一刀切撤 auto-complete 防 snapshot 漂,
+          // 现在 owner 直接给出收口规则: 只对 is_main_goal=true 重启 auto-complete,
+          // 三道 evidence gate:
+          //   (1) goal.target.building/research 命中具体字段
+          //   (2) state level >= target level (任务名称和等级双匹配)
+          //   (3) build_q / research.queue 不在建该 tech (排除 in-flight 误判)
+          // child opt-*/exp-*/expb-* 等仍按 v0.0.985 保持 blocked (snapshot 漂值
+          // 误完成的最大风险面). v0.0.985 33674107 case 是 child opt-deut 在漂值,
+          // 不是 main goal → 这次新规不复发.
+          const goalRef = row.goal;
+          const tgt = goalRef.target as { building?: string; research?: string; level?: number } | undefined;
+          const tgtLvl = typeof tgt?.level === "number" ? tgt.level : 0;
+          const planetId = goalRef.planet;
+          const planet = planetId ? (state.planets as Record<string, unknown> | undefined)?.[planetId] : null;
+          // v0.0.995b — owner 实证: 33653036 deutSynth 33/33 是 buil-* 用户建的
+          // 但 is_main_goal=false. 放宽 gate: buil-* / rsch-* / life-* / lifeb-* 都
+          // 算 root user goal (owner 显式创建, 不是 opt-* 后台 emit), 允许 auto-complete.
+          // opt-*/exp-*/expb-*/colo-*/disc-* 等仍保持 blocked (v0.0.985 漂值风险面).
+          const isRootUserGoal = goalRef.id.startsWith("buil-") ||
+            goalRef.id.startsWith("rsch-") || goalRef.id.startsWith("life-") ||
+            goalRef.id.startsWith("lifeb-") || goalRef.is_main_goal === true;
+          let isMainTerminalComplete = false;
+          if (isRootUserGoal && tgt && tgtLvl > 0) {
+            if (tgt.building && planet) {
+              const cur = (planet as { buildings?: Record<string, number> }).buildings?.[tgt.building] ?? 0;
+              const bq = (planet as { build_q?: { item?: { building?: string } } | null }).build_q;
+              const inFlight = bq?.item?.building === tgt.building;
+              if (cur >= tgtLvl && !inFlight) isMainTerminalComplete = true;
+            } else if (tgt.research) {
+              const cur = (state.research as unknown as Record<string, number> | undefined)?.[tgt.research] ?? 0;
+              const rq = (state.research as unknown as { queue?: { item?: { research?: string } } | null } | undefined)?.queue;
+              const inFlight = rq?.item?.research === tgt.research;
+              if (cur >= tgtLvl && !inFlight) isMainTerminalComplete = true;
+            }
+          }
+          if (isMainTerminalComplete) {
+            const tgtLabel = tgt?.building ?? tgt?.research ?? "?";
+            console.info(`[merger/auto-complete] root goal ${row.goal.id} ${tgtLabel} L${tgtLvl} met @planet=${planetId} (build_q clean, snapshot fresh)`);
+            await this.updateStatusAndMirror(row.goal.id, "completed", result.blocked);
+            skipped_terminal += 1;
+            continue;
+          }
           await this.updateStatusAndMirror(row.goal.id, "blocked", result.blocked);
           blocked.push({ goal_id: row.goal.id, reason: result.blocked });
           if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);

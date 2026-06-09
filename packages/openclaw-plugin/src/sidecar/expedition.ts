@@ -199,9 +199,13 @@ export async function expeditionTickForUser(
   }
   // Filter in-flight 也按 uid (more careful):
   const inFlightLocal = inFlightLaunches.filter((x) => x.uid === uid && tickNow - x.ts < INFLIGHT_TTL_MS).reduce((s, x) => s + x.count, 0);
+  // v0.0.995c — owner 2026-06-09 "远征不飞了": 老 gate 把 blocked goals 也算
+  // 入 queue 上限, 当 3 颗死星 (空仓库/缺 reaper) 卡 blocked 时 queue=7 卡 gate 4,
+  // 5 颗满仓库星球永远等不到 emit. 修: 只数 dispatchable (active/pending/dispatched),
+  // blocked 不占名额 (它们等 ships 返回, 不消耗 daemon emit 配额).
   const activeExpInQueue = allRows.filter((r) => {
     const g = r.goal as unknown as GoalLike;
-    return !["completed", "cancelled"].includes(r.status) && g.type === "expedition";
+    return ["active", "pending", "dispatched"].includes(r.status) && g.type === "expedition";
   }).length;
 
   const effectiveOutbound = Math.max(outbound, inFlightLocal);
