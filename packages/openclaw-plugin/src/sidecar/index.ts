@@ -203,6 +203,7 @@ const UPSTREAM_TYPES: ReadonlyArray<UpstreamMsg["type"]> = [
   "event.directive_completed",
   "event.extractor_failure",
   "audit.condition_unmet",
+  "expedition.harvest_dispatched",
   "pong",
 ];
 

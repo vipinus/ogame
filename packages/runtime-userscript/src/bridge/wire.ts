@@ -557,23 +557,33 @@ export async function wireBridge(
           // legitimate retry.
           recentHarvestDispatch.set(dedupKey, Date.now());
           dispatchedThisAttempt = true;
-          // v0.0.1033 — owner 2026-06-09 "发完之后没有返回状态吗? 后台 sidecar
-          // 没有收到状态?" — wire dispatch 成功后 ack 回 sidecar. sidecar 写
-          // per-coord lock 跨 fleet ID 去重, F5 reload 也不会重派.
-          // 单一权威源 = sidecar 端 firedDebrisCheckFor per-coord set.
+          // v0.0.1033 — wire ack 回 sidecar, 走 emergency queue 持久化通道
+          // (owner "走持久化层了吗？"). persist 前置, send 成功 clear, 失败留 queue
+          // 等 reconnect drainPendingEmergencies 重发. 跟 emergency / save.recall_now
+          // 同源 100% 通讯无误.
+          const ackMsg = {
+            type: "expedition.harvest_dispatched" as const,
+            origin_planet_id: origin,
+            galaxy: g,
+            system: s,
+            position: targetPosition,
+            fleet_id: result.fleetId,
+            ship_type: harvestShipKey,
+            ship_count: shipsToSend,
+          };
+          const ackId = `harvest-${origin}-${g}-${s}-${result.fleetId}`;
+          try { persistPendingEmergency(ackId, ackMsg as unknown as Parameters<typeof persistPendingEmergency>[1]); } catch { /* */ }
           try {
-            (client as unknown as { send: (m: unknown) => void }).send({
-              type: "expedition.harvest_dispatched",
-              origin_planet_id: origin,
-              galaxy: g,
-              system: s,
-              position: targetPosition,
-              fleet_id: result.fleetId,
-              ship_type: harvestShipKey,
-              ship_count: shipsToSend,
-            });
+            const ret = (client as unknown as { send: (m: unknown) => unknown }).send(ackMsg);
+            if (ret && typeof (ret as Promise<unknown>).then === "function") {
+              (ret as Promise<unknown>)
+                .then(() => clearPendingEmergency(ackId))
+                .catch((e: unknown) => console.warn(`[debris] ack push FAILED — kept in queue`, e));
+            } else {
+              clearPendingEmergency(ackId);
+            }
           } catch (e) {
-            console.warn("[debris] ack send failed:", e);
+            console.warn("[debris] ack send threw — kept in queue", e);
           }
           try {
             void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
