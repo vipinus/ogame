@@ -76,7 +76,7 @@ function costAtLevel(techId: string, level: number): { m: number; c: number; d: 
   };
 }
 
-function buildSecondsForRange(building: string, fromLvl: number, toLvl: number, robo: number, nano: number, speed = 1): number | null {
+export function buildSecondsForRange(building: string, fromLvl: number, toLvl: number, robo: number, nano: number, speed = 1): number | null {
   let total = 0;
   let curRobo = robo;
   let curNano = nano;
@@ -90,7 +90,7 @@ function buildSecondsForRange(building: string, fromLvl: number, toLvl: number, 
   return total;
 }
 
-function cumulativeMineCost(building: string, fromLvl: number, toLvl: number): { m: number; c: number; d: number } | null {
+export function cumulativeMineCost(building: string, fromLvl: number, toLvl: number): { m: number; c: number; d: number } | null {
   let m = 0, c = 0, d = 0;
   for (let L = fromLvl + 1; L <= toLvl; L++) {
     const cost = costAtLevel(building, L);
@@ -127,7 +127,7 @@ function resourceKeyForMine(mine: string): "m" | "c" | "d" {
   return "d";
 }
 
-function mineProdRatio(fromL: number, toL: number): number {
+export function mineProdRatio(fromL: number, toL: number): number {
   // ogame v12 mine production scales as L * 1.1^L (per-level multiplier).
   // L=0 produces nothing (除 base 30/h floor); +1 → ratio ≈ infinity.
   // 对 +1 of L=0 用 sentinel 比 base 高 100×, 保 saving 总比 build sec 大.

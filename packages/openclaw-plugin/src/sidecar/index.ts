@@ -3254,6 +3254,32 @@ export async function startSidecar(
   }
   void optimizerHandle;
 
+  // v0.0.989 — owner 2026-06-08 "新账号任务的优化为什么不建矿和存储罐" +
+  // "我要优化出最优解". growth_daemon: per-planet ROI-driven auto-grow (mines +
+  // storage). Skip planets with main goal or existing growth-* active. Decouples
+  // from optimizer (which still owns opt-* energy/build accel for user goals).
+  let growthHandle: { stop: () => void } | null = null;
+  if (goalsStorePg && pgStore) {
+    const { startGrowthDaemon } = await import("./growth_daemon.js");
+    growthHandle = startGrowthDaemon({
+      goalsStorePg,
+      worldStateStorePg: pgStore,
+      getStateForUid: (uid: string) => tenantRegistry.get(uid).worldState ?? null,
+      loadActiveTenantUids: async (): Promise<string[]> => {
+        if (!pgStore) return [];
+        try {
+          const sharedSql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+          const rows = await sharedSql`SELECT DISTINCT user_id FROM ogame_goals WHERE status IN ('active','blocked','pending')`;
+          return (rows as Array<{ user_id?: string }>).map((r) => r.user_id ?? "").filter(Boolean);
+        } catch (e) {
+          console.warn("[growth-daemon] loadActiveTenantUids failed:", e instanceof Error ? e.message : e);
+          return [];
+        }
+      },
+    });
+  }
+  void growthHandle;
+
   // Phase 8b (v0.0.785) — expedition 从 daemon 搬到 sidecar. 5s base tick +
   // state.snapshot event-driven trigger (fleet 回家时立刻 fire 而不必等 5s).
   // daemon ogamex_discord_bridge.mjs 那侧 expedition setInterval 同步 disable.
