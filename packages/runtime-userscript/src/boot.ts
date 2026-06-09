@@ -274,6 +274,39 @@ function mergeTechLevels(doc: Document, store: StateStore): void {
  * Pure (no global side effects) — takes injected document/window/fetch/kv so it's testable in jsdom.
  */
 export async function boot(env: BootEnv): Promise<BootHandle> {
+  // v0.0.989j — owner 2026-06-09 "遇到这个问题刷新网页": gameforge nginx 偶发
+  // 返回 503 HTML 替换整个 page → ogame SPA 全死, 用户必须手动 F5. Auto-detect
+  // (document.title or body 含 "503 Service Temporarily Unavailable") → 5s 后
+  // location.reload(). localStorage 限速: 同一 origin 60s 内最多 1 次 reload,
+  // 防止持续 503 时反复刷新打 gameforge.
+  try {
+    const title = env.doc.title || "";
+    const bodyText = (env.doc.body?.textContent || "").slice(0, 200);
+    const is503 = /503\s+Service\s+Temporarily\s+Unavailable/i.test(title) || /503\s+Service\s+Temporarily\s+Unavailable[\s\S]{0,40}nginx/i.test(bodyText);
+    if (is503) {
+      const LAST_RELOAD_KEY = "OGAMEX_LAST_503_RELOAD_TS";
+      let lastReload = 0;
+      try { lastReload = parseInt(env.win.localStorage?.getItem(LAST_RELOAD_KEY) || "0", 10) || 0; } catch { /* */ }
+      const now = Date.now();
+      if (now - lastReload > 60_000) {
+        try { env.win.localStorage?.setItem(LAST_RELOAD_KEY, String(now)); } catch { /* */ }
+        console.warn(`[OgameX] 503 nginx detected on ${location.href}, auto-reloading in 5s...`);
+        env.win.setTimeout(() => { try { env.win.location.reload(); } catch { /* */ } }, 5000);
+      } else {
+        console.warn(`[OgameX] 503 nginx detected but rate-limited (last reload ${Math.round((now - lastReload) / 1000)}s ago)`);
+      }
+      // Return early stub — rest of boot is meaningless on the nginx error page.
+      const stubBus = new EventBus();
+      const stubStore = new StateStore(stubBus, env.kv ?? null);
+      const stubSummary: BootSummary = {
+        resources_ok: false, storage_ok: false, production_ok: false,
+        lifeform_resources_ok: false, events_count: 0, planets_count: 0,
+        fleet_movements_count: 0, token_present: false, ogame_meta: {},
+      };
+      return { bus: stubBus, store: stubStore, summary: stubSummary, stop: () => { /* */ } };
+    }
+  } catch (e) { console.warn("[OgameX] 503 auto-reload detect threw:", e); }
+
   const bus = new EventBus();
   const store = new StateStore(bus, env.kv ?? null);
 
@@ -1911,7 +1944,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.989";
+  const USERSCRIPT_VERSION = "0.0.989j";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
