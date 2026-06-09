@@ -810,6 +810,51 @@ export async function runOptimizerOnce(
         await emitOpt("research", { tech: "energyTech", level: winner.eL }, eOptId, winner.eL, "energyTech");
       }
     }
+    // v0.0.1010 — owner 2026-06-09 "不缺电 为什么要补电" 实证 4baba0e2 11 颗
+    // planet 全正电 (lowest e=193), opt-energyTech-L16 仍在 PG blocked, 老
+    // cleanup logic (L714) 只 cancel opt-solarPlant/opt-fusionReactor, 漏 energyTech.
+    // 注释里说 "energyTech 是 global, 服务所有负电星球", 但当 0 颗负电时该 sweep
+    // 也得清. 这里在外 loop 完后 global sweep: 若 uid 任何 planet 都不缺电
+    // (forward-project 后) → cancel opt-energyTech-L*.
+    let anyNeedsEnergyFix = false;
+    for (const planet of Object.values(planetsMap)) {
+      const snapE = (planet as { resources?: { e?: number } }).resources?.e ?? 0;
+      if (snapE < 0) { anyNeedsEnergyFix = true; break; }
+      // forward-project: 检查该 planet 的 active mine goal 是否会让 e 变负
+      const pid = (planet as { id?: string }).id ?? "";
+      let maxDelta = 0;
+      for (const r of allRows) {
+        if (!["active","blocked","pending","dispatched"].includes(r.status)) continue;
+        if ((r.goal as { planet?: string }).planet !== pid) continue;
+        const tgt = r.goal.target as { building?: string; level?: number } | undefined;
+        const bld = tgt?.building;
+        const lvl = tgt?.level;
+        if (!bld || typeof lvl !== "number") continue;
+        if (bld !== "metalMine" && bld !== "crystalMine" && bld !== "deuteriumSynth") continue;
+        const curLvl = (planet.buildings as Record<string, number> | undefined)?.[bld] ?? 0;
+        if (lvl <= curLvl) continue;
+        const delta = mineEnergyConsumption(bld, lvl) - mineEnergyConsumption(bld, curLvl);
+        if (delta > maxDelta) maxDelta = delta;
+      }
+      if (snapE - maxDelta < 0) { anyNeedsEnergyFix = true; break; }
+    }
+    if (!anyNeedsEnergyFix) {
+      const stales = allRows.filter((r) => {
+        const id = r.goal.id;
+        if (!id.startsWith("opt-energyTech-L")) return false;
+        if (!id.endsWith(uid.slice(0, 8))) return false;
+        return ["pending","blocked","active"].includes(r.status);
+      });
+      for (const stale of stales) {
+        try {
+          await pgStore.updateGoalStatus(uid, stale.goal.id, "cancelled", `no planet needs energy fix (all planets projected positive) — global energyTech opt obsolete`);
+          console.info(`[optimizer/energy-guard/cleanup-global] uid=${uid.slice(0,8)} cancel ${stale.goal.id} (no neg-e planet for this uid)`);
+          actioned++;
+        } catch (e) {
+          console.warn(`[optimizer/energy-guard/cleanup-global] cancel ${stale.goal.id} threw:`, e instanceof Error ? e.message : e);
+        }
+      }
+    }
   } catch (e) {
     console.warn(`[optimizer/energy-guard] sweep threw uid=${uid.slice(0, 8)}:`, e instanceof Error ? e.message : e);
   }
