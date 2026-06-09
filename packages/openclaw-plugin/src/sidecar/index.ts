@@ -2218,18 +2218,20 @@ export async function startSidecar(
       }
       const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const nowTs = Date.now();
-      // v0.0.1030 — owner 2026-06-09 "research 绑定星球, 每个星球可以有自己的研究,
-      // 从 TM 建立的 就是 主任务, 其他任务都挂在主任务下面" — per-planet root tree
-      // 模型: 同 planet 第一个 TM-add = main, 后续 TM-add 自动挂 child (parent=
-      // existing main). 不再 setMainGoal 排他踢前 main. 实现"一个星球一棵树".
+      // v0.0.1031 — owner 2026-06-09 "我添加的任务是天体物理 9" 反例: v0.0.1030
+      // 设 "first-add = main, 后 add = child" 让 daemon 先 emit 的 buil-metalMine
+      // 占了 main 位 → owner 后 add 的 rese-astro 被降 child → owner panel 看不
+      // 到自己的目标顶层.
+      // 真意: **TM-add 永远是 main, 现有 same-planet main (不管 daemon emit 还是
+      // 旧 TM-add) 整棵子树降挂在 new main 下作 child**. owner add = owner 表达
+      // 的最新意图, 永远顶替前任.
       const planetKey = body.planet ?? "";
       const allRowsForCheck = await goalsStorePg!.list(createUid);
-      const samePlanetMain = allRowsForCheck.find((r) =>
+      const existingPlanetMain = allRowsForCheck.find((r) =>
         (r.goal as { planet?: string }).planet === planetKey &&
         r.goal.is_main_goal === true &&
         ["pending", "active", "blocked"].includes(r.status),
       );
-      const willBeChild = !!samePlanetMain;
       const addedRow: GoalRow = {
         goal: {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2237,18 +2239,25 @@ export async function startSidecar(
           target: body.target,
           ...(body.planet ? { planet: body.planet } : { planet: "" }),
           priority: typeof body.priority === "number" ? body.priority : 5,
-          is_main_goal: !willBeChild,
-          ...(willBeChild ? { parent_goal_id: samePlanetMain.goal.id } : {}),
+          is_main_goal: true,
           status: "pending", created_at: nowTs,
           progress_pct: 0, current_step: "queued", eta_at: null,
         },
         status: "pending", created_at: nowTs, updated_at: nowTs,
       };
       await pgStore.upsertGoal(createUid, addedRow);
-      if (!willBeChild) {
-        await pgStore.setMainGoal(createUid, id, planetKey);
+      // 降前任 main 为 child of new (子树整体平移过来).
+      if (existingPlanetMain) {
+        const prev = existingPlanetMain.goal;
+        const demoted = {
+          ...existingPlanetMain,
+          goal: { ...prev, is_main_goal: false, parent_goal_id: id },
+          updated_at: Date.now(),
+        };
+        await pgStore.upsertGoal(createUid, demoted);
       }
-      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid.slice(0,8)} ${willBeChild ? `(child of ${samePlanetMain.goal.id})` : "(is_main=true)"}`);
+      await pgStore.setMainGoal(createUid, id, planetKey);
+      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid.slice(0,8)} is_main=true${existingPlanetMain ? ` (demoted prev ${existingPlanetMain.goal.id} to child)` : ""}`);
       triggerDispatch();
       return { ok: true, goal_id: id };
     },
