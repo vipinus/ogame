@@ -50,32 +50,35 @@ export function maybeAutoLoginFromHub(win: Window): boolean {
       return false;
     }
   } catch { /* */ }
-  // Cooldown / kill-switch — checked BEFORE diagnostic too, so we don't
-  // spam dumps on every reload during a loop.
-  // v0.0.989k — owner 2026-06-09 "新账号不会自动登录": cooldown/kill-switch
-  // 之前 per-domain localStorage,owner 切换账号时旧账号的 cooldown 阻塞新账号
-  // 自动 click. 用当前 hub 上 serverDetails 文本 (universe 名+玩家数, e.g.
-  // "Titania – Players: 2040") 拼 key 后缀, 每账号互不影响. 同账号反复刷新
-  // 仍受 cooldown 保护.
+  // v0.0.989k 引入 per-account cooldown 用 serverDetails 文本拼 key 后缀.
+  // v0.0.992 修 owner "卡登录页面" 回归: gameforge lobby 是 React SPA, script
+  // run-at=document-end 时 #root 还空 → .serverDetails 不存在 → acctTag=""
+  // → 退回 base CLICKED_KEY → 旧账号写的 base cooldown 卡死新账号.
+  //
+  // 顶层修复: 早期 cooldown check 只在 acctTag 已就绪 (React 渲染完) 时跑
+  // (快路径). React 未渲染时跳过早 check, 全延后到 tick() 里 — tick 找到
+  // button 时 .serverDetails 必然也在 (它们同属 #joinGame 子树), 用最新 tag
+  // 推导 per-account key + check cooldown + mark + click. 闭环.
   const acctTag = readCurrentServerTag(win);
-  const clickedKey = acctTag ? `${CLICKED_KEY}_${acctTag}` : CLICKED_KEY;
-  const countKey = acctTag ? `${COUNT_KEY}_${acctTag}` : COUNT_KEY;
-  if (clickCountTooMany(win, countKey)) {
-    console.warn(`[OgameX/auto-login] kill-switch active for ${acctTag || "(no-tag)"}. Run in console: ` +
-      `localStorage.removeItem("${countKey}"); localStorage.removeItem("${clickedKey}")`);
-    return false;
+  if (acctTag) {
+    const clickedKey = `${CLICKED_KEY}_${acctTag}`;
+    const countKey = `${COUNT_KEY}_${acctTag}`;
+    if (clickCountTooMany(win, countKey)) {
+      console.warn(`[OgameX/auto-login] kill-switch active for ${acctTag}. Run: ` +
+        `localStorage.removeItem("${countKey}"); localStorage.removeItem("${clickedKey}")`);
+      return false;
+    }
+    if (alreadyClickedRecently(win, clickedKey)) {
+      const ageS = Math.round((Date.now() - readNum(win, clickedKey)) / 1000);
+      console.info(`[OgameX/auto-login] cooldown active for ${acctTag} (last click ${ageS}s ago).`);
+      return false;
+    }
+  } else {
+    console.info("[OgameX/auto-login] serverDetails not yet rendered — deferring cooldown check to tick");
   }
-  if (alreadyClickedRecently(win, clickedKey)) {
-    const ageS = Math.round((Date.now() - readNum(win, clickedKey)) / 1000);
-    console.info(`[OgameX/auto-login] cooldown active for ${acctTag || "(no-tag)"} (last click ${ageS}s ago). To force, clear ${clickedKey}.`);
-    return false;
-  }
-  // Operator directive: "直接点 last play". Always look for the
-  // "Last Play" button by class/text fallbacks. Override only via custom
-  // selector key if operator sets one explicitly.
   let savedSelector = "";
   try { savedSelector = win.localStorage.getItem(SELECTOR_KEY) ?? ""; } catch { /* */ }
-  runLastPlayClicker(win, savedSelector, clickedKey, countKey);
+  runLastPlayClicker(win, savedSelector);
   return true;
 }
 
@@ -176,7 +179,7 @@ function findLastPlayButton(doc: Document): HTMLElement | null {
   return null;
 }
 
-function runLastPlayClicker(win: Window, customSelector: string, clickedKey: string, countKey: string): void {
+function runLastPlayClicker(win: Window, customSelector: string): void {
   const label = customSelector ? `custom selector "${customSelector}"` : "Last Play button";
   console.info(`[OgameX/auto-login] looking for ${label}...`);
   const startedAt = Date.now();
@@ -185,7 +188,6 @@ function runLastPlayClicker(win: Window, customSelector: string, clickedKey: str
       console.warn("[OgameX/auto-login] gave up — Last Play button not found. " +
         "Run: window.__ogamexHubClickables (saved at boot) to inspect DOM. " +
         `If your hub uses a different selector, set localStorage["${SELECTOR_KEY}"] to it.`);
-      // Dump clickables on giveup for diagnostic.
       const clickables = Array.from(win.document.querySelectorAll<HTMLElement>("a, button"));
       (win as Window & { __ogamexHubClickables?: HTMLElement[] }).__ogamexHubClickables = clickables;
       console.warn(`[OgameX/auto-login] ${clickables.length} clickables present at giveup time. ` +
@@ -204,8 +206,25 @@ function runLastPlayClicker(win: Window, customSelector: string, clickedKey: str
     }
     if (!target) target = findLastPlayButton(win.document);
     if (target) {
-      console.info(`[OgameX/auto-login] clicking: ${describe(target)}`);
-      markClicked(win, clickedKey, countKey); // mark BEFORE click
+      // v0.0.992 — React 渲染完后 .serverDetails 与 button 同时出现 (同属
+      // #joinGame 子树). 这里 re-read acctTag → per-account key 正确, fresh
+      // 账号不被旧 base CLICKED_KEY cooldown 卡.
+      const acctTagNow = readCurrentServerTag(win);
+      const clickedKey = acctTagNow ? `${CLICKED_KEY}_${acctTagNow}` : CLICKED_KEY;
+      const countKey = acctTagNow ? `${COUNT_KEY}_${acctTagNow}` : COUNT_KEY;
+      if (clickCountTooMany(win, countKey)) {
+        console.warn(`[OgameX/auto-login] kill-switch active for ${acctTagNow || "(no-tag)"}. ` +
+          `Run: localStorage.removeItem("${countKey}"); localStorage.removeItem("${clickedKey}")`);
+        return;
+      }
+      if (alreadyClickedRecently(win, clickedKey)) {
+        const ageS = Math.round((Date.now() - readNum(win, clickedKey)) / 1000);
+        console.info(`[OgameX/auto-login] cooldown active for ${acctTagNow || "(no-tag)"} ` +
+          `(last click ${ageS}s ago). Skip.`);
+        return;
+      }
+      console.info(`[OgameX/auto-login] clicking (acct=${acctTagNow || "(no-tag)"}): ${describe(target)}`);
+      markClicked(win, clickedKey, countKey);
       try { target.click(); } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
       return;
     }
