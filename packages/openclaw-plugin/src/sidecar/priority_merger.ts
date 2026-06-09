@@ -767,6 +767,46 @@ export class PriorityMerger {
       // planner, planner 的 picker 路径就读 optimizer 派的 opt-* 当真理.
       const result = this.planGoal(row.goal, state, this.allRowsForChain);
       if (isBlocked(result)) {
+        // v0.0.1017 — owner 2026-06-09 "3 已经部署成功了，为什么还显示没有部署" +
+        // "不是手动完成的". 实证 depl-mq6rmib0 dispatched 14:59:43, ogame
+        // arrival 15:00:30 (fleet 0 cargo), 但 planner 在 15:00:45 重 eval
+        // 看 src 月球 0 LC → blocked. dispatchedAt 已清, outbound match 已扫过
+        // 没 fire. 真态是 fleet airborne / arrived 已经 dispatched 完成.
+        //
+        // 修: planner blocked + 该 goal 是 atomic fleet type → 扫 outbound 找
+        // 匹配 fleet (src/dst coord+type + mission). 找到 = 已 dispatched 完成,
+        // 直接 mark completed 而不是 blocked.
+        const atomicFleetTypes = new Set(["expedition","colonize","deploy","transport","jumpgate","species_discovery"]);
+        if (atomicFleetTypes.has(row.goal.type)) {
+          const tParams2 = row.goal.target as { source_planet?: string; target_coords?: string; target_type?: string };
+          const missionMap2: Record<string, number> = { expedition:15, colonize:7, deploy:4, transport:3 };
+          const expectMission2 = missionMap2[row.goal.type] ?? -1;
+          if (expectMission2 > 0) {
+            const srcId2 = tParams2.source_planet ?? (typeof row.goal.planet === "string" ? row.goal.planet : "");
+            const srcPlanet2 = srcId2 ? (Object.values(state.planets ?? {}).find((p) => p.id === srcId2)
+              ?? Object.values(state.planets ?? {}).find((p) => Array.isArray(p.coords) && p.coords.join(":") === srcId2)) : undefined;
+            const srcCoord2 = Array.isArray(srcPlanet2?.coords) ? srcPlanet2.coords.join(":") : "";
+            const srcType2 = (srcPlanet2 as { type?: string } | undefined)?.type ?? "planet";
+            const tgtCoord2 = typeof tParams2.target_coords === "string" ? tParams2.target_coords : "";
+            const tgtType2 = (tParams2.target_type ?? "planet").toLowerCase();
+            const normT = (t: unknown): string => { if (typeof t === "string") return t.toLowerCase(); if (t === 1) return "planet"; if (t === 2) return "debris"; if (t === 3) return "moon"; return ""; };
+            const airborne = (state.fleets_outbound ?? []).find((f) => {
+              if (f.mission !== expectMission2) return false;
+              if (!Array.isArray(f.origin) || f.origin.join(":") !== srcCoord2) return false;
+              if (tgtCoord2 && (!Array.isArray(f.dest) || f.dest.join(":") !== tgtCoord2)) return false;
+              if (srcType2 && normT((f as { origin_type?: unknown }).origin_type) !== srcType2) return false;
+              if (tgtType2 && normT((f as { dest_type?: unknown }).dest_type) !== tgtType2) return false;
+              return true;
+            });
+            if (airborne) {
+              console.info(`[merger/auto-complete-airborne] ${row.goal.id} fleet ${(airborne as {id?:string}).id ?? "?"} airborne mission=${expectMission2} ${srcCoord2}→${tgtCoord2} (planner blocked but ogame fleet flying) → completed`);
+              await this.updateStatusAndMirror(row.goal.id, "completed", `fleet airborne: planner blocked (${result.blocked}) but ogame fleet matched outbound`);
+              this.dispatchedAt.delete(row.goal.id);
+              skipped_terminal += 1;
+              continue;
+            }
+          }
+        }
         // v0.0.805 — operator 2026-06-05 "跳跃成功了 还卡在这里 是自动跳完
         // 刷新不到结果". planner 返 auto_complete 标记 (e.g. JG self-detect
         // target_moon has expected ships) → priorityMerger mark completed,
