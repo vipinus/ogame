@@ -16,6 +16,7 @@ import { TECH_ID_BY_NAME } from "@ogamex/shared";
 import { planTransportChain, makeTransportChainId, type PlannerPlanet } from "@ogamex/shared";
 import { t } from "../i18n/t.js";
 import { techName } from "../i18n/tech_name.js";
+import { setVisibleInterval } from "../util/visible_interval.js";
 
 // 2026-06-05 — module-level bridge-token reader. Used by every POST to a
 // sidecar endpoint that needs per-user routing (createGoal, discovery
@@ -4824,9 +4825,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     // bridge status dot WITHOUT a full panel re-render. Only mutates the
     // colored dot element's inline style; idempotent re-attach guarded
     // by a panel-scoped property to avoid duplicate timers across renders.
-    const panelExt = panel as HTMLElement & { __ogamexBridgeLightTimer?: number };
+    const panelExt = panel as HTMLElement & { __ogamexBridgeLightTimer?: { stop: () => void } };
     if (panelExt.__ogamexBridgeLightTimer !== undefined) {
-      clearInterval(panelExt.__ogamexBridgeLightTimer);
+      panelExt.__ogamexBridgeLightTimer.stop();
     }
     // v0.0.990 — owner 2026-06-09 "装载TM以后很卡": 500ms 闪烁 JS 改 CSS @keyframes,
     // color/title 更新降到 2000ms (4× CPU 降). 红灯闪烁靠 CSS animation 跑, JS 只
@@ -4838,7 +4839,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
         "[data-bridge-light].ogx-red{animation:ogamex-red-blink 1s ease-in-out infinite}";
       document.head.appendChild(styleEl);
     }
-    panelExt.__ogamexBridgeLightTimer = window.setInterval(() => {
+    panelExt.__ogamexBridgeLightTimer = setVisibleInterval(() => {
       const dot = panel.querySelector<HTMLElement>("[data-bridge-light]");
       if (!dot) return;
       const bs2 = (window as Window & { __ogamexBridgeStatus?: { transport: "ws" | "http"; status: string } }).__ogamexBridgeStatus;
@@ -5401,18 +5402,32 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     }
   }
 
+  // v0.0.991 — owner "idle tab JS 心跳 可以取消": hidden tab 时 timer 清掉
+  // (self-chained setTimeout 不再续), visibility 回来时 catch-up refresh + 重续.
+  // 用户看不到 panel 期间 0 fetch/render.
   function schedule(): void {
-    if (stopped) return;
+    if (stopped || document.hidden) return;
     timer = setTimeout(async () => {
       await refresh();
       schedule();
     }, pollMs);
   }
+  document.addEventListener("visibilitychange", () => {
+    if (stopped) return;
+    if (document.hidden) {
+      if (timer) { clearTimeout(timer); timer = null; }
+    } else if (timer === null) {
+      void refresh().then(schedule);
+    }
+  });
 
   // 1Hz ticker — updates jumpgate mm:ss countdowns in place without full
   // panel re-render. Reads each .jg-cd span's snapshot value + harvested_at
   // and recomputes remaining seconds. Hides span when remaining hits 0.
-  let jgTickerId: ReturnType<typeof setInterval> | null = setInterval(() => {
+  // v0.0.991 — owner "idle tab JS 心跳 可以取消": setVisibleInterval, hidden
+  // tab 时 JG mm:ss 倒计时停 (用户看不到无意义), 可见时 catch-up tick 立即重算
+  // 跳过的 elapsed 秒数 (snapshot+at 是 wall-clock based, 不会显示错误).
+  const jgTickerHandle = setVisibleInterval(() => {
     if (!panel) return;
     const spans = panel.querySelectorAll<HTMLElement>(".jg-cd");
     if (spans.length === 0) return;
@@ -5438,7 +5453,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   function stop(): void {
     stopped = true;
     if (timer) clearTimeout(timer);
-    if (jgTickerId) { clearInterval(jgTickerId); jgTickerId = null; }
+    jgTickerHandle.stop();
     if (updateCheckTimer) clearInterval(updateCheckTimer);
     stopAlarm();
     panel?.remove();

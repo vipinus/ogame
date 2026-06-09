@@ -3,6 +3,7 @@ import { EventBus } from "./event_bus.js";
 import { StateStore } from "./state_store.js";
 import type { IndexedKv } from "./store/indexed_db.js";
 import { initSafeFetch, fetchWithCp, BusyDeferredError, cpInFlightCount } from "./api/safe_fetch.js";
+import { setVisibleInterval } from "./util/visible_interval.js";
 import { setLocaleDocSource } from "./i18n/locale.js";
 import { t } from "./i18n/t.js";
 import { startMutationObserver } from "./probes/mutation_observer.js";
@@ -725,11 +726,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   let lastSeenLfChangeTs = 0;
   let lastSeenLfResearchChangeTs = 0;
   let lastSeenClassChangeTs = 0;
-  // v0.0.990 — owner 2026-06-09 "装载TM以后很卡": 200ms → 1000ms (5× CPU 降幅).
-  // dynamic import 也提到顶层 (cached but Promise.resolve chain per tick 无意义).
-  // lf/lfresearch/class 事件 ~800ms 延迟由 sniffer-driven dataset 翻转 polling,
-  // owner 手点几个 ogame 页面动作,1s 检测窗口对体感无影响.
-  setInterval(() => {
+  // v0.0.990 → v0.0.991 — owner 2026-06-09 "idle tab JS 心跳 可以取消":
+  // 切到 setVisibleInterval, tab hidden 时整个 interval clearInterval, 重新
+  // visible 时 catch-up 一次再续 setInterval. 隐藏 tab CPU 0 fire.
+  // lf/lfresearch/class 事件本来就是 owner 手点 ogame 触发的, tab hidden 时
+  // 用户没在点, 不可能产生新事件 → 0 漏检. visibility 回来时 catch-up tick 立刻扫.
+  setVisibleInterval(() => {
     try {
       (env.win as Window & { __ogamexCpInFlight?: number }).__ogamexCpInFlight = cpInFlightCount();
       // Event-driven species refresh: if sniffer detected an lfsettings hit,
@@ -770,7 +772,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }
       }
     } catch { /* */ }
-  }, 1000);
+  }, 1000, { doc: env.doc });
   void clickInterceptHandler; // unused (kept for reference)
   // userBusy() local helper retained as `() => false` so existing callers
   // (cargo-probe, jumpgate hydrate) compile without churn. The conflict-
@@ -1947,7 +1949,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "0.0.990";
+  const USERSCRIPT_VERSION = "0.0.991";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -3288,7 +3290,10 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // pollFetchResources + pushNow, panel 立刻看到 fresh building levels +
   // 扣除 resources. 1s tick 扫所有 planet queue, 检测 future → past 翻转.
   const lastSeenEnds = new Map<string, number>();
-  setInterval(() => {
+  // v0.0.991 — owner "idle tab JS 心跳 可以取消": tab hidden 完全 stop.
+  // visibility 回来时 catch-up tick 自动扫一遍 endsAt, 期间完成的 build 会被
+  // 立即检测 + force pollEmpire — 等价于 tab visible 时 2s 内的延迟检测.
+  setVisibleInterval(() => {
     try {
       const state = store.state;
       const planets = state.planets ?? {};
@@ -3322,8 +3327,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
         }, 1500);
       }
     } catch (e) { console.warn("[build-complete-watcher] threw", e); }
-    // v0.0.990 — 1000ms → 2000ms (build completion 30s+ 尺度, 2s 延迟无感, 减半 CPU).
-  }, 2_000);
+  }, 2_000, { doc: env.doc });
   // Operator 2026-05-25: "不要用倒計時，都用事件驅動". Removed 30s
   // setInterval. Resources accumulate predictably (production rates +
   // delta T), DOM mutation observers update on navigation. Background-

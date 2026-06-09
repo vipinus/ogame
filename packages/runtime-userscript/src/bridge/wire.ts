@@ -1,6 +1,7 @@
 import type { BootHandle } from "../boot.js";
 import { HttpBridgeClient } from "./http_client.js";
 import { BridgeClient as WsBridgeClient } from "./ws_client.js";
+import { setVisibleInterval } from "../util/visible_interval.js";
 
 /**
  * M4.7 — wire HttpBridgeClient into the userscript boot lifecycle.
@@ -101,10 +102,11 @@ export async function wireBridge(
     await client.connect(stripTrailing(url), opts.bridgeToken);
   }
   publishStatus();
-  // Poll client.status() every 1s — both client types may transition
-  // open→reconnecting→open silently; panel renders the current color.
-  const statusPollTimer = setInterval(publishStatus, 1000);
-  void statusPollTimer;
+  // v0.0.991 — owner "idle tab JS 心跳 可以取消": setVisibleInterval, hidden
+  // tab 时整个 publishStatus 停. 可见时 catch-up 一次立刻发, 之后 1s 续poll.
+  // 隐藏 tab 没人看 light, 不需要每秒推.
+  const statusPollHandle = setVisibleInterval(publishStatus, 1000);
+  void statusPollHandle;
 
   // Hello — fired immediately after the open event resolves.
   client.send({
