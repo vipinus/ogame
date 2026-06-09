@@ -1547,6 +1547,23 @@ function planExpeditionGoal(goal: Goal, state: WorldState): PlanResult {
   // Each exp- goal here = one launch attempt regardless of how many
   // fleets are already outbound. ogame will reject 140019 if cap full.
 
+  // v0.0.1006 — owner 2026-06-09 "远征没有足够的船也派出去了": planner
+  // 老代码 expedition 路径**完全没有 ship-availability 检查**, deploy/transport
+  // (planner.ts:1823) 早就有同款 `have < want → blocked`. 一份代码两套标准,
+  // daemon snapshot 跟实际 ogame 状态有 lag 时漏拦. 拉通: planner 在 expedition
+  // dispatch 前也做 ship 检查, 不够就 blocked, 让 daemon 下 tick 重 emit / 等
+  // ships 回港.
+  const planetShipsMap = (planet.ships as Record<string, number | undefined>) ?? {};
+  for (const [shipKey, want] of Object.entries(ships)) {
+    if (typeof want !== "number" || want <= 0) continue;
+    const have = planetShipsMap[shipKey] ?? 0;
+    if (have < want) {
+      return {
+        blocked: `expedition blocked: ${planet.id} has ${have}× ${shipKey}, need ${want} (preflight on dispatch)`,
+      };
+    }
+  }
+
   return {
     id: `dir-${randomUUID()}`,
     source: "goal",
