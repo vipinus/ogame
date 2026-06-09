@@ -196,6 +196,12 @@ export interface TenantContext {
    *  to detect ogame silent rejection. On mismatch reverts goal to
    *  blocked + clears prematurely-written cd (JG only). */
   readonly pendingFleetVerify: Map<string, FleetVerifyEntry>;
+  /** v0.0.1008 — owner 2026-06-09 "为啥又在造机器人工厂": state.snapshot lag
+   *  let planner cascade re-dispatch same (planet, building) within seconds
+   *  (e.g. robo L7 dispatched 13:23:01, then 13:24:05 dispatched again because
+   *  state still showed empty build_q). key = `${planetId}:${building}` →
+   *  last dispatch ts. planner gate: if within 60s, treat as build_q busy. */
+  readonly recentBuildDispatchAt: Map<string, number>;
 }
 
 export type FleetVerifyEntry = {
@@ -239,6 +245,7 @@ function newContext(): TenantContext {
     expeditionFailureCoolOff: new Map<string, number>(),
     pendingFleetVerify: new Map<string, FleetVerifyEntry>(),
     alreadyAtTargetSince: new Map<string, number>(),
+    recentBuildDispatchAt: new Map<string, number>(),
     // v0.0.881 — owner directive D
     expSeenFleetIdsByOrigin: new Map<string, Set<string>>(),
     expReturnedCountByOrigin: new Map<string, number>(),

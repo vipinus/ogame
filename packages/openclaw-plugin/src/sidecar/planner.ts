@@ -1232,6 +1232,18 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   // queue 独立, 不受影响 (planBuild → 不 gate research_q except researchLab).
   // 历史 v0.0.* line 923 用 `buildQ.item` 是死字段 (实际数据用 `building`,
   // shared/types.ts 同步修过), gate 永远 false → 100001 反复事故.
+  // v0.0.1008 — owner 2026-06-09 "为啥又在造机器人工厂": state.snapshot lag
+  // 让 planner 在同一 (planet,building) 60s 内 cascade re-dispatch 多次. 加
+  // recent-dispatch gate: 如果同 (planet,building) 30s 内派过, 强制 blocked
+  // 等 state 同步. 60s 后自动放行 (build ack/snapshot 应已到位).
+  const uidForRecent = getCurrentUserId() ?? "";
+  const recentKey = `${planetId}:${building}`;
+  const recentTs = tenantRegistry.get(uidForRecent).recentBuildDispatchAt.get(recentKey) ?? 0;
+  if (recentTs > 0 && Date.now() - recentTs < 30_000) {
+    const ageSec = Math.round((Date.now() - recentTs) / 1000);
+    return { blocked: `${building} dispatched ${ageSec}s ago on ${planetId} — waiting for state.snapshot to reflect (30s cooldown)` };
+  }
+
   const buildQ = planet.build_q;
   if (buildQ && (buildQ.ends_at ?? 0) > Date.now()) {
     const etaS = Math.max(0, Math.round(((buildQ.ends_at ?? 0) - Date.now()) / 1000));

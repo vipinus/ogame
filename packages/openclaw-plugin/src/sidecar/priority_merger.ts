@@ -924,6 +924,16 @@ export class PriorityMerger {
       try {
         const dParams = result.params as Record<string, unknown>;
         console.log(`[merger] DISPATCH goal=${row.goal.id} type=${row.goal.type} P=${row.goal.priority} action=${result.action} dirId=${result.id} planet_id=${dParams["planet_id"]} source_planet=${dParams["source_planet"]} target=${dParams["target_coords"]}(${dParams["target_type"]}) mission=${dParams["mission"]} ships=${JSON.stringify(dParams["ships"])} resources=${JSON.stringify(dParams["resources"])}`);
+        // v0.0.1008 — stamp recent dispatch ts so planner 30s cooldown fires.
+        // Only for build actions (mine/facility), not fleet/research.
+        if (result.action === "build") {
+          const pid = String(dParams["planet_id"] ?? "");
+          const bld = String((dParams["target"] as { building?: unknown } | undefined)?.building ?? dParams["building"] ?? "");
+          if (pid && bld) {
+            const uidDispatch = getCurrentUserId() ?? "";
+            tenantRegistry.get(uidDispatch).recentBuildDispatchAt.set(`${pid}:${bld}`, Date.now());
+          }
+        }
       } catch { /* */ }
       // v0.0.433: this leg is now active; downstream chain peers must wait.
       // v0.0.819 — operator "解除链式依赖" disable chainBlocked.add 也.
