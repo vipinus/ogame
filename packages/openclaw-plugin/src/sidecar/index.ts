@@ -2973,62 +2973,11 @@ export async function startSidecar(
         const uid = mergerUid || resolvedUid;
         await pgStore!.upsertGoal(uid, row);
       });
-      // v0.0.921 → v0.0.922 — fleet ack post-verify. owner 2026-06-07
-      // 实证: api_executor 接 ogame status:true 假象 → goal completed →
-      // 实际 ships 没移动 (JG 撒谎, 或 deploy take_all 拿了陈年残货). Map
-      // covers JG + deploy + transport: 入队 pendingFleetVerify, 30s tick
-      // diff src/tgt ship counts vs ack 前快照. verified → 完成 (JG 写
-      // cd-mirror); 60s 无 delta → revert blocked + 清 cd; 5min timeout
-      // → 默认完成 (lost snapshot fallback).
-      const fleetTypes = new Set(["jumpgate", "deploy", "transport"]);
-      if (row.status === "completed" && fleetTypes.has(row.goal.type)) {
-        const tgt = row.goal.target as {
-          source_moon?: string; target_moon?: string;
-          source_planet?: string; target_coords?: string;
-          ships?: unknown;
-        };
-        const uid = mergerUid;
-        const srcBodyId = tgt.source_moon ?? tgt.source_planet ?? null;
-        if (uid && srcBodyId) {
-          const tenant = tenantRegistry.get(uid);
-          const us = tenant.worldState;
-          if (us) {
-            const planetsMap = (us.planets ?? {}) as Record<string, unknown>;
-            const srcBody = planetsMap[srcBodyId] as { ships?: Record<string, number> } | undefined;
-            // Resolve target body: JG uses target_moon directly; deploy/
-            // transport resolve target_coords to a known body if any.
-            let tgtBodyId: string | null = null;
-            if (tgt.target_moon) {
-              tgtBodyId = tgt.target_moon;
-            } else if (tgt.target_coords) {
-              const tgtType = (row.goal.target as { target_type?: string }).target_type ?? "planet";
-              for (const [pid, pUnk] of Object.entries(planetsMap)) {
-                const p = pUnk as { coords?: readonly number[]; type?: string };
-                const coordStr = (p.coords ?? []).join(":");
-                if (coordStr === tgt.target_coords && (p.type ?? "planet") === tgtType) {
-                  tgtBodyId = pid;
-                  break;
-                }
-              }
-            }
-            const tgtBody = tgtBodyId ? planetsMap[tgtBodyId] as { ships?: Record<string, number> } | undefined : undefined;
-            const dispatched = (tgt.ships && typeof tgt.ships === "object" && !Array.isArray(tgt.ships)) ? tgt.ships as Record<string, number> : {};
-            const now = Date.now();
-            tenant.pendingFleetVerify.set(row.goal.id, {
-              goalId: row.goal.id,
-              goalType: row.goal.type as "jumpgate" | "deploy" | "transport",
-              srcBodyId,
-              tgtBodyId,
-              srcShipsBefore: { ...(srcBody?.ships ?? {}) },
-              tgtShipsBefore: { ...(tgtBody?.ships ?? {}) },
-              dispatchedShips: { ...dispatched },
-              ackTs: now,
-              deadline: now + 5 * 60_000,
-            });
-            console.info(`[fleet/verify] uid=${uid.slice(0,8)} queue ${row.goal.id} type=${row.goal.type} src=${srcBodyId} tgt=${tgtBodyId ?? "(coord-only)"} dispatched=${JSON.stringify(dispatched)}`);
-          }
-        }
-      }
+      // v0.0.921 → v0.0.922 → v0.0.1020 — owner 2026-06-09 "兜底全删":
+      // pendingFleetVerify queue-at-completed 入队代码删. 整 verifier
+      // 30s tick 路径下方一并删 (ship-diff 推断 / 60s revert / 5min timeout
+      // 假完成 都是 [[no-fallback-design]] 红线).
+      // ack 是 atomic fleet status 唯一权威源.
     },
     // Phase 7a — PG primary reader. SQLite reads survived in dist purely as
     // a fallback when DATABASE_URL is unset; if pgStore boots OK, the merger
@@ -3406,108 +3355,13 @@ export async function startSidecar(
   }
   void expeditionHandle;
 
-  // v0.0.921 → v0.0.922 — fleet ack post-verify worker. 30s tick scans
-  // pendingFleetVerify per tenant for JG + deploy + transport goals; diff's
-  // src/tgt ships vs ack snapshot. JG verified → write cd-mirror (3600s
-  // fallback). Deploy/transport verified → just dequeue. Silent rejection
-  // (60s no delta) → revert goal blocked + clear cd (JG). 5min deadline →
-  // assume completed (lost snapshot).
-  let fleetVerifierHandle: { stop: () => void } | null = null;
-  if (pgStore) {
-    // v0.0.924 — owner 2026-06-07 "v12 数据和以前版本不同". v0.0.923 用
-    // `3600/level` 是老 ogame 公式, v12 改了. **本质不同的方案**: sidecar
-    // 不再瞎猜兜底 cd, 让 sniffer (userscript v0.0.919 XHR/fetch 抓 JG
-    // response.cooldown) 是 cd 唯一 source of truth. verifier 只确认 ack
-    // 真实性 (ship delta), 不再写 cd-mirror. sniffer 没抓到 → cd 显 NULL,
-    // 下次 planner JG check 看不到 cd 直接尝试 dispatch, ogame 真在 cd
-    // 中会返 empty error → v0.0.920 userscript 路径假设 cd 兜底 (那边
-    // 看 jumpgate level 公式, 也是临时的, 但是 v0.0.919 真值路径优先).
-    const NO_DELTA_REVERT_AFTER_MS = 60_000;
-    const clearCdMirror = (planetsMap: Record<string, unknown>, srcId: string, tgtId: string): void => {
-      for (const id of [srcId, tgtId]) {
-        const p = planetsMap[id] as { jumpgate_cooldown_sec?: number | null; jumpgate_harvested_at?: number | null; jumpgate_pair_with?: string | null } | undefined;
-        if (!p) continue;
-        p.jumpgate_cooldown_sec = null;
-        p.jumpgate_harvested_at = null;
-        p.jumpgate_pair_with = null;
-      }
-    };
-    const tick = async (): Promise<void> => {
-      try {
-        for (const [uid, tenant] of tenantRegistry.entries()) {
-          if (tenant.pendingFleetVerify.size === 0) continue;
-          const us = tenant.worldState;
-          if (!us) continue;
-          const planetsMap = (us.planets ?? {}) as Record<string, unknown>;
-          const now = Date.now();
-          const toRemove: string[] = [];
-          for (const entry of tenant.pendingFleetVerify.values()) {
-            const srcBody = planetsMap[entry.srcBodyId] as { ships?: Record<string, number> } | undefined;
-            const tgtBody = entry.tgtBodyId ? planetsMap[entry.tgtBodyId] as { ships?: Record<string, number> } | undefined : undefined;
-            if (!srcBody) {
-              if (now > entry.deadline) toRemove.push(entry.goalId);
-              continue;
-            }
-            const srcNow = srcBody.ships ?? {};
-            const tgtNow = tgtBody?.ships ?? {};
-            let allShipsVerified = true;
-            let anyDelta = false;
-            for (const [shipName, nVal] of Object.entries(entry.dispatchedShips)) {
-              const n = nVal as number;
-              if (!Number.isFinite(n) || n <= 0) continue;
-              const srcDrop = (entry.srcShipsBefore[shipName] ?? 0) - (srcNow[shipName] ?? 0);
-              // Only require src drop when target body unknown (coord-only
-              // deploy/transport — can't verify destination gain).
-              const tgtGain = entry.tgtBodyId ? ((tgtNow[shipName] ?? 0) - (entry.tgtShipsBefore[shipName] ?? 0)) : n;
-              if (srcDrop > 0 || tgtGain > 0) anyDelta = true;
-              if (srcDrop < n || tgtGain < n) allShipsVerified = false;
-            }
-            const dispatchedCount = Object.keys(entry.dispatchedShips).length;
-            if (allShipsVerified && dispatchedCount > 0) {
-              // v0.0.924 — 不再写 cd-mirror; sniffer 是 cd 唯一真值源.
-              // v0.0.1018 — owner 2026-06-09 "你不要骗我": queue-at-dispatch 路径
-              // 下, verifier VERIFIED 时也得写 completed (status 此前还是 "active"
-              // 或被 planner 改成 "blocked"). 显式 updateGoalStatus 让 panel /
-              // chain dispatcher 知道这条已闭环.
-              try {
-                await pgStore.updateGoalStatus(uid, entry.goalId, "completed", `fleet/verify VERIFIED (src/dst ship diff matched dispatched payload)`);
-                console.info(`[fleet/verify] uid=${uid.slice(0,8)} VERIFIED ${entry.goalId} type=${entry.goalType} → completed`);
-              } catch (e) {
-                console.warn(`[fleet/verify] updateGoalStatus completed ${entry.goalId} threw:`, e instanceof Error ? e.message : e);
-              }
-              toRemove.push(entry.goalId);
-            } else if (now > entry.deadline) {
-              console.warn(`[fleet/verify] uid=${uid.slice(0,8)} TIMEOUT ${entry.goalId} type=${entry.goalType} after 5min — assume completed (lost snapshot)`);
-              toRemove.push(entry.goalId);
-            } else if (now - entry.ackTs > NO_DELTA_REVERT_AFTER_MS && !anyDelta) {
-              try {
-                const reason = entry.goalType === "jumpgate"
-                  ? "JG ack mismatch — ogame silently rejected (ship counts unchanged); will retry"
-                  : `${entry.goalType} ack mismatch — ship counts unchanged (dispatched payload didn't move); will retry`;
-                await pgStore.updateGoalStatus(uid, entry.goalId, "blocked", reason);
-                if (entry.goalType === "jumpgate" && entry.tgtBodyId) {
-                  clearCdMirror(planetsMap, entry.srcBodyId, entry.tgtBodyId);
-                }
-                console.warn(`[fleet/verify] uid=${uid.slice(0,8)} REVERT ${entry.goalId} type=${entry.goalType} — silent rejection, status→blocked`);
-                toRemove.push(entry.goalId);
-              } catch (e) {
-                console.warn(`[fleet/verify] revert ${entry.goalId} threw:`, e instanceof Error ? e.message : e);
-              }
-            }
-          }
-          for (const id of toRemove) tenant.pendingFleetVerify.delete(id);
-        }
-      } catch (e) {
-        console.warn("[fleet/verify] outer tick threw:", e instanceof Error ? e.message : e);
-      }
-    };
-    const t = setInterval(() => { void tick(); }, 30_000);
-    if (typeof (t as unknown as { unref?: () => void }).unref === "function") {
-      (t as unknown as { unref: () => void }).unref();
-    }
-    fleetVerifierHandle = { stop: () => clearInterval(t) };
-  }
-  void fleetVerifierHandle;
+  // v0.0.1020 — owner 2026-06-09 "所有功能都不允许有兜底设计": 整个
+  // fleetVerifier 删. 它原本三条 path 都是兜底:
+  //   1. 30s tick 用 src/dst ship-diff 推断 fleet 是否到港 → 推断, 兜底
+  //   2. 60s 无 delta → revert blocked → 二路写 status, race 覆盖 ack
+  //   3. 5min deadline → 默认 completed → 编造状态 (silent lying)
+  // atomic fleet status = userscript ack `event.directive_completed` 唯一权威源.
+  // ack 没回 → goal 卡 active, owner 看 panel 自己判断. 见 [[no-fallback-design]].
 
   // -------------------------------------------------------------------------
   // Upstream handlers — registered ONCE against the wrapped on, which the

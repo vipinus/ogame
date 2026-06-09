@@ -933,57 +933,11 @@ export class PriorityMerger {
       // v0.0.478: stamp dispatch time for time-anchored stuck-recovery and
       // in-flight dedup. Cleared by clearDispatched() in ack handler.
       this.dispatchedAt.set(row.goal.id, Date.now());
-      // v0.0.1018 — owner 2026-06-09 "你不要骗我": queue pendingFleetVerify
-      // at DISPATCH time (不是等 status=completed). 月→星几秒就到, outbound
-      // window 太短, 只有 destination ship-count diff 是 durable 凭证.
-      // verifier (index.ts:3426+) 30s tick 用 src/dst ship snapshot diff 确认,
-      // 命中 → updateGoalStatus completed.
-      const atomicFleetTypesForVerify = new Set(["jumpgate", "deploy", "transport"]);
-      if (atomicFleetTypesForVerify.has(row.goal.type)) {
-        const uidD = getCurrentUserId() ?? "";
-        if (uidD) {
-          const tenantD = tenantRegistry.get(uidD);
-          const tParams = row.goal.target as { source_moon?: string; target_moon?: string; source_planet?: string; target_coords?: string; target_type?: string; ships?: unknown };
-          const srcBodyId = tParams.source_moon ?? tParams.source_planet ?? (typeof row.goal.planet === "string" ? row.goal.planet : null);
-          if (srcBodyId) {
-            const planetsM = (state.planets ?? {}) as Record<string, unknown>;
-            const srcB = planetsM[srcBodyId] as { ships?: Record<string, number> } | undefined;
-            let tgtBodyId: string | null = null;
-            if (tParams.target_moon) {
-              tgtBodyId = tParams.target_moon;
-            } else if (tParams.target_coords) {
-              const tgtType = tParams.target_type ?? "planet";
-              for (const [pid, pU] of Object.entries(planetsM)) {
-                const p = pU as { coords?: readonly number[]; type?: string };
-                if ((p.coords ?? []).join(":") === tParams.target_coords && (p.type ?? "planet") === tgtType) {
-                  tgtBodyId = pid;
-                  break;
-                }
-              }
-            }
-            const tgtB = tgtBodyId ? planetsM[tgtBodyId] as { ships?: Record<string, number> } | undefined : undefined;
-            // v0.0.1018 — dispatched payload from directive result.params (planner
-            // 在 take_all 模式会把 source.ships 全 sweep 进 result.params.ships).
-            const dParams = result.params as Record<string, unknown>;
-            const dispatched_ships = (dParams["ships"] && typeof dParams["ships"] === "object" && !Array.isArray(dParams["ships"]))
-              ? dParams["ships"] as Record<string, number>
-              : (tParams.ships && typeof tParams.ships === "object" && !Array.isArray(tParams.ships) ? tParams.ships as Record<string, number> : {});
-            const nowMs = Date.now();
-            tenantD.pendingFleetVerify.set(row.goal.id, {
-              goalId: row.goal.id,
-              goalType: row.goal.type as "jumpgate" | "deploy" | "transport",
-              srcBodyId,
-              tgtBodyId,
-              srcShipsBefore: { ...(srcB?.ships ?? {}) },
-              tgtShipsBefore: { ...(tgtB?.ships ?? {}) },
-              dispatchedShips: { ...dispatched_ships },
-              ackTs: nowMs,
-              deadline: nowMs + 5 * 60_000,
-            });
-            console.info(`[fleet/verify/queue-at-dispatch] uid=${uidD.slice(0,8)} ${row.goal.id} type=${row.goal.type} src=${srcBodyId} tgt=${tgtBodyId ?? "(coord-only)"} dispatched=${JSON.stringify(dispatched_ships)}`);
-          }
-        }
-      }
+      // v0.0.1020 — owner 2026-06-09 "所有功能都不允许有兜底设计": 删
+      // v0.0.1018 queue-at-dispatch pendingFleetVerify 写入. status = userscript
+      // ack 唯一权威 (event.directive_completed → success → completed). 不准用
+      // ship-diff 推断 / timeout 假完成. ack 不来就让 goal 卡 active, owner
+      // 看 panel 自己判断. 见 [[no-fallback-design]].
       this.send({ type: "directive.dispatch", directive: result });
       dispatched.push(result);
       // v0.0.506 forensic — log every dispatch so duplicate-fleet bugs are
