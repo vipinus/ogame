@@ -603,11 +603,13 @@ export async function runOptimizerOnce(
     // v0.0.918 — owner 2026-06-07 "这么有一个单独的 能源技术 L13" — opt-energyTech
     // 的 parent (e.g. crystalMine goal) 中途 complete 后, panel filter 不到
     // parent → 该 research goal 沦为 standalone top-level row 让 owner 困惑.
-    // sweep: 任何 active opt-energyTech 若 parent_goal_id 指向 completed/cancelled
-    // 的 goal, 改挂到当前第一个 active non-opt root; 若无 candidate, 视为 stale 直接 cancel.
+    // v0.0.1029 — owner 2026-06-09 "新账号树还是很乱" 实证 eb990432 opt-researchLab-L8/L9
+    // 同款 dangling (parent 是已 cancel 的老 rese), sweep 从 `opt-energyTech-L` 扩到
+    // 所有 `opt-` prefix (researchLab/solarPlant/fusionReactor/metalMine/energyTech).
+    // 优先 same-planet root, fallback first non-opt root; 仍无则 cancel.
     {
       const orphans = allRows.filter((r) => {
-        if (!r.goal.id.startsWith("opt-energyTech-L")) return false;
+        if (!r.goal.id.startsWith("opt-")) return false;
         if (!r.goal.id.endsWith(uid.slice(0, 8))) return false;
         if (!["pending", "active", "blocked"].includes(r.status)) return false;
         const pid = (r.goal as { parent_goal_id?: string }).parent_goal_id;
@@ -616,26 +618,32 @@ export async function runOptimizerOnce(
         return !alive;
       });
       for (const orphan of orphans) {
-        const newRoot = allRows.find((r) => {
+        const orphanPlanet = (orphan.goal as { planet?: string }).planet ?? "";
+        const isLiveNonOptRoot = (r: { goal: { id: string }; status: string }): boolean => {
           if (!["pending", "active", "blocked"].includes(r.status)) return false;
           const id = r.goal.id;
           if (id.startsWith("opt-") || id.startsWith("exp-") || id.startsWith("expb-")) return false;
           return true;
-        });
+        };
+        // 优先同 planet 的 active root.
+        const samePlanetRoot = orphanPlanet
+          ? allRows.find((r) => isLiveNonOptRoot(r) && (r.goal as { planet?: string }).planet === orphanPlanet)
+          : null;
+        const newRoot = samePlanetRoot ?? allRows.find(isLiveNonOptRoot);
         if (newRoot) {
           try {
             const merged = { ...orphan, goal: { ...orphan.goal, parent_goal_id: newRoot.goal.id }, updated_at: Date.now() };
             await pgStore.upsertGoal(uid, merged);
-            console.info(`[optimizer/energy-guard/orphan] uid=${uid.slice(0, 8)} re-parent ${orphan.goal.id}: dead-parent → ${newRoot.goal.id}`);
+            console.info(`[optimizer/orphan-sweep] uid=${uid.slice(0, 8)} re-parent ${orphan.goal.id}: dead-parent → ${newRoot.goal.id}${samePlanetRoot ? " (same-planet)" : " (fallback first-root)"}`);
           } catch (e) {
-            console.warn(`[optimizer/energy-guard/orphan] re-parent ${orphan.goal.id} threw:`, e instanceof Error ? e.message : e);
+            console.warn(`[optimizer/orphan-sweep] re-parent ${orphan.goal.id} threw:`, e instanceof Error ? e.message : e);
           }
         } else {
           try {
-            await pgStore.updateGoalStatus(uid, orphan.goal.id, "cancelled", "orphan opt-energyTech — no active root to re-attach");
-            console.info(`[optimizer/energy-guard/orphan] uid=${uid.slice(0, 8)} cancel ${orphan.goal.id} (no active root)`);
+            await pgStore.updateGoalStatus(uid, orphan.goal.id, "cancelled", "orphan opt-* — no active root to re-attach");
+            console.info(`[optimizer/orphan-sweep] uid=${uid.slice(0, 8)} cancel ${orphan.goal.id} (no active root)`);
           } catch (e) {
-            console.warn(`[optimizer/energy-guard/orphan] cancel ${orphan.goal.id} threw:`, e instanceof Error ? e.message : e);
+            console.warn(`[optimizer/orphan-sweep] cancel ${orphan.goal.id} threw:`, e instanceof Error ? e.message : e);
           }
         }
       }
