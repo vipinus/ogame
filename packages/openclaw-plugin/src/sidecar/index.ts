@@ -1254,12 +1254,17 @@ export async function startSidecar(
                 let projected = virtualEnergy - delta;
                 let firstBumpForced = !skipPlantInsert && fusionStart === 0 && solarStart === 0 && l === current + 1 && virtualPlantLvl === 0;
                 let safetyCap = 25;
+                // v0.0.989f — owner 2026-06-08 "把电厂优化找回来": 恢复 v0.0.738
+                // e8784d1 原版 — plant cascade aggregate 成 ONE 合并 step (cumulative
+                // cost/ETA), 不再每 +1 plant level emit 一个 panel node. 178f8c9 改
+                // per-level 后 owner 当时 ✓, 现在重申"12 B# 太垃圾"撤回. while loop
+                // bump virtualPlantLvl 不变, 但仅 push 一次步骤 (start→end range).
+                const plantBumpStart = virtualPlantLvl;
+                let plantBumpEtaSum = 0;
                 while (!skipPlantInsert && (projected < 0 || firstBumpForced) && safetyCap-- > 0) {
                   const nextPlantLvl = virtualPlantLvl + 1;
                   const baseProd = prodFn(virtualPlantLvl);
                   const newProd = prodFn(nextPlantLvl);
-                  // Inline plant cost simulation (same primitives as parent
-                  // self loop) so virtual bank stays consistent.
                   const plantCostFn = (TECH_TREE as Record<string, { cost_at?: (l: number) => { m: number; c: number; d?: number } }>)[plantBuilding]?.cost_at;
                   if (typeof plantCostFn === "function") {
                     const pCost = plantCostFn(nextPlantLvl);
@@ -1267,7 +1272,6 @@ export async function startSidecar(
                     totalCost.m += pCost3.m;
                     totalCost.c += pCost3.c;
                     totalCost.d += pCost3.d;
-                    // v0.0.773 — astro >= 4 跳 production-wait (同上面 self-loop)
                     const pWait = postExpeditionPhase ? 0 : timeToAfford(pCost3);
                     if (isFinite(pWait)) {
                       if (!postExpeditionPhase) accumulate(pWait);
@@ -1279,13 +1283,16 @@ export async function startSidecar(
                       const pStep = Math.round(pWait + pBuild);
                       cumulativeEta += pStep;
                       total += pStep;
-                      steps.push({ tech: plantBuilding, current: virtualPlantLvl, target: nextPlantLvl, kind: "building", eta: pStep });
+                      plantBumpEtaSum += pStep;
                     }
                   }
                   virtualEnergy += newProd - baseProd;
                   virtualPlantLvl = nextPlantLvl;
                   projected = virtualEnergy - delta;
                   firstBumpForced = false;
+                }
+                if (virtualPlantLvl > plantBumpStart) {
+                  steps.push({ tech: plantBuilding, current: plantBumpStart, target: virtualPlantLvl, kind: "building", eta: plantBumpEtaSum });
                 }
                 virtualEnergy -= delta;
                 // Parent self-level
