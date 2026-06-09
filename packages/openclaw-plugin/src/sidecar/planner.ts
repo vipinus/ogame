@@ -398,58 +398,16 @@ export function pickEnergyPrereqBuilding(
     }
     return { kind: "research", tech: "energyTech", level: opt.level, targetLevel: opt.level };
   }
-  // v0.0.931 — owner 2026-06-07 "维护三套代码 改个参数会很容易出错". input
-  // prep (snapE / extraConsumption / deficit / fusionPrereqsMet) 搬进 helper,
-  // planner caller 收缩到几行。
-  const solar = planet.buildings?.["solarPlant"] ?? 0;
-  const fusion = planet.buildings?.["fusionReactor"] ?? 0;
-  // v0.0.985 — 预测模式: snapE 减 queue 已计划的 mine 升级耗电, extra 从
-  // projectedCurrent (queue level) 算起, 不是 PG 当下 current.
-  const snapE = ((planet.resources as { e?: number } | undefined)?.e ?? 0) - queuedConsumeDelta;
-  const extraConsumption = mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, projectedCurrent);
-  const needsPowerPlant = (solar === 0 && fusion === 0) || extraConsumption > snapE;
-  if (!needsPowerPlant) return null;
-  if (solar === 0 && fusion === 0) {
-    return { kind: "build", building: "solarPlant", level: 1, targetLevel: 1 };
-  }
-  const uidForCache = getCurrentUserId() ?? "";
-  const candidates = pickEnergyFixForBuildLevel({
-    planet, building, currentLevel: current, nextLevel, energyTech,
-    solarBlocked: isFieldsFull(uidForCache, planet.id, "solarPlant"),
-    fusionBlocked: isFieldsFull(uidForCache, planet.id, "fusionReactor"),
-  });
-  console.info(
-    `[ogamex/planner/energy-gate] planet=${planet.id} building=${building} ${current}->${nextLevel} ` +
-    `snapE=${snapE} extra=${Math.round(extraConsumption)} ` +
-    `picks=[${candidates.map(c => `${c.kind}:${c.cost}`).join(",")}]`,
+  // v0.0.1026 — owner 2026-06-09 "你是不是又在搞两个决策树了" — 删 legacy
+  // fallback. 历史 fallback 用本地 pickEnergyFixCandidates 自跑一遍, 跟
+  // optimizer 第二决策树 drift. 现在 sole-decider 唯一权威源, uid/activeRows
+  // 空 = ALS 边界 bug, throw 让 owner 看见, 别静默 fallback 编决策.
+  // 关联: [[no-fallback-design]] [[reuse-existing-pattern]] v0.0.938 设计
+  throw new Error(
+    `pickEnergyPrereqBuilding: sole-decider 需 activeRows+uid, 收到 ` +
+    `activeRows=${activeRows ? "present" : "missing"} uid="${uidForOptLookup ?? ""}". ` +
+    `ALS wrap 缺失或 caller 没传, 不允许 fallback 自跑 picker.`,
   );
-  const winner = candidates[0];
-  if (!winner) return null;
-  // v0.0.985 — 同 v0.0.985 路径 1 修法: 若 picker 推荐已达 level, 不要返
-  // (会被递归 planBuild 误判 already at → 冒泡到 ALREADY_AT_TARGET_RE → 误删 goal)
-  if (winner.kind === "solar") {
-    if (solar >= winner.level) return null;
-    return { kind: "build", building: "solarPlant", level: winner.level, targetLevel: winner.level };
-  }
-  if (winner.kind === "fusion") {
-    if (fusion >= winner.level) return null;
-    return { kind: "build", building: "fusionReactor", level: winner.level, targetLevel: winner.level };
-  }
-  if (winner.kind === "energy") {
-    if (energyTech >= winner.level) return null;
-    return { kind: "research", tech: "energyTech", level: winner.level, targetLevel: winner.level };
-  }
-  // combo: greedy first step — emit the cheaper kick-off (energyTech research
-  // is typically cheaper than first fusion bump at mid-game). next-tick re-eval
-  // dispatches the remaining half once state advances.
-  {
-    const fusionCostFn = TECH_TREE.fusionReactor?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
-    const energyCostFn = TECH_TREE.energyTech?.cost_at as ((l: number) => { m: number; c: number; d?: number }) | undefined;
-    const fFirst = fusionCostFn ? (() => { const c = fusionCostFn(fusion + 1); return c.m + c.c + (c.d ?? 0); })() : Number.POSITIVE_INFINITY;
-    const eFirst = energyCostFn ? (() => { const c = energyCostFn(energyTech + 1); return c.m + c.c + (c.d ?? 0); })() : Number.POSITIVE_INFINITY;
-    if (eFirst <= fFirst) return { kind: "research", tech: "energyTech", level: winner.eL, targetLevel: winner.eL };
-    return { kind: "build", building: "fusionReactor", level: winner.fL, targetLevel: winner.fL };
-  }
 }
 
 // Ogame v12 — list of buildings that can physically exist on a moon. Anything

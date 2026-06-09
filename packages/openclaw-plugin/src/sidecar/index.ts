@@ -1225,20 +1225,12 @@ export async function startSidecar(
               if (optDecision.kind === "build" && optDecision.building === "fusionReactor") sharedWinner = { kind: "fusion", level: optDecision.level, cost: 0 };
               else if (optDecision.kind === "build" && optDecision.building === "solarPlant") sharedWinner = { kind: "solar", level: optDecision.level, cost: 0 };
               else if (optDecision.kind === "research") sharedWinner = { kind: "energy", level: optDecision.level, cost: 0 };
-            } else {
-              // v0.0.989g — owner 2026-06-08 "全用太阳能电厂 能比 太阳能 核电 能量
-              // 科技混用便宜吗". Previously nextLevel=current+1 → deficit 只是 1 级 (~1466
-              // energy), solar single jump 永远便宜过 combo, 8 级 cascade 全 solar.
-              // Owner 心智 = cascade 全范围 total deficit (~5 levels × 1466) 应让
-              // combo (fusion+energyTech 多轴) 胜出. 改 nextLevel=targetLevel 让 picker
-              // 算 total cascade 能源缺口, 4 个候选公平对比.
-              const sharedCandidates = pickEnergyFixForBuildLevel({
-                planet, building: techName,
-                currentLevel: current, nextLevel: targetLevel,
-                energyTech: energyTechL,
-              });
-              sharedWinner = sharedCandidates[0] as LocalCand | undefined;
             }
+            // v0.0.1026 — owner 2026-06-09 "你是不是又在搞两个决策树了":
+            // 删 simulate 的 fallback 本地 picker. opt-* null 时 sharedWinner 保持
+            // undefined, cascade 不画 energy fix child (panel 暂时显空), 等 optimizer
+            // 下一拍 emit opt-* 真态后 panel 自然补齐. 历史 fallback "防 cascade 显空"
+            // = picker drift 源头, 跟 [[no-fallback-design]] 直接对着干.
             // pickFusion: helper-aligned. solar 或 fusion winner 决定;
             // energy/combo winner 时, fall back 到 fusion (combo first half)
             // 或 solar (energy alone — 没 plant 选, 走原 self loop 等同
