@@ -65,11 +65,111 @@ function isValidDirective(d: unknown): d is Directive {
   return true;
 }
 
+// v0.0.1021 — owner 2026-06-09 "网络克隆或者掉线了 请求回丢失吧": persistent
+// ack queue in localStorage. ack 失败 (tab 关 / 网络掉线 / 浏览器崩) → 下次
+// boot 自动 replay 至 sidecar 收到 (sidecar directiveToGoal 去重幂等). Cap 200
+// 条 FIFO 防 localStorage 撑爆.
+const ACK_QUEUE_KEY = "OGAMEX_ACK_PENDING_QUEUE";
+const ACK_QUEUE_CAP = 200;
+
+type PendingAckEntry = {
+  directive_id: string;
+  msg: { type: "event.directive_completed"; directive_id: string; result: unknown };
+  queued_at: number;
+};
+
+function readAckQueue(): PendingAckEntry[] {
+  try {
+    const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+    const raw = ctxWin.localStorage?.getItem(ACK_QUEUE_KEY) ?? "";
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed as PendingAckEntry[];
+  } catch { return []; }
+}
+
+function writeAckQueue(q: PendingAckEntry[]): void {
+  try {
+    const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+    ctxWin.localStorage?.setItem(ACK_QUEUE_KEY, JSON.stringify(q));
+  } catch { /* localStorage 满 / SecurityError 等吞掉 */ }
+}
+
+function persistPendingAck(directiveId: string, msg: { type: "event.directive_completed"; directive_id: string; result: unknown }): void {
+  const q = readAckQueue();
+  // 同 directive_id 替换 (重 dispatch 同 id 时刷新 payload)
+  const filtered = q.filter((e) => e.directive_id !== directiveId);
+  filtered.push({ directive_id: directiveId, msg, queued_at: Date.now() });
+  // FIFO cap
+  while (filtered.length > ACK_QUEUE_CAP) filtered.shift();
+  writeAckQueue(filtered);
+}
+
+function clearPendingAck(directiveId: string): void {
+  const q = readAckQueue();
+  const filtered = q.filter((e) => e.directive_id !== directiveId);
+  if (filtered.length === q.length) return;
+  writeAckQueue(filtered);
+}
+
+async function sendAckHttp(directiveId: string, msg: { type: "event.directive_completed"; directive_id: string; result: unknown }): Promise<void> {
+  try {
+    const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+    const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+    const tok = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+    const url = `${bridgeBase.replace(/\/$/, "")}/ogamex/v1/push`;
+    const body = JSON.stringify(msg);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5_000);
+      try {
+        const res = await fetch(url, {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tok}` },
+          body, signal: ac.signal,
+        });
+        if (res.ok) { clearPendingAck(directiveId); return; }
+        if (res.status >= 400 && res.status < 500) {
+          // 4xx — payload 永远 reject, 留 queue 也无意义
+          console.warn(`[goal_runner/ack] POST HTTP ${res.status} — 4xx 不留 queue`);
+          clearPendingAck(directiveId);
+          return;
+        }
+        console.warn(`[goal_runner/ack] attempt=${attempt} HTTP ${res.status} — backoff before retry`);
+      } catch (e) {
+        const errName = (e as { name?: string }).name;
+        console.warn(`[goal_runner/ack] attempt=${attempt} ${errName === "AbortError" ? "TIMEOUT" : "ERROR"}: ${(e as Error).message ?? e}`);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      }
+    }
+    // 3 次失败 — 留在 localStorage queue, 下次 boot/drain 接力 replay
+    console.warn(`[goal_runner/ack] 3 attempts failed for ${directiveId} — staying in localStorage queue for replay`);
+  } catch { /* */ }
+}
+
+/** v0.0.1021 — boot 时和 WS reconnect 时 drain pending acks (持久化的 replay 路径). */
+export async function drainPendingAcks(): Promise<void> {
+  const q = readAckQueue();
+  if (q.length === 0) return;
+  console.info(`[goal_runner/ack/drain] replaying ${q.length} pending acks from localStorage`);
+  for (const e of q) {
+    await sendAckHttp(e.directive_id, e.msg);
+  }
+}
+
 export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
   const { client, gate, executors, userBusy } = deps;
 
   const pending: Directive[] = [];
   let stopped = false;
+
+  // v0.0.1021 — boot 时立即 drain 上次没送达的 ack
+  void drainPendingAcks();
 
   // v0.0.673 — operator 2026-06-03 "等我恢复操作的时候才发出去": fleetdispatch
   // page defer used to wait INDEFINITELY for navigation away. Operator
@@ -102,54 +202,16 @@ export function startGoalRunner(deps: GoalRunnerDeps): GoalRunnerHandle {
       directive_id: directiveId,
       result,
     };
+    // v0.0.1021 — owner 2026-06-09 "网络克隆或者掉线了 请求回丢失吧，前端和
+    // 后端做池连接做好持久化，保证100%通讯无误":
+    // 1. 写 localStorage queue (persistent, 抗 tab 关 / 浏览器崩 / 网络掉线)
+    // 2. fire WS + HTTP 双路 (现状)
+    // 3. 任一路返回 ok → 删 localStorage entry
+    // 4. boot 时 drainPendingAcks() 把上次没送达的 replay
+    // sidecar 端 directiveToGoal idempotency check 已经能去重 (index.ts:2370).
+    try { persistPendingAck(directiveId, msg); } catch { /* */ }
     client.send(msg);
-    // v0.0.548 — dual-path ack via HTTP. WS can be in a zombie state.
-    // v0.0.579 — operator 2026-06-01 "不要手動 resume": single POST sometimes
-    // fails (cf flakiness, sidecar restart window, network blip). Retry × 3
-    // with exponential backoff so ack survives single-point failure. Sidecar's
-    // directiveToGoal map is idempotent — re-processing same directive_id
-    // is a no-op after the first ack lands. Failure after 3 retries falls
-    // through to stuck-recovery 60s on sidecar side (still owner-free).
-    try {
-      const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
-      const tok = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
-      const url = `${bridgeBase.replace(/\/$/, "")}/ogamex/v1/push`;
-      const body = JSON.stringify(msg);
-      void (async (): Promise<void> => {
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          const ac = new AbortController();
-          const timer = setTimeout(() => ac.abort(), 5_000);
-          try {
-            const res = await fetch(url, {
-              method: "POST", credentials: "omit",
-              headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${tok}`,
-              },
-              body,
-              signal: ac.signal,
-            });
-            if (res.ok) return;
-            // 4xx (e.g., 401) → no point retrying same payload
-            if (res.status >= 400 && res.status < 500) {
-              console.warn(`[goal_runner/ack] POST ${url} HTTP ${res.status} — not retrying client error`);
-              return;
-            }
-            console.warn(`[goal_runner/ack] attempt=${attempt} HTTP ${res.status} — backoff before retry`);
-          } catch (e) {
-            const errName = (e as { name?: string }).name;
-            console.warn(`[goal_runner/ack] attempt=${attempt} ${errName === "AbortError" ? "TIMEOUT" : "ERROR"}: ${(e as Error).message ?? e}`);
-          } finally {
-            clearTimeout(timer);
-          }
-          if (attempt < 3) {
-            await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
-          }
-        }
-        console.warn(`[goal_runner/ack] gave up after 3 attempts for ${directiveId} — sidecar stuck-recovery 60s will re-dispatch`);
-      })();
-    } catch { /* */ }
+    void sendAckHttp(directiveId, msg);
   }
 
   async function run(directive: Directive): Promise<void> {
