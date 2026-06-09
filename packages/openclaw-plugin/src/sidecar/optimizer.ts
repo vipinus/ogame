@@ -640,6 +640,70 @@ export async function runOptimizerOnce(
         }
       }
     }
+    // v0.0.1011 — owner 2026-06-09 "不缺电 为什么要补电" 真因: opt-energyTech-L16
+    // parent_goal_id 锁在 buil-deutSynth-L33 @ planet 33640786, 但 33640786 现在
+    // e=5767 正电, owner panel 看见 opt-energyTech 显在 2:279:8 树下 → 困惑.
+    // v0.0.918 orphan 兜底只处理 parent 已 dead 的 case. 这里加 wrong-planet 兜底:
+    // 如果 opt-energyTech parent 的 planet 已不缺电, re-parent 到当前最缺电 planet
+    // 的某个 active goal. 全 uid 都不缺电的话 cleanup-global (本函数末尾) 兜底 cancel.
+    {
+      // 计算每个 planet 的 projected E (snapE - max single mine delta).
+      const planetProjE = new Map<string, number>();
+      for (const planet of Object.values(planetsMap)) {
+        const pid = (planet as { id?: string }).id ?? "";
+        if (!pid) continue;
+        const snapE = (planet as { resources?: { e?: number } }).resources?.e ?? 0;
+        let maxDelta = 0;
+        for (const r of allRows) {
+          if (!["active","blocked","pending","dispatched"].includes(r.status)) continue;
+          if ((r.goal as { planet?: string }).planet !== pid) continue;
+          const tgt = r.goal.target as { building?: string; level?: number } | undefined;
+          const bld = tgt?.building;
+          const lvl = tgt?.level;
+          if (!bld || typeof lvl !== "number") continue;
+          if (bld !== "metalMine" && bld !== "crystalMine" && bld !== "deuteriumSynth") continue;
+          const curLvl = (planet.buildings as Record<string, number> | undefined)?.[bld] ?? 0;
+          if (lvl <= curLvl) continue;
+          const delta = mineEnergyConsumption(bld, lvl) - mineEnergyConsumption(bld, curLvl);
+          if (delta > maxDelta) maxDelta = delta;
+        }
+        planetProjE.set(pid, snapE - maxDelta);
+      }
+      const energyTechGoals = allRows.filter((r) =>
+        r.goal.id.startsWith("opt-energyTech-L") &&
+        r.goal.id.endsWith(uid.slice(0, 8)) &&
+        ["pending","active","blocked"].includes(r.status),
+      );
+      for (const eg of energyTechGoals) {
+        const parentId = (eg.goal as { parent_goal_id?: string }).parent_goal_id;
+        if (!parentId) continue;
+        const parent = allRows.find((p) => p.goal.id === parentId);
+        if (!parent) continue;
+        const parentPid = (parent.goal as { planet?: string }).planet ?? "";
+        if (!parentPid) continue;
+        const projE = planetProjE.get(parentPid) ?? 0;
+        if (projE >= 0) {
+          // current parent's planet 不缺电 — 找另一个缺电 planet 的 goal 改挂
+          const needyPid = [...planetProjE.entries()].filter(([, e]) => e < 0).sort((a, b) => a[1] - b[1])[0]?.[0];
+          if (!needyPid) continue; // 没缺电 planet — cleanup-global 接管
+          const newParent = allRows.find((r) => {
+            if (!["pending","active","blocked"].includes(r.status)) return false;
+            const id = r.goal.id;
+            if (id.startsWith("opt-") || id.startsWith("exp-") || id.startsWith("expb-")) return false;
+            return (r.goal as { planet?: string }).planet === needyPid;
+          });
+          if (!newParent) continue;
+          try {
+            const merged = { ...eg, goal: { ...eg.goal, parent_goal_id: newParent.goal.id }, updated_at: Date.now() };
+            await pgStore.upsertGoal(uid, merged);
+            console.info(`[optimizer/energy-guard/reparent] uid=${uid.slice(0,8)} ${eg.goal.id} parent ${parentId}@${parentPid}(projE=${Math.round(projE)}) → ${newParent.goal.id}@${needyPid}(projE=${Math.round(planetProjE.get(needyPid) ?? 0)})`);
+            actioned++;
+          } catch (e) {
+            console.warn(`[optimizer/energy-guard/reparent] ${eg.goal.id} threw:`, e instanceof Error ? e.message : e);
+          }
+        }
+      }
+    }
     for (const planet of Object.values(planetsMap)) {
       if ((planet as { type?: string }).type !== "planet") continue;
       const b = (planet as { buildings?: Record<string, number> }).buildings ?? {};
