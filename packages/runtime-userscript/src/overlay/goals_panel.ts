@@ -4103,6 +4103,10 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     const renderSingleGoalRow = (g: GoalRowFromHttp): string => {
       const targetStr = fmtTarget(g.type, g.target as Record<string, unknown>);
       const paused = isPaused(g);
+      // v0.0.1034b — sh / cs 提到 outer scope (treeHtml IIFE 内 sh 不可见时 1034
+      // header/mini-row 引用 sh 抛 ReferenceError 整片挂掉).
+      const sh = g.resource_shortage;
+      const cs = g.current_step;
       // v0.0.916 — isMain UI 已删 (owner "删掉主要任务"); 字段在 PG 仍存在
       // 仅 panel 不再渲染 mainStar/mainBtn/mainBg.
       const derived = deriveDisplayStatus(g, goals);
@@ -4156,7 +4160,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
               if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
               return String(Math.round(n));
             };
-            const sh = g.resource_shortage;
+            // v0.0.1034b — sh hoisted to renderSingleGoalRow outer scope (above).
             // v0.0.701 — operator 2026-06-03 "当前任务就是最终任务时, 不用比较资源".
             // identity 判定取代浮点比较: current_step.tech+level 等同 goal.target →
             // 没有 prereq 横在中间, 主行 shortage 与 step shortage 必然同一笔账,
@@ -4279,7 +4283,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       })();
       // v0.0.1034 — 当前任务 mini-row: 永远显 (即使主行 collapsed), 不参加折叠.
       // 显 currentStep tech+level + shortage chip + transport button.
-      const cs = g.current_step;
+      // cs hoisted to top of renderSingleGoalRow (v0.0.1034b).
       const currentStepRow = (cs && !isExpanded) ? (() => {
         const csh = cs.shortage;
         const bits = [
