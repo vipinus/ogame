@@ -4245,7 +4245,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // v0.0.488 — operator 2026-05-30 "bar 上要顯示星球坐標". Coord shows
       // inline on the bar even when collapsed, so operator can scan moons
       // without expanding.
-      const isExpanded = expandedGoalId === g.id;
+      // v0.0.1032 — owner 2026-06-09 "当前等待资源的任务不要折叠 能直接看到缺
+      // 多少资源和运输按钮": main goal 默认 expanded, cascade tree 直接可见,
+      // currentStep 路径的 tree node forceExpandKeys 已 unfold + 节点 inline
+      // 显 shortage chip + transport button (renderTreeNode L3899-3924).
+      const isExpanded = expandedGoalId === g.id || g.is_main_goal === true;
       const chevron = `<span style="color:#8090a8; font-size:10px; width:10px; display:inline-block; user-select:none;">${isExpanded ? "▾" : "▸"}</span>`;
       const coordChip = g.planet
         ? `<span style="color:#a0b0c8; font-size:10px; margin-left:4px;" title="${escapeHtml(g.planet)}">@${escapeHtml(g.planet)}</span>`

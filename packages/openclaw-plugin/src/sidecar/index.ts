@@ -979,11 +979,14 @@ export async function startSidecar(
         const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
         // v0.0.1012 — owner 2026-06-09 "总资源缺多少计算错了" 实证:
         // research goal (planetId=undefined, e.g. opt-energyTech) 老路径 bank
-        // = Object.values(planets)[0] 单 planet (4baba0e2 第一 33637818 m=571M
-        // 掩盖了真实 shortage). research 是 global, bank 该取 ALL planets sum.
-        // 后续 cascade 走 single-planet 的 production/buildtime 仍用 planet (代表),
-        // 但 bank 用全局合计反映"owner 全帝国能拿出多少".
-        const isGlobalResearch = !planetId && rootKind === "research";
+        // = Object.values(planets)[0] 单 planet 掩盖了真实 shortage. research
+        // 是 global, bank 该取 ALL planets sum.
+        // v0.0.1032 — owner 2026-06-09 再触发: v0.0.1030 createGoal 后 research
+        // goal 字段 planet=<某 planet>, !planetId=false → 走 single-planet bank,
+        // shortage 算错. research 本质 server-global, planet 字段只是 "owner 偏好
+        // 哪 planet 启动 cascade", 不影响 bank — 全改 `rootKind==="research"`
+        // 一律 empire-wide bank. 后续 cascade production/buildtime 仍用 planet.
+        const isGlobalResearch = rootKind === "research";
         const bank: { m: number; c: number; d: number } = isGlobalResearch
           ? Object.values(planets).reduce(
               (acc, p) => ({
