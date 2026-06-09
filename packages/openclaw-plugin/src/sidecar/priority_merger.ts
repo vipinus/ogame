@@ -813,10 +813,14 @@ export class PriorityMerger {
           // v0.0.995b — owner 实证: 33653036 deutSynth 33/33 是 buil-* 用户建的
           // 但 is_main_goal=false. 放宽 gate: buil-* / rsch-* / life-* / lifeb-* 都
           // 算 root user goal (owner 显式创建, 不是 opt-* 后台 emit), 允许 auto-complete.
-          // opt-*/exp-*/expb-*/colo-*/disc-* 等仍保持 blocked (v0.0.985 漂值风险面).
+          // opt-*/exp-*/expb-*/colo-* 等仍保持 blocked (v0.0.985 漂值风险面).
+          // v0.0.1038 — owner 2026-06-09 "受阻 ↳ all coords attempted — goal complete":
+          // disc-* (species_discovery) 加进允许列表. planner 算 completed.length>=total
+          // 是显式终态信号, 不依赖 building level 比对, 直接信任标记完成.
           const isRootUserGoal = goalRef.id.startsWith("buil-") ||
             goalRef.id.startsWith("rsch-") || goalRef.id.startsWith("life-") ||
-            goalRef.id.startsWith("lifeb-") || goalRef.is_main_goal === true;
+            goalRef.id.startsWith("lifeb-") || goalRef.id.startsWith("disc-") ||
+            goalRef.is_main_goal === true;
           let isMainTerminalComplete = false;
           if (isRootUserGoal && tgt && tgtLvl > 0) {
             if (tgt.building && planet) {
@@ -830,6 +834,13 @@ export class PriorityMerger {
               const inFlight = rq?.item?.research === tgt.research;
               if (cur >= tgtLvl && !inFlight) isMainTerminalComplete = true;
             }
+          }
+          // v0.0.1038 — disc-* (species_discovery) 没 building/research level 比对.
+          // planner reason "all N coords attempted — goal complete" 是显式终态信号,
+          // 直接信任 (planner 已 verify completed[].length == total).
+          if (isRootUserGoal && goalRef.id.startsWith("disc-") &&
+              /all \d+ coords attempted — goal complete/.test(result.blocked)) {
+            isMainTerminalComplete = true;
           }
           if (isMainTerminalComplete) {
             const tgtLabel = tgt?.building ?? tgt?.research ?? "?";
