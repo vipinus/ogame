@@ -1313,21 +1313,43 @@ export async function startSidecar(
                 virtualEnergy -= delta;
                 // Parent self-level
                 const cost = costFn(l);
-                if (currentStep === null) {
-                  currentStep = { tech: techName, kind, level: l, cost: { m: cost.m, c: cost.c, d: cost.d ?? 0 } };
+                // v0.0.1036b — energy-gated path (deutSynth 等) 漏了 v0.0.1036 in-queue
+                // skip. 检查 build_q: l 已在 ogame queue → 资源已扣, 不累加 totalCost,
+                // currentStep cost 设 0 让 cs.shortage 为 0.
+                let egStepOverride: number | null = null;
+                if (kind === "building" && planet) {
+                  const bq = (planet as { build_q?: { building?: string; level?: number; ends_at?: number } | null }).build_q;
+                  if (bq && bq.building === techName && bq.level === l && typeof bq.ends_at === "number" && bq.ends_at > Date.now()) {
+                    egStepOverride = Math.max(0, Math.floor((bq.ends_at - Date.now()) / 1000));
+                  }
                 }
-                totalCost.m += cost.m;
-                totalCost.c += cost.c;
-                totalCost.d += cost.d ?? 0;
-                // v0.0.773 — astro >= 4 跳 wait (同 outer loop)
-                const wait = postExpeditionPhase ? 0 : timeToAfford(cost);
-                if (!isFinite(wait)) { total = Infinity; break; }
-                if (!postExpeditionPhase) accumulate(wait);
-                const build = buildSec(cost, kind);
-                accumulate(build);
-                bank.m = Math.max(0, bank.m - cost.m);
-                bank.c = Math.max(0, bank.c - cost.c);
-                bank.d = Math.max(0, bank.d - (cost.d ?? 0));
+                if (currentStep === null) {
+                  currentStep = {
+                    tech: techName, kind, level: l,
+                    cost: egStepOverride !== null ? { m: 0, c: 0, d: 0 } : { m: cost.m, c: cost.c, d: cost.d ?? 0 },
+                  };
+                }
+                if (egStepOverride === null) {
+                  totalCost.m += cost.m;
+                  totalCost.c += cost.c;
+                  totalCost.d += cost.d ?? 0;
+                }
+                // v0.0.1036b — in-queue level: 用 ogame ETA 短路, 不扣 bank.
+                let wait: number, build: number;
+                if (egStepOverride !== null) {
+                  wait = 0;
+                  build = egStepOverride;
+                } else {
+                  // v0.0.773 — astro >= 4 跳 wait (同 outer loop)
+                  wait = postExpeditionPhase ? 0 : timeToAfford(cost);
+                  if (!isFinite(wait)) { total = Infinity; break; }
+                  if (!postExpeditionPhase) accumulate(wait);
+                  build = buildSec(cost, kind);
+                  accumulate(build);
+                  bank.m = Math.max(0, bank.m - cost.m);
+                  bank.c = Math.max(0, bank.c - cost.c);
+                  bank.d = Math.max(0, bank.d - (cost.d ?? 0));
+                }
                 const step = Math.round(wait + build);
                 cumulativeEta += step;
                 total += step;
