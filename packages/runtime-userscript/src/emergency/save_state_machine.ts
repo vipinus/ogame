@@ -101,6 +101,15 @@ export class SaveStateMachine {
   }
 
   notifyNewThreat(t: NewThreatInput): void {
+    // v0.0.1016 — owner 2026-06-09 "没有自动fs?" 实证: sidecar 15:06:40 收到
+    // spy events 但 FSM 没 LAUNCHING. FSM 在 FALLBACK 状态 (v0.0.989k 时
+    // 8 FSM 全 FALLBACK, 已修 v0.0.996 retry, 但 FALLBACK 持久, 后续 threat
+    // 进来只 add pending 不重新 LAUNCH). 修: 收到新 threat 时若 state=FALLBACK
+    // 或 RETURNED, 自动 reset 回 WATCHING, 让 handleThreat 流程能重新 LAUNCHING.
+    if (this.state === "FALLBACK" || this.state === "RETURNED") {
+      console.warn(`[fsm] new threat ${t.eventId} but state=${this.state} — reset to WATCHING for fresh handling`);
+      this.reset();
+    }
     this.pending.add(t.eventId);
   }
 
