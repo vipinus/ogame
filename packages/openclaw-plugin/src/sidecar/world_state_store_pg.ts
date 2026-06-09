@@ -487,8 +487,31 @@ export class WorldStateStorePg {
    * acceptable (next setMainGoal call will reconcile). SQLite primary
    * has the source of truth.
    */
-  async setMainGoal(userId: string, id: string | null): Promise<void> {
-    // Clear every other row for this user.
+  /**
+   * v0.0.1028 — owner 2026-06-09 "合并 root 任务和主任务的逻辑" + "新账号建造
+   * 树 一个星球一个树". setMainGoal 排他范围从 per-uid 收紧到 per-planet:
+   * 同 planet 旧 main → clear, 不同 planet main 保留独立运行. 全局型 goal
+   * (research / colonize / discovery 等无 planet 字段) 用 planetKey="" 自成一组.
+   *
+   * 调用约定: planetKey 必传 (createGoal 用 body.planet ?? ""), null 表示
+   * 跨 planet 清空 (兼容老 unsetMainGoal 全清场景).
+   */
+  async setMainGoal(userId: string, id: string | null, planetKey?: string | null): Promise<void> {
+    // null id + null planetKey = 全清 (老 unsetMainGoal 语义).
+    const clearAllPlanets = id === null && (planetKey === null || planetKey === undefined);
+    if (clearAllPlanets) {
+      await this.sql`
+        UPDATE ogame_goals
+           SET is_main_goal = false,
+               goal_json = jsonb_set(goal_json, '{is_main_goal}', 'false'::jsonb, true),
+               updated_at = NOW()
+         WHERE user_id = ${userId}
+           AND is_main_goal = true
+      `;
+      return;
+    }
+    const pk = planetKey ?? "";
+    // Per-planet 排他: clear 同 planet 旧 main (排除自己), 跨 planet main 保留.
     await this.sql`
       UPDATE ogame_goals
          SET is_main_goal = false,
@@ -497,6 +520,7 @@ export class WorldStateStorePg {
        WHERE user_id = ${userId}
          AND (${id}::varchar IS NULL OR id <> ${id})
          AND is_main_goal = true
+         AND COALESCE(goal_json->>'planet', '') = ${pk}
     `;
     if (id !== null) {
       await this.sql`

@@ -2116,7 +2116,11 @@ export async function startSidecar(
       const owner = await goalsStorePg.ownerOf(uid, id);
       if (!owner) return { ok: false, reason: "goal not found" };
       if (callerUid && owner !== callerUid) return { ok: false, reason: "goal not found" };
-      await pgStore.setMainGoal(uid, id);
+      // v0.0.1028 per-planet 排他: lookup goal's planet, 传给 setMainGoal.
+      const rows = await goalsStorePg.list(uid);
+      const row = rows.find((r) => r.goal.id === id);
+      const planetKey = (row?.goal as { planet?: string } | undefined)?.planet ?? "";
+      await pgStore.setMainGoal(uid, id, planetKey);
       triggerDispatch();
       return { ok: true };
     },
@@ -2214,6 +2218,11 @@ export async function startSidecar(
       }
       const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const nowTs = Date.now();
+      // v0.0.1028 — owner 2026-06-09 "合并 root 任务和主任务的逻辑, 从 TM 发的
+      // 任务默认就是主任务". TM panel 添加目标 = owner 显式 own 这个 planet 上的
+      // 顶层目标. 默认 is_main_goal=true, 让 planner cascade 顶层优先 + per-planet
+      // 渲染独立 cascade tree. 不再要求 owner 二次点 "设为主目标".
+      // setMainGoal 同步改成 per-planet 排他 (world_state_store_pg.ts).
       const addedRow: GoalRow = {
         goal: {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2221,14 +2230,18 @@ export async function startSidecar(
           target: body.target,
           ...(body.planet ? { planet: body.planet } : { planet: "" }),
           priority: typeof body.priority === "number" ? body.priority : 5,
-          is_main_goal: false,
+          is_main_goal: true,
           status: "pending", created_at: nowTs,
           progress_pct: 0, current_step: "queued", eta_at: null,
         },
         status: "pending", created_at: nowTs, updated_at: nowTs,
       };
       await pgStore.upsertGoal(createUid, addedRow);
-      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid.slice(0,8)}`);
+      // setMainGoal (per-planet 排他) — clear 同 planet 其它 main goal, 设这个为 main.
+      // body.planet 空 = 全局型 goal (research / discovery 等), 用 "" 作为 planet key
+      // 在 setMainGoal 里也走 per-planet 排他 (全局型自成一组, 不影响 planet-specific).
+      await pgStore.setMainGoal(createUid, id, body.planet ?? "");
+      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid.slice(0,8)} (is_main=true)`);
       triggerDispatch();
       return { ok: true, goal_id: id };
     },
@@ -3298,7 +3311,7 @@ export async function startSidecar(
             });
             if (existing) {
               if (!(existing.goal as { is_main_goal?: boolean }).is_main_goal) {
-                await pgStore!.setMainGoal(uid, existing.goal.id);
+                await pgStore!.setMainGoal(uid, existing.goal.id, planet);
               }
               return existing.goal.id;
             }
@@ -3319,7 +3332,7 @@ export async function startSidecar(
             status: "pending", created_at: now, updated_at: now,
           };
           await pgStore!.upsertGoal(uid, row);
-          await pgStore!.setMainGoal(uid, id);
+          await pgStore!.setMainGoal(uid, id, planet);
           triggerDispatch();
           return id;
         } catch (e) {
