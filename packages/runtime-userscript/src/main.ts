@@ -86,9 +86,13 @@ const _isLobby = /lobby\.ogame\.gameforge\.com/i.test(window.location.href);
 if (_inIframe) {
   console.info("[OgameX] running inside iframe — skipping boot (parent frame handles state)");
 } else if (_isLobby) {
-  // Post-server-reset: ogame redirects to lobby/hub. Auto-click play to
-  // re-enter the universe. Script re-loads on the new in-game URL.
-  maybeAutoLoginFromHub(window);
+  // v0.0.999b — owner 2026-06-09 "老账号卡登录页面 在登录页面的时候 先暂停TM
+  // 进去以后再继续": gameforge React click handler 跨 session/account 不稳定,
+  // userscript 介入反而让 owner 卡死 (v0.0.989k 实测 / v0.0.992 + v0.0.994
+  // fallback 都救不回). 改成 lobby 完全 no-op — owner 手动点 Last Played /
+  // Play, 进游戏后 boot() 正常跑.
+  console.info("[OgameX] on lobby — userscript paused, owner manually enters game");
+  void maybeAutoLoginFromHub; // import 保留兼容性, 不调用
 } else if (!_isGamePage) {
   console.info("[OgameX] not an in-game page (no ogame-universe-speed meta) — skipping boot");
 } else
