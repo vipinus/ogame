@@ -767,17 +767,20 @@ export class PriorityMerger {
       // planner, planner 的 picker 路径就读 optimizer 派的 opt-* 当真理.
       const result = this.planGoal(row.goal, state, this.allRowsForChain);
       if (isBlocked(result)) {
-        // v0.0.1018 — owner 2026-06-09 "你不要骗我": v0.0.1017 outbound 匹配
-        // 跟 v0.0.828 是同款短窗错误, 月→星几秒就到抓不到. 撤回.
-        // 真修在 dispatch 时 queue pendingFleetVerify, verifier 用 dst ship-diff
-        // 凭证 (durable, 不依赖任何短窗). 若该 goal 已在 pendingFleetVerify
-        // 队列 → 不写 blocked, 让 verifier 接管 (避免 planner.blocked 覆盖 verifier
-        // 的 completion).
-        const uidForVerify = getCurrentUserId() ?? "";
-        if (uidForVerify) {
-          const tenantForVerify = tenantRegistry.get(uidForVerify);
-          if (tenantForVerify.pendingFleetVerify.has(row.goal.id)) {
-            console.info(`[merger/skip-blocked-verify-pending] ${row.goal.id} planner blocked but pendingFleetVerify in flight — defer to verifier (planner reason: ${result.blocked})`);
+        // v0.0.1018 → v0.0.1019 — owner 2026-06-09 顶层设计: directive.id 是
+        // sidecar 给 fleet 的唯一编码, userscript ack success/failure 是 status
+        // 的权威源. planner 任何 blocked 不准覆盖 ack 写的 completed/cancelled.
+        // 实证 depl-mq6rmib0: 14:59:44 ack=true → completed, 15:00:45 planner
+        // race blocked 覆盖. 改 ackTerminalLock (5min) — atomic fleet ack 后
+        // 锁住 status, merger blocked-update 前 check, 锁未过期就 skip.
+        // 撤回 v0.0.1018 的 pendingFleetVerify check (ack 比 ship-diff 推断更
+        // 权威, 不需要 verifier 再 guess).
+        const uidForLock = getCurrentUserId() ?? "";
+        if (uidForLock) {
+          const tenantForLock = tenantRegistry.get(uidForLock);
+          const lockExpire = tenantForLock.ackTerminalLock.get(row.goal.id) ?? 0;
+          if (lockExpire > Date.now()) {
+            console.info(`[merger/skip-blocked-ack-locked] ${row.goal.id} planner blocked but ack terminal lock active (expires in ${Math.round((lockExpire - Date.now())/1000)}s) — ack is authoritative, skip blocked write (planner reason: ${result.blocked})`);
             if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
             continue;
           }

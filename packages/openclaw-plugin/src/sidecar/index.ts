@@ -2507,6 +2507,10 @@ export async function startSidecar(
             if (!isTransient && atomicCancelOk) {
               if (pgStore && lookupUid) {
                 await pgStore.updateGoalStatus(lookupUid, goalId, "cancelled", reason);
+                // v0.0.1019 — 同 success path 一致, atomic fleet cancel 也锁 5min
+                // 防 planner blocked race 覆盖 (cancelled 是 terminal).
+                ackTenant.ackTerminalLock.set(goalId, Date.now() + 5 * 60_000);
+                console.info(`[ack-lock] uid=${ackCtxUid?.slice(0,8) ?? "?"} ${goalId} → cancelled + lock 5min (atomic fleet ack)`);
               }
               priorityMergerRef?.clearAwaiting(goalId);
               priorityMergerRef?.clearDispatched(goalId);
@@ -2652,6 +2656,11 @@ export async function startSidecar(
               // making it look like "ack never arrived" to leg 2/3 downstream.
               if (pgStore && lookupUid2) {
                 await pgStore.updateGoalStatus(lookupUid2, goalId, "completed", null);
+                // v0.0.1019 — owner 2026-06-09 顶层 ack-authoritative 设计: 锁 5min
+                // 防 merger planner.blocked race 覆盖 completed. (实证 depl-mq6rmib0
+                // 14:59:44 ack=true 写 completed, 15:00:45 planner blocked 覆盖.)
+                ackTenant.ackTerminalLock.set(goalId, Date.now() + 5 * 60_000);
+                console.info(`[ack-lock] uid=${ackCtxUid?.slice(0,8) ?? "?"} ${goalId} → completed + lock 5min (atomic fleet ack)`);
               }
             }
             // v0.0.952 — fallbackCd=3600 hardcode + v0.0.953 [jg/local-mirror]

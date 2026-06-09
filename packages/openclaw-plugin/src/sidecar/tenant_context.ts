@@ -202,6 +202,13 @@ export interface TenantContext {
    *  state still showed empty build_q). key = `${planetId}:${building}` →
    *  last dispatch ts. planner gate: if within 60s, treat as build_q busy. */
   readonly recentBuildDispatchAt: Map<string, number>;
+  /** v0.0.1019 — owner 2026-06-09 顶层抓手: directive.id = 唯一编码, userscript
+   *  ack success=true/false 是 sidecar 写 goal status 的权威源. 但 planner
+   *  下个 tick 可能 race 覆盖 (实证 depl-mq6rmib0: 14:59:44 ack=true →
+   *  status=completed, 15:00:45 planner blocked 重写). 锁: goalId → expireAt
+   *  (5min). atomic fleet goal ack 写 completed/cancelled 后写入锁, merger
+   *  blocked-update 前 check 此锁, 在期内 skip 不覆盖. */
+  readonly ackTerminalLock: Map<string, number>;
 }
 
 export type FleetVerifyEntry = {
@@ -246,6 +253,7 @@ function newContext(): TenantContext {
     pendingFleetVerify: new Map<string, FleetVerifyEntry>(),
     alreadyAtTargetSince: new Map<string, number>(),
     recentBuildDispatchAt: new Map<string, number>(),
+    ackTerminalLock: new Map<string, number>(),
     // v0.0.881 — owner directive D
     expSeenFleetIdsByOrigin: new Map<string, Set<string>>(),
     expReturnedCountByOrigin: new Map<string, number>(),
