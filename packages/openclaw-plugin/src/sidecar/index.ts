@@ -2218,11 +2218,18 @@ export async function startSidecar(
       }
       const id = `${body.type.slice(0, 4)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const nowTs = Date.now();
-      // v0.0.1028 — owner 2026-06-09 "合并 root 任务和主任务的逻辑, 从 TM 发的
-      // 任务默认就是主任务". TM panel 添加目标 = owner 显式 own 这个 planet 上的
-      // 顶层目标. 默认 is_main_goal=true, 让 planner cascade 顶层优先 + per-planet
-      // 渲染独立 cascade tree. 不再要求 owner 二次点 "设为主目标".
-      // setMainGoal 同步改成 per-planet 排他 (world_state_store_pg.ts).
+      // v0.0.1030 — owner 2026-06-09 "research 绑定星球, 每个星球可以有自己的研究,
+      // 从 TM 建立的 就是 主任务, 其他任务都挂在主任务下面" — per-planet root tree
+      // 模型: 同 planet 第一个 TM-add = main, 后续 TM-add 自动挂 child (parent=
+      // existing main). 不再 setMainGoal 排他踢前 main. 实现"一个星球一棵树".
+      const planetKey = body.planet ?? "";
+      const allRowsForCheck = await goalsStorePg!.list(createUid);
+      const samePlanetMain = allRowsForCheck.find((r) =>
+        (r.goal as { planet?: string }).planet === planetKey &&
+        r.goal.is_main_goal === true &&
+        ["pending", "active", "blocked"].includes(r.status),
+      );
+      const willBeChild = !!samePlanetMain;
       const addedRow: GoalRow = {
         goal: {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2230,18 +2237,18 @@ export async function startSidecar(
           target: body.target,
           ...(body.planet ? { planet: body.planet } : { planet: "" }),
           priority: typeof body.priority === "number" ? body.priority : 5,
-          is_main_goal: true,
+          is_main_goal: !willBeChild,
+          ...(willBeChild ? { parent_goal_id: samePlanetMain.goal.id } : {}),
           status: "pending", created_at: nowTs,
           progress_pct: 0, current_step: "queued", eta_at: null,
         },
         status: "pending", created_at: nowTs, updated_at: nowTs,
       };
       await pgStore.upsertGoal(createUid, addedRow);
-      // setMainGoal (per-planet 排他) — clear 同 planet 其它 main goal, 设这个为 main.
-      // body.planet 空 = 全局型 goal (research / discovery 等), 用 "" 作为 planet key
-      // 在 setMainGoal 里也走 per-planet 排他 (全局型自成一组, 不影响 planet-specific).
-      await pgStore.setMainGoal(createUid, id, body.planet ?? "");
-      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid.slice(0,8)} (is_main=true)`);
+      if (!willBeChild) {
+        await pgStore.setMainGoal(createUid, id, planetKey);
+      }
+      console.log(`[goal/create] ${id} type=${body.type} planet=${body.planet ?? "(none)"} priority=${body.priority ?? 5} user=${createUid.slice(0,8)} ${willBeChild ? `(child of ${samePlanetMain.goal.id})` : "(is_main=true)"}`);
       triggerDispatch();
       return { ok: true, goal_id: id };
     },

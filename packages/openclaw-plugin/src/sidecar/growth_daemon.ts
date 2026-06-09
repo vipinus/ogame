@@ -21,10 +21,26 @@
  * growth-daemon 解决"无 main goal 殖民地长期成长"问题.
  */
 
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
 import type { WorldState } from "@ogamex/shared";
 import { mineProdRatio, cumulativeMineCost, buildSecondsForRange } from "./optimizer.js";
+
+// v0.0.1030 — owner 2026-06-09 "关掉 daemon": file-based kill switch.
+// touch ~/.openclaw/workspace/ogamex/runtime/growth-daemon.disabled (全局)
+// 或 growth-daemon.disabled.<uid8> (per-uid) → daemon 对应 uid 直接 skip.
+// 没文件 = 默认开. 重启不丢, owner ssh rm 撤回.
+const KILL_SWITCH_DIR = path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime");
+function isGrowthDaemonKilled(uid: string): boolean {
+  try {
+    if (fs.existsSync(path.join(KILL_SWITCH_DIR, "growth-daemon.disabled"))) return true;
+    if (fs.existsSync(path.join(KILL_SWITCH_DIR, `growth-daemon.disabled.${uid.slice(0, 8)}`))) return true;
+  } catch { /* fs error 不阻塞 daemon */ }
+  return false;
+}
 
 /** Closure deps injected by sidecar/index.ts boot — REUSES the existing
  *  createGoal + setMainGoal pipelines (with dedup + triggerDispatch + uid
@@ -190,6 +206,11 @@ export async function runGrowthDaemonOnce(
     }
   }
   if (!state) return { emitted: 0, skipped: 0 };
+  // v0.0.1030 — kill switch: owner-controlled 文件 sentinel, 优先级最高.
+  if (isGrowthDaemonKilled(uid)) {
+    console.info(`[growth-daemon] uid=${uid.slice(0, 8)} KILL-SWITCH active (sentinel file present)`);
+    return { emitted: 0, skipped: 0 };
+  }
   // v0.0.989b — owner 2026-06-08 "改错了 你又吧约束忘了 天体物理9 以上,
   // 不考虑 矿和存储罐". planner.ts:isPostExpeditionPhase + optimizer.ts:329
   // postPhaseSkipMine 都已用 astrophysics>=9 阈值跳过矿/存储 (post-expedition
