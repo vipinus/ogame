@@ -4273,7 +4273,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // v0.0.1034 — 主行总缺 + 运输按钮: 复用 sh + fillSrc (前面已算好) 渲 inline
       const fmtRes2 = (n: number): string => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n/1_000).toFixed(0)}K` : String(Math.round(n));
       const headerShortage = sh && (sh.m + sh.c + sh.d) > 0
-        ? `<span style="color:#ff9b6b; font-size:10px;">${escapeHtml(t('auto.289'))} ${sh.m > 0 ? `${fmtRes2(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes2(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes2(sh.d)} d` : ""}</span>`
+        ? `<span style="color:#ff9b6b; font-size:10px;" title="整条链累计缺 (target L9 整体)">📦 ${escapeHtml(t('auto.289'))} ${sh.m > 0 ? `${fmtRes2(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes2(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes2(sh.d)} d` : ""}</span>`
         : "";
       const headerFillBtn = (() => {
         const f = sh ?? { m: 0, c: 0, d: 0 };
@@ -4284,14 +4284,16 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // v0.0.1034 — 当前任务 mini-row: 永远显 (即使主行 collapsed), 不参加折叠.
       // 显 currentStep tech+level + shortage chip + transport button.
       // cs hoisted to top of renderSingleGoalRow (v0.0.1034b).
-      const currentStepRow = (cs && !isExpanded) ? (() => {
+      // v0.0.1035 — owner 2026-06-09 "永远显示不参加折叠" 字面含义: expanded
+      // 时也显. 去掉 !isExpanded gate. 加 "⚡ 当前缺" 跟 header "📦 总缺" 区分.
+      const currentStepRow = cs ? (() => {
         const csh = cs.shortage;
         const bits = [
           csh.m > 0 ? `${fmtRes2(csh.m)} m` : "",
           csh.c > 0 ? `${fmtRes2(csh.c)} c` : "",
           csh.d > 0 ? `${fmtRes2(csh.d)} d` : "",
         ].filter(Boolean).join(" · ");
-        const csShortageHtml = bits ? `<span style="color:#ff9b6b; font-size:10px;">${escapeHtml(t('auto.289'))} ${bits}</span>` : "";
+        const csShortageHtml = bits ? `<span style="color:#ff9b6b; font-size:10px;" title="当前正在干的这一步 cost - bank">⚡ ${escapeHtml(t('auto.289'))} ${bits}</span>` : "";
         const csTotal = csh.m + csh.c + csh.d;
         const csBtnHtml = csTotal > 0
           ? `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="background:#205a40; color:#fff; border:1px solid #408a60; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:10px;" title="${escapeHtml(t('auto.154'))}">${escapeHtml(t('auto.274'))}</button>`
