@@ -52,14 +52,22 @@ export function maybeAutoLoginFromHub(win: Window): boolean {
   } catch { /* */ }
   // Cooldown / kill-switch — checked BEFORE diagnostic too, so we don't
   // spam dumps on every reload during a loop.
-  if (clickCountTooMany(win)) {
-    console.warn("[OgameX/auto-login] kill-switch active. Run in console: " +
-      `localStorage.removeItem("${COUNT_KEY}"); localStorage.removeItem("${CLICKED_KEY}")`);
+  // v0.0.989k — owner 2026-06-09 "新账号不会自动登录": cooldown/kill-switch
+  // 之前 per-domain localStorage,owner 切换账号时旧账号的 cooldown 阻塞新账号
+  // 自动 click. 用当前 hub 上 serverDetails 文本 (universe 名+玩家数, e.g.
+  // "Titania – Players: 2040") 拼 key 后缀, 每账号互不影响. 同账号反复刷新
+  // 仍受 cooldown 保护.
+  const acctTag = readCurrentServerTag(win);
+  const clickedKey = acctTag ? `${CLICKED_KEY}_${acctTag}` : CLICKED_KEY;
+  const countKey = acctTag ? `${COUNT_KEY}_${acctTag}` : COUNT_KEY;
+  if (clickCountTooMany(win, countKey)) {
+    console.warn(`[OgameX/auto-login] kill-switch active for ${acctTag || "(no-tag)"}. Run in console: ` +
+      `localStorage.removeItem("${countKey}"); localStorage.removeItem("${clickedKey}")`);
     return false;
   }
-  if (alreadyClickedRecently(win)) {
-    const ageS = Math.round((Date.now() - readNum(win, CLICKED_KEY)) / 1000);
-    console.info(`[OgameX/auto-login] cooldown active (last click ${ageS}s ago). To force, clear ${CLICKED_KEY}.`);
+  if (alreadyClickedRecently(win, clickedKey)) {
+    const ageS = Math.round((Date.now() - readNum(win, clickedKey)) / 1000);
+    console.info(`[OgameX/auto-login] cooldown active for ${acctTag || "(no-tag)"} (last click ${ageS}s ago). To force, clear ${clickedKey}.`);
     return false;
   }
   // Operator directive: "直接点 last play". Always look for the
@@ -67,8 +75,20 @@ export function maybeAutoLoginFromHub(win: Window): boolean {
   // selector key if operator sets one explicitly.
   let savedSelector = "";
   try { savedSelector = win.localStorage.getItem(SELECTOR_KEY) ?? ""; } catch { /* */ }
-  runLastPlayClicker(win, savedSelector);
+  runLastPlayClicker(win, savedSelector, clickedKey, countKey);
   return true;
+}
+
+/** v0.0.989k — extract serverDetails text from hub to use as per-account
+ *  cooldown key suffix. Returns sanitized [a-z0-9_] or "" if absent. */
+function readCurrentServerTag(win: Window): string {
+  try {
+    const el = win.document.querySelector<HTMLElement>(".serverDetails")
+      ?? win.document.querySelector<HTMLElement>("[class*='serverDetails']");
+    if (!el) return "";
+    const txt = (el.textContent ?? "").trim().toLowerCase();
+    return txt.replace(/[^a-z0-9]+/g, "_").slice(0, 40);
+  } catch { return ""; }
 }
 
 function readNum(win: Window, key: string): number {
@@ -78,23 +98,23 @@ function readNum(win: Window, key: string): number {
     return Number.isFinite(n) ? n : 0;
   } catch { return 0; }
 }
-function alreadyClickedRecently(win: Window): boolean {
-  const ts = readNum(win, CLICKED_KEY);
+function alreadyClickedRecently(win: Window, clickedKey: string): boolean {
+  const ts = readNum(win, clickedKey);
   return ts > 0 && (Date.now() - ts) < COOLDOWN_MS;
 }
-function clickCountTooMany(win: Window): boolean {
+function clickCountTooMany(win: Window, countKey: string): boolean {
   try {
-    const raw = win.localStorage.getItem(COUNT_KEY);
+    const raw = win.localStorage.getItem(countKey);
     if (!raw) return false;
     const p = JSON.parse(raw) as { since: number; count: number };
     if (!p.since || (Date.now() - p.since) > ABORT_WINDOW_MS) return false;
     return p.count >= MAX_CLICKS_IN_WINDOW;
   } catch { return false; }
 }
-function markClicked(win: Window): void {
+function markClicked(win: Window, clickedKey: string, countKey: string): void {
   try {
-    win.localStorage.setItem(CLICKED_KEY, String(Date.now()));
-    const raw = win.localStorage.getItem(COUNT_KEY);
+    win.localStorage.setItem(clickedKey, String(Date.now()));
+    const raw = win.localStorage.getItem(countKey);
     let p: { since: number; count: number } | null = null;
     try { p = raw ? JSON.parse(raw) as { since: number; count: number } : null; } catch { /* */ }
     if (!p || (Date.now() - p.since) > ABORT_WINDOW_MS) {
@@ -102,7 +122,7 @@ function markClicked(win: Window): void {
     } else {
       p.count += 1;
     }
-    win.localStorage.setItem(COUNT_KEY, JSON.stringify(p));
+    win.localStorage.setItem(countKey, JSON.stringify(p));
   } catch { /* */ }
 }
 
@@ -156,7 +176,7 @@ function findLastPlayButton(doc: Document): HTMLElement | null {
   return null;
 }
 
-function runLastPlayClicker(win: Window, customSelector: string): void {
+function runLastPlayClicker(win: Window, customSelector: string, clickedKey: string, countKey: string): void {
   const label = customSelector ? `custom selector "${customSelector}"` : "Last Play button";
   console.info(`[OgameX/auto-login] looking for ${label}...`);
   const startedAt = Date.now();
@@ -185,7 +205,7 @@ function runLastPlayClicker(win: Window, customSelector: string): void {
     if (!target) target = findLastPlayButton(win.document);
     if (target) {
       console.info(`[OgameX/auto-login] clicking: ${describe(target)}`);
-      markClicked(win); // mark BEFORE click
+      markClicked(win, clickedKey, countKey); // mark BEFORE click
       try { target.click(); } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
       return;
     }
