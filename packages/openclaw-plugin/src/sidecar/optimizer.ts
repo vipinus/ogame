@@ -636,14 +636,17 @@ export async function runOptimizerOnce(
       // 永远负电. 用 snapE 兜底: 跟 formulaBudget 取最小, 让真实负电信号也能 fire.
       // 容差 -50: 避免 snapshot 抖动 / 计算延迟造成小负值反复 emit.
       const snapE = (planet as { resources?: { e?: number } }).resources?.e ?? 0;
-      // v0.0.989m — owner 2026-06-09 "不该先补电厂吗 电厂优化又没工作": planner
-      // forward-looking (deut L33 build → snapE -621) trigger plant emit, 但 optimizer
-      // current-only (formulaBudget=+7748) SKIP → planner 没 opt-* 可参 → 死锁.
-      // 修: forward-project snapE — 找该 planet 上 active user goal 中目标更高的
-      // mine/deut/crystal level, 用 mineEnergyConsumption(L_target) - mineEnergyConsumption(L_current)
-      // 总和减去, 看是否真未来会负. snapE 即时 + 目标 build 后增量耗电 = 预测.
+      // v0.0.989m → v0.0.993 — owner 2026-06-09 picked B (顶层修复):
+      // v0.0.989m 加了 forward-project, 但循环里 `projectedSnapE -= delta` 把同
+      // planet 上多个 active mine goal 的 delta **累加**, 实际 mine 串行 build,
+      // sum 会 oversize solar → solar 太贵建不起 → mine 也卡在 prereq 不动 → 死锁
+      // (eb990432 新账号 3 颗负电星球, opt-solar L19/L22 全 blocked on 24k crystal).
+      //
+      // 顶层模型: optimizer 只需 size solar to 覆盖**单个最大 mine 的下次 build**
+      // 即可. mine 串行完成, 其余 mine 在自己 prereq cascade 里再触发 opt-solar
+      // (chain emit). 用 MAX single delta 替代 SUM.
       const planetIdLocal = (planet as { id?: string }).id ?? "";
-      let projectedSnapE = snapE;
+      let maxMineDelta = 0;
       if (planetIdLocal) {
         for (const r of allRows) {
           if (!["active","blocked","pending","dispatched"].includes(r.status)) continue;
@@ -656,9 +659,10 @@ export async function runOptimizerOnce(
           const curLvl = (planet.buildings as Record<string, number> | undefined)?.[bld] ?? 0;
           if (lvl <= curLvl) continue;
           const delta = mineEnergyConsumption(bld, lvl) - mineEnergyConsumption(bld, curLvl);
-          projectedSnapE -= delta;
+          if (delta > maxMineDelta) maxMineDelta = delta;
         }
       }
+      const projectedSnapE = snapE - maxMineDelta;
       const realBudget = projectedSnapE < -50 || snapE < -50
         ? Math.min(formulaBudget, projectedSnapE, snapE)
         : Math.min(formulaBudget, projectedSnapE);
