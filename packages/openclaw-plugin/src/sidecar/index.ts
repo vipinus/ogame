@@ -977,12 +977,27 @@ export async function startSidecar(
       const postExpeditionPhase = (currentState?.research?.levels?.astrophysics ?? 0) >= 9;
       function simulate(rootTechName: string, rootTargetLevel: number, rootKind: "research" | "building", planetId: string | undefined, useTreeBuilder: "regular" | "lifeform"): { tree: PrereqTreeNode | null; total: number; totalCost: { m: number; c: number; d: number }; bankAtStart: { m: number; c: number; d: number }; currentStep: { tech: string; kind: "research" | "building"; level: number; cost: { m: number; c: number; d: number } } | null } {
         const planet = planetId ? planets[planetId] ?? Object.values(planets)[0] : Object.values(planets)[0];
-        // Initial bank — REAL planet resources at this moment.
-        const bank: { m: number; c: number; d: number } = {
-          m: planet?.resources?.m ?? 0,
-          c: planet?.resources?.c ?? 0,
-          d: planet?.resources?.d ?? 0,
-        };
+        // v0.0.1012 — owner 2026-06-09 "总资源缺多少计算错了" 实证:
+        // research goal (planetId=undefined, e.g. opt-energyTech) 老路径 bank
+        // = Object.values(planets)[0] 单 planet (4baba0e2 第一 33637818 m=571M
+        // 掩盖了真实 shortage). research 是 global, bank 该取 ALL planets sum.
+        // 后续 cascade 走 single-planet 的 production/buildtime 仍用 planet (代表),
+        // 但 bank 用全局合计反映"owner 全帝国能拿出多少".
+        const isGlobalResearch = !planetId && rootKind === "research";
+        const bank: { m: number; c: number; d: number } = isGlobalResearch
+          ? Object.values(planets).reduce(
+              (acc, p) => ({
+                m: acc.m + ((p as { resources?: { m?: number } })?.resources?.m ?? 0),
+                c: acc.c + ((p as { resources?: { c?: number } })?.resources?.c ?? 0),
+                d: acc.d + ((p as { resources?: { d?: number } })?.resources?.d ?? 0),
+              }),
+              { m: 0, c: 0, d: 0 },
+            )
+          : {
+              m: planet?.resources?.m ?? 0,
+              c: planet?.resources?.c ?? 0,
+              d: planet?.resources?.d ?? 0,
+            };
         // v0.0.730 — operator 2026-06-03 "按照服务器倍速计算就好了". Base
         // production.m_h is the UN-SPEED-ADJUSTED hourly rate (ogame's API
         // returns base rate; universe speed multiplier applies separately).
