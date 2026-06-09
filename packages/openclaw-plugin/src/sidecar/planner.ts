@@ -1152,20 +1152,18 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   const planet = Object.values(ctx.state.planets ?? {}).find((p) => p.id === planetId);
   if (!planet) return { blocked: `planet not found: ${planetId}` };
 
-  // v0.0.1007 → v0.0.1009 → v0.0.1013 — owner 2026-06-09 "造完又会负电, 没有用
-  // 预测模块吗?" 实证 33623250 e=24 (current 正), 在建 deutSynth L10, 完工后
-  // delta=-95 → e=-71 (forward-projected 负). 老 gate 只看 planetE < 0, 漏拦.
-  // 加 predicted-E: 算本次升级耗电 delta (mineEnergyConsumption 对 mine 类有效,
-  // 其他 building 0), e - delta 若 < 0 也 block.
-  // 顶层逻辑: 电厂建设优先 + 预测模块拉通 一刀切.
-  const planetE = (planet.resources as { e?: number } | undefined)?.e ?? 0;
+  // v0.0.1009 → v0.0.1013 → v0.0.1014 — owner 2026-06-09 "current e 这个没用了
+  // 就删掉吧": delta >= 0 时 projected = current - delta ≤ current, 所以
+  // current<0 必然 projected<0, `current<0` 是 `projected<0` 的子集. 删冗余.
+  // 顶层逻辑: 只看预测 E (forward-projected post-build). 任何 building 类 (mine
+  // 有 delta, 非 mine delta=0) 都走同一公式.
   const isEnergyFixPath = building === "solarPlant" || building === "fusionReactor";
   const isMineForEnergy = building === "metalMine" || building === "crystalMine" || building === "deuteriumSynth";
   const curLvlForE = (planet.buildings as Record<string, number> | undefined)?.[building] ?? 0;
   const deltaE = isMineForEnergy ? mineEnergyConsumption(building, targetLevel) - mineEnergyConsumption(building, curLvlForE) : 0;
-  const projectedE = planetE - deltaE;
-  if (!isEnergyFixPath && (planetE < 0 || projectedE < 0)) {
-    return { blocked: `energy gate (e=${Math.round(planetE)} → projected=${Math.round(projectedE)}, delta=${Math.round(deltaE)}) — ${building} L${targetLevel} blocked, energy fix has priority (build solar/fusion first)` };
+  const projectedE = ((planet.resources as { e?: number } | undefined)?.e ?? 0) - deltaE;
+  if (!isEnergyFixPath && projectedE < 0) {
+    return { blocked: `energy gate (projected=${Math.round(projectedE)}, delta=${Math.round(deltaE)}) — ${building} L${targetLevel} blocked, energy fix has priority (build solar/fusion first)` };
   }
 
   // v0.0.455: planet-only gate — reject up-front if the goal asks for a
