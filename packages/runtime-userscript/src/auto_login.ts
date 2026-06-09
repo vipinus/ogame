@@ -225,7 +225,23 @@ function runLastPlayClicker(win: Window, customSelector: string): void {
       }
       console.info(`[OgameX/auto-login] clicking (acct=${acctTagNow || "(no-tag)"}): ${describe(target)}`);
       markClicked(win, clickedKey, countKey);
+      const urlBeforeClick = win.location.href;
       try { target.click(); } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
+      // v0.0.994 — owner 2026-06-09 "新账号卡登录页面": gameforge React click
+      // handler 在某些 session/account 上抛 "Cannot set properties of null
+      // (setting 'location')" → 页面不跳. owner pasted console 实证. Last Played
+      // 按钮无 href, 完全靠 React routing, 它崩了 userscript click 也没用.
+      // Fallback: 3s 后 URL 没变 + 仍在 lobby → 直接 anchor 跳 /en_GB/accounts
+      // (账号选择列表, owner 再点一次进游戏). 不阻塞.
+      win.setTimeout(() => {
+        if (win.location.href === urlBeforeClick &&
+            /lobby\.ogame\.gameforge\.com/i.test(win.location.href)) {
+          console.warn("[OgameX/auto-login] Last Played click did not navigate within 3s " +
+            "(gameforge React handler likely threw). Falling back to /en_GB/accounts.");
+          try { win.location.href = "/en_GB/accounts"; }
+          catch (e) { console.warn("[OgameX/auto-login] /en_GB/accounts nav failed", e); }
+        }
+      }, 3000);
       return;
     }
     win.setTimeout(tick, POLL_MS);
