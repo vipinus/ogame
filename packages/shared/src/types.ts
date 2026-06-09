@@ -360,6 +360,10 @@ export type UpstreamMsg =
   | { type: "event.directive_completed"; directive_id: string; result: unknown }
   | { type: "event.extractor_failure"; extractor: string; raw_html_sample: string }
   | { type: "audit.condition_unmet"; rule_id: string; evidence: unknown }
+  /** v0.0.1033 — wire dispatch recycler (mission=8) 成功后 ack. sidecar 写
+   *  per-coord dispatched lock 跨 fleet ID + F5 reload 去重. owner 2026-06-09
+   *  "发完之后没有返回状态吗? 后台 sidecar 没有收到状态?" */
+  | { type: "expedition.harvest_dispatched"; origin_planet_id: string; galaxy: number; system: number; position: number; fleet_id: number; ship_type: string; ship_count: number }
   | { type: "pong"; ts: number };
 
 export type DownstreamMsg =

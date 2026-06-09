@@ -3497,6 +3497,12 @@ export async function startSidecar(
           }
           const g = dest[0], s = dest[1];
           if (typeof g !== "number" || typeof s !== "number") return "noop";
+          // v0.0.1033 — wire ack 后, harvestDispatchedCoords 写 coord, 这里直接 check.
+          const coordKey = `${originPlanet.id}→${g}:${s}`;
+          if (tenant.harvestDispatchedCoords.has(coordKey)) {
+            console.log(`[debris-check] SKIP coord-acked fleet ${fleetId} ${coordKey}`);
+            return "noop";
+          }
           firedSignals.add(signal);
           tenant.firedDebrisCheckFor.set(fleetId, firedSignals);
           const dbgMsg = { type: "expedition.debris_check" as const, galaxy: g, system: s, origin_planet_id: originPlanet.id, reason };
@@ -3756,6 +3762,15 @@ export async function startSidecar(
     } else {
       console.warn(`[ogamex/sidecar] emergency skipped — uid missing or untagged (subtype=${msg.subtype}); refusing fallback to operator channel`);
     }
+  });
+
+  // v0.0.1033 — wire 派完 ack 回, sidecar 直接标记 coord 已派.
+  ws.on("expedition.harvest_dispatched", (msg) => {
+    const m = msg as { origin_planet_id: string; galaxy: number; system: number };
+    const ctxUid = getCurrentUserId() ?? EMPTY_LEGACY_UID;
+    const coordKey = `${m.origin_planet_id}→${m.galaxy}:${m.system}`;
+    tenantRegistry.get(ctxUid).harvestDispatchedCoords.set(coordKey, Date.now());
+    console.info(`[debris-ack] uid=${ctxUid.slice(0, 8)} ${coordKey}`);
   });
 
   ws.on("hello", () => {

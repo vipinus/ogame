@@ -557,6 +557,24 @@ export async function wireBridge(
           // legitimate retry.
           recentHarvestDispatch.set(dedupKey, Date.now());
           dispatchedThisAttempt = true;
+          // v0.0.1033 — owner 2026-06-09 "发完之后没有返回状态吗? 后台 sidecar
+          // 没有收到状态?" — wire dispatch 成功后 ack 回 sidecar. sidecar 写
+          // per-coord lock 跨 fleet ID 去重, F5 reload 也不会重派.
+          // 单一权威源 = sidecar 端 firedDebrisCheckFor per-coord set.
+          try {
+            (client as unknown as { send: (m: unknown) => void }).send({
+              type: "expedition.harvest_dispatched",
+              origin_planet_id: origin,
+              galaxy: g,
+              system: s,
+              position: targetPosition,
+              fleet_id: result.fleetId,
+              ship_type: harvestShipKey,
+              ship_count: shipsToSend,
+            });
+          } catch (e) {
+            console.warn("[debris] ack send failed:", e);
+          }
           try {
             void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
               method: "POST", credentials: "omit",

@@ -128,6 +128,11 @@ export interface TenantContext {
    *  当前 returned = seenIds.size - currentOutboundCount; 若大于此值, fire 一次,
    *  update 为当前. wire.ts 6min dedup 兜底 fire-storm. */
   readonly expReturnedCountByOrigin: Map<string, number>;
+  /** v0.0.1033 — wire ack 回路 per-coord lock. key=`${origin_planet_id}→${G}:${S}:${P}`,
+   *  value=ts. wire 派 mission=8 成功后 ack, sidecar 写本 map; 下次 fireFor 检查
+   *  此 key 在 6min 内有值 → skip (跨 fleet ID, 跨 wire reload). 跟 [[single-decision-tree]]
+   *  对齐: sidecar 是 dispatched 真态权威源, 不再依赖 wire 端 in-memory dedup. */
+  readonly harvestDispatchedCoords: Map<string, number>;
   /** directive id → goal id. Source of truth for ack→goal mapping.
    *  Trimmed when the success/failure ack arrives. */
   readonly directiveToGoal: Map<string, string>;
@@ -257,6 +262,7 @@ function newContext(): TenantContext {
     // v0.0.881 — owner directive D
     expSeenFleetIdsByOrigin: new Map<string, Set<string>>(),
     expReturnedCountByOrigin: new Map<string, number>(),
+    harvestDispatchedCoords: new Map<string, number>(),
   };
 }
 

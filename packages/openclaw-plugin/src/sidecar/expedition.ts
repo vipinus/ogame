@@ -42,7 +42,7 @@ interface ExpeditionConfig {
   auto_build_ships?: boolean;
 }
 
-function loadExpeditionConfig(uid: string): ExpeditionConfig {
+export function loadExpeditionConfig(uid: string): ExpeditionConfig {
   if (!uid) {
     throw new Error("loadExpeditionConfig: uid required (no legacy fallback). [[single-decision-tree]]");
   }
