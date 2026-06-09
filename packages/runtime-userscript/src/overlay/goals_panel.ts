@@ -4221,7 +4221,12 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
                 goalPlanet: g.planet,
                 currentStep: g.current_step,
                 bodyBuildQ: g.body_build_q,
-                bypassFillBtn: samePrereqShortage,
+                // v0.0.989i — owner 2026-06-08 "当前在建的建筑的运输按钮没有了":
+                // samePrereqShortage=true (goal.targetLevel === currentStep.level,
+                // 即 goal 剩最后 1 级且当前在建该级) 时, 旧逻辑 bypassFillBtn 把整棵树
+                // 按钮全 skip 掉 → 缺资源但无 button → "运输按钮没了". 实际只该
+                // dedup root 行的 shortage 数字, 按钮该渲染就渲染. 撤 bypassFillBtn.
+                bypassFillBtn: false,
                 forceExpandKeys: collectCurrentStepPath(g.prereq_tree, g.current_step ?? null),
               })}
             </div>`;
