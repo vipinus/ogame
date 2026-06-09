@@ -86,13 +86,14 @@ const _isLobby = /lobby\.ogame\.gameforge\.com/i.test(window.location.href);
 if (_inIframe) {
   console.info("[OgameX] running inside iframe — skipping boot (parent frame handles state)");
 } else if (_isLobby) {
-  // v0.0.999b — owner 2026-06-09 "老账号卡登录页面 在登录页面的时候 先暂停TM
-  // 进去以后再继续": gameforge React click handler 跨 session/account 不稳定,
-  // userscript 介入反而让 owner 卡死 (v0.0.989k 实测 / v0.0.992 + v0.0.994
-  // fallback 都救不回). 改成 lobby 完全 no-op — owner 手动点 Last Played /
-  // Play, 进游戏后 boot() 正常跑.
-  console.info("[OgameX] on lobby — userscript paused, owner manually enters game");
-  void maybeAutoLoginFromHub; // import 保留兼容性, 不调用
+  // v0.0.999b → v0.0.1001 — owner 2026-06-09 "新账号没有自动登录" 反转:
+  // v0.0.999 一刀切撤掉 auto-login click, 新账号 (gameforge React 正常) 也失去
+  // 自动入场. 恢复 maybeAutoLoginFromHub call — 它含 v0.0.992 React-rendering
+  // 时序修 + v0.0.994 3s 失败 fallback /en_GB/accounts. 老账号 React crash 时
+  // fallback 兜底, 新账号正常 click 成功.
+  // owner 不想自动 click 可以 localStorage.setItem("OGAMEX_AUTO_LOGIN_DISABLED", "1")
+  // 显式关闭 (auto_login.ts:48).
+  maybeAutoLoginFromHub(window);
 } else if (!_isGamePage) {
   console.info("[OgameX] not an in-game page (no ogame-universe-speed meta) — skipping boot");
 } else
