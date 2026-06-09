@@ -3456,7 +3456,16 @@ export async function startSidecar(
             const dispatchedCount = Object.keys(entry.dispatchedShips).length;
             if (allShipsVerified && dispatchedCount > 0) {
               // v0.0.924 — 不再写 cd-mirror; sniffer 是 cd 唯一真值源.
-              console.info(`[fleet/verify] uid=${uid.slice(0,8)} VERIFIED ${entry.goalId} type=${entry.goalType}`);
+              // v0.0.1018 — owner 2026-06-09 "你不要骗我": queue-at-dispatch 路径
+              // 下, verifier VERIFIED 时也得写 completed (status 此前还是 "active"
+              // 或被 planner 改成 "blocked"). 显式 updateGoalStatus 让 panel /
+              // chain dispatcher 知道这条已闭环.
+              try {
+                await pgStore.updateGoalStatus(uid, entry.goalId, "completed", `fleet/verify VERIFIED (src/dst ship diff matched dispatched payload)`);
+                console.info(`[fleet/verify] uid=${uid.slice(0,8)} VERIFIED ${entry.goalId} type=${entry.goalType} → completed`);
+              } catch (e) {
+                console.warn(`[fleet/verify] updateGoalStatus completed ${entry.goalId} threw:`, e instanceof Error ? e.message : e);
+              }
               toRemove.push(entry.goalId);
             } else if (now > entry.deadline) {
               console.warn(`[fleet/verify] uid=${uid.slice(0,8)} TIMEOUT ${entry.goalId} type=${entry.goalType} after 5min — assume completed (lost snapshot)`);

@@ -767,44 +767,19 @@ export class PriorityMerger {
       // planner, planner 的 picker 路径就读 optimizer 派的 opt-* 当真理.
       const result = this.planGoal(row.goal, state, this.allRowsForChain);
       if (isBlocked(result)) {
-        // v0.0.1017 — owner 2026-06-09 "3 已经部署成功了，为什么还显示没有部署" +
-        // "不是手动完成的". 实证 depl-mq6rmib0 dispatched 14:59:43, ogame
-        // arrival 15:00:30 (fleet 0 cargo), 但 planner 在 15:00:45 重 eval
-        // 看 src 月球 0 LC → blocked. dispatchedAt 已清, outbound match 已扫过
-        // 没 fire. 真态是 fleet airborne / arrived 已经 dispatched 完成.
-        //
-        // 修: planner blocked + 该 goal 是 atomic fleet type → 扫 outbound 找
-        // 匹配 fleet (src/dst coord+type + mission). 找到 = 已 dispatched 完成,
-        // 直接 mark completed 而不是 blocked.
-        const atomicFleetTypes = new Set(["expedition","colonize","deploy","transport","jumpgate","species_discovery"]);
-        if (atomicFleetTypes.has(row.goal.type)) {
-          const tParams2 = row.goal.target as { source_planet?: string; target_coords?: string; target_type?: string };
-          const missionMap2: Record<string, number> = { expedition:15, colonize:7, deploy:4, transport:3 };
-          const expectMission2 = missionMap2[row.goal.type] ?? -1;
-          if (expectMission2 > 0) {
-            const srcId2 = tParams2.source_planet ?? (typeof row.goal.planet === "string" ? row.goal.planet : "");
-            const srcPlanet2 = srcId2 ? (Object.values(state.planets ?? {}).find((p) => p.id === srcId2)
-              ?? Object.values(state.planets ?? {}).find((p) => Array.isArray(p.coords) && p.coords.join(":") === srcId2)) : undefined;
-            const srcCoord2 = Array.isArray(srcPlanet2?.coords) ? srcPlanet2.coords.join(":") : "";
-            const srcType2 = (srcPlanet2 as { type?: string } | undefined)?.type ?? "planet";
-            const tgtCoord2 = typeof tParams2.target_coords === "string" ? tParams2.target_coords : "";
-            const tgtType2 = (tParams2.target_type ?? "planet").toLowerCase();
-            const normT = (t: unknown): string => { if (typeof t === "string") return t.toLowerCase(); if (t === 1) return "planet"; if (t === 2) return "debris"; if (t === 3) return "moon"; return ""; };
-            const airborne = (state.fleets_outbound ?? []).find((f) => {
-              if (f.mission !== expectMission2) return false;
-              if (!Array.isArray(f.origin) || f.origin.join(":") !== srcCoord2) return false;
-              if (tgtCoord2 && (!Array.isArray(f.dest) || f.dest.join(":") !== tgtCoord2)) return false;
-              if (srcType2 && normT((f as { origin_type?: unknown }).origin_type) !== srcType2) return false;
-              if (tgtType2 && normT((f as { dest_type?: unknown }).dest_type) !== tgtType2) return false;
-              return true;
-            });
-            if (airborne) {
-              console.info(`[merger/auto-complete-airborne] ${row.goal.id} fleet ${(airborne as {id?:string}).id ?? "?"} airborne mission=${expectMission2} ${srcCoord2}→${tgtCoord2} (planner blocked but ogame fleet flying) → completed`);
-              await this.updateStatusAndMirror(row.goal.id, "completed", `fleet airborne: planner blocked (${result.blocked}) but ogame fleet matched outbound`);
-              this.dispatchedAt.delete(row.goal.id);
-              skipped_terminal += 1;
-              continue;
-            }
+        // v0.0.1018 — owner 2026-06-09 "你不要骗我": v0.0.1017 outbound 匹配
+        // 跟 v0.0.828 是同款短窗错误, 月→星几秒就到抓不到. 撤回.
+        // 真修在 dispatch 时 queue pendingFleetVerify, verifier 用 dst ship-diff
+        // 凭证 (durable, 不依赖任何短窗). 若该 goal 已在 pendingFleetVerify
+        // 队列 → 不写 blocked, 让 verifier 接管 (避免 planner.blocked 覆盖 verifier
+        // 的 completion).
+        const uidForVerify = getCurrentUserId() ?? "";
+        if (uidForVerify) {
+          const tenantForVerify = tenantRegistry.get(uidForVerify);
+          if (tenantForVerify.pendingFleetVerify.has(row.goal.id)) {
+            console.info(`[merger/skip-blocked-verify-pending] ${row.goal.id} planner blocked but pendingFleetVerify in flight — defer to verifier (planner reason: ${result.blocked})`);
+            if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
+            continue;
           }
         }
         // v0.0.805 — operator 2026-06-05 "跳跃成功了 还卡在这里 是自动跳完
@@ -955,6 +930,57 @@ export class PriorityMerger {
       // v0.0.478: stamp dispatch time for time-anchored stuck-recovery and
       // in-flight dedup. Cleared by clearDispatched() in ack handler.
       this.dispatchedAt.set(row.goal.id, Date.now());
+      // v0.0.1018 — owner 2026-06-09 "你不要骗我": queue pendingFleetVerify
+      // at DISPATCH time (不是等 status=completed). 月→星几秒就到, outbound
+      // window 太短, 只有 destination ship-count diff 是 durable 凭证.
+      // verifier (index.ts:3426+) 30s tick 用 src/dst ship snapshot diff 确认,
+      // 命中 → updateGoalStatus completed.
+      const atomicFleetTypesForVerify = new Set(["jumpgate", "deploy", "transport"]);
+      if (atomicFleetTypesForVerify.has(row.goal.type)) {
+        const uidD = getCurrentUserId() ?? "";
+        if (uidD) {
+          const tenantD = tenantRegistry.get(uidD);
+          const tParams = row.goal.target as { source_moon?: string; target_moon?: string; source_planet?: string; target_coords?: string; target_type?: string; ships?: unknown };
+          const srcBodyId = tParams.source_moon ?? tParams.source_planet ?? (typeof row.goal.planet === "string" ? row.goal.planet : null);
+          if (srcBodyId) {
+            const planetsM = (state.planets ?? {}) as Record<string, unknown>;
+            const srcB = planetsM[srcBodyId] as { ships?: Record<string, number> } | undefined;
+            let tgtBodyId: string | null = null;
+            if (tParams.target_moon) {
+              tgtBodyId = tParams.target_moon;
+            } else if (tParams.target_coords) {
+              const tgtType = tParams.target_type ?? "planet";
+              for (const [pid, pU] of Object.entries(planetsM)) {
+                const p = pU as { coords?: readonly number[]; type?: string };
+                if ((p.coords ?? []).join(":") === tParams.target_coords && (p.type ?? "planet") === tgtType) {
+                  tgtBodyId = pid;
+                  break;
+                }
+              }
+            }
+            const tgtB = tgtBodyId ? planetsM[tgtBodyId] as { ships?: Record<string, number> } | undefined : undefined;
+            // v0.0.1018 — dispatched payload from directive result.params (planner
+            // 在 take_all 模式会把 source.ships 全 sweep 进 result.params.ships).
+            const dParams = result.params as Record<string, unknown>;
+            const dispatched_ships = (dParams["ships"] && typeof dParams["ships"] === "object" && !Array.isArray(dParams["ships"]))
+              ? dParams["ships"] as Record<string, number>
+              : (tParams.ships && typeof tParams.ships === "object" && !Array.isArray(tParams.ships) ? tParams.ships as Record<string, number> : {});
+            const nowMs = Date.now();
+            tenantD.pendingFleetVerify.set(row.goal.id, {
+              goalId: row.goal.id,
+              goalType: row.goal.type as "jumpgate" | "deploy" | "transport",
+              srcBodyId,
+              tgtBodyId,
+              srcShipsBefore: { ...(srcB?.ships ?? {}) },
+              tgtShipsBefore: { ...(tgtB?.ships ?? {}) },
+              dispatchedShips: { ...dispatched_ships },
+              ackTs: nowMs,
+              deadline: nowMs + 5 * 60_000,
+            });
+            console.info(`[fleet/verify/queue-at-dispatch] uid=${uidD.slice(0,8)} ${row.goal.id} type=${row.goal.type} src=${srcBodyId} tgt=${tgtBodyId ?? "(coord-only)"} dispatched=${JSON.stringify(dispatched_ships)}`);
+          }
+        }
+      }
       this.send({ type: "directive.dispatch", directive: result });
       dispatched.push(result);
       // v0.0.506 forensic — log every dispatch so duplicate-fleet bugs are
