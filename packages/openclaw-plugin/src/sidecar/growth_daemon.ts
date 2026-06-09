@@ -168,7 +168,18 @@ export async function runGrowthDaemonOnce(
   goalsStorePg: GoalsStorePg,
   worldStateStorePg: WorldStateStorePg,
 ): Promise<{ emitted: number; skipped: number }> {
-  const state = getStateForUid(uid);
+  // v0.0.989a — owner 2026-06-08: in-memory tenantRegistry only hydrates on
+  // active WS session; eb990432 silent-skipped first round despite having 3
+  // planets in PG. Fallback to PG read so daemon doesn't depend on WS state.
+  let state = getStateForUid(uid);
+  if (!state) {
+    try {
+      const hydrated = await worldStateStorePg.hydrate(uid);
+      if (hydrated) state = hydrated.state;
+    } catch (e) {
+      console.warn(`[growth-daemon] PG hydrate ${uid.slice(0,8)} failed:`, e instanceof Error ? e.message : e);
+    }
+  }
   if (!state) return { emitted: 0, skipped: 0 };
   const allRows = await goalsStorePg.list(uid);
   const econSpeed = (state as { server?: { speed?: number } }).server?.speed ?? 1;
