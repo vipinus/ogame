@@ -215,16 +215,23 @@ export async function runGrowthDaemonOnce(
     if (hasGrowthActive) { skipped++; continue; }
     const pick = pickBestGrowthAction(planet, econSpeed);
     if (!pick || pick.roi < MIN_ROI_VALUE) { skipped++; continue; }
-    const goalId = `growth-${planetId}-${pick.building}-L${pick.level}`;
+    // v0.0.989c — owner 2026-06-08 "没做到 一个星球一颗树": 单 build 节点不是 tree.
+    // 升级到长视野 (curLvl+5) + is_main_goal=true → planner cascade L+1..L+5 出树,
+    // panel 显主 tree, gate dedup 后该 planet 一棵长 tree 跑完才能再 emit.
+    const TREE_HORIZON_LEVELS = 5;
+    const buildings = (planet as { buildings?: Record<string, number> }).buildings ?? {};
+    const curLvl = buildings[pick.building] ?? 0;
+    const treeTargetLvl = curLvl + TREE_HORIZON_LEVELS;
+    const goalId = `growth-${planetId}-${pick.building}-L${treeTargetLvl}`;
     const now = Date.now();
     const goal = {
       id: goalId,
       type: "build" as const,
       planet: planetId,
-      target: { building: pick.building, level: pick.level },
+      target: { building: pick.building, level: treeTargetLvl },
       status: "pending" as const,
       priority: 7,
-      is_main_goal: false,
+      is_main_goal: true,
       current_step: "queued",
       created_at: now,
       progress_pct: 0,
