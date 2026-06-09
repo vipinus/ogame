@@ -369,7 +369,18 @@ export function startExpedition(deps: {
     (t as unknown as { unref: () => void }).unref();
   }
   // event-driven trigger — state.snapshot handler calls this when fleet returns.
+  // v0.0.1000 — owner 2026-06-09 "你有没有 spam ogame 服务器": v0.0.995c daemon
+  // gate 放开后, state.snapshot 风暴让 trigger 每 100ms 触发 → 1s emit 8 个 exp
+  // goals → 全部 dispatch → 全部 fail-recover → 又触发 snapshot → 死循环 → ogame
+  // /empire 503 storm. 加 per-uid 5s 节流, 同 uid 5s 内只允许 1 次 trigger.
+  // 期间任何 trigger 都 noop (event 丢失没事 — 60s base setInterval 兜底).
+  const TRIGGER_MIN_MS = 5000;
+  const lastTriggerAt = new Map<string, number>();
   const triggerForUid = (uid: string): void => {
+    const now = Date.now();
+    const last = lastTriggerAt.get(uid) ?? 0;
+    if (now - last < TRIGGER_MIN_MS) return; // throttled
+    lastTriggerAt.set(uid, now);
     const st = deps.getStateForUid(uid);
     if (!st) return;
     // Fire-and-forget — don't block snapshot handler.

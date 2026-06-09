@@ -2812,7 +2812,25 @@ export async function startSidecar(
   }, STATE_REFRESH_INTERVAL_MS);
   stateRefreshTimer.unref();
 
+  // v0.0.1000 — owner 2026-06-09 "你有没有 spam ogame 服务器": per-goal 60s
+  // cooldown 防不住 10 个 goals 各自 fire → 集体频率仍高 → userscript pollEmpire
+  // 风暴 → ogame /empire 503 storm. 加 GLOBAL 节流 (跨所有 reason): 最小 2s 一次
+  // data.refresh 广播. 期间任何 emit drop, 不重排队 (userscript 自有 60s base
+  // pollEmpire 兜底).
+  const GLOBAL_REFRESH_MIN_MS = 2000;
+  let lastGlobalRefreshAt = 0;
+  let globalDropCount = 0;
   const emitPostDirectiveRefresh = (reason: string): void => {
+    const now = Date.now();
+    if (now - lastGlobalRefreshAt < GLOBAL_REFRESH_MIN_MS) {
+      globalDropCount++;
+      if (globalDropCount % 20 === 1) {
+        console.info(`[refresh-throttle] dropped ${globalDropCount} emits in last window (latest reason=${reason})`);
+      }
+      return;
+    }
+    lastGlobalRefreshAt = now;
+    if (globalDropCount > 0) globalDropCount = 0;
     const msg: DownstreamMsg = { type: "data.refresh", scope: "all", reason };
     try { ws.send(msg); } catch (e) { console.warn("[ogamex/sidecar] emitPostDirectiveRefresh ws.send threw", e); }
     try { http.queueDownstream(msg); } catch (e) { console.warn("[ogamex/sidecar] emitPostDirectiveRefresh http.queue threw", e); }
