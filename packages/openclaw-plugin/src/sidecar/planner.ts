@@ -1152,6 +1152,20 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   const planet = Object.values(ctx.state.planets ?? {}).find((p) => p.id === planetId);
   if (!planet) return { blocked: `planet not found: ${planetId}` };
 
+  // v0.0.1007 — owner 2026-06-09 "新账号负电还在升矿" 第二次实证: oscillating
+  // dispatch (13:14:41 + 13:16:18 都 dispatch 了 crystalMine, 中间 1min 后才
+  // blocked). pickEnergyPrereqBuilding 在 pickAffordable=true 时 cascade 进 solar
+  // 但 owner 看 ogame 队列里仍是 crystalMine (build_q.building="crystalMine").
+  // 加最后一道硬闸: 任何 mine target (metalMine/crystalMine/deuteriumSynth) 在
+  // planet.resources.e < 0 时 planBuild 入口直接 blocked, 不走 cascade. 让 owner
+  // 在 panel 上看见明确原因 "energy negative — mine dispatch blocked at planBuild".
+  if (building === "metalMine" || building === "crystalMine" || building === "deuteriumSynth") {
+    const planetE = (planet.resources as { e?: number } | undefined)?.e ?? 0;
+    if (planetE < 0) {
+      return { blocked: `energy negative (e=${Math.round(planetE)}) — mine ${building} L${targetLevel} dispatch blocked at planBuild entry, build energy fix first` };
+    }
+  }
+
   // v0.0.455: planet-only gate — reject up-front if the goal asks for a
   // building that physically can't exist on a moon. Catches optimizer
   // mistakes like naniteFactory L7 on a moon (operator hit this 2026-05-29,
