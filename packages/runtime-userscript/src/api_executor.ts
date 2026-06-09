@@ -857,14 +857,32 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // 死路 + 双边单边写失败 race (v0.0.744 ships refresh stale spread 覆盖).
     const cdFromResp = (resp.cooldown ?? resp.nextActionAt ?? null) as number | null;
     if (cdFromResp !== null && Number.isFinite(cdFromResp) && cdFromResp > 0) {
+      // v0.0.1015 — owner 2026-06-09 "4leg 运输任务 拿不到跳跃门CD": resp.cooldown
+      // 是 src 侧 cd, 但 ogame 异 level JG 时 src/tgt cd 不同 (src JG L4 / tgt L7).
+      // 跟 v0.0.1005 page-world post-ack 修法对齐: parallel fetch 两边 overlay,
+      // 各拿 simpleCountdown(_, N) 后 4-arg 双边 commit. 任一失败 helper 退回单值.
       try {
-        const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, c: number) => void }).__ogamexCommitJgCd;
-        if (typeof commit === "function") {
-          commit(sourceMoonId, targetMoonId, cdFromResp);
-        } else {
-          console.warn(`[ApiExec/jumpgate] __ogamexCommitJgCd helper absent — JG cd not written to store`);
-        }
-      } catch (e) { console.warn(`[ApiExec/jumpgate] commit threw:`, e); }
+        const { fetchWithCpBypassBusy } = await import("./api/safe_fetch.js");
+        const pSrc = fetchWithCpBypassBusy(overlayUrl, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } }, sourceMoonId)
+          .then((r) => r.status === 200 ? r.text() : "").catch(() => "");
+        const pTgt = fetchWithCpBypassBusy(overlayUrl, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } }, targetMoonId)
+          .then((r) => r.status === 200 ? r.text() : "").catch(() => "");
+        void Promise.all([pSrc, pTgt]).then(([htmlSrc, htmlTgt]) => {
+          const mS = htmlSrc.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
+          const mT = htmlTgt.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
+          const srcCd2 = mS ? parseInt(mS[1], 10) : 0;
+          const tgtCd2 = mT ? parseInt(mT[1], 10) : 0;
+          const effSrc = srcCd2 > 0 ? srcCd2 : cdFromResp;
+          const effTgt = tgtCd2 > 0 ? tgtCd2 : cdFromResp;
+          const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, c: number, t2?: number) => void }).__ogamexCommitJgCd;
+          if (typeof commit === "function") {
+            commit(sourceMoonId, targetMoonId, effSrc, effTgt);
+            console.info(`[ApiExec/jumpgate/bilateral] resp.cooldown=${cdFromResp}s srcCd=${srcCd2}s tgtCd=${tgtCd2}s → commit(${effSrc},${effTgt})`);
+          } else {
+            console.warn(`[ApiExec/jumpgate] __ogamexCommitJgCd helper absent — JG cd not written to store`);
+          }
+        });
+      } catch (e) { console.warn(`[ApiExec/jumpgate] bilateral commit threw:`, e); }
     } else {
       // v0.0.954 — owner 2026-06-08 "没拿到cd": chain JG 不开 widget, DOM scrape
       // 不触发 → cd 永远 null. 补 api_executor 程序化 overlay fetch + 解析
@@ -883,29 +901,35 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         const tokF = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
         const tryFetchCd = async (attempt: number, delayMs: number): Promise<boolean> => {
           await new Promise((r) => setTimeout(r, delayMs));
-          let srcHtml = "";
+          // v0.0.1015 — owner 2026-06-09 "4leg 运输任务 拿不到跳跃门CD": fallback
+          // overlay 抓取也改 parallel 两边 (cp=src + cp=tgt) → 4-arg 双边 commit.
+          let srcHtml = "", tgtHtml = "";
           try {
-            const srcRes = await fetchWithCpBypassBusy(
-              overlayUrl,
-              { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } },
-              sourceMoonId,
-            );
-            srcHtml = srcRes.status === 200 ? await srcRes.text() : "";
-          } catch (e) { console.warn(`[ApiExec/jumpgate] attempt=${attempt} fetch threw:`, e); }
-          const m = srcHtml.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
-          const srcCd = m ? parseInt(m[1], 10) : 0;
+            const [srcRes, tgtRes] = await Promise.all([
+              fetchWithCpBypassBusy(overlayUrl, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } }, sourceMoonId).catch(() => null),
+              fetchWithCpBypassBusy(overlayUrl, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } }, targetMoonId).catch(() => null),
+            ]);
+            srcHtml = (srcRes && srcRes.status === 200) ? await srcRes.text() : "";
+            tgtHtml = (tgtRes && tgtRes.status === 200) ? await tgtRes.text() : "";
+          } catch (e) { console.warn(`[ApiExec/jumpgate] attempt=${attempt} parallel fetch threw:`, e); }
+          const mS = srcHtml.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
+          const mT = tgtHtml.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
+          const srcCd = mS ? parseInt(mS[1], 10) : 0;
+          const tgtCd = mT ? parseInt(mT[1], 10) : 0;
           try {
             void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
               method: "POST", credentials: "omit",
               headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tokF}` },
-              body: JSON.stringify({ tag: "JG-CD-OVERLAY-v0982", text: `attempt=${attempt} src=${sourceMoonId} tgt=${targetMoonId} htmlLen=${srcHtml.length} cdSec=${srcCd} snip=${srcHtml.slice(0, 1500)}` }),
+              body: JSON.stringify({ tag: "JG-CD-OVERLAY-v1015", text: `attempt=${attempt} src=${sourceMoonId} tgt=${targetMoonId} srcLen=${srcHtml.length} tgtLen=${tgtHtml.length} srcCd=${srcCd} tgtCd=${tgtCd}` }),
             }).catch(() => { /* */ });
           } catch { /* */ }
-          if (srcCd > 0) {
-            const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, c: number) => void }).__ogamexCommitJgCd;
+          if (srcCd > 0 || tgtCd > 0) {
+            const commit = (this.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, c: number, t2?: number) => void }).__ogamexCommitJgCd;
             if (typeof commit === "function") {
-              commit(sourceMoonId, targetMoonId, srcCd);
-              console.info(`[ApiExec/jumpgate] cd parsed attempt=${attempt} ${srcCd}s src=${sourceMoonId} tgt=${targetMoonId}`);
+              const effSrc = srcCd > 0 ? srcCd : tgtCd;
+              const effTgt = tgtCd > 0 ? tgtCd : srcCd;
+              commit(sourceMoonId, targetMoonId, effSrc, effTgt);
+              console.info(`[ApiExec/jumpgate] bilateral cd attempt=${attempt} src=${effSrc}s tgt=${effTgt}s`);
               return true;
             }
           }

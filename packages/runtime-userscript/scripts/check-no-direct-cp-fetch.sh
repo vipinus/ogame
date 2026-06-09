@@ -56,7 +56,11 @@ EOF
 ALLOW_LIST_DIRECTIVE=$(cat <<'EOF'
 src/api_executor.ts:141
 src/api_executor.ts:405
+src/api_executor.ts:866
+src/api_executor.ts:868
 src/api_executor.ts:888
+src/api_executor.ts:909
+src/api_executor.ts:910
 EOF
 )
 
