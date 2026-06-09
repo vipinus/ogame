@@ -190,26 +190,13 @@ function runLastPlayClicker(win: Window, customSelector: string): void {
     }
     if (!target) target = findLastPlayButton(win.document);
     if (target) {
-      // v0.0.1003 — owner "不要限制登录, 你不spam就不会被封": 撤掉 cooldown
-      // / kill-switch / per-account counter, 直接 click.
+      // v0.0.1004 — owner 2026-06-09 "不能登录 新老账号统一点last play登录游戏":
+      // 撤掉 v0.0.994 3s 跳 /en_GB/accounts 兜底 — 它会把 owner 从 hub 拉去
+      // 账号列表页 → 新 lobby URL → maybeAutoLoginFromHub 再触发 → 找不到
+      // Last Played → 死循环卡 lobby. 统一只做一件事: click Last Played.
+      // gameforge React 真崩了 owner 自己刷新, 我们不偷偷跳别处.
       console.info(`[OgameX/auto-login] clicking: ${describe(target)}`);
-      const urlBeforeClick = win.location.href;
       try { target.click(); } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
-      // v0.0.994 — owner 2026-06-09 "新账号卡登录页面": gameforge React click
-      // handler 在某些 session/account 上抛 "Cannot set properties of null
-      // (setting 'location')" → 页面不跳. owner pasted console 实证. Last Played
-      // 按钮无 href, 完全靠 React routing, 它崩了 userscript click 也没用.
-      // Fallback: 3s 后 URL 没变 + 仍在 lobby → 直接 anchor 跳 /en_GB/accounts
-      // (账号选择列表, owner 再点一次进游戏). 不阻塞.
-      win.setTimeout(() => {
-        if (win.location.href === urlBeforeClick &&
-            /lobby\.ogame\.gameforge\.com/i.test(win.location.href)) {
-          console.warn("[OgameX/auto-login] Last Played click did not navigate within 3s " +
-            "(gameforge React handler likely threw). Falling back to /en_GB/accounts.");
-          try { win.location.href = "/en_GB/accounts"; }
-          catch (e) { console.warn("[OgameX/auto-login] /en_GB/accounts nav failed", e); }
-        }
-      }, 3000);
       return;
     }
     win.setTimeout(tick, POLL_MS);
