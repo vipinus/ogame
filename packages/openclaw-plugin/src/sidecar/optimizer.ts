@@ -648,6 +648,7 @@ export async function runOptimizerOnce(
     // 的某个 active goal. 全 uid 都不缺电的话 cleanup-global (本函数末尾) 兜底 cancel.
     {
       // 计算每个 planet 的 projected E (snapE - max single mine delta).
+      // v0.0.1025 — 同 main forward-projection: 跳过 blocked mine, 避免循环锁.
       const planetProjE = new Map<string, number>();
       for (const planet of Object.values(planetsMap)) {
         const pid = (planet as { id?: string }).id ?? "";
@@ -655,7 +656,7 @@ export async function runOptimizerOnce(
         const snapE = (planet as { resources?: { e?: number } }).resources?.e ?? 0;
         let maxDelta = 0;
         for (const r of allRows) {
-          if (!["active","blocked","pending","dispatched"].includes(r.status)) continue;
+          if (!["active","pending","dispatched"].includes(r.status)) continue;
           if ((r.goal as { planet?: string }).planet !== pid) continue;
           const tgt = r.goal.target as { building?: string; level?: number } | undefined;
           const bld = tgt?.building;
@@ -741,7 +742,17 @@ export async function runOptimizerOnce(
       let maxMineDelta = 0;
       if (planetIdLocal) {
         for (const r of allRows) {
-          if (!["active","blocked","pending","dispatched"].includes(r.status)) continue;
+          // v0.0.1025 — owner 2026-06-09 "电够为什么建电厂" 实证 33674107: e=+6218
+          // (够), 但 PG 仍派 opt-solarPlant. 真因循环锁:
+          //   buil-deutSynth-L33 → planner hard-gate blocked (projected=-1035)
+          //   forward-projection 仍把它算进 delta
+          //   → realBudget<0 → emit opt-solar → blocked m short
+          //   → deutSynth 永远不动 → e 永远 +6218 → 实际不缺
+          //   ↑ 但 forward-projection 还说缺, 死锁
+          // 修: forward-projection 只 count 真会落地的 mine (status ∈ active/
+          // pending/dispatched). blocked 的 mine 不动, 也就不会消耗 energy,
+          // 别把它纳入 projection.
+          if (!["active","pending","dispatched"].includes(r.status)) continue;
           if ((r.goal as { planet?: string }).planet !== planetIdLocal) continue;
           const tgt = r.goal.target as { building?: string; level?: number } | undefined;
           const bld = tgt?.building;
@@ -924,10 +935,11 @@ export async function runOptimizerOnce(
       const snapE = (planet as { resources?: { e?: number } }).resources?.e ?? 0;
       if (snapE < 0) { anyNeedsEnergyFix = true; break; }
       // forward-project: 检查该 planet 的 active mine goal 是否会让 e 变负
+      // v0.0.1025 — 同前 2 处: blocked mine 不算 (循环锁修复).
       const pid = (planet as { id?: string }).id ?? "";
       let maxDelta = 0;
       for (const r of allRows) {
-        if (!["active","blocked","pending","dispatched"].includes(r.status)) continue;
+        if (!["active","pending","dispatched"].includes(r.status)) continue;
         if ((r.goal as { planet?: string }).planet !== pid) continue;
         const tgt = r.goal.target as { building?: string; level?: number } | undefined;
         const bld = tgt?.building;
