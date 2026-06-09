@@ -4249,11 +4249,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // v0.0.488 — operator 2026-05-30 "bar 上要顯示星球坐標". Coord shows
       // inline on the bar even when collapsed, so operator can scan moons
       // without expanding.
-      // v0.0.1034 — owner 2026-06-09 "goals 手风琴折叠 / 主任务后显总缺+运输按钮 /
-      // 当前任务后显缺+运输按钮 / 当前任务永远不折叠".
-      // 撤 v0.0.1032 默认 main expanded — 恢复 single-accordion. 主行 collapsed
-      // 时仍展示: 总缺资源 + 运输按钮 (chain total) + 当前 active node 单独露出
-      // (mini-row, 不参加折叠) 显 step shortage + step transport button.
+      // v0.0.1037 — owner 2026-06-09 "取消 L5 不折叠, 总资源显示在天体物理 9 后面,
+      // 等资源时当前资源显示在总资源的位置": 删 mini-row (currentStepRow), chip 改
+      // 挂在 target name 后面 (collapsed 用 collapsedRow2 同行, expanded 用 targetStr
+      // 同行). 切换逻辑: cs 跟 body_build_q 匹配 (in-queue) → 显 chain total 缺;
+      // cs 不在 queue (等资源) → 用 cs.shortage 替代显当前 step 缺.
       const isExpanded = expandedGoalId === g.id;
       const chevron = `<span style="color:#8090a8; font-size:10px; width:10px; display:inline-block; user-select:none;">${isExpanded ? "▾" : "▸"}</span>`;
       const coordChip = g.planet
@@ -4270,61 +4270,35 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const collapsedRow2 = (lvlForRow2 || g.planet)
         ? `<span style="color:#8090a8;">${lvlForRow2 ? escapeHtml(lvlForRow2) : ""}${lvlForRow2 && g.planet ? " " : ""}${g.planet ? `@${escapeHtml(g.planet)}` : ""}</span>`
         : "";
-      // v0.0.1034 — 主行总缺 + 运输按钮: 复用 sh + fillSrc (前面已算好) 渲 inline
       const fmtRes2 = (n: number): string => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n/1_000).toFixed(0)}K` : String(Math.round(n));
-      const headerShortage = sh && (sh.m + sh.c + sh.d) > 0
-        ? `<span style="color:#ff9b6b; font-size:10px;" title="整条链累计缺 (target L9 整体)">📦 ${escapeHtml(t('auto.289'))} ${sh.m > 0 ? `${fmtRes2(sh.m)} m` : ""}${sh.c > 0 ? `${sh.m > 0 ? " · " : ""}${fmtRes2(sh.c)} c` : ""}${sh.d > 0 ? `${(sh.m + sh.c) > 0 ? " · " : ""}${fmtRes2(sh.d)} d` : ""}</span>`
+      // v0.0.1037 — 选 chip 源:
+      //   in-queue (bqMatchesCS): chain total shortage (主行运资源给后续 dispatch)
+      //   等资源 (cs 真态没在 ogame queue): 用 cs.shortage 替代 (这一步要凑多少)
+      const bqForChip = g.body_build_q;
+      const bqMatchesCS = !!(cs && bqForChip && bqForChip.tech === cs.tech
+        && bqForChip.level === cs.level && (bqForChip.ends_at ?? 0) > Date.now());
+      const chipSrc: { m: number; c: number; d: number } = (cs && !bqMatchesCS)
+        ? cs.shortage
+        : (sh ?? { m: 0, c: 0, d: 0 });
+      const chipLabel = bqMatchesCS ? "📦" : "⚡";
+      const chipTitle = bqMatchesCS ? "整条链累计缺 (后续 dispatch)" : "当前等待的一步 cost - bank";
+      const chipHasValue = (chipSrc.m + chipSrc.c + chipSrc.d) > 0;
+      const targetChipHtml = chipHasValue
+        ? `<span style="color:#ff9b6b; font-size:10px; margin-left:6px;" title="${chipTitle}">${chipLabel} ${escapeHtml(t('auto.289'))} ${chipSrc.m > 0 ? `${fmtRes2(chipSrc.m)} m` : ""}${chipSrc.c > 0 ? `${chipSrc.m > 0 ? " · " : ""}${fmtRes2(chipSrc.c)} c` : ""}${chipSrc.d > 0 ? `${(chipSrc.m + chipSrc.c) > 0 ? " · " : ""}${fmtRes2(chipSrc.d)} d` : ""}</span>`
         : "";
-      const headerFillBtn = (() => {
-        const f = sh ?? { m: 0, c: 0, d: 0 };
-        if ((f.m + f.c + f.d) <= 0) return "";
-        const tgB = g.target as { building?: unknown } | undefined;
-        return `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(String(tgB?.building ?? ""))}" data-fill-m="${Math.ceil(f.m)}" data-fill-c="${Math.ceil(f.c)}" data-fill-d="${Math.ceil(f.d)}" style="${btnStyle("#205a40", "#408a60")} font-size:10px; padding:1px 6px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`;
-      })();
-      // v0.0.1034 — 当前任务 mini-row: 永远显 (即使主行 collapsed), 不参加折叠.
-      // v0.0.1035 — 去掉 !isExpanded gate. 加 "⚡ 当前缺" 跟 header "📦 总缺" 区分.
-      // v0.0.1036 — owner 2026-06-09 "已经在研究 L5 了 L5 后面不显示缺多少不显示
-      // 运输, 只有等资源的时候才显示": cs 跟 ogame body_build_q 匹配 (in-queue) →
-      // 只显倒计时 ETA, 不显 shortage chip / transport button.
-      const currentStepRow = cs ? (() => {
-        const bq = g.body_build_q;
-        const bqMatchesCS = bq && bq.tech === cs.tech && bq.level === cs.level
-          && (bq.ends_at ?? 0) > Date.now();
-        const kindIcon = cs.kind === "research" ? "🧪" : "🏗";
-        if (bqMatchesCS) {
-          const etaSec = Math.max(0, Math.round(((bq!.ends_at ?? 0) - Date.now()) / 1000));
-          return `<div style="margin-top:3px; padding:3px 6px 3px 18px; background:#1a2332; border-left:2px solid #408a60; font-size:11px; color:#cfd6e2; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-            <span>${kindIcon} ${escapeHtml(techName(cs.tech))} <span style="color:#8090a8;">L${cs.level}</span></span>
-            <span style="color:#7cfc00; font-size:10px;">⏱ ${fmtSeconds(etaSec)}</span>
-          </div>`;
-        }
-        const csh = cs.shortage;
-        const bits = [
-          csh.m > 0 ? `${fmtRes2(csh.m)} m` : "",
-          csh.c > 0 ? `${fmtRes2(csh.c)} c` : "",
-          csh.d > 0 ? `${fmtRes2(csh.d)} d` : "",
-        ].filter(Boolean).join(" · ");
-        const csShortageHtml = bits ? `<span style="color:#ff9b6b; font-size:10px;" title="当前正在干的这一步 cost - bank">⚡ ${escapeHtml(t('auto.289'))} ${bits}</span>` : "";
-        const csTotal = csh.m + csh.c + csh.d;
-        const csBtnHtml = csTotal > 0
-          ? `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs.tech)}" data-fill-m="${Math.ceil(csh.m)}" data-fill-c="${Math.ceil(csh.c)}" data-fill-d="${Math.ceil(csh.d)}" style="background:#205a40; color:#fff; border:1px solid #408a60; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:10px;" title="${escapeHtml(t('auto.154'))}">${escapeHtml(t('auto.274'))}</button>`
-          : "";
-        return `<div style="margin-top:3px; padding:3px 6px 3px 18px; background:#1a2332; border-left:2px solid #408a60; font-size:11px; color:#cfd6e2; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-          <span>${kindIcon} ${escapeHtml(techName(cs.tech))} <span style="color:#8090a8;">L${cs.level}</span></span>
-          ${csShortageHtml}${csBtnHtml}
-        </div>`;
-      })() : "";
+      const targetFillBtnHtml = chipHasValue
+        ? `<button data-action-fill-shortage="${escapeHtml(g.id)}" data-fill-target="${escapeHtml(g.planet ?? "")}" data-fill-building="${escapeHtml(cs && !bqMatchesCS ? cs.tech : String((g.target as { building?: unknown })?.building ?? ""))}" data-fill-m="${Math.ceil(chipSrc.m)}" data-fill-c="${Math.ceil(chipSrc.c)}" data-fill-d="${Math.ceil(chipSrc.d)}" style="${btnStyle("#205a40", "#408a60")} font-size:10px; padding:1px 6px; margin-left:4px;" title="${escapeHtml(t('auto.153'))}">${escapeHtml(t('auto.274'))}</button>`
+        : "";
       return `
         <div style="border-top: 1px solid #2a3a52; padding: 6px 0;">
           <div data-action-toggle-expand="${escapeHtml(g.id)}" style="display:flex; align-items:center; gap:6px; justify-content:space-between; cursor:pointer;" title="${isExpanded ? t("auto.257") : t("auto.258")}">
-            <span style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">${chevron}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${coordChip}${etaAtBadge}${awaitingChip}${headerShortage}${headerFillBtn}</span>
+            <span style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">${chevron}${optIcon}<span style="color:${color}; font-weight:bold;">${escapeHtml(displayStatus)}</span>${coordChip}${etaAtBadge}${awaitingChip}</span>
             <span style="color:#8090a8; font-size:10px;">P${g.priority}</span>
             <span style="display:flex; gap:4px; flex-wrap:wrap;" data-stop-toggle="1">${retryBtn}${pauseOrResume}${cancelBtn}</span>
           </div>
           ${isExpanded
-            ? `<div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer; font-size:11px;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</div>`
-            : (collapsedRow2 ? `<div data-action-toggle-expand="${escapeHtml(g.id)}" style="margin-top:2px; cursor:pointer; font-size:10px; padding-left:16px;">${collapsedRow2}</div>` : "")}
-          ${currentStepRow}
+            ? `<div style="margin-top:2px; font-size:11px; display:flex; align-items:center; flex-wrap:wrap;"><span data-action-toggle-expand="${escapeHtml(g.id)}" style="cursor:pointer;"><strong style="color:#e0e8f0;">${escapeHtml(t(`goal.type.${g.type}`))}</strong> ${escapeHtml(targetStr)}</span>${targetChipHtml}${targetFillBtnHtml}</div>`
+            : (collapsedRow2 ? `<div style="margin-top:2px; font-size:10px; padding-left:16px; display:flex; align-items:center; flex-wrap:wrap;"><span data-action-toggle-expand="${escapeHtml(g.id)}" style="cursor:pointer;">${collapsedRow2}</span>${targetChipHtml}${targetFillBtnHtml}</div>` : "")}
           ${detailBlock}
         </div>`;
     };
