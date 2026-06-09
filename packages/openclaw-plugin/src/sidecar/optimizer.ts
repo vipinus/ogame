@@ -18,7 +18,7 @@ import { buildingSec as sharedBuildingSec, TECH_TREE } from "@ogamex/shared";
 import type { WorldState } from "@ogamex/shared";
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
-import { mineEnergyConsumption, solarProduction, fusionProduction, pickEnergyFixCandidates } from "./planner.js";
+import { mineEnergyConsumption, solarProduction, fusionProduction, pickEnergyFixCandidates, pickEnergyPrereqBuilding } from "./planner.js";
 
 interface TechCost {
   kind: "research" | "building" | "ship" | "defense";
@@ -480,18 +480,33 @@ export async function runOptimizerOnce(
     console.info(`[optimizer/dbg] uid=${uid.slice(0, 8)} goal=${rawGoal.id} type=${rawGoal.type} cands=${r.candidates.length} top3=[${top3}]`);
     const best = r.candidates[0];
     if (!best || best.savings < AUTO_SAVINGS_THRESHOLD_SEC) { skipped++; continue; }
-    // v0.0.997 — owner 2026-06-09 "新账号负电还在建矿": optimizer 在负电星球
-    // 上 emit opt-mine 是 root cause. 加 gate: 当前 e<0 + best.mine 是三种矿
-    // (metalMine/crystalMine/deuteriumSynth) → skip mine emit, 等 energy 回正.
-    // opt-solar/fusion/energyTech 等 energy-fix 不受影响 (best.mine 不是矿类).
-    // 非矿 accel (robotics/nano/shipyard/lab) 也不受影响 — 它们 emit 不直接耗电.
+    // v0.0.997 → v0.0.998 → v0.0.999 — owner 2026-06-09 "决策模块只有一个吗?
+    // 你又造了其他的决策模块?" 一针见血: v0.0.997/998 都在 optimizer 里另造
+    // 预测逻辑, planner 已有 canonical `pickEnergyPrereqBuilding` (planner.ts:350)
+    // 同时给 planner cascade + simulate + 现在 optimizer 用. 撤掉自造逻辑,
+    // 直接调它. 返回 non-null = 需先建电厂 → skip mine emit.
+    // 它内部已含 forward-projection (build_q delta + this delta), affordability,
+    // opt-* lookup 等所有 owner 验过的策略.
     const planetIdForGate = (r.planet as { id?: string })?.id ?? g.planet ?? "";
-    const planetE = (r.planet as { resources?: { e?: number } })?.resources?.e ?? 0;
     const isMineAccel = best.mine === "metalMine" || best.mine === "crystalMine" || best.mine === "deuteriumSynth";
-    if (planetE < 0 && isMineAccel) {
-      console.info(`[optimizer/skip-mine] uid=${uid.slice(0,8)} planet=${planetIdForGate} e=${planetE} < 0, skip ${best.mine} L${best.L_new} (energy-fix in progress)`);
-      skipped++;
-      continue;
+    if (isMineAccel) {
+      const planetForProj = r.planet as {
+        id?: string;
+        buildings?: Record<string, number>;
+        resources?: { e?: number };
+        build_q?: { building?: string; level?: number } | null;
+      };
+      const curLvl = planetForProj.buildings?.[best.mine] ?? 0;
+      const energyTech = (state.research as { levels?: Record<string, number> } | undefined)?.levels?.energyTech ?? 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const energyPick = pickEnergyPrereqBuilding(best.mine, curLvl, best.L_new, planetForProj as any, energyTech, allRows as any, uid);
+      if (energyPick) {
+        const pickLabel = energyPick.kind === "build" ? energyPick.building : energyPick.tech;
+        console.info(`[optimizer/skip-mine] uid=${uid.slice(0,8)} planet=${planetIdForGate} ${best.mine} L${curLvl}→L${best.L_new} ` +
+          `blocked by canonical pickEnergyPrereqBuilding → need ${pickLabel} L${energyPick.level} first`);
+        skipped++;
+        continue;
+      }
     }
     // Found a worthwhile accelerator. Upsert opt-<accel>-L<new> goal.
     const optId = `opt-${best.mine}-L${best.L_new}-${uid.slice(0, 8)}`;
