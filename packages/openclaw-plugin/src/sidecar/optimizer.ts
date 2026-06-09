@@ -857,6 +857,40 @@ export async function runOptimizerOnce(
           console.warn(`[optimizer/energy-guard] upsert ${optId} threw:`, e instanceof Error ? e.message : e);
         }
       };
+      // v0.0.1024 — owner 2026-06-09 "发现错误" 实证 33674107: PG 有 opt-solarPlant-L28
+      // AND L29 双 stale, 但当前 winner 是 fusion. 根因:
+      //   A. emitOpt 只 skip 自己再 emit, 不 cancel 同 planet 老 opt-solar 当 winner 升级
+      //   B. 老 cleanup 只在 realBudget>=0 时跑, winner kind 切换时 NEG-E 下没 cleanup
+      // 修: emit winner 之前 cancel 同 planet 所有 non-winner opt-energy (planet-bound:
+      // solarPlant + fusionReactor). opt-energyTech 是 global 不绑 planet, 由
+      // cleanup-global (v0.0.1010) + reparent (v0.0.1011) 处理, 这里不动.
+      const winnerOptIds = new Set<string>();
+      if (winner.kind === "solar") winnerOptIds.add(`opt-solarPlant-L${winner.level}-${uid.slice(0,8)}`);
+      else if (winner.kind === "fusion") winnerOptIds.add(`opt-fusionReactor-L${winner.level}-${uid.slice(0,8)}`);
+      else if (winner.kind === "energy") winnerOptIds.add(`opt-energyTech-L${winner.level}-${uid.slice(0,8)}`);
+      else if (winner.kind === "combo") {
+        winnerOptIds.add(`opt-fusionReactor-L${winner.fL}-${uid.slice(0,8)}`);
+        winnerOptIds.add(`opt-energyTech-L${winner.eL}-${uid.slice(0,8)}`);
+      }
+      const stalePlanetEnergyOpts = allRows.filter((r) => {
+        const id = r.goal.id;
+        if (!id.endsWith(uid.slice(0,8))) return false;
+        // planet-bound energy opt-* only: solar + fusion. opt-energyTech 是 global.
+        if (!(id.startsWith("opt-solarPlant-L") || id.startsWith("opt-fusionReactor-L"))) return false;
+        if (r.goal.planet !== planetId) return false;
+        if (!["pending","blocked","active"].includes(r.status)) return false;
+        if (winnerOptIds.has(id)) return false; // winner 留住
+        return true;
+      });
+      for (const stale of stalePlanetEnergyOpts) {
+        try {
+          await pgStore.updateGoalStatus(uid, stale.goal.id, "cancelled", `superseded by energy-guard winner=${winner.kind}${"level" in winner ? `:L${winner.level}` : ""} on planet=${planetId}`);
+          console.info(`[optimizer/energy-guard/supersede] uid=${uid.slice(0,8)} planet=${planetId} cancel ${stale.goal.id} (winner=${winner.kind})`);
+          actioned++;
+        } catch (e) {
+          console.warn(`[optimizer/energy-guard/supersede] cancel ${stale.goal.id} threw:`, e instanceof Error ? e.message : e);
+        }
+      }
       // dispatch by winning candidate
       if (winner.kind === "solar") {
         const optId = `opt-solarPlant-L${winner.level}-${uid.slice(0, 8)}`;
@@ -873,6 +907,11 @@ export async function runOptimizerOnce(
         await emitOpt("build", { building: "fusionReactor", level: winner.fL }, fOptId, winner.fL, "fusionReactor");
         await emitOpt("research", { tech: "energyTech", level: winner.eL }, eOptId, winner.eL, "energyTech");
       }
+      // v0.0.1024 (C 撤回) — owner 2026-06-09 "天体物理大于等于9 就不看产能"
+      // + "设置成等待资源": 产能判断不归 optimizer 管. planner 已经在资源
+      // 不够时返 "waiting for resources" 状态, 那就是权威结果, optimizer 不
+      // 再额外 warn/block. astro>=9 (post-expedition phase) 资源跨 planet
+      // 流转充裕, 更不该看产能. 见 [[no-fallback-design]] — 不另写 second-guess.
     }
     // v0.0.1010 — owner 2026-06-09 "不缺电 为什么要补电" 实证 4baba0e2 11 颗
     // planet 全正电 (lowest e=193), opt-energyTech-L16 仍在 PG blocked, 老
