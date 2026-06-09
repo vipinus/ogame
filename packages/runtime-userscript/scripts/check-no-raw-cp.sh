@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 ALLOW_LIST=$(cat <<'EOF'
 src/directive_executor.ts:125
 src/directive_executor.ts:562
-src/boot.ts:1394
+src/boot.ts:1397
 EOF
 )
 # v0.0.960 — owner 2026-06-08 "跳跃了没有 cd": sniffer page-world JS

@@ -4828,6 +4828,16 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
     if (panelExt.__ogamexBridgeLightTimer !== undefined) {
       clearInterval(panelExt.__ogamexBridgeLightTimer);
     }
+    // v0.0.990 — owner 2026-06-09 "装载TM以后很卡": 500ms 闪烁 JS 改 CSS @keyframes,
+    // color/title 更新降到 2000ms (4× CPU 降). 红灯闪烁靠 CSS animation 跑, JS 只
+    // 负责切 class. 全局 style 一次注入, 渲染漏 (panel.innerHTML wipe) 时 CSS rule 留存.
+    if (!document.getElementById("ogamex-bridge-light-style")) {
+      const styleEl = document.createElement("style");
+      styleEl.id = "ogamex-bridge-light-style";
+      styleEl.textContent = "@keyframes ogamex-red-blink{0%,100%{opacity:1}50%{opacity:.25}}" +
+        "[data-bridge-light].ogx-red{animation:ogamex-red-blink 1s ease-in-out infinite}";
+      document.head.appendChild(styleEl);
+    }
     panelExt.__ogamexBridgeLightTimer = window.setInterval(() => {
       const dot = panel.querySelector<HTMLElement>("[data-bridge-light]");
       if (!dot) return;
@@ -4839,15 +4849,12 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       } else if (bs2 && (bs2.status === "connecting" || bs2.status === "reconnecting")) {
         c = "#e0c020"; title = `Bridge: ${bs2.transport} ${bs2.status}`;
       }
-      // Operator 2026-06-04 "红灯闪烁" — 500ms 切换 opacity
       const isRed = c === "#c43d3d";
-      const blinkOn = Math.floor(Date.now() / 500) % 2 === 0;
       dot.style.background = c;
       dot.style.boxShadow = isRed ? `0 0 10px ${c}, 0 0 16px ${c}` : `0 0 6px ${c}`;
-      dot.style.opacity = isRed && !blinkOn ? "0.25" : "1";
-      dot.style.transition = "opacity 0.3s ease-in-out";
+      dot.classList.toggle("ogx-red", isRed);
       dot.title = title;
-    }, 500);
+    }, 2000);
     // Wire discovery Start button.
     const startBtn = panel.querySelector<HTMLElement>("[data-action=\"discovery-start\"]");
     if (startBtn) {
