@@ -15,6 +15,15 @@ import { runWithUser, getCurrentUserId } from "./user_context.js";
 // only used as the absolute fallback when no operator uid is configured.
 const LEGACY_BUCKET = "_legacy_";
 
+// v0.0.1023 — owner 2026-06-09 "①②③ 也接入持久化通道":
+// state-mutating downstream msg 类型 (丢了会造成真态损失) 的白名单.
+// 见 queueDownstream() 持久化过滤.
+const PERSISTABLE_DOWNSTREAM_TYPES = new Set<string>([
+  "directive.dispatch",
+  "save.recall_now",
+  "expedition.debris_check",
+]);
+
 // Read at CALL time, not module init — run_sidecar.mjs sets the env var
 // AFTER its `import { startSidecar }` line (ESM hoisting puts the import
 // effectively before the assignment), so a module-init `process.env` read
@@ -452,10 +461,13 @@ export class HttpServer {
       }
     }
     q.push(entry);
-    // v0.0.1021 Phase 2 — persist 只 persist directive.dispatch (transport 层
-    // 唯一需要 100% reliability 的 msg type). data.refresh / ping 等 transient
-    // msg 丢了无关键损失.
-    if (this.pendingStore && msg.type === "directive.dispatch") {
+    // v0.0.1021 Phase 2 → v0.0.1023 — owner "①②③ 也接入持久化通道". 扩到 3 类:
+    //   directive.dispatch     — 派给 userscript 的 directive (Phase 2 已加)
+    //   save.recall_now        — FS 召回指令, 丢了 fleet 不召回 (state-mutating)
+    //   expedition.debris_check — 残骸回收触发 (资源损失)
+    // data.refresh / ping / strategy.* / hello / pong 仍 transient 不持久 (latest-wins
+    // / 握手 / 自我修复).
+    if (this.pendingStore && PERSISTABLE_DOWNSTREAM_TYPES.has(msg.type)) {
       void this.pendingStore.upsert({ id: entry.id, userId: uid, payload: msg, queuedAt: entry.ts }).catch((e: unknown) => {
         console.warn("[http_server] pendingStore.upsert threw:", e instanceof Error ? e.message : e);
       });
@@ -492,11 +504,13 @@ export class HttpServer {
     if (!q || q.length === 0) return [];
     const msgs: DownstreamMsg[] = [];
     const ids: string[] = [];
+    // v0.0.1023 — owner "①②③ 也接入持久化通道": WS resend 也扩到 3 类
+    // (directive.dispatch + save.recall_now + expedition.debris_check).
     for (const e of q) {
-      if (e.msg.type === "directive.dispatch") { msgs.push(e.msg); ids.push(e.id); }
+      if (PERSISTABLE_DOWNSTREAM_TYPES.has(e.msg.type)) { msgs.push(e.msg); ids.push(e.id); }
     }
     if (msgs.length > 0) {
-      console.info(`[http_server] drained ${msgs.length} directive.dispatch from bucket=${uid.slice(0,8)} for WS resend`);
+      console.info(`[http_server] drained ${msgs.length} persistable downstream msgs from bucket=${uid.slice(0,8)} for WS resend`);
     }
     q.length = 0;
     // v0.0.1021 Phase 2 — WS resend = delivered, 删 PG row.
@@ -1830,11 +1844,11 @@ export class HttpServer {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ messages: messages.map((e) => e.msg) }));
-    // v0.0.1021 Phase 2 — poll consume = delivered (long-poll body sent),
-    // 删 PG row 防 sidecar 重启时 replay 已送达的 msg.
+    // v0.0.1021 Phase 2 → v0.0.1023 — poll consume = delivered, 删 PG row 防
+    // sidecar 重启时 replay 已送达的 msg. 同 queueDownstream 一致扩到 3 类.
     if (this.pendingStore && messages.length > 0) {
       for (const e of messages) {
-        if (e.msg.type === "directive.dispatch") {
+        if (PERSISTABLE_DOWNSTREAM_TYPES.has(e.msg.type)) {
           void this.pendingStore.deleteById(e.id).catch(() => { /* */ });
         }
       }

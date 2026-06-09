@@ -2,6 +2,7 @@ import type { BootHandle } from "../boot.js";
 import { HttpBridgeClient } from "./http_client.js";
 import { BridgeClient as WsBridgeClient } from "./ws_client.js";
 import { setVisibleInterval } from "../util/visible_interval.js";
+import { persistPendingEmergency, clearPendingEmergency } from "../goal_runner.js";
 
 /**
  * M4.7 — wire HttpBridgeClient into the userscript boot lifecycle.
@@ -80,9 +81,11 @@ export async function wireBridge(
       const w = window as Window & { __ogamexBridgeStatus?: { transport: "ws" | "http"; status: string } };
       const status = client ? client.status() : "disconnected";
       if (lastStatus !== "open" && status === "open") {
-        void import("../goal_runner.js").then(({ drainPendingAcks }) => {
+        // v0.0.1023 — drain BOTH ack + emergency localStorage queues
+        void import("../goal_runner.js").then(({ drainPendingAcks, drainPendingEmergencies }) => {
           void drainPendingAcks();
-        }).catch((e) => console.warn("[wire] drainPendingAcks lazy import threw", e));
+          void drainPendingEmergencies();
+        }).catch((e) => console.warn("[wire] drain lazy import threw", e));
       }
       lastStatus = status;
       w.__ogamexBridgeStatus = { transport, status };
@@ -796,19 +799,27 @@ export async function wireBridge(
       ? new Date(p.arrives_at * 1000).toISOString().slice(11, 19)
       : "?";
     const md = `🚨 **ATTACK** ${fromStr} → ${toStr} arrival=${eta} (event=${p.event_id ?? "?"})`;
+    const msg = {
+      type: "event.emergency" as const,
+      subtype: "attack",
+      data: payload,
+      markdown_report: md,
+    };
+    const emergencyId = typeof p.event_id === "string" && p.event_id ? p.event_id : `synth-attack-${Date.now()}`;
+    // v0.0.1023 — owner "①②③ 也接入持久化通道": 写 localStorage 前置,
+    // WS send 成功才 clear. send 抛/未发 → 留 queue 等 reconnect drain.
+    try { persistPendingEmergency(emergencyId, msg); } catch { /* */ }
     try {
-      const ret = client.send({
-        type: "event.emergency",
-        subtype: "attack",
-        data: payload,
-        markdown_report: md,
-      });
+      const ret = client.send(msg);
       if (ret && typeof (ret as Promise<unknown>).then === "function") {
         (ret as Promise<unknown>)
-          .catch((e: unknown) => console.warn(`[wireBridge] attack push FAILED`, e));
+          .then(() => clearPendingEmergency(emergencyId))
+          .catch((e: unknown) => console.warn(`[wireBridge] attack push FAILED — kept in queue`, e));
+      } else {
+        clearPendingEmergency(emergencyId);
       }
     } catch (e) {
-      console.warn("[wireBridge] attack forward threw", e);
+      console.warn("[wireBridge] attack forward threw — kept in queue", e);
     }
   });
   const offSpy = boot.bus.on("emergency.spy", (payload: unknown) => {
@@ -824,21 +835,26 @@ export async function wireBridge(
       ? new Date(p.arrives_at * 1000).toISOString().slice(11, 19)
       : "?";
     const md = `🛰️ **SPY PROBE** ${fromStr} → ${toStr} arrival=${eta} (event=${p.event_id ?? "?"})`;
+    const msg = {
+      type: "event.emergency" as const,
+      subtype: "spy",
+      data: payload,
+      markdown_report: md,
+    };
+    const emergencyId = typeof p.event_id === "string" && p.event_id ? p.event_id : `synth-spy-${Date.now()}`;
+    // v0.0.1023 — owner "①②③ 也接入持久化通道": persist 前置 + send 成功 clear.
+    try { persistPendingEmergency(emergencyId, msg); } catch { /* */ }
     try {
-      const ret = client.send({
-        type: "event.emergency",
-        subtype: "spy",
-        data: payload,
-        markdown_report: md,
-      });
-      // client.send returns Promise; surface failures so operator notices
-      // (success path is silent — Discord arrival is the success signal).
+      const ret = client.send(msg);
       if (ret && typeof (ret as Promise<unknown>).then === "function") {
         (ret as Promise<unknown>)
-          .catch((e: unknown) => console.warn(`[wireBridge] spy push FAILED`, e));
+          .then(() => clearPendingEmergency(emergencyId))
+          .catch((e: unknown) => console.warn(`[wireBridge] spy push FAILED — kept in queue`, e));
+      } else {
+        clearPendingEmergency(emergencyId);
       }
     } catch (e) {
-      console.warn("[wireBridge] spy forward threw", e);
+      console.warn("[wireBridge] spy forward threw — kept in queue", e);
     }
   });
 

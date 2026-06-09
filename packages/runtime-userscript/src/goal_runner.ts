@@ -72,6 +72,17 @@ function isValidDirective(d: unknown): d is Directive {
 const ACK_QUEUE_KEY = "OGAMEX_ACK_PENDING_QUEUE";
 const ACK_QUEUE_CAP = 200;
 
+// v0.0.1023 — owner 2026-06-09 "①②③ 也接入持久化通道": upstream
+// event.emergency 也走 localStorage queue. 通用化, 复用 reader/writer.
+const EMERGENCY_QUEUE_KEY = "OGAMEX_EMERGENCY_PENDING_QUEUE";
+const EMERGENCY_QUEUE_CAP = 100;
+
+type PendingEmergencyEntry = {
+  emergency_id: string; // event_id (or fallback synthetic id)
+  msg: { type: "event.emergency"; subtype: string; data: unknown; markdown_report: string };
+  queued_at: number;
+};
+
 type PendingAckEntry = {
   directive_id: string;
   msg: { type: "event.directive_completed"; directive_id: string; result: unknown };
@@ -159,6 +170,73 @@ export async function drainPendingAcks(): Promise<void> {
   console.info(`[goal_runner/ack/drain] replaying ${q.length} pending acks from localStorage`);
   for (const e of q) {
     await sendAckHttp(e.directive_id, e.msg);
+  }
+}
+
+// v0.0.1023 — owner "①②③ 也接入持久化通道" upstream emergency 持久化:
+function readEmergencyQueue(): PendingEmergencyEntry[] {
+  try {
+    const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+    const raw = ctxWin.localStorage?.getItem(EMERGENCY_QUEUE_KEY) ?? "";
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed as PendingEmergencyEntry[];
+  } catch { return []; }
+}
+function writeEmergencyQueue(q: PendingEmergencyEntry[]): void {
+  try {
+    const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+    ctxWin.localStorage?.setItem(EMERGENCY_QUEUE_KEY, JSON.stringify(q));
+  } catch { /* */ }
+}
+export function persistPendingEmergency(emergencyId: string, msg: PendingEmergencyEntry["msg"]): void {
+  const q = readEmergencyQueue();
+  const filtered = q.filter((e) => e.emergency_id !== emergencyId);
+  filtered.push({ emergency_id: emergencyId, msg, queued_at: Date.now() });
+  while (filtered.length > EMERGENCY_QUEUE_CAP) filtered.shift();
+  writeEmergencyQueue(filtered);
+}
+export function clearPendingEmergency(emergencyId: string): void {
+  const q = readEmergencyQueue();
+  const filtered = q.filter((e) => e.emergency_id !== emergencyId);
+  if (filtered.length === q.length) return;
+  writeEmergencyQueue(filtered);
+}
+async function sendEmergencyHttp(emergencyId: string, msg: PendingEmergencyEntry["msg"]): Promise<void> {
+  try {
+    const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+    const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+    const tok = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
+    const url = `${bridgeBase.replace(/\/$/, "")}/ogamex/v1/push`;
+    const body = JSON.stringify(msg);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5_000);
+      try {
+        const res = await fetch(url, {
+          method: "POST", credentials: "omit",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tok}` },
+          body, signal: ac.signal,
+        });
+        if (res.ok) { clearPendingEmergency(emergencyId); return; }
+        if (res.status >= 400 && res.status < 500) { clearPendingEmergency(emergencyId); return; }
+        console.warn(`[wireBridge/emergency] attempt=${attempt} HTTP ${res.status} — backoff before retry`);
+      } catch (e) {
+        const errName = (e as { name?: string }).name;
+        console.warn(`[wireBridge/emergency] attempt=${attempt} ${errName === "AbortError" ? "TIMEOUT" : "ERROR"}: ${(e as Error).message ?? e}`);
+      } finally { clearTimeout(timer); }
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 250 * attempt));
+    }
+    console.warn(`[wireBridge/emergency] 3 attempts failed for ${emergencyId} — staying in localStorage queue for replay`);
+  } catch { /* */ }
+}
+export async function drainPendingEmergencies(): Promise<void> {
+  const q = readEmergencyQueue();
+  if (q.length === 0) return;
+  console.info(`[wireBridge/emergency/drain] replaying ${q.length} pending emergencies from localStorage`);
+  for (const e of q) {
+    await sendEmergencyHttp(e.emergency_id, e.msg);
   }
 }
 
