@@ -396,7 +396,7 @@ export type DownstreamMsg =
    *  user_settings.section_settings changes (website modal OR another
    *  device). Userscript applies each entry to localStorage immediately,
    *  so in-game panel reflects without F5. */
-  | { type: "section_settings.update"; settings: Record<string, string | boolean>; reason?: string }
+  | { type: "section_settings.update"; settings: Record<string, unknown>; reason?: string }
   | { type: "ping"; ts: number };
 
 export type BridgeMsg = UpstreamMsg | DownstreamMsg;

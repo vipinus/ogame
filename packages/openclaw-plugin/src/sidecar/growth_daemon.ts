@@ -21,25 +21,24 @@
  * growth-daemon 解决"无 main goal 殖民地长期成长"问题.
  */
 
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
 import type { WorldState } from "@ogamex/shared";
 import { mineProdRatio, cumulativeMineCost, buildSecondsForRange } from "./optimizer.js";
+import { tenantRegistry } from "./tenant_context.js";
 
-// v0.0.1030 — owner 2026-06-09 "关掉 daemon": file-based kill switch.
-// touch ~/.openclaw/workspace/ogamex/runtime/growth-daemon.disabled (全局)
-// 或 growth-daemon.disabled.<uid8> (per-uid) → daemon 对应 uid 直接 skip.
-// 没文件 = 默认开. 重启不丢, owner ssh rm 撤回.
-const KILL_SWITCH_DIR = path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime");
+// v0.0.1030 — owner 2026-06-09 "关掉 daemon": kill switch.
+// v1.0.17 — owner 2026-06-10 "全部改 PG": file-based switch (~/.openclaw/
+// workspace/ogamex/runtime/growth-daemon.disabled[.<uid8>]) 迁移到 PG
+// user_settings.section_settings.ogamex.growth_daemon_disabled (boolean).
+// per-uid 已通过 PG row's user_id 隔离, 不再需要 .${uid8} suffix.
+// 没 key 或 false = 默认开. owner panel toggle 即时生效, sectionSettingsWrite
+// 会更新 tenantCtx.sectionSettings.
 function isGrowthDaemonKilled(uid: string): boolean {
-  try {
-    if (fs.existsSync(path.join(KILL_SWITCH_DIR, "growth-daemon.disabled"))) return true;
-    if (fs.existsSync(path.join(KILL_SWITCH_DIR, `growth-daemon.disabled.${uid.slice(0, 8)}`))) return true;
-  } catch { /* fs error 不阻塞 daemon */ }
-  return false;
+  const ss = tenantRegistry.get(uid).sectionSettings;
+  if (!ss) return false;
+  const v = ss["ogamex.growth_daemon_disabled"];
+  return v === true || v === "true";
 }
 
 /** Closure deps injected by sidecar/index.ts boot — REUSES the existing

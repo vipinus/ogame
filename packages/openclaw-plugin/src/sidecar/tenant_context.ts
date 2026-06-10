@@ -136,7 +136,11 @@ export interface TenantContext {
   /** v0.0.1045o — section_settings 缓存. sidecar 启动/sectionSettingsWrite 后
    *  更新. state.snapshot handler 把 cache 注入 worldState.section_settings
    *  给 planner/optimizer/growth_daemon 决策. null = lazy-load 未跑. */
-  sectionSettings: Record<string, string | boolean> | null;
+  // v1.0.17 — owner 2026-06-10 "全部改 PG" file → PG migration: jsonb-valued
+  // settings (ogamex.expedition_config, ogamex.expedition_state) 进 same flat
+  // map, type 扩 unknown 容纳 nested object/array. legacy string/boolean keys
+  // (auto_build_mine, expedition.paused) 兼容不变.
+  sectionSettings: Record<string, unknown> | null;
   /** directive id → goal id. Source of truth for ack→goal mapping.
    *  Trimmed when the success/failure ack arrives. */
   readonly directiveToGoal: Map<string, string>;

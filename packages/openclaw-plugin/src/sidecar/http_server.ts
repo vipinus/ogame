@@ -45,74 +45,41 @@ import type {
   DebugEventEntry,
 } from "./debug_buffer.js";
 
-/** Where the expedition pause/resume flag is persisted. Single shared file so
- *  the daily-task runner and the operator can both observe the same state.
- *
- *  operator 2026-06-04 "远征设置里面的舰队配置不生效了" — root cause: sidecar
- *  wrote /tmp/ogamex-expedition.json but daemon (discord_bridge.mjs:1396)
- *  reads ~/.openclaw/workspace/ogamex/runtime/ogamex-expedition.json.
- *  Migration v0.0.635 [[reference_sidecar_deploy]] moved dbs out of /tmp,
- *  this file path was missed. Realign to daemon's canonical location so
- *  panel template edits propagate to next expedition tick. Env override
- *  OGAMEX_EXPEDITION_STATE_FILE for non-default deploys (CI/tests). */
-// v0.0.840 — operator 2026-06-06 "远征的舰队设置分开了吗": legacy 全局单文件
-// `ogamex-expedition.json` 所有 uid 共享 → 新号 panel save 写覆盖老号. 改 per-uid
-// 文件路径: `ogamex-expedition-<uid-prefix>.json`. uid 缺省 (legacy 单 tenant) 回
-// 退老路径保持向后兼容. 环境变量 OGAMEX_EXPEDITION_STATE_FILE 仍 override (CI/
-// tests).
-const EXPEDITION_STATE_DIR = path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime");
-const EXPEDITION_STATE_FILE_LEGACY = process.env.OGAMEX_EXPEDITION_STATE_FILE
-  ?? path.join(EXPEDITION_STATE_DIR, "ogamex-expedition.json");
-export function expeditionStateFileForUid(uid?: string): string {
-  if (process.env.OGAMEX_EXPEDITION_STATE_FILE) return process.env.OGAMEX_EXPEDITION_STATE_FILE;
-  if (!uid) return EXPEDITION_STATE_FILE_LEGACY;
-  return path.join(EXPEDITION_STATE_DIR, `ogamex-expedition-${uid.slice(0, 8)}.json`);
-}
+/** v1.0.17 — owner 2026-06-10 "全部改 PG": 远征 config 文件 → PG.
+ *  老 per-uid file (~/.openclaw/workspace/ogamex/runtime/ogamex-expedition-<uid8>.json)
+ *  全部迁移到 PG user_settings.section_settings["ogamex.expedition_config"] (jsonb).
+ *  panel POST → sectionSettingsWrite → tenantCtx 内存即时刷新 → daemon next tick
+ *  生效 (loadExpeditionConfig 走 tenantCtx.sectionSettings 同源). 0 fs IO,
+ *  0 路径硬编, [[single-decision-tree]] + [[audit-all-db-consumers]] 双 memory
+ *  根治. 老 legacy global file + OGAMEX_EXPEDITION_STATE_FILE env override 全删,
+ *  per-uid 通过 PG row's user_id 隔离, 已无需 legacy 兜底. */
+const EXPEDITION_CONFIG_KEY = "ogamex.expedition_config";
 
-function readExpeditionState(uid?: string): Record<string, unknown> {
-  const fp = expeditionStateFileForUid(uid);
-  try {
-    const raw = fs.readFileSync(fp, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    /* missing or malformed — fall through to legacy fallback */
-  }
-  // v0.0.868 — operator 2026-06-06 "TM 远征设置船的页面加载不到以前的远征
-  // 舰队配置". v0.0.840 加 per-uid 路由后, 老 single-tenant 时代 operator 的
-  // ogamex-expedition.json 没自动迁给 operator's per-uid bucket. operator 用
-  // per-user Bearer 连入 → 读 ogamex-expedition-<uid8>.json (missing) → {}.
-  // 修法: operator uid (== OGAMEX_LEGACY_USER_ID env) 读 missing 时 fallback
-  // 到 legacy file, 顺手 migrate (copy to per-uid file) — 下次直接命中 per-uid.
-  // 别 user 不走这条 (legacy 是 operator 的, 不能让别人继承).
-  const operatorUid = (process.env.OGAMEX_LEGACY_USER_ID ?? "").trim();
-  if (uid && operatorUid && uid === operatorUid && fp !== EXPEDITION_STATE_FILE_LEGACY) {
-    try {
-      const raw = fs.readFileSync(EXPEDITION_STATE_FILE_LEGACY, "utf8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const obj = parsed as Record<string, unknown>;
-        // one-shot migrate so next read hits per-uid directly
-        try {
-          fs.writeFileSync(fp, JSON.stringify(obj, null, 2));
-          console.log(`[expedition] migrated legacy ogamex-expedition.json → ${fp} for operator uid=${uid.slice(0, 8)}`);
-        } catch (e) {
-          console.warn(`[expedition] legacy migrate write failed:`, e instanceof Error ? e.message : e);
-        }
-        return obj;
-      }
-    } catch {
-      /* legacy also missing — fall through */
-    }
+async function readExpeditionStatePg(
+  uid: string | undefined,
+  sectionSettingsRead?: (uid: string) => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+  if (!uid || !sectionSettingsRead) return {};
+  const ss = await sectionSettingsRead(uid);
+  const raw = ss[EXPEDITION_CONFIG_KEY];
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
   }
   return {};
 }
 
-function writeExpeditionState(state: Record<string, unknown>, uid?: string): void {
-  const fp = expeditionStateFileForUid(uid);
-  fs.writeFileSync(fp, JSON.stringify(state, null, 2));
+async function writeExpeditionStatePg(
+  state: Record<string, unknown>,
+  uid: string | undefined,
+  sectionSettingsWrite?: (uid: string, patch: Record<string, unknown>) => Promise<Record<string, unknown>>,
+): Promise<void> {
+  if (!uid) {
+    throw new Error("writeExpeditionStatePg: uid required (no legacy single-tenant fallback). [[single-decision-tree]]");
+  }
+  if (!sectionSettingsWrite) {
+    throw new Error("writeExpeditionStatePg: sectionSettingsWrite callback not configured (httpServerCtor opts missing)");
+  }
+  await sectionSettingsWrite(uid, { [EXPEDITION_CONFIG_KEY]: state });
 }
 
 export interface HttpServerOptions {
@@ -670,12 +637,13 @@ export class HttpServer {
     if (method === "GET" && url === "/ogamex/v1/expedition/config") {
       this.writeCorsHeaders(res);
       void (async () => {
-        // v0.0.840 — per-uid config 路由. Bearer-resolved uid → 各账号独立文件.
+        // v1.0.17 — Bearer-resolved uid → PG section_settings.ogamex.expedition_config.
         const r = await this.resolveBearer(req);
         const uid = r.kind === "user" ? r.uid : undefined;
+        const state = await readExpeditionStatePg(uid, this.opts.sectionSettingsRead);
         res.statusCode = 200;
         res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify(readExpeditionState(uid)));
+        res.end(JSON.stringify(state));
       })();
       return;
     }
@@ -1242,12 +1210,12 @@ export class HttpServer {
       let ok = true;
       let error: string | undefined;
       try {
-        // v0.0.840 per-uid file routing
+        // v1.0.17 per-uid PG routing (was file-based)
         const uid = req ? await this.resolveBearer(req).then(r => r.kind === "user" ? r.uid : undefined).catch(() => undefined) : undefined;
-        const state = readExpeditionState(uid);
+        const state = await readExpeditionStatePg(uid, this.opts.sectionSettingsRead);
         state["paused"] = paused;
         state["updated_at"] = Date.now();
-        writeExpeditionState(state, uid);
+        await writeExpeditionStatePg(state, uid, this.opts.sectionSettingsWrite);
       } catch (e) {
         ok = false;
         error = (e as Error).message;
@@ -1287,16 +1255,16 @@ export class HttpServer {
     }
     const allowed = new Set(["template", "paused", "enabled", "target_position", "enabled_planets", "auto_build_ships"]);
     try {
-      // v0.0.840 per-uid file routing
+      // v1.0.17 per-uid PG routing (was file-based)
       const r = await this.resolveBearer(req);
       const uid = r.kind === "user" ? r.uid : undefined;
-      const state = readExpeditionState(uid);
+      const state = await readExpeditionStatePg(uid, this.opts.sectionSettingsRead);
       for (const [k, v] of Object.entries(patch)) {
         if (!allowed.has(k)) continue;
         state[k] = v;
       }
       state["updated_at"] = Date.now();
-      writeExpeditionState(state, uid);
+      await writeExpeditionStatePg(state, uid, this.opts.sectionSettingsWrite);
       this.writeCorsHeaders(res);
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json");

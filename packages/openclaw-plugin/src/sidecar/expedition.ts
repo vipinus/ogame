@@ -13,7 +13,6 @@
  * 状态 swap).
  */
 
-import * as fs from "node:fs";
 import type { WorldState } from "@ogamex/shared";
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
@@ -22,15 +21,11 @@ import { tenantRegistry } from "./tenant_context.js";
 // v0.0.834 — operator 2026-06-06: 5s tick 噪声大, event-driven 已能覆盖大多数,
 // base 拉到 30s 兜底.
 const EXPEDITION_TICK_MS = 30_000;
-// v0.0.840 — operator 2026-06-06 "远征的舰队设置分开了吗": per-uid 文件路径.
-// v0.0.1027 — owner 2026-06-09 "是不是有两套模板" + [[single-decision-tree]]:
-// 删 legacy fallback. per-uid 文件缺 = ALS / setup 问题, throw fail-fast,
-// 不允许静默 fallback legacy file (legacy 是僵尸 path, Discord `fleet`
-// 命令还写它 → 改 template 看似生效实际没影响 daemon).
-const EXPEDITION_STATE_DIR_EXP = "/home/ddxs/.openclaw/workspace/ogamex/runtime";
-function templatePathForUid(uid: string): string {
-  return `${EXPEDITION_STATE_DIR_EXP}/ogamex-expedition-${uid.slice(0, 8)}.json`;
-}
+// v1.0.17 — owner 2026-06-10 "全部改 PG": 远征 config 从 per-uid file
+// (~/.openclaw/workspace/ogamex/runtime/ogamex-expedition-<uid8>.json) 迁移到
+// PG user_settings.section_settings.ogamex.expedition_config (jsonb). 单一权
+// 威源 [[single-decision-tree]] + 0 路径硬编 [[audit-all-db-consumers]]. 老路径
+// owner 已 europa cutover, file 上一刻的 snapshot 已 seed 到 PG (deploy step).
 const FAILURE_COOL_OFF_MS = 15 * 1000;
 const INFLIGHT_TTL_MS = 45_000;
 
@@ -40,16 +35,23 @@ interface ExpeditionConfig {
   template?: Record<string, number>;
   enabled_planets?: string[];
   auto_build_ships?: boolean;
+  target_position?: number;
+  updated_at?: number;
 }
 
 export function loadExpeditionConfig(uid: string): ExpeditionConfig {
   if (!uid) {
     throw new Error("loadExpeditionConfig: uid required (no legacy fallback). [[single-decision-tree]]");
   }
-  const fp = templatePathForUid(uid);
-  // 文件不存在或 JSON 烂 → 让 fs.readFileSync / JSON.parse throw, caller
-  // 看见调用栈, owner 修配置. 不再静默 fallback 默认值/legacy file.
-  return JSON.parse(fs.readFileSync(fp, "utf8")) as ExpeditionConfig;
+  const ss = tenantRegistry.get(uid).sectionSettings;
+  if (!ss) {
+    throw new Error(`loadExpeditionConfig: tenantCtx.sectionSettings null for uid=${uid.slice(0, 8)} (sectionSettingsRead not yet run; check WS ALS / state.snapshot hydrate)`);
+  }
+  const raw = ss["ogamex.expedition_config"];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`loadExpeditionConfig: section_settings["ogamex.expedition_config"] missing/invalid for uid=${uid.slice(0, 8)}. [[no-fallback-design]]`);
+  }
+  return raw as ExpeditionConfig;
 }
 
 // Per-tenant cool-off + in-flight state.

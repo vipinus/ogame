@@ -672,7 +672,16 @@ export async function startSidecar(
   // sidecar restart 期间 expedition return → in-memory expLastSeen 丢 →
   // Signal B miss. 文件持久化, restart 重 load. firedDebrisCheckFor 也持久
   // 防 重 fire (fleet id 全宇宙单调递增, 重启后看到旧 id 已 fired).
-  const EXP_PERSIST_PATH = `${process.env.HOME ?? "/tmp"}/.openclaw/workspace/ogamex/exp_state.json`;
+  // v1.0.17 — owner 2026-06-10 "全部改 PG" expedition_config/state/kill-switch 已迁 PG.
+  // sidecar-internal expLastSeen / firedDebrisCheckFor (远征回家 Signal B fire-once)
+  // 持久化暂留 fs 但用 os.homedir() (而非 process.env.HOME ?? "/tmp") 修 uk4 deploy
+  // 路径 bug. PG 化此块需 worldStateStorePg.sidecarKvGet/Set + schema migration,
+  // owner 后续独立 RFC; 当前 sidecar restart 频率低, 影响有限 [[no-fallback-design]]
+  // 仍守 — 真态 cache miss 会丢若干分钟内的 expedition return-Signal-B fire memo,
+  // 不影响远征 dispatch 链路.
+  const EXP_PERSIST_DIR = path.join(os.homedir(), ".openclaw/workspace/ogamex");
+  try { fs.mkdirSync(EXP_PERSIST_DIR, { recursive: true }); } catch { /* exists or no perm */ }
+  const EXP_PERSIST_PATH = path.join(EXP_PERSIST_DIR, "exp_state.json");
   try {
     const raw = fs.readFileSync(EXP_PERSIST_PATH, "utf-8");
     const parsed = JSON.parse(raw) as {
@@ -720,7 +729,7 @@ export async function startSidecar(
   // block) needs to broadcast to userscript so in-game panel reflects
   // without F5. http itself is constructed AFTER this block, so we hold a
   // mutable forwarder; reassigned at line ~1801 after `const http = ...`.
-  let broadcastSectionUpdate: (uid: string, settings: Record<string, string | boolean>) => void
+  let broadcastSectionUpdate: (uid: string, settings: Record<string, unknown>) => void
     = () => { /* no-op until http is wired */ };
   // The HttpServer's /v1/health route delegates to buildHealthReport via a
   // thunk closure — needs `stateRef`, `lastSeen`, and the `ws.clients` set,
@@ -813,13 +822,26 @@ export async function startSidecar(
             }
           },
           sectionSettingsWrite: async (uid: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> => {
-            // v0.0.1045o — owner 2026-06-10 加 auto_build_mine / auto_build_storage
-            // 两个 checkbox key (TM planet-build pane 控制 cascade gate, 取代 astro≥16).
-            const ALLOWED = new Set(["ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE", "ogamex.expedition.paused", "OGAMEX_EMERGENCY_SOUND_ALARM", "ogamex.global.paused", "ogamex.auto_build_mine", "ogamex.auto_build_storage"]);
-            const filtered: Record<string, string | boolean> = {};
+            // v0.0.1045o — owner 2026-06-10 加 auto_build_mine / auto_build_storage.
+            // v1.0.17 — owner 2026-06-10 "全部改 PG": jsonb-valued keys
+            // (ogamex.expedition_config / ogamex.expedition_state /
+            // ogamex.growth_daemon_disabled) 也允许; filter 改 typeof != "function"
+            // 容纳 string|boolean|object|array (jsonb 全谱).
+            const ALLOWED = new Set([
+              "ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE",
+              "ogamex.expedition.paused", "OGAMEX_EMERGENCY_SOUND_ALARM",
+              "ogamex.global.paused", "ogamex.auto_build_mine", "ogamex.auto_build_storage",
+              // v1.0.17 — file → PG migration
+              "ogamex.expedition_config", "ogamex.expedition_state",
+              "ogamex.growth_daemon_disabled",
+            ]);
+            const filtered: Record<string, unknown> = {};
             for (const [k, v] of Object.entries(patch)) {
               if (!ALLOWED.has(k)) continue;
-              if (typeof v === "string" || typeof v === "boolean") filtered[k] = v;
+              const t = typeof v;
+              if (t === "string" || t === "boolean" || t === "number" || (t === "object" && v !== null)) {
+                filtered[k] = v;
+              }
             }
             const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
             const existing = await sql`SELECT section_settings FROM user_settings WHERE user_id = ${uid} LIMIT 1`;
@@ -834,16 +856,16 @@ export async function startSidecar(
             // v0.0.1045o — update tenant cache so planner/optimizer/growth_daemon
             // 下次 tick 立刻看到新设置, 不用等下次 sectionSettingsRead.
             const tCtxForWrite = tenantRegistry.get(uid);
-            tCtxForWrite.sectionSettings = merged as Record<string, string | boolean>;
+            tCtxForWrite.sectionSettings = merged as Record<string, unknown>;
             // v1.0.0 — owner 2026-06-10 "checkbox 勾选实时生效": 同步 in-place
             // mutate worldState.section_settings, 不等下次 state.snapshot 注入.
             // planner / optimizer / growth_daemon 下次 tick (1-5s) 就看到新值.
             if (tCtxForWrite.worldState) {
-              (tCtxForWrite.worldState as { section_settings?: Record<string, string | boolean> }).section_settings = merged as Record<string, string | boolean>;
+              (tCtxForWrite.worldState as { section_settings?: Record<string, unknown> }).section_settings = merged as Record<string, unknown>;
             }
             // Operator 2026-06-04 "全做" — push to userscript so in-game panel
             // 即时 reflect, not "next F5". Forwarder set after http construction.
-            try { broadcastSectionUpdate(uid, merged as Record<string, string | boolean>); } catch (e) { console.warn("[ogamex] broadcastSectionUpdate threw", e); }
+            try { broadcastSectionUpdate(uid, merged as Record<string, unknown>); } catch (e) { console.warn("[ogamex] broadcastSectionUpdate threw", e); }
             return merged;
           },
         }
@@ -1978,15 +2000,14 @@ export async function startSidecar(
       const stateForUid: WorldState | null = uid ? (tenantRegistry.get(uid).worldState ?? null) : (stateRef.current ?? null);
       const ready = stateForUid !== null;
       let paused = false;
-      try {
-        // operator 2026-06-04 "远征设置里面的舰队配置不生效了" — must match
-        // http_server.ts EXPEDITION_STATE_FILE (workspace, not /tmp).
-        const fp = process.env.OGAMEX_EXPEDITION_STATE_FILE
-          ?? path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime/ogamex-expedition.json");
-        const raw = fs.readFileSync(fp, "utf8");
-        const parsed = JSON.parse(raw) as Record<string, unknown>;
-        paused = parsed["paused"] === true;
-      } catch { /* missing or malformed — treat as not paused */ }
+      // v1.0.17 — owner 2026-06-10 "全部改 PG": per-uid paused 从 PG section_settings
+      // ogamex.expedition_config.paused 读 (in-memory cache via tenantCtx.sectionSettings).
+      // uid 缺省 (legacy operator) → tenantCtx.sectionSettings 也可能 null, paused 默认 false.
+      if (uid) {
+        const ss = tenantRegistry.get(uid).sectionSettings;
+        const cfg = (ss?.["ogamex.expedition_config"] ?? {}) as { paused?: boolean };
+        paused = cfg.paused === true;
+      }
       if (!ready) return { state_ready: false, used: -1, max: -1, paused, active: [] };
       // v0.0.720 (rev v0.0.724) — operator 2026-06-03 "重启才会变成0，前台
       // 传回的数据都要持久化". Pure-fleets15 broke the post-restart case:
@@ -3468,14 +3489,14 @@ export async function startSidecar(
       // sectionSettings 由 sectionSettingsRead/Write 维护; 首次 snapshot 时若 null
       // 触发一次 lazy PG load (fire-and-forget, 下次 snapshot 生效).
       if (tenantCtx.sectionSettings) {
-        (msg.snapshot as { section_settings?: Record<string, string | boolean> }).section_settings = tenantCtx.sectionSettings;
+        (msg.snapshot as { section_settings?: Record<string, unknown> }).section_settings = tenantCtx.sectionSettings;
       } else if (pgStore) {
         const uidForLoad = ctxUid;
         void (async (): Promise<void> => {
           try {
             const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
             const rows = await sql`SELECT section_settings FROM user_settings WHERE user_id = ${uidForLoad} LIMIT 1`;
-            const row = rows[0] as { section_settings?: Record<string, string | boolean> } | undefined;
+            const row = rows[0] as { section_settings?: Record<string, unknown> } | undefined;
             tenantRegistry.get(uidForLoad).sectionSettings = row?.section_settings ?? {};
           } catch (e) { console.warn("[sidecar/section_settings] lazy-load threw", e); }
         })();
@@ -3934,16 +3955,15 @@ export async function startSidecar(
  * state file written by `/v1/expedition/{pause,resume}`. Missing or malformed
  * file ⇒ not paused.
  */
-function readExpeditionPaused(): boolean {
-  try {
-    const expeditionStateFile = process.env.OGAMEX_EXPEDITION_STATE_FILE
-      ?? path.join(os.homedir(), ".openclaw/workspace/ogamex/runtime/ogamex-expedition.json");
-    const raw = fs.readFileSync(expeditionStateFile, "utf8");
-    const parsed = JSON.parse(raw);
-    return !!(parsed && typeof parsed === "object" && (parsed as { paused?: unknown }).paused === true);
-  } catch {
-    return false;
-  }
+function readExpeditionPaused(uid?: string): boolean {
+  // v1.0.17 — owner 2026-06-10 "全部改 PG": file → tenantCtx.sectionSettings
+  // (PG-backed in-memory cache). uid 缺省 = legacy operator daemon, fall back
+  // OGAMEX_LEGACY_USER_ID env. 没 uid / 没 sectionSettings = 默认未 paused.
+  const resolvedUid = uid ?? (process.env.OGAMEX_LEGACY_USER_ID ?? "").trim();
+  if (!resolvedUid) return false;
+  const ss = tenantRegistry.get(resolvedUid).sectionSettings;
+  const cfg = (ss?.["ogamex.expedition_config"] ?? {}) as { paused?: boolean };
+  return cfg.paused === true;
 }
 
 /**
