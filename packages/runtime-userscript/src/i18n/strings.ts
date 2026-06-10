@@ -27,6 +27,9 @@ export type StringRegistry = Readonly<Record<string, Readonly<Record<string, str
 
 export const STRINGS: StringRegistry = {
   en: {
+    "panel.sub_badge.valid_label": "✓ {days}d ({date})",
+    "panel.sub_badge.warning_label": "⏳ {days}d ({date})",
+    "panel.sub_badge.expired_label": "Expired {date}",
     // Panel header / drag handle
     "panel.title_prefix": "🪐",
     "panel.btn.audit": "Audit log — sidecar persisted events",
@@ -463,6 +466,9 @@ export const STRINGS: StringRegistry = {
   },
 
   tw: {
+    "panel.sub_badge.valid_label": "✓ 剩 {days} 天 ({date})",
+    "panel.sub_badge.warning_label": "⏳ 剩 {days} 天 ({date})",
+    "panel.sub_badge.expired_label": "已過期 {date}",
     "panel.title_prefix": "🪐",
     "panel.btn.audit": "稽核日誌 — sidecar 持久化事件",
     "panel.btn.update": "🔄 v{version}",

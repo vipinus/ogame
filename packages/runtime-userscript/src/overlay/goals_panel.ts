@@ -3513,6 +3513,9 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       const r = await fetchFn(`${baseUrl}/ogamex/v1/subscription-status`, init);
       if (!r.ok) return;
       const j = await r.json() as { active?: boolean; expires_at?: number | null };
+      // v1.0.6 — cache 真态给 header sub badge 用
+      if (typeof j.active === "boolean") lastSubActive = j.active;
+      if (typeof j.expires_at === "number" || j.expires_at === null) lastSubExpiresAt = j.expires_at ?? null;
       if (j.active === false) {
         showSubscriptionExpiredModal();
       }
@@ -3641,6 +3644,11 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
   };
   let lastEmergency: EmergencyPayload | null = null;
   let lastExpedition: ExpeditionPayload | null = null;
+  // v1.0.6 — owner 2026-06-10: panel 标题栏第二行 (时间后) 显示订阅有效期 badge,
+  // 颜色逻辑同 ogame-next SubscriptionBadge (none/expired/warning<7d/valid).
+  // checkSubscription 60s poll 已存在, 加 cache + render header 右对齐.
+  let lastSubExpiresAt: number | null = null;
+  let lastSubActive: boolean | null = null;
   // Persisted section-level collapse state.
   // Operator 2026-05-26: "panel 菜單 預設都是收起的". One-time migration:
   // if sentinel v302 not set, overwrite all section flags to collapsed=true
@@ -4645,7 +4653,29 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
           <button data-action="close" style="background:transparent; color:#8090a8; border:none; cursor:pointer; font-size:14px; padding:0 4px;" title="${escapeHtml(t("panel.btn.close"))}">×</button>
         </span>
       </div>
-      <div style="color:#8090a8; font-size:10px;">${escapeHtml(t("panel.counter.active", { n: filtered.length }))}${err ? ` — ${escapeHtml(err)}` : ""} · <span id="ogamex-server-time" style="color:#6080a8;">--:--:--</span></div>`;
+      <div style="color:#8090a8; font-size:10px; display:flex; justify-content:space-between; align-items:center;">
+        <span>${escapeHtml(t("panel.counter.active", { n: filtered.length }))}${err ? ` — ${escapeHtml(err)}` : ""} · <span id="ogamex-server-time" style="color:#6080a8;">--:--:--</span></span>
+        ${(() => {
+          // v1.0.6 — sub badge 右对齐, 颜色逻辑同 ogame-next SubscriptionBadge.
+          // none = lastSubExpiresAt null (server 没 sub 数据); expired = active false;
+          // warning = daysLeft < 7; valid = >=7. 颜色: expired #ff6b6b, warning #ffcc40, valid #80c0ff.
+          if (lastSubExpiresAt === null && lastSubActive === null) return "";
+          if (lastSubActive === false || (lastSubExpiresAt !== null && lastSubExpiresAt < Date.now())) {
+            const label = t("panel.sub_badge.expired_label", { date: lastSubExpiresAt ? new Date(lastSubExpiresAt).toLocaleDateString() : "—" });
+            return `<span style="color:#ff6b6b; font-weight:bold;" title="${escapeHtml(label)}">⚠ ${escapeHtml(label)}</span>`;
+          }
+          if (lastSubExpiresAt === null) return "";
+          const msLeft = lastSubExpiresAt - Date.now();
+          const daysLeft = Math.max(0, Math.floor(msLeft / 86_400_000));
+          const dateStr = new Date(lastSubExpiresAt).toLocaleDateString();
+          if (daysLeft < 7) {
+            const label = t("panel.sub_badge.warning_label", { days: daysLeft, date: dateStr });
+            return `<span style="color:#ffcc40;" title="${escapeHtml(label)}">⏳ ${escapeHtml(label)}</span>`;
+          }
+          const label = t("panel.sub_badge.valid_label", { days: daysLeft, date: dateStr });
+          return `<span style="color:#80c0ff;" title="${escapeHtml(label)}">✓ ${escapeHtml(label)}</span>`;
+        })()}
+      </div>`;
     const empty = filtered.length === 0 && !err
       ? `<div style="color:#666; text-align:center; padding:12px;">(no active goals)</div>`
       : "";
