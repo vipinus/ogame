@@ -803,14 +803,19 @@ export async function startSidecar(
               const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
               const rows = await sql`SELECT section_settings FROM user_settings WHERE user_id = ${uid} LIMIT 1`;
               const row = rows[0] as { section_settings?: Record<string, unknown> } | undefined;
-              return row?.section_settings ?? {};
+              const settings = (row?.section_settings ?? {}) as Record<string, string | boolean>;
+              // v0.0.1045o — cache 进 tenant 给 planner / optimizer / growth_daemon 同步读
+              tenantRegistry.get(uid).sectionSettings = settings;
+              return settings;
             } catch (e) {
               console.warn("[ogamex/sidecar] sectionSettingsRead threw", e);
               return {};
             }
           },
           sectionSettingsWrite: async (uid: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> => {
-            const ALLOWED = new Set(["ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE", "ogamex.expedition.paused", "OGAMEX_EMERGENCY_SOUND_ALARM", "ogamex.global.paused"]);
+            // v0.0.1045o — owner 2026-06-10 加 auto_build_mine / auto_build_storage
+            // 两个 checkbox key (TM planet-build pane 控制 cascade gate, 取代 astro≥16).
+            const ALLOWED = new Set(["ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE", "ogamex.expedition.paused", "OGAMEX_EMERGENCY_SOUND_ALARM", "ogamex.global.paused", "ogamex.auto_build_mine", "ogamex.auto_build_storage"]);
             const filtered: Record<string, string | boolean> = {};
             for (const [k, v] of Object.entries(patch)) {
               if (!ALLOWED.has(k)) continue;
@@ -826,6 +831,9 @@ export async function startSidecar(
               VALUES (${uid}, ${mergedJson}, NOW())
               ON CONFLICT (user_id) DO UPDATE SET section_settings = ${mergedJson}, updated_at = NOW()
             `;
+            // v0.0.1045o — update tenant cache so planner/optimizer/growth_daemon
+            // 下次 tick 立刻看到新设置, 不用等下次 sectionSettingsRead.
+            tenantRegistry.get(uid).sectionSettings = merged as Record<string, string | boolean>;
             // Operator 2026-06-04 "全做" — push to userscript so in-game panel
             // 即时 reflect, not "next F5". Forwarder set after http construction.
             try { broadcastSectionUpdate(uid, merged as Record<string, string | boolean>); } catch (e) { console.warn("[ogamex] broadcastSectionUpdate threw", e); }
@@ -3448,6 +3456,23 @@ export async function startSidecar(
       // v0.0.861 — per-uid mirror now lives in TenantContext.worldState /
       // .lastSeenAt instead of two parallel Map<uid,…> globals.
       const tenantCtx = tenantRegistry.get(ctxUid);
+      // v0.0.1045o — inject section_settings cache into snapshot so planner /
+      // optimizer / growth_daemon 同步读 owner UI checkbox 状态 (替代 astro阈值).
+      // sectionSettings 由 sectionSettingsRead/Write 维护; 首次 snapshot 时若 null
+      // 触发一次 lazy PG load (fire-and-forget, 下次 snapshot 生效).
+      if (tenantCtx.sectionSettings) {
+        (msg.snapshot as { section_settings?: Record<string, string | boolean> }).section_settings = tenantCtx.sectionSettings;
+      } else if (pgStore) {
+        const uidForLoad = ctxUid;
+        void (async (): Promise<void> => {
+          try {
+            const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+            const rows = await sql`SELECT section_settings FROM user_settings WHERE user_id = ${uidForLoad} LIMIT 1`;
+            const row = rows[0] as { section_settings?: Record<string, string | boolean> } | undefined;
+            tenantRegistry.get(uidForLoad).sectionSettings = row?.section_settings ?? {};
+          } catch (e) { console.warn("[sidecar/section_settings] lazy-load threw", e); }
+        })();
+      }
       tenantCtx.worldState = msg.snapshot;
       tenantCtx.lastSeenAt = Date.now();
     }

@@ -211,15 +211,16 @@ export async function runGrowthDaemonOnce(
     console.info(`[growth-daemon] uid=${uid.slice(0, 8)} KILL-SWITCH active (sentinel file present)`);
     return { emitted: 0, skipped: 0 };
   }
-  // v0.0.989b — owner 2026-06-08 "改错了 你又吧约束忘了 天体物理9 以上,
-  // 不考虑 矿和存储罐". planner.ts:isPostExpeditionPhase + optimizer.ts:329
-  // postPhaseSkipMine 都已用 astrophysics>=9 阈值跳过矿/存储 (post-expedition
-  // 经济阶段 transport 接管补给). growth_daemon 必须对齐, 否则同账号 3 处约束
-  // 不拉通.
-  // v0.0.1045n — owner 2026-06-10 "改成天体物理到达 16": 3 处一起改到 16.
-  const astro = (state as { research?: { levels?: Record<string, number> } }).research?.levels?.["astrophysics"] ?? 0;
-  if (astro >= 16) {
-    console.info(`[growth-daemon] uid=${uid.slice(0,8)} SKIP-ALL astrophysics=${astro} >=16 (post-expedition phase)`);
+  // v0.0.989b → 1045n (astro≥16) → 1045o: owner 2026-06-10 "checkbox 控制
+  // auto 建矿/建存储". 不再用 astro 阈值, 改读 section_settings 双 key.
+  // 两个都关才全 SKIP (因为 growth_daemon 同时推 mine 跟 storage cascade).
+  const s = (state as { section_settings?: Record<string, string | boolean> }).section_settings ?? {};
+  const autoMine = s["ogamex.auto_build_mine"];
+  const autoStorage = s["ogamex.auto_build_storage"];
+  const mineDisabled = autoMine === false || autoMine === "false";
+  const storageDisabled = autoStorage === false || autoStorage === "false";
+  if (mineDisabled && storageDisabled) {
+    console.info(`[growth-daemon] uid=${uid.slice(0,8)} SKIP-ALL — section_settings: auto_mine=off, auto_storage=off`);
     return { emitted: 0, skipped: 0 };
   }
   const allRows = await goalsStorePg.list(uid);

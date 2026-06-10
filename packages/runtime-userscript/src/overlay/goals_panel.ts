@@ -1004,6 +1004,17 @@ function openGoalsSettings(
           <input data-pb-level type="number" min="1" max="50" value="" placeholder="${escapeHtml(t('auto.130'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
+        <!-- v0.0.1045o — owner 2026-06-10 checkbox 自动建矿 / 自动建存储, 替代 astro≥16 阈值. -->
+        <div style="display:flex; gap:14px; align-items:center; padding:6px 0; border-top:1px dashed #2a3a52; border-bottom:1px dashed #2a3a52; margin-top:4px;">
+          <label style="display:inline-flex; align-items:center; gap:5px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="${escapeHtml(t('auto.295'))}">
+            <input data-pb-auto-mine type="checkbox" checked style="margin:0;"/>
+            <span>${escapeHtml(t('auto.293'))}</span>
+          </label>
+          <label style="display:inline-flex; align-items:center; gap:5px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="${escapeHtml(t('auto.296'))}">
+            <input data-pb-auto-storage type="checkbox" checked style="margin:0;"/>
+            <span>${escapeHtml(t('auto.294'))}</span>
+          </label>
+        </div>
         <div style="padding:6px 0; min-height:22px;">
           <span data-pb-desc style="color:#7cfc00; font-size:11px;"></span>
         </div>
@@ -1503,6 +1514,48 @@ function openGoalsSettings(
     const pbPriorityInput = m.querySelector<HTMLInputElement>("[data-pb-priority]");
     const pbStatusEl = m.querySelector<HTMLElement>("[data-pb-status]");
     const pbCreateBtn = m.querySelector<HTMLButtonElement>("[data-pb-create]");
+    // v0.0.1045o — owner 2026-06-10 checkbox 自动建矿/建存储, 初始化 + sync to PG
+    {
+      const pbAutoMine = m.querySelector<HTMLInputElement>("[data-pb-auto-mine]");
+      const pbAutoStorage = m.querySelector<HTMLInputElement>("[data-pb-auto-storage]");
+      // 初始 state: 先 localStorage 兜底 (本地 cache), 然后 fetch PG 真态覆盖
+      const lsMineRaw = lsGet("ogamex.auto_build_mine");
+      const lsStorageRaw = lsGet("ogamex.auto_build_storage");
+      if (pbAutoMine) pbAutoMine.checked = lsMineRaw !== "false"; // default checked
+      if (pbAutoStorage) pbAutoStorage.checked = lsStorageRaw !== "false";
+      // Fetch authoritative state from PG (覆盖 LS)
+      const baseUrlForSync = (window as Window & { __OGAMEX_BRIDGE_URL_RUNTIME?: string }).__OGAMEX_BRIDGE_URL_RUNTIME ?? "https://ogame.anyfq.com";
+      const tokForSync = lsGet("OGAMEX_BRIDGE_TOKEN") ?? "";
+      if (tokForSync) {
+        void fetch(`${baseUrlForSync}/ogamex/v1/section-settings`, {
+          method: "GET",
+          headers: { "authorization": `Bearer ${tokForSync}` },
+        })
+          .then((r) => r.ok ? r.json() : null)
+          .then((j) => {
+            if (!j) return;
+            const settings = (j as { settings?: Record<string, unknown> }).settings ?? {};
+            const mineRaw = settings["ogamex.auto_build_mine"];
+            const storageRaw = settings["ogamex.auto_build_storage"];
+            if (pbAutoMine && mineRaw !== undefined) pbAutoMine.checked = !(mineRaw === false || mineRaw === "false");
+            if (pbAutoStorage && storageRaw !== undefined) pbAutoStorage.checked = !(storageRaw === false || storageRaw === "false");
+          })
+          .catch(() => { /* PG fetch best-effort */ });
+      }
+      // change → save to PG + LS
+      const syncAutoFlag = (key: string, checked: boolean): void => {
+        const v = checked ? "true" : "false";
+        lsSet(key, v);
+        if (!tokForSync) return;
+        void fetch(`${baseUrlForSync}/ogamex/v1/section-settings`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "authorization": `Bearer ${tokForSync}` },
+          body: JSON.stringify({ [key]: v }),
+        }).catch(() => { /* sync best-effort */ });
+      };
+      pbAutoMine?.addEventListener("change", () => syncAutoFlag("ogamex.auto_build_mine", pbAutoMine.checked));
+      pbAutoStorage?.addEventListener("change", () => syncAutoFlag("ogamex.auto_build_storage", pbAutoStorage.checked));
+    }
     // v0.0.590 — operator 2026-06-01 "有月球不能選, 所有月球就不能選, 星球
     // 頁面也是": if ANY body is occupied, the "所有" radio doesn't make sense
     // (literally cannot include them). Disable + gray it out, force operator

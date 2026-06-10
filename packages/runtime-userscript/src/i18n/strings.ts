@@ -456,6 +456,10 @@ export const STRINGS: StringRegistry = {
     "auto.290": "· 🏗 building (~{eta}m to finish)",
     "auto.291": "· ✅ resources ready, dispatchable",
     "auto.292": "✓ Colonize task created",
+    "auto.293": "Auto build mines",
+    "auto.294": "Auto build storage",
+    "auto.295": "Mine cascade emit (metal/crystal/deuterium) controlled here. Uncheck = manual only.",
+    "auto.296": "Storage cascade emit (metalStorage/crystalStorage/deuteriumTank) controlled here. Uncheck = manual only.",
   },
 
   tw: {
@@ -870,5 +874,9 @@ export const STRINGS: StringRegistry = {
     "auto.290": "· 🏗 在造中 (~{eta}m 完工)",
     "auto.291": "· ✅ 資源夠, 立即可派",
     "auto.292": "✓ 殖民任務已建立",
+    "auto.293": "自動建礦",
+    "auto.294": "自動建儲存",
+    "auto.295": "礦 cascade (金屬/晶體/重氫) 自動 emit, 取消勾選 = 完全手動.",
+    "auto.296": "儲存 cascade (各類存儲槽) 自動 emit, 取消勾選 = 完全手動.",
   },
 } as const;

@@ -133,6 +133,10 @@ export interface TenantContext {
    *  此 key 在 6min 内有值 → skip (跨 fleet ID, 跨 wire reload). 跟 [[single-decision-tree]]
    *  对齐: sidecar 是 dispatched 真态权威源, 不再依赖 wire 端 in-memory dedup. */
   readonly harvestDispatchedCoords: Map<string, number>;
+  /** v0.0.1045o — section_settings 缓存. sidecar 启动/sectionSettingsWrite 后
+   *  更新. state.snapshot handler 把 cache 注入 worldState.section_settings
+   *  给 planner/optimizer/growth_daemon 决策. null = lazy-load 未跑. */
+  sectionSettings: Record<string, string | boolean> | null;
   /** directive id → goal id. Source of truth for ack→goal mapping.
    *  Trimmed when the success/failure ack arrives. */
   readonly directiveToGoal: Map<string, string>;
@@ -263,6 +267,9 @@ function newContext(): TenantContext {
     expSeenFleetIdsByOrigin: new Map<string, Set<string>>(),
     expReturnedCountByOrigin: new Map<string, number>(),
     harvestDispatchedCoords: new Map<string, number>(),
+    // v0.0.1045o — section_settings 缓存, sectionSettingsRead/Write 维护,
+    // state.snapshot 时注入 worldState 给 planner / optimizer / growth_daemon.
+    sectionSettings: null,
   };
 }
 

@@ -163,6 +163,11 @@ export interface WorldState {
    *  hardcoded catalog fallback. Populated lazily as operator visits
    *  pages (supplies / lfbuildings / lfresearch / research / shipyard). */
   tech_labels?: Record<string, string>;
+  /** v0.0.1045o — owner 2026-06-10 "checkbox 自动建矿/自动建存储": sidecar
+   *  从 user_settings.section_settings JSONB 注入到 worldState 给 planner /
+   *  optimizer / growth_daemon 同步读取. 替代 v0.0.1045n astro≥16 阈值
+   *  (post-expedition phase) 的硬编码决策. */
+  section_settings?: Record<string, string | boolean>;
 }
 
 // --- Directive ---
