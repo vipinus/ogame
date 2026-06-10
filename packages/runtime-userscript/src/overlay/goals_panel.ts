@@ -173,7 +173,7 @@ const PANEL_ID = "ogamex-goals-panel";
 // operator feedback (20 was too faint to read at a glance).
 const PANEL_STYLE = `
   position: fixed; top: 80px; right: 12px; z-index: 99999;
-  width: 320px; max-height: 60vh; overflow-y: auto;
+  width: 518px; max-height: 60vh; overflow-y: auto;
   background: rgba(15, 20, 30, 0.92); color: #d8e0ec;
   border: 1px solid #2a3a52; border-radius: 6px;
   font-family: -apple-system, system-ui, "Helvetica Neue", sans-serif;
