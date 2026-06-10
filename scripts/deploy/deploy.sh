@@ -21,6 +21,8 @@
 #   $0 nginx  <host> <domain>                           # 渲染 + 推 nginx site, reload
 #   $0 systemd <host>                                   # 推 systemd unit + restart
 #   $0 seed   <host> <owner_uid> <owner_email>          # users INSERT + section_settings 默认
+#   $0 paypal-bootstrap <host> <domain>                 # 一键创 PayPal Product/Plans/Webhook
+#                                                       # (需 PAYPAL_CLIENT_ID + _SECRET env)
 #   $0 smoke  <host> <domain>                           # verify 真 200
 #   $0 all    <host> <domain> <owner_uid> <owner_email> # build + push + env (first time) + nginx
 #                                                       # + systemd + seed + smoke
@@ -58,6 +60,14 @@ NEXT_REPO="${NEXT_REPO:-$(cd "$REPO_ROOT/../ogame-next" 2>/dev/null && pwd)}"
 : "${STRIPE_WEBHOOK_SECRET:=}"
 : "${STRIPE_PRICE_ID_MONTHLY:=}"
 : "${STRIPE_PRICE_ID_YEARLY:=}"
+: "${STRIPE_BILLING_PORTAL_CONFIGURATION_ID:=}"
+# PayPal Subscriptions (v1.0.18). owner Developer Dashboard 拿:
+# 1. Apps & Credentials → Live → Create App → Client ID + Secret
+# PAYPAL_PRODUCT_ID / PLAN_{MONTHLY,YEARLY}_ID / WEBHOOK_ID 由 cmd_paypal_bootstrap
+# 用 API 自动创 + 写 .env.production. owner 0 Dashboard 操作.
+: "${PAYPAL_CLIENT_ID:=}"
+: "${PAYPAL_CLIENT_SECRET:=}"
+: "${PAYPAL_ENV:=live}"
 
 log()  { printf '\033[1;36m[deploy]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -93,6 +103,7 @@ render() {
   STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET" \
   STRIPE_PRICE_ID_MONTHLY="$STRIPE_PRICE_ID_MONTHLY" \
   STRIPE_PRICE_ID_YEARLY="$STRIPE_PRICE_ID_YEARLY" \
+  STRIPE_BILLING_PORTAL_CONFIGURATION_ID="$STRIPE_BILLING_PORTAL_CONFIGURATION_ID" \
     envsubst < "$TEMPLATES/$tmpl"
 }
 
@@ -229,6 +240,84 @@ cmd_systemd() {
   "
 }
 
+# ──────────────────────────────────────────── stage: paypal subscriptions bootstrap
+
+cmd_paypal_bootstrap() {
+  parse_host "$1"
+  DOMAIN="$2"
+  [[ -n "$PAYPAL_CLIENT_ID" && -n "$PAYPAL_CLIENT_SECRET" ]] \
+    || die "Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET env first"
+  local base="https://api-m.paypal.com"
+  [[ "$PAYPAL_ENV" == "sandbox" ]] && base="https://api-m.sandbox.paypal.com"
+  log "PayPal env: $PAYPAL_ENV  base: $base"
+
+  # 1) Get access token
+  local token
+  token=$(curl -sS -u "$PAYPAL_CLIENT_ID:$PAYPAL_CLIENT_SECRET" \
+    -d grant_type=client_credentials "$base/v1/oauth2/token" \
+    | python3 -c 'import json,sys;print(json.load(sys.stdin).get("access_token",""))')
+  [[ -n "$token" ]] || die "PayPal access_token failed (check CLIENT_ID/_SECRET, PAYPAL_ENV=$PAYPAL_ENV)"
+  log "PayPal token ✓ (len=${#token})"
+
+  # 2) Create Product (idempotent: if env has PAYPAL_PRODUCT_ID, reuse)
+  local product_id="${PAYPAL_PRODUCT_ID:-}"
+  if [[ -z "$product_id" ]]; then
+    product_id=$(curl -sS -X POST "$base/v1/catalogs/products" \
+      -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+      -d '{"name":"OgameX","description":"ogame full-stack automation subscription","type":"SERVICE","category":"SOFTWARE"}' \
+      | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+    [[ -n "$product_id" ]] || die "PayPal createProduct failed"
+  fi
+  log "PayPal product_id: $product_id"
+
+  # 3) Create Billing Plans (monthly $20 + yearly $200)
+  local plan_monthly plan_yearly
+  plan_monthly=$(curl -sS -X POST "$base/v1/billing/plans" \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" -H "Prefer: return=representation" \
+    -d "{\"product_id\":\"$product_id\",\"name\":\"OgameX Monthly\",\"description\":\"OgameX Monthly\",\"status\":\"ACTIVE\",\"billing_cycles\":[{\"frequency\":{\"interval_unit\":\"MONTH\",\"interval_count\":1},\"tenure_type\":\"REGULAR\",\"sequence\":1,\"total_cycles\":0,\"pricing_scheme\":{\"fixed_price\":{\"value\":\"20.00\",\"currency_code\":\"USD\"}}}],\"payment_preferences\":{\"auto_bill_outstanding\":true,\"setup_fee_failure_action\":\"CONTINUE\",\"payment_failure_threshold\":3}}" \
+    | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+  [[ -n "$plan_monthly" ]] || die "PayPal createBillingPlan(monthly) failed"
+  log "PayPal monthly plan_id: $plan_monthly"
+
+  plan_yearly=$(curl -sS -X POST "$base/v1/billing/plans" \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" -H "Prefer: return=representation" \
+    -d "{\"product_id\":\"$product_id\",\"name\":\"OgameX Yearly\",\"description\":\"OgameX Yearly\",\"status\":\"ACTIVE\",\"billing_cycles\":[{\"frequency\":{\"interval_unit\":\"YEAR\",\"interval_count\":1},\"tenure_type\":\"REGULAR\",\"sequence\":1,\"total_cycles\":0,\"pricing_scheme\":{\"fixed_price\":{\"value\":\"200.00\",\"currency_code\":\"USD\"}}}],\"payment_preferences\":{\"auto_bill_outstanding\":true,\"setup_fee_failure_action\":\"CONTINUE\",\"payment_failure_threshold\":3}}" \
+    | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+  [[ -n "$plan_yearly" ]] || die "PayPal createBillingPlan(yearly) failed"
+  log "PayPal yearly plan_id: $plan_yearly"
+
+  # 4) Create Webhook
+  local webhook_id
+  webhook_id=$(curl -sS -X POST "$base/v1/notifications/webhooks" \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    -d "{\"url\":\"https://$DOMAIN/api/webhooks/paypal\",\"event_types\":[{\"name\":\"BILLING.SUBSCRIPTION.ACTIVATED\"},{\"name\":\"BILLING.SUBSCRIPTION.UPDATED\"},{\"name\":\"BILLING.SUBSCRIPTION.CANCELLED\"},{\"name\":\"BILLING.SUBSCRIPTION.SUSPENDED\"},{\"name\":\"BILLING.SUBSCRIPTION.EXPIRED\"},{\"name\":\"PAYMENT.SALE.COMPLETED\"}]}" \
+    | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+  [[ -n "$webhook_id" ]] || die "PayPal createWebhook failed"
+  log "PayPal webhook_id: $webhook_id"
+
+  # 5) Push 7 envs to host .env.production (overwrite + restart)
+  log "Pushing 7 PAYPAL_* envs → $SSH_USER_HOST:$REMOTE_HOME/ogame-next/.env.production"
+  ssh "${SSH_OPTS[@]}" "$SSH_USER_HOST" "
+    cp -a '$REMOTE_HOME/ogame-next/.env.production' '$REMOTE_HOME/ogame-next/.env.production.bak.\$(date +%s)'
+    sed -i '/^PAYPAL_/d' '$REMOTE_HOME/ogame-next/.env.production'
+    cat >> '$REMOTE_HOME/ogame-next/.env.production' <<EOF
+PAYPAL_CLIENT_ID=$PAYPAL_CLIENT_ID
+PAYPAL_CLIENT_SECRET=$PAYPAL_CLIENT_SECRET
+PAYPAL_ENV=$PAYPAL_ENV
+PAYPAL_PUBLIC_CLIENT_ID=$PAYPAL_CLIENT_ID
+PAYPAL_PRODUCT_ID=$product_id
+PAYPAL_PLAN_MONTHLY_ID=$plan_monthly
+PAYPAL_PLAN_YEARLY_ID=$plan_yearly
+PAYPAL_WEBHOOK_ID=$webhook_id
+EOF
+    chmod 600 '$REMOTE_HOME/ogame-next/.env.production'
+    systemctl restart ogame-next
+    sleep 4
+    systemctl is-active ogame-next
+  "
+  log "✓ PayPal bootstrap complete. owner refresh https://$DOMAIN/pricing → PayPal button 真切 subscription mode"
+}
+
 # ──────────────────────────────────────────────────────── stage: pg seed
 
 cmd_seed() {
@@ -341,6 +430,7 @@ case "$cmd" in
   nginx)   [[ $# -ge 2 ]] || usage; cmd_nginx   "$@" ;;
   systemd) [[ $# -ge 1 ]] || usage; cmd_systemd "$@" ;;
   seed)    [[ $# -ge 3 ]] || usage; cmd_seed    "$@" ;;
+  paypal-bootstrap) [[ $# -ge 2 ]] || usage; cmd_paypal_bootstrap "$@" ;;
   smoke)   [[ $# -ge 2 ]] || usage; cmd_smoke   "$@" ;;
   all)     [[ $# -ge 4 ]] || usage; cmd_all     "$@" ;;
   ""|-h|--help|help) usage ;;
