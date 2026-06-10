@@ -293,7 +293,7 @@ export function startEmergencySave(
   const debugLog = (tag: string, text: string): void => {
     try {
       const winLs = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-      const baseUrl = winLs.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+      const baseUrl = winLs.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
       void fetch(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
         method: "POST", credentials: "omit",
         headers: { "Content-Type": "application/json" },

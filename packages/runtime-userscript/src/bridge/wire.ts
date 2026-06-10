@@ -281,7 +281,7 @@ export async function wireBridge(
         if (!realCp || !planet || !Array.isArray(planet.coords) || planet.coords.length < 3) {
           const failMsg = `_CURRENT_ resolve failed: meta=${realCp || "<empty>"} planet=${JSON.stringify(planet ?? null)}`;
           console.warn(`[debris] ${failMsg}`);
-          void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+          void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
             method: "POST", credentials: "omit",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ tag: "debris-current-fail", text: failMsg }),
@@ -308,7 +308,7 @@ export async function wireBridge(
         }
         const okMsg = `_CURRENT_ resolved → origin=${origin} coords=${g}:${s}:${planet.coords[2]} type=${planet.type ?? "?"}`;
         console.info(`[debris] ${okMsg}`);
-        void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+        void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
           method: "POST", credentials: "omit",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ tag: "debris-current-ok", text: okMsg }),
@@ -473,7 +473,7 @@ export async function wireBridge(
           const diag = `G:S=${g}:${s} target=${targetPosition} rowsLen=${rows.length} rootKeys=[${rootKeys}] firstRowKeys=[${firstRowKeys}] systemKeys=[${systemKeys}] reservedPositions=${reservedDump} pos${targetPosition}=${posJson}`;
           console.info(`[debris-raw] ${diag}`);
           // mirror to sidecar journal — operator can verify via journalctl.
-          void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+          void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
             method: "POST", credentials: "omit",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ tag: "debris-raw", text: diag }),
@@ -487,7 +487,7 @@ export async function wireBridge(
           const skipMsg = `G:S:${targetPosition}=${g}:${s}:${targetPosition} — no debris field at primary slot, will still scan home planet (isDebrisField=${isDebrisField})`;
           console.info(`[debris] ${skipMsg}`);
           try {
-            void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+            void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
               method: "POST", credentials: "omit",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ tag: "debris-skip", text: skipMsg }),
@@ -525,7 +525,7 @@ export async function wireBridge(
         const inventoryMsg = `origin=${origin} inventory: ${harvestShipKey}=${shipsAvailable} d=${planetD} | needed=${shipsNeeded} cap=${shipCap}/ship totalDebris=${totalDebris}`;
         console.info(`[debris] ${inventoryMsg}`);
         try {
-          void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+          void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
             method: "POST", credentials: "omit",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ tag: "debris-inv", text: inventoryMsg }),
@@ -586,7 +586,7 @@ export async function wireBridge(
             console.warn("[debris] ack send threw — kept in queue", e);
           }
           try {
-            void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+            void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
               method: "POST", credentials: "omit",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ tag: "debris-ok", text: okMsg }),
@@ -596,7 +596,7 @@ export async function wireBridge(
           const errMsg = e instanceof Error ? e.message : String(e);
           console.error("[debris] sendFleet failed:", e);
           try {
-            void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+            void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
               method: "POST", credentials: "omit",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ tag: "debris-fail", text: `sendFleet error: ${errMsg.slice(0, 300)}` }),
@@ -659,7 +659,7 @@ export async function wireBridge(
                 const homeShipsNeeded = homeReq > 0 ? homeReq : Math.max(1, Math.ceil(homeTotal / 20000));
                 const homeInfo = `home G:S:${planetPos}=${g}:${s}:${planetPos} m=${hm} c=${hc} d=${hd} total=${homeTotal} need=${homeShipsNeeded} have=${homeShipsAvail} origin=${origin}`;
                 console.info(`[debris/home] ${homeInfo}`);
-                void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+                void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
                   method: "POST", credentials: "omit",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ tag: "debris-home", text: homeInfo }),
@@ -680,7 +680,7 @@ export async function wireBridge(
                     const homeOk = `home recycler dispatched fleetId=${homeRes.fleetId} count=${homeSend} target=${g}:${s}:${planetPos}`;
                     console.info(`[debris/home] ${homeOk}`);
                     recentHarvestDispatch.set(homeDedupKey, Date.now());
-                    void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+                    void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
                       method: "POST", credentials: "omit",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ tag: "debris-home-ok", text: homeOk }),
@@ -688,7 +688,7 @@ export async function wireBridge(
                   } catch (e) {
                     const errMsg = e instanceof Error ? e.message : String(e);
                     console.error("[debris/home] sendFleet failed:", e);
-                    void fetch("https://ogame.anyfq.com/ogamex/v1/debug/log", {
+                    void fetch("https://fs.5x24hrs.com/ogamex/v1/debug/log", {
                       method: "POST", credentials: "omit",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ tag: "debris-home-fail", text: `home sendFleet error: ${errMsg.slice(0, 300)}` }),
@@ -734,7 +734,7 @@ export async function wireBridge(
         console.info(`[wireBridge] save.recall_now planet=${m.planet_id} fleet=${m.fleet_id} — FSM already in ${snap.state}, frontend handled it; skip backend duplicate.`);
         // Notify backend so it closes its own record (avoid re-fire).
         try {
-          void fetch("https://ogame.anyfq.com/ogamex/v1/save/recall-confirmed", {
+          void fetch("https://fs.5x24hrs.com/ogamex/v1/save/recall-confirmed", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ fleet_id: m.fleet_id, note: "frontend FSM already recalled" }),
@@ -776,7 +776,7 @@ export async function wireBridge(
         await w.__ogamexRecallFleet!(fidFinal);
         console.log(`[wireBridge] recall POST ok fleet=${fidFinal}, reporting back to backend`);
         try {
-          await fetch("https://ogame.anyfq.com/ogamex/v1/save/recall-confirmed", {
+          await fetch("https://fs.5x24hrs.com/ogamex/v1/save/recall-confirmed", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ fleet_id: fidFinal }),
@@ -800,7 +800,7 @@ export async function wireBridge(
           if (!fleetStillFlying) {
             console.warn(`[wireBridge] recall POST said success=false BUT fleet=${fidFinal} not in fleets_outbound — fleet already landed (backend timing). Notifying backend.`);
             try {
-              await fetch("https://ogame.anyfq.com/ogamex/v1/save/recall-confirmed", {
+              await fetch("https://fs.5x24hrs.com/ogamex/v1/save/recall-confirmed", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ fleet_id: fidFinal, note: "fleet already landed; treated as confirmed" }),

@@ -13,9 +13,9 @@ declare const GM_getValue: ((key: string, def?: string) => string) | undefined;
 // CF tunnel (sidecar/index.ts attachToHttpServer). Real-time DownstreamMsg
 // push (section_settings.update, directive.dispatch, etc.) instead of ≤30s
 // long-poll latency. HTTP fallback baked into wireBridge if WS fails.
-// Operators can pin HTTP by setting OGAMEX_BRIDGE_URL=https://ogame.anyfq.com
+// Operators can pin HTTP by setting OGAMEX_BRIDGE_URL=https://fs.5x24hrs.com
 // in localStorage / GM_setValue.
-const DEFAULT_BRIDGE_URL = "wss://ogame.anyfq.com";
+const DEFAULT_BRIDGE_URL = "wss://fs.5x24hrs.com";
 
 // Build-time placeholder constants. The generic dist/ogame-runtime.user.js
 // ships with the bare placeholder literals below. When ogame-next's
@@ -120,7 +120,7 @@ if (_inIframe) {
     (window as unknown as { __OGAMEX__: unknown }).__OGAMEX__ = handle;
 
     // Wire bridge if a token is configured (GM_getValue OR window.localStorage)
-    // v0.0.782 — auto-upgrade http(s)://ogame.anyfq.com → ws(s):// so旧 per-user
+    // v0.0.782 — auto-upgrade http(s)://fs.5x24hrs.com → ws(s):// so旧 per-user
     // install (route.ts injected https before fix) 不用重 install 也能走 WS.
     // CF tunnel 同 host 同 port 支持 WS upgrade — scheme 切换无安全代价.
     const rawBridgeUrl = readConfig("OGAMEX_BRIDGE_URL", DEFAULT_BRIDGE_URL, INJECTED_BRIDGE_URL);
@@ -155,7 +155,7 @@ if (_inIframe) {
       // userscript boot → localStorage. (Reverse direction handled in panel
       // toggle handlers below, fetching POST to /ogamex/v1/section-settings.)
       try {
-        const baseUrl = readConfig("OGAMEX_GOALS_PANEL_URL", "https://ogame.anyfq.com");
+        const baseUrl = readConfig("OGAMEX_GOALS_PANEL_URL", "https://fs.5x24hrs.com");
         const r = await fetch(`${baseUrl}/ogamex/v1/section-settings`, {
           method: "GET",
           headers: { authorization: `Bearer ${bridgeToken}` },
@@ -188,7 +188,7 @@ if (_inIframe) {
       // The sidecar exposes an unauthenticated operator HTTP on the same host
       // (no-auth by design — same threat model as /v1/debug). The panel base
       // URL is configurable so dev / staging operators can re-target it.
-      const goalsPanelBaseUrl = readConfig("OGAMEX_GOALS_PANEL_URL", "https://ogame.anyfq.com");
+      const goalsPanelBaseUrl = readConfig("OGAMEX_GOALS_PANEL_URL", "https://fs.5x24hrs.com");
       const runtime = wireRuntime(handle, {
         ...(wired?.client ? { bridge: wired.client } : {}),
         win: window,
