@@ -1110,19 +1110,14 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
   const planet = Object.values(ctx.state.planets ?? {}).find((p) => p.id === planetId);
   if (!planet) return { blocked: `planet not found: ${planetId}` };
 
-  // v0.0.1009 → v0.0.1013 → v0.0.1014 — owner 2026-06-09 "current e 这个没用了
-  // 就删掉吧": delta >= 0 时 projected = current - delta ≤ current, 所以
-  // current<0 必然 projected<0, `current<0` 是 `projected<0` 的子集. 删冗余.
-  // 顶层逻辑: 只看预测 E (forward-projected post-build). 任何 building 类 (mine
-  // 有 delta, 非 mine delta=0) 都走同一公式.
+  // v0.0.1045 — owner "新星球会卡住" 实证: v0.0.1014 顶层 early-return blocked
+  // 导致新 colony e=4 + 任何 mine 升 → planner 不走 line 1252 pickEnergyPrereqBuilding
+  // (它会推 plant) 直接 dead-end. 真因 = early return 屏蔽了 cascade plant prereq.
+  // 修: 删 early-return blocked (建筑性 mineEnergyConsumption 单级 deltaE 真态
+  // 由 line 1252+ pickEnergyPrereqBuilding 接管 — 它会 emit plant child 让 cascade
+  // 自然推 solar 升级). 顶层不再"先 gate 再递归", 直接递归让 picker 决策.
   const isEnergyFixPath = building === "solarPlant" || building === "fusionReactor";
-  const isMineForEnergy = building === "metalMine" || building === "crystalMine" || building === "deuteriumSynth";
-  const curLvlForE = (planet.buildings as Record<string, number> | undefined)?.[building] ?? 0;
-  const deltaE = isMineForEnergy ? mineEnergyConsumption(building, targetLevel) - mineEnergyConsumption(building, curLvlForE) : 0;
-  const projectedE = ((planet.resources as { e?: number } | undefined)?.e ?? 0) - deltaE;
-  if (!isEnergyFixPath && projectedE < 0) {
-    return { blocked: `energy gate (projected=${Math.round(projectedE)}, delta=${Math.round(deltaE)}) — ${building} L${targetLevel} blocked, energy fix has priority (build solar/fusion first)` };
-  }
+  void isEnergyFixPath;
 
   // v0.0.455: planet-only gate — reject up-front if the goal asks for a
   // building that physically can't exist on a moon. Catches optimizer
