@@ -15,12 +15,15 @@
 #
 # Usage:
 #   $0 build                                            # local build (sidecar+next+userscript)
-#   $0 push   <host> <domain>                           # rsync 全套 → host, 不动 PG
+#   $0 push   <host> <domain>                           # rsync 全套 → host, 不动 .env / PG / systemd
+#   $0 env    <host> <domain> <owner_uid>               # render + 推 .env.production + run_sidecar.mjs
+#                                                       # (覆盖已有, owner 自行备份再跑)
 #   $0 nginx  <host> <domain>                           # 渲染 + 推 nginx site, reload
 #   $0 systemd <host>                                   # 推 systemd unit + restart
 #   $0 seed   <host> <owner_uid> <owner_email>          # users INSERT + section_settings 默认
 #   $0 smoke  <host> <domain>                           # verify 真 200
-#   $0 all    <host> <domain> <owner_uid> <owner_email> # build + push + nginx + systemd + smoke
+#   $0 all    <host> <domain> <owner_uid> <owner_email> # build + push + env (first time) + nginx
+#                                                       # + systemd + seed + smoke
 #
 # Args:
 #   <host>       — ssh target, e.g. root@uk4.fanq.in:2222 (port 可选, 默认 22)
@@ -49,6 +52,12 @@ NEXT_REPO="${NEXT_REPO:-$(cd "$REPO_ROOT/../ogame-next" 2>/dev/null && pwd)}"
 : "${GEMINI_API_KEY:=}"
 : "${REMOTE_HOME:=/root}"
 : "${REMOTE_REPO_DIR:=/root/ogamex}"
+# Stripe 订阅 (v1.0.18) — owner 在 Stripe Dashboard 拿真值后 export, 否则留
+# 空 deploy 仍跑通, Checkout 调用时再 fail-fast.
+: "${STRIPE_SECRET_KEY:=}"
+: "${STRIPE_WEBHOOK_SECRET:=}"
+: "${STRIPE_PRICE_ID_MONTHLY:=}"
+: "${STRIPE_PRICE_ID_YEARLY:=}"
 
 log()  { printf '\033[1;36m[deploy]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -80,6 +89,10 @@ render() {
   DISCORD_CHANNEL_ID="$DISCORD_CHANNEL_ID" \
   REMOTE_HOME="$REMOTE_HOME" \
   REMOTE_REPO_DIR="$REMOTE_REPO_DIR" \
+  STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY" \
+  STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET" \
+  STRIPE_PRICE_ID_MONTHLY="$STRIPE_PRICE_ID_MONTHLY" \
+  STRIPE_PRICE_ID_YEARLY="$STRIPE_PRICE_ID_YEARLY" \
     envsubst < "$TEMPLATES/$tmpl"
 }
 
@@ -157,12 +170,26 @@ cmd_push() {
     warn "skipping next.js push (no $NEXT_REPO/.next/standalone)"
   fi
 
-  log "render + push .env.production"
-  render env.production | ssh "${SSH_OPTS[@]}" "$SSH_USER_HOST" "mkdir -p '$REMOTE_HOME/ogame-next' && cat > '$REMOTE_HOME/ogame-next/.env.production'"
+  # NOTE: .env.production + run_sidecar.mjs 由 cmd_env 单独推 — 默认 push 不
+  # 动它们, 防覆盖 owner 已配 secret / Stripe key. 首次 deploy 或更新 ENV 时
+  # 显式 `./deploy.sh env <host> <domain> <uid>`.
+}
 
+# ──────────────────────────────────────────────────────── stage: env (render)
+
+cmd_env() {
+  parse_host "$1"
+  DOMAIN="$2"
+  OPERATOR_USER_ID="$3"
+  log "render + push .env.production → $REMOTE_HOME/ogame-next/"
+  log "  (覆盖已有! 改 secret 会让 owner cookie 解不开, 改前 backup)"
+  ssh "${SSH_OPTS[@]}" "$SSH_USER_HOST" "
+    mkdir -p '$REMOTE_HOME/ogame-next'
+    [[ -f '$REMOTE_HOME/ogame-next/.env.production' ]] && cp -a '$REMOTE_HOME/ogame-next/.env.production' '$REMOTE_HOME/ogame-next/.env.production.bak.\$(date +%s)' || true
+  "
+  render env.production | ssh "${SSH_OPTS[@]}" "$SSH_USER_HOST" "cat > '$REMOTE_HOME/ogame-next/.env.production'"
   log "render + push run_sidecar.mjs"
-  OPERATOR_USER_ID="${OPERATOR_USER_ID:-00000000-0000-0000-0000-000000000000}" \
-    render run_sidecar.mjs | ssh "${SSH_OPTS[@]}" "$SSH_USER_HOST" "cat > '$REMOTE_HOME/run_sidecar.mjs'"
+  render run_sidecar.mjs | ssh "${SSH_OPTS[@]}" "$SSH_USER_HOST" "cat > '$REMOTE_HOME/run_sidecar.mjs'"
 }
 
 # ──────────────────────────────────────────────────────────── stage: nginx
@@ -289,6 +316,9 @@ cmd_all() {
   OPERATOR_USER_ID="$uid"
   cmd_build
   cmd_push    "$host" "$domain"
+  # ENV — first-time deploy 必须跑; 后续 update code 不动 ENV. 想 force 改:
+  #   ./deploy.sh env <host> <domain> <uid>
+  cmd_env     "$host" "$domain" "$uid"
   cmd_nginx   "$host" "$domain"
   cmd_systemd "$host"
   cmd_seed    "$host" "$uid" "$email"
@@ -307,6 +337,7 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   build)   cmd_build ;;
   push)    [[ $# -ge 2 ]] || usage; cmd_push    "$@" ;;
+  env)     [[ $# -ge 3 ]] || usage; cmd_env     "$@" ;;
   nginx)   [[ $# -ge 2 ]] || usage; cmd_nginx   "$@" ;;
   systemd) [[ $# -ge 1 ]] || usage; cmd_systemd "$@" ;;
   seed)    [[ $# -ge 3 ]] || usage; cmd_seed    "$@" ;;

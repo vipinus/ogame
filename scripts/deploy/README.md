@@ -45,13 +45,17 @@ PG 5432 (postgres://ogamex:ogamex@127.0.0.1) — sidecar + next 共享
 
 ```bash
 ./deploy.sh build                                    # local build (sidecar+next+userscript+typecheck)
-./deploy.sh push  <host> <domain>                    # rsync 全套 → host (不动 PG / systemd)
+./deploy.sh push  <host> <domain>                    # rsync 全套 → host (不动 .env / PG / systemd)
+./deploy.sh env   <host> <domain> <owner_uid>        # render + 推 .env.production + run_sidecar.mjs (覆盖+备份)
 ./deploy.sh nginx <host> <domain>                    # 写 nginx site + reload
 ./deploy.sh systemd <host>                           # 写 systemd unit + restart
 ./deploy.sh seed  <host> <owner_uid> <owner_email>   # PG users INSERT + section_settings 默认 row (idempotent)
 ./deploy.sh smoke <host> <domain>                    # verify endpoints + chunks 真 200
-./deploy.sh all   <host> <domain> <owner_uid> <owner_email>  # 一把梭 build→push→nginx→systemd→seed→smoke
+./deploy.sh all   <host> <domain> <owner_uid> <owner_email>  # 一把梭 build→push→env→nginx→systemd→seed→smoke
 ```
+
+注: `push` 默认 **不** 覆盖 .env.production (防覆盖 owner 已配 secret / Stripe key).
+首次 deploy 跑 `all`; 后续仅更新代码用 `push` + `systemd restart`; 改 ENV 才显式 `env`.
 
 `<host>` 格式: `user@host[:port]` (port 可选, 默认 22)
 
@@ -107,6 +111,94 @@ SET section_settings = section_settings
     || jsonb_build_object('ogamex.expedition_config', convert_from(decode('\$B64','base64'),'UTF8')::jsonb)
 WHERE user_id = '<owner_uid>';\""
 ```
+
+## Stripe 订阅 (v1.0.18 onboarding)
+
+owner code 端 100% ready (`mode:"subscription"` + Customer Portal). 上线需要 4 个 Stripe Dashboard 步骤:
+
+### 1. 创 Product + 2 个 recurring Price
+
+Stripe Dashboard → Product catalog → Add product:
+
+| 字段 | 值 |
+|---|---|
+| Name | OgameX |
+| Pricing model | Recurring |
+| Price 1 (monthly) | $20 USD, every 1 month |
+| Price 2 (yearly)  | $200 USD, every 1 year |
+
+→ 拿 2 个 `price_xxxxx` ID:
+
+```bash
+export STRIPE_PRICE_ID_MONTHLY=price_1AbCDEfgh...
+export STRIPE_PRICE_ID_YEARLY=price_1WxYZabcd...
+```
+
+留空也可 (代码 fallback inline `price_data` + `recurring`, 用 `PRICE_MONTHLY_USD=20` / `PRICE_YEARLY_USD=200` 控价), 但 Dashboard 有 Product 后续报表 / promo code / tax handling 都更好。
+
+### 2. 加 Webhook Endpoint
+
+Stripe Dashboard → Developers → Webhooks → Add endpoint:
+
+| 字段 | 值 |
+|---|---|
+| Endpoint URL | `https://<DOMAIN>/api/webhooks/stripe` |
+| Listen to | Events on your account |
+| Events | `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed` |
+
+→ Reveal Signing secret:
+
+```bash
+export STRIPE_WEBHOOK_SECRET=whsec_xxxxx
+```
+
+### 3. 启用 Customer Portal (self-service cancel / change plan)
+
+Stripe Dashboard → Settings → Billing → Customer portal → **Activate**
+
+- Save
+- 选 "Allow customers to cancel subscriptions" + "Switch plans" + "Update payment methods"
+- 不 activate 时 `/api/billing/portal` 调用 throws — 代码 redirect 到 `/pricing?error=...`
+
+### 4. API Secret Key (test or live)
+
+Stripe Dashboard → Developers → API keys → Secret key:
+
+```bash
+export STRIPE_SECRET_KEY=sk_live_xxxxx   # 或 sk_test_xxxxx
+```
+
+### 5. 推到 host
+
+```bash
+./scripts/deploy/deploy.sh env root@uk4.fanq.in:2222 fs.7x24hrs.com <owner_uid>
+ssh -p 2222 root@uk4.fanq.in 'systemctl restart ogame-next'
+```
+
+### 6. 真测 (Stripe Test Mode 卡)
+
+- `STRIPE_SECRET_KEY=sk_test_...` + `STRIPE_WEBHOOK_SECRET=whsec_test_...` (Stripe CLI 本地用 `stripe listen` 拿)
+- 浏览 `https://<DOMAIN>/pricing` → 选 monthly → Subscribe
+- Stripe Checkout 输入 `4242 4242 4242 4242` / 任意未来日期 / 任意 CVC
+- 成功后 redirect `/dashboard?paid=stripe`
+- 验证 PG `subscriptions` row 真态 active + current_period_end 月后
+
+```sql
+SELECT user_id, status, plan, current_period_end, provider_subscription_id
+FROM subscriptions
+WHERE user_id = '<owner_uid>';
+```
+
+- 验证 free codes 真 mint:
+
+```sql
+SELECT COUNT(*) FROM free_codes WHERE owner_id = '<owner_uid>' AND status = 'unused';
+```
+
+### 7. 真订阅续费 (test clock)
+
+Stripe Dashboard → Developers → Test Clocks → New (跳过日期到 1 个月后) → 验证 `invoice.paid` 真触发 +
+PG `current_period_end` 真推进。
 
 ## 后续 hardening (owner 拍板再做)
 
