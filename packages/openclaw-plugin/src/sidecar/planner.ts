@@ -380,7 +380,9 @@ export function pickEnergyPrereqBuilding(
     if (extra0 <= snapE0 && !((planet.buildings?.["solarPlant"] ?? 0) === 0 && (planet.buildings?.["fusionReactor"] ?? 0) === 0)) {
       return null; // 能源够用 (post-queue projected), 不需要补
     }
-    const opt = findActiveEnergyOpt(activeRows, uidForOptLookup, planet.id);
+    // v0.0.1045b — 传 fusion 让 fusion=0 时跳 opt-energyTech (不解 e=0 死局)
+    const callerFusion = planet.buildings?.["fusionReactor"] ?? 0;
+    const opt = findActiveEnergyOpt(activeRows, uidForOptLookup, planet.id, callerFusion);
     if (!opt) return null; // optimizer 还没派 → planner 这一拍不动手, 等 60s 后下次 tick
     // v0.0.985 — owner 2026-06-08 "查清原因" 真态: opt-* goal 落后于 PG 真态,
     // 仍要求 solarPlant Lxxx 但 planet 实际已 Lxxx. 老代码递归 planBuild 命中
@@ -483,6 +485,12 @@ export function findActiveEnergyOpt(
   rows: readonly { goal: { id: string; planet?: string; target: unknown; type: string }; status: string }[],
   uid: string,
   planetId: string,
+  /** v0.0.1045b — owner 2026-06-09 "新星球还没动": opt-energyTech 是 research
+   *  global, 老逻辑任何 planet 调都返它. 但 energyTech 只提升 fusion 产能,
+   *  fusion=0 的 planet 选 energyTech 等于死锁 (升 eT 不解 e=0).
+   *  caller 传 callerPlanetFusion, fusion=0 时跳 energyTech opt 让 picker 回
+   *  走 forward path 选 solar. */
+  callerPlanetFusion?: number,
 ): { kind: "build" | "research"; building?: "fusionReactor" | "solarPlant"; tech?: "energyTech"; level: number; goalId: string } | null {
   const tail = uid.slice(0, 8);
   for (const r of rows) {
@@ -500,6 +508,8 @@ export function findActiveEnergyOpt(
       return { kind: "build", building: "solarPlant", level: lvl, goalId: id };
     }
     if (id.startsWith("opt-energyTech-L")) {
+      // v0.0.1045b — fusion=0 caller 不能用 energyTech 解 e<0, skip
+      if (typeof callerPlanetFusion === "number" && callerPlanetFusion === 0) continue;
       // research 是 global, 不绑 planet
       return { kind: "research", tech: "energyTech", level: lvl, goalId: id };
     }

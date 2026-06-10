@@ -838,9 +838,16 @@ export async function runOptimizerOnce(
         return true;
       });
       const parentField = sameRoot ? { parent_goal_id: sameRoot.goal.id } : {};
+      // v0.0.1045c — owner 2026-06-09 "为什么不先补太阳能" 实证 33627968:
+      // 同 cycle supersede→emit 撕裂. supersede 写 PG cancel L5, 但 allRows
+      // 内存 snapshot 里 L5 还是 pending → emitOpt dedup 误判 L5(lvl=5>=4) 已存在
+      // → skip emit winner L4 → picker 找不到 active solar opt → 卡在 deutSynth.
+      // 修: supersededIds 跟 emitOpt 闭包共享, dedup 时 skip 这一拍刚 cancel 的 ids.
+      const supersededIds = new Set<string>();
       // emitOpt — uid/level dedup + upsert single goal row
       const emitOpt = async (kind: "build" | "research", target: Record<string, unknown>, optId: string, levelForDedup: number, optKindKey: string): Promise<void> => {
         const exists = allRows.find((r) => {
+          if (supersededIds.has(r.goal.id)) return false; // v0.0.1045c — 同 cycle 刚 cancel 的不算 exists
           if (!r.goal.id.startsWith(`opt-${optKindKey}-L`)) return false;
           if (!r.goal.id.endsWith(uid.slice(0, 8))) return false;
           if (kind === "build" && r.goal.planet !== planetId) return false;
@@ -904,6 +911,7 @@ export async function runOptimizerOnce(
       for (const stale of stalePlanetEnergyOpts) {
         try {
           await pgStore.updateGoalStatus(uid, stale.goal.id, "cancelled", `superseded by energy-guard winner=${winner.kind}${"level" in winner ? `:L${winner.level}` : ""} on planet=${planetId}`);
+          supersededIds.add(stale.goal.id); // v0.0.1045c — emitOpt dedup 必须 skip
           console.info(`[optimizer/energy-guard/supersede] uid=${uid.slice(0,8)} planet=${planetId} cancel ${stale.goal.id} (winner=${winner.kind})`);
           actioned++;
         } catch (e) {
