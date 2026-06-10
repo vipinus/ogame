@@ -1515,42 +1515,36 @@ function openGoalsSettings(
     const pbPriorityInput = m.querySelector<HTMLInputElement>("[data-pb-priority]");
     const pbStatusEl = m.querySelector<HTMLElement>("[data-pb-status]");
     const pbCreateBtn = m.querySelector<HTMLButtonElement>("[data-pb-create]");
-    // v0.0.1045o — owner 2026-06-10 checkbox 自动建矿/建存储, 初始化 + sync to PG
+    // v1.0.2 — owner 2026-06-10 "uncheck 以后再打开没有读回当前状态 — 通过永久化
+    // 接口传?" 修真因: v1.0.0 用 lsGet/lsSet 引用不到 (在 openEmergencySettings
+    // 内部 scope), rollup TS plugin 不 fail-fast → dist ReferenceError → init
+    // throw → checkbox 状态读不回. 这次纯 PG roundtrip 走 /ogamex/v1/section-
+    // settings, 不用 LS. authHeadersGlobal 提供 Bearer (modal scope 可见).
     {
       const pbAutoMine = m.querySelector<HTMLInputElement>("[data-pb-auto-mine]");
       const pbAutoStorage = m.querySelector<HTMLInputElement>("[data-pb-auto-storage]");
-      // 初始 state: 先 localStorage 兜底 (本地 cache), 然后 fetch PG 真态覆盖
-      const lsMineRaw = lsGet("ogamex.auto_build_mine");
-      const lsStorageRaw = lsGet("ogamex.auto_build_storage");
-      if (pbAutoMine) pbAutoMine.checked = lsMineRaw !== "false"; // default checked
-      if (pbAutoStorage) pbAutoStorage.checked = lsStorageRaw !== "false";
-      // Fetch authoritative state from PG (覆盖 LS)
-      const baseUrlForSync = (window as Window & { __OGAMEX_BRIDGE_URL_RUNTIME?: string }).__OGAMEX_BRIDGE_URL_RUNTIME ?? "https://ogame.anyfq.com";
-      const tokForSync = lsGet("OGAMEX_BRIDGE_TOKEN") ?? "";
-      if (tokForSync) {
-        void fetch(`${baseUrlForSync}/ogamex/v1/section-settings`, {
-          method: "GET",
-          headers: { "authorization": `Bearer ${tokForSync}` },
+      // 初始 default checked (HTML 里写死), fetch GET 后覆盖真态.
+      void fetchFn(`${baseUrl}/ogamex/v1/section-settings`, {
+        method: "GET",
+        headers: authHeadersGlobal(),
+      })
+        .then((r) => r.ok ? r.json() : null)
+        .then((j) => {
+          if (!j) return;
+          const settings = (j as { settings?: Record<string, unknown> }).settings ?? {};
+          const mineRaw = settings["ogamex.auto_build_mine"];
+          const storageRaw = settings["ogamex.auto_build_storage"];
+          if (pbAutoMine && mineRaw !== undefined) pbAutoMine.checked = !(mineRaw === false || mineRaw === "false");
+          if (pbAutoStorage && storageRaw !== undefined) pbAutoStorage.checked = !(storageRaw === false || storageRaw === "false");
         })
-          .then((r) => r.ok ? r.json() : null)
-          .then((j) => {
-            if (!j) return;
-            const settings = (j as { settings?: Record<string, unknown> }).settings ?? {};
-            const mineRaw = settings["ogamex.auto_build_mine"];
-            const storageRaw = settings["ogamex.auto_build_storage"];
-            if (pbAutoMine && mineRaw !== undefined) pbAutoMine.checked = !(mineRaw === false || mineRaw === "false");
-            if (pbAutoStorage && storageRaw !== undefined) pbAutoStorage.checked = !(storageRaw === false || storageRaw === "false");
-          })
-          .catch(() => { /* PG fetch best-effort */ });
-      }
-      // change → save to PG + LS
+        .catch(() => { /* PG fetch best-effort, 失败仍维持 default checked */ });
+      // change → POST 直接到 PG (sidecar 立刻 mutate worldState section_settings,
+      // 下次 daemon tick 立刻生效, 不需要 LS 中转).
       const syncAutoFlag = (key: string, checked: boolean): void => {
         const v = checked ? "true" : "false";
-        lsSet(key, v);
-        if (!tokForSync) return;
-        void fetch(`${baseUrlForSync}/ogamex/v1/section-settings`, {
+        void fetchFn(`${baseUrl}/ogamex/v1/section-settings`, {
           method: "POST",
-          headers: { "content-type": "application/json", "authorization": `Bearer ${tokForSync}` },
+          headers: authHeadersGlobal({ "Content-Type": "application/json" }),
           body: JSON.stringify({ [key]: v }),
         }).catch(() => { /* sync best-effort */ });
       };
