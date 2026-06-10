@@ -673,7 +673,13 @@ export async function runOptimizerOnce(
           if (bld !== "metalMine" && bld !== "crystalMine" && bld !== "deuteriumSynth") continue;
           const curLvl = (planet.buildings as Record<string, number> | undefined)?.[bld] ?? 0;
           if (lvl <= curLvl) continue;
-          const delta = mineEnergyConsumption(bld, lvl) - mineEnergyConsumption(bld, curLvl);
+          // v0.0.1045d — owner 2026-06-09 "新账号建筑还是没有推" 实证 33627968:
+          // 顶层 buil-mq7baylt target.deuteriumSynth=30, cur=3. 老 forward-project
+          // 算 delta=mineCons(d,30)-mineCons(d,3)=10390 → realBudget=-10453 →
+          // 选 solar L31 (cost 60M) 卡死. 真态 cascade 单级走, 下次 dispatch
+          // 只 +1 级 (L4) → 实 delta 才 37. 修: lvl 限 cur+1 单步.
+          const stepLvl = Math.min(lvl, curLvl + 1);
+          const delta = mineEnergyConsumption(bld, stepLvl) - mineEnergyConsumption(bld, curLvl);
           if (delta > maxDelta) maxDelta = delta;
         }
         planetProjE.set(pid, snapE - maxDelta);
@@ -769,7 +775,13 @@ export async function runOptimizerOnce(
           if (bld !== "metalMine" && bld !== "crystalMine" && bld !== "deuteriumSynth") continue;
           const curLvl = (planet.buildings as Record<string, number> | undefined)?.[bld] ?? 0;
           if (lvl <= curLvl) continue;
-          const delta = mineEnergyConsumption(bld, lvl) - mineEnergyConsumption(bld, curLvl);
+          // v0.0.1045d — owner 2026-06-09 "新账号建筑还是没有推" 实证 33627968:
+          // 顶层 buil-mq7baylt target.deuteriumSynth=30, cur=3. 老 forward-project
+          // 算 delta=mineCons(d,30)-mineCons(d,3)=10390 → realBudget=-10453 →
+          // 选 solar L31 (cost 60M) 卡死. 真态 cascade 单级走, 下次 dispatch
+          // 只 +1 级 (L4) → 实 delta 才 37. 修: lvl 限 cur+1 单步.
+          const stepLvl = Math.min(lvl, curLvl + 1);
+          const delta = mineEnergyConsumption(bld, stepLvl) - mineEnergyConsumption(bld, curLvl);
           if (delta > maxMineDelta) maxMineDelta = delta;
         }
       }
