@@ -2783,16 +2783,19 @@ function openTransportSettings(
             <input type="checkbox" data-tr-cargo-enable="m" checked style="margin:0;"/>
             <span>${escapeHtml(t('auto.215'))}</span>
             <input data-tr-cargo="m" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
+            <span data-tr-stock="m" style="color:#7080a0; font-size:10px; font-family:monospace;" title="resource planet stock">/0</span>
           </label>
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="c" checked style="margin:0;"/>
             <span>${escapeHtml(t('auto.216'))}</span>
             <input data-tr-cargo="c" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
+            <span data-tr-stock="c" style="color:#7080a0; font-size:10px; font-family:monospace;" title="resource planet stock">/0</span>
           </label>
           <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="d" checked style="margin:0;"/>
             <span>${escapeHtml(t('auto.217'))}</span>
             <input data-tr-cargo="d" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
+            <span data-tr-stock="d" style="color:#7080a0; font-size:10px; font-family:monospace;" title="resource planet stock">/0</span>
           </label>
         </div>
         <div style="display:flex; gap:8px; align-items:center; padding-top:4px;">
@@ -3066,6 +3069,10 @@ function openTransportSettings(
     // 大於星球有的資源，資源顯示紅字"). Each input compares against the
     // CURRENT resource-source planet's bank; if user-typed value exceeds,
     // paint the input text red. Reads from radio selection live.
+    // v0.0.1044 — owner 2026-06-09 "TM 运输也同样改一下 库存资源显示位置": 同步
+    // 更新 data-tr-stock chip 紧贴 input 显 /X.XM, over 时红色.
+    const fmtStockChip = (n: number): string => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M`
+      : n >= 1_000 ? `${(n/1_000).toFixed(0)}K` : String(n);
     const refreshCargoOverflowColors = (): void => {
       const sel = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio"]:checked')?.value ?? "";
       const src = sel ? planetsMap[sel] : null;
@@ -3078,7 +3085,8 @@ function openTransportSettings(
         const key = ci.getAttribute("data-tr-cargo") as "m" | "c" | "d";
         const val = parseInt(ci.value || "0", 10) || 0;
         const cap = bank[key];
-        if (val > cap) {
+        const isOver = val > cap;
+        if (isOver) {
           ci.style.color = "#ff6b6b";
           ci.style.borderColor = "#ff6b6b";
           ci.title = t("auto.180", { key: key.toUpperCase(), cap: fmt(cap), val: fmt(val) });
@@ -3089,6 +3097,12 @@ function openTransportSettings(
           ci.style.color = "#e0e8f0";
           ci.style.borderColor = "#2a3a52";
           ci.title = "";
+        }
+        // v0.0.1044 — stock chip 同步: /X.XM 文本 + 红/灰颜色
+        const stockEl = m.querySelector<HTMLElement>(`[data-tr-stock="${key}"]`);
+        if (stockEl) {
+          stockEl.textContent = `/${isFinite(cap) ? fmtStockChip(cap) : "?"}`;
+          stockEl.style.color = isOver ? "#ff6b6b" : "#7080a0";
         }
       }
     };
@@ -3137,6 +3151,9 @@ function openTransportSettings(
     for (const tr of m.querySelectorAll<HTMLInputElement>('input[name="tr-target-radio"]')) {
       tr.addEventListener("change", updateShipCount);
     }
+    // v0.0.1044 — modal init 完后强制一次 stock chip 真态刷新 (init 时 listener
+    // 未注册导致 dispatchEvent 漏接, stock chip 仍显默认 "/0").
+    refreshCargoOverflowColors();
     // Submit — POST /v1/goals/create with a transport goal.
     m.querySelector<HTMLElement>("[data-tr-submit]")?.addEventListener("click", async () => {
       const status = m.querySelector<HTMLElement>("[data-tr-status]");
