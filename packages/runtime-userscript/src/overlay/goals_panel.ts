@@ -1081,6 +1081,7 @@ function openGoalsSettings(
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-mb-level type="number" min="1" max="50" value="" placeholder="${escapeHtml(t('auto.132'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span data-mb-cur-display style="color:#7cfc00; font-size:11px; min-width:80px;"></span>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1153,6 +1154,7 @@ function openGoalsSettings(
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-lf-level type="number" min="1" max="80" value="" placeholder="${escapeHtml(t('auto.133'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span data-lf-cur-display style="color:#7cfc00; font-size:11px; min-width:80px;"></span>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1218,6 +1220,7 @@ function openGoalsSettings(
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-rs-level type="number" min="1" max="30" value="" placeholder="${escapeHtml(t('auto.134'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span data-rs-cur-display style="color:#7cfc00; font-size:11px; min-width:80px;"></span>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.192'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1274,6 +1277,7 @@ function openGoalsSettings(
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-lr-level type="number" min="1" max="50" value="" placeholder="${escapeHtml(t('auto.133'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span data-lr-cur-display style="color:#7cfc00; font-size:11px; min-width:80px;"></span>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
         <div style="padding:6px 0; min-height:22px;">
@@ -1727,15 +1731,25 @@ function openGoalsSettings(
       mbDescEl.style.color = "#7cfc00";
     };
     // v0.0.767 — operator 2026-06-04: 选好 moon+building 自动填 current+1.
+    // v1.0.3 — owner 2026-06-10 "其他设置页面 ... 显示当前级别如同普通建筑": 同步
+    // 更新 data-mb-cur-display "(当前 L{cur})".
+    const mbCurDisplay = m.querySelector<HTMLElement>("[data-mb-cur-display]");
     const prefillMbLevel = (): void => {
       if (!mbLevelInput) return;
       const moonRadio = mbMoonRadios().find((r) => r.checked);
       const buildingRadio = mbBuildingRadios().find((r) => r.checked);
-      if (!moonRadio || !buildingRadio) return;
-      if (moonRadio.value === "all-moons" || moonRadio.value === "idle-moons") return;
+      if (!moonRadio || !buildingRadio) {
+        if (mbCurDisplay) mbCurDisplay.textContent = "";
+        return;
+      }
+      if (moonRadio.value === "all-moons" || moonRadio.value === "idle-moons") {
+        if (mbCurDisplay) mbCurDisplay.textContent = "";
+        return;
+      }
       const moonState = (storeRef?.state?.planets?.[moonRadio.value] ?? {}) as { buildings?: Record<string, number> };
       const cur = moonState.buildings?.[buildingRadio.value] ?? 0;
       mbLevelInput.value = String(cur + 1);
+      if (mbCurDisplay) mbCurDisplay.textContent = t("auto.297", { cur: String(cur) });
     };
     for (const r of mbMoonRadios()) r.addEventListener("change", () => { prefillMbLevel(); refreshMbDesc(); });
     for (const r of mbBuildingRadios()) r.addEventListener("change", () => { prefillMbLevel(); refreshMbDesc(); });
@@ -1828,15 +1842,24 @@ function openGoalsSettings(
         for (const r of lfBuildingRadios()) r.addEventListener("change", () => { prefillLfLevel(); refreshLfDesc(); });
       };
       // v0.0.767 — operator 2026-06-04: 选好 planet+building 自动填 current+1.
+      // v1.0.3 — owner 2026-06-10: 同步 data-lf-cur-display "(当前 L{cur})".
+      const lfCurDisplay = m.querySelector<HTMLElement>("[data-lf-cur-display]");
       const prefillLfLevel = (): void => {
         if (!lfLevelInput) return;
         const planetRadio = lfPlanetRadios().find((r) => r.checked);
         const buildingRadio = lfBuildingRadios().find((r) => r.checked);
-        if (!planetRadio || !buildingRadio) return;
-        if (planetRadio.value === "all-planets" || planetRadio.value === "idle-planets") return;
+        if (!planetRadio || !buildingRadio) {
+          if (lfCurDisplay) lfCurDisplay.textContent = "";
+          return;
+        }
+        if (planetRadio.value === "all-planets" || planetRadio.value === "idle-planets") {
+          if (lfCurDisplay) lfCurDisplay.textContent = "";
+          return;
+        }
         const planetState = (storeRef?.state?.planets?.[planetRadio.value] ?? {}) as { lifeform_buildings?: Record<string, number> };
         const cur = planetState.lifeform_buildings?.[buildingRadio.value] ?? 0;
         lfLevelInput.value = String(cur + 1);
+        if (lfCurDisplay) lfCurDisplay.textContent = t("auto.297", { cur: String(cur) });
       };
       const refreshLfDesc = (): void => {
         if (!lfDescEl) return;
@@ -2088,13 +2111,19 @@ function openGoalsSettings(
         rsDescEl.style.color = "#7cfc00";
       };
       // v0.0.767 — operator 2026-06-04: 选 tech 后自动填 current+1.
+      // v1.0.3 — owner 2026-06-10: 同步 data-rs-cur-display "(当前 L{cur})".
+      const rsCurDisplay = m.querySelector<HTMLElement>("[data-rs-cur-display]");
       const prefillRsLevel = (): void => {
         if (!rsLevelInput) return;
         const techRadio = rsTechRadios().find((r) => r.checked);
-        if (!techRadio) return;
+        if (!techRadio) {
+          if (rsCurDisplay) rsCurDisplay.textContent = "";
+          return;
+        }
         const levels = (storeRef?.state as { research?: { levels?: Record<string, number> } } | undefined)?.research?.levels ?? {};
         const cur = levels[techRadio.value] ?? 0;
         rsLevelInput.value = String(cur + 1);
+        if (rsCurDisplay) rsCurDisplay.textContent = t("auto.297", { cur: String(cur) });
       };
       for (const r of rsTechRadios()) r.addEventListener("change", () => { prefillRsLevel(); refreshRsDesc(); });
       rsLevelInput?.addEventListener("input", refreshRsDesc);
@@ -2258,14 +2287,20 @@ function openGoalsSettings(
         for (const r of lrTechRadios()) r.addEventListener("change", () => { prefillLrLevel(); refreshLrDesc(); });
       };
       // v0.0.767 — operator 2026-06-04: 选 planet+tech 后自动填 current+1.
+      // v1.0.3 — owner 2026-06-10: 同步 data-lr-cur-display "(当前 L{cur})".
+      const lrCurDisplay = m.querySelector<HTMLElement>("[data-lr-cur-display]");
       const prefillLrLevel = (): void => {
         if (!lrLevelInput) return;
         const planetRadio = lrPlanetRadios().find((r) => r.checked);
         const techRadio = lrTechRadios().find((r) => r.checked);
-        if (!planetRadio || !techRadio) return;
+        if (!planetRadio || !techRadio) {
+          if (lrCurDisplay) lrCurDisplay.textContent = "";
+          return;
+        }
         const planetState = (storeRef?.state?.planets?.[planetRadio.value] ?? {}) as { lifeform_research?: Record<string, number> };
         const cur = planetState.lifeform_research?.[techRadio.value] ?? 0;
         lrLevelInput.value = String(cur + 1);
+        if (lrCurDisplay) lrCurDisplay.textContent = t("auto.297", { cur: String(cur) });
       };
       const speciesLabelMapLr: Record<string, string> = { humans: t("auto.056"), rocktal: t("auto.057"), mechas: t("auto.058"), kaelesh: t("auto.059") };
       // v0.0.603 — per-planet current level display. lifeform_research is
