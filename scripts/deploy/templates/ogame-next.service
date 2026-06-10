@@ -1,0 +1,20 @@
+[Unit]
+Description=OgameX flagship (Next.js standalone)
+After=network.target postgresql.service ogamex-sidecar.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=${REMOTE_HOME}/ogame-next/.next/standalone
+EnvironmentFile=${REMOTE_HOME}/ogame-next/.env.production
+Environment=NODE_ENV=production
+Environment=PORT=3002
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

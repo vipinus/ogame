@@ -1,0 +1,19 @@
+[Unit]
+Description=OgameX Sidecar (priority merger + WS bridge + HTTP /v1)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=${REMOTE_REPO_DIR}
+ExecStart=/usr/bin/node ${REMOTE_HOME}/run_sidecar.mjs
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=LANG=C.UTF-8
+Environment=HOME=${REMOTE_HOME}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
