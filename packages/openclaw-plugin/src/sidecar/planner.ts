@@ -376,9 +376,40 @@ export function pickEnergyPrereqBuilding(
   if (activeRows && uidForOptLookup) {
     const snapE0Raw = (planet.resources as { e?: number } | undefined)?.e ?? 0;
     const snapE0 = snapE0Raw - queuedConsumeDelta;  // 预测 post-queue balance
+    // v0.0.1045m — owner 2026-06-10 "改 cumulative — 看 cascade 整条链 cumulative
+    // draw, 多步连看, 真正预测最终态" 升级 [[energy-gate-buffer]] 单步公式.
+    // 之前 (v0.0.985): `extra0 <= snapE0` 单步, build 完 e=0 也放行, 但 cascade
+    // 多级 mine 串行升完, 累计 draw 超 prod → 真态负电 (33622689 -26, 33628332
+    // -65 实证). 改: SUM 本 planet 所有 active mine goal target-整级 delta + 本次
+    // dispatch delta, post-cascade e ≥ 0 才放行. 不加固定 BUFFER (owner 2026-06-05
+    // 拒了), 用 cascade 真态预测.
+    let cumulativeMineDelta = 0;
+    const planetBuildings = planet.buildings ?? {};
+    for (const r of activeRows) {
+      if (!["active", "pending", "dispatched"].includes(r.status)) continue;
+      if ((r.goal as { planet?: string }).planet !== planet.id) continue;
+      const tgt = r.goal.target as { building?: string; level?: number } | undefined;
+      const bld = tgt?.building;
+      const tgtLvl = tgt?.level;
+      if (!bld || typeof tgtLvl !== "number") continue;
+      if (bld !== "metalMine" && bld !== "crystalMine" && bld !== "deuteriumSynth") continue;
+      const curLvlForBld = planetBuildings[bld] ?? 0;
+      if (tgtLvl <= curLvlForBld) continue;
+      cumulativeMineDelta += mineEnergyConsumption(bld, tgtLvl) - mineEnergyConsumption(bld, curLvlForBld);
+    }
+    // 本次 dispatch 单级 delta — 通常已在 activeRows (本 goal 是 active 才会到 picker),
+    // 但保险: 当前 dispatch building 不在 mine 类 (e.g. lifeform 建筑) 时, 独立加单级.
     const extra0 = mineEnergyConsumption(building, nextLevel) - mineEnergyConsumption(building, projectedCurrent);
-    if (extra0 <= snapE0 && !((planet.buildings?.["solarPlant"] ?? 0) === 0 && (planet.buildings?.["fusionReactor"] ?? 0) === 0)) {
-      return null; // 能源够用 (post-queue projected), 不需要补
+    const thisInRows = activeRows.some((r) =>
+      ["active", "pending", "dispatched"].includes(r.status) &&
+      (r.goal as { planet?: string }).planet === planet.id &&
+      (r.goal.target as { building?: string; level?: number })?.building === building &&
+      ((r.goal.target as { level?: number })?.level ?? 0) >= nextLevel,
+    );
+    const dispatchExtra = thisInRows ? 0 : extra0;
+    const projectedCascadeE = snapE0 - cumulativeMineDelta - dispatchExtra;
+    if (projectedCascadeE >= 0 && !((planet.buildings?.["solarPlant"] ?? 0) === 0 && (planet.buildings?.["fusionReactor"] ?? 0) === 0)) {
+      return null; // cumulative cascade 后 e ≥ 0, 不需要补电厂
     }
     // v0.0.1045b — 传 fusion 让 fusion=0 时跳 opt-energyTech (不解 e=0 死局)
     const callerFusion = planet.buildings?.["fusionReactor"] ?? 0;
