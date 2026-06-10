@@ -833,7 +833,14 @@ export async function startSidecar(
             `;
             // v0.0.1045o — update tenant cache so planner/optimizer/growth_daemon
             // 下次 tick 立刻看到新设置, 不用等下次 sectionSettingsRead.
-            tenantRegistry.get(uid).sectionSettings = merged as Record<string, string | boolean>;
+            const tCtxForWrite = tenantRegistry.get(uid);
+            tCtxForWrite.sectionSettings = merged as Record<string, string | boolean>;
+            // v1.0.0 — owner 2026-06-10 "checkbox 勾选实时生效": 同步 in-place
+            // mutate worldState.section_settings, 不等下次 state.snapshot 注入.
+            // planner / optimizer / growth_daemon 下次 tick (1-5s) 就看到新值.
+            if (tCtxForWrite.worldState) {
+              (tCtxForWrite.worldState as { section_settings?: Record<string, string | boolean> }).section_settings = merged as Record<string, string | boolean>;
+            }
             // Operator 2026-06-04 "全做" — push to userscript so in-game panel
             // 即时 reflect, not "next F5". Forwarder set after http construction.
             try { broadcastSectionUpdate(uid, merged as Record<string, string | boolean>); } catch (e) { console.warn("[ogamex] broadcastSectionUpdate threw", e); }

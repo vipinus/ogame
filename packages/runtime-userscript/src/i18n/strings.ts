@@ -460,6 +460,7 @@ export const STRINGS: StringRegistry = {
     "auto.294": "Auto build storage",
     "auto.295": "Mine cascade emit (metal/crystal/deuterium) controlled here. Uncheck = manual only.",
     "auto.296": "Storage cascade emit (metalStorage/crystalStorage/deuteriumTank) controlled here. Uncheck = manual only.",
+    "auto.297": "(current L{cur})",
   },
 
   tw: {
@@ -878,5 +879,6 @@ export const STRINGS: StringRegistry = {
     "auto.294": "自動建儲存",
     "auto.295": "礦 cascade (金屬/晶體/重氫) 自動 emit, 取消勾選 = 完全手動.",
     "auto.296": "儲存 cascade (各類存儲槽) 自動 emit, 取消勾選 = 完全手動.",
+    "auto.297": "(當前 L{cur})",
   },
 } as const;

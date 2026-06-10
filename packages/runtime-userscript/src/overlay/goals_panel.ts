@@ -1002,9 +1002,10 @@ function openGoalsSettings(
         <div style="display:flex; gap:8px; align-items:center; padding:6px 0;">
           <span style="color:#d0d8e0; font-size:11px; width:80px;">${escapeHtml(t('auto.189'))}</span>
           <input data-pb-level type="number" min="1" max="50" value="" placeholder="${escapeHtml(t('auto.130'))}" onclick="this.select()" style="${inputStyle} width:100px;"/>
+          <span data-pb-cur-display style="color:#7cfc00; font-size:11px; min-width:80px;"></span>
           <span style="color:#7080a0; font-size:10px;">${escapeHtml(t('auto.191'))}</span>
         </div>
-        <!-- v0.0.1045o — owner 2026-06-10 checkbox 自动建矿 / 自动建存储, 替代 astro≥16 阈值. -->
+        <!-- v1.0.0 — owner 2026-06-10 checkbox 自动建矿 / 自动建存储, 替代 astro≥16 阈值. -->
         <div style="display:flex; gap:14px; align-items:center; padding:6px 0; border-top:1px dashed #2a3a52; border-bottom:1px dashed #2a3a52; margin-top:4px;">
           <label style="display:inline-flex; align-items:center; gap:5px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="${escapeHtml(t('auto.295'))}">
             <input data-pb-auto-mine type="checkbox" checked style="margin:0;"/>
@@ -1600,16 +1601,26 @@ function openGoalsSettings(
       pbDescEl.style.color = "#7cfc00";
     };
     // v0.0.767 — operator 2026-06-04: 选好 planet+building 自动填 current+1.
+    // v1.0.0 — owner 2026-06-10 "在输入框后面显示当前级别": curDisplay span 同步
+    // 显示当前 L{cur}, 让 owner 一眼看见目标级别相对当前差多少.
     // 仅 specific planet 触发 (all/idle 多选无单一 currentLevel).
+    const pbCurDisplay = m.querySelector<HTMLElement>("[data-pb-cur-display]");
     const prefillPbLevel = (): void => {
       if (!pbLevelInput) return;
       const planetRadio = pbPlanetRadios().find((r) => r.checked);
       const buildingRadio = pbBuildingRadios().find((r) => r.checked);
-      if (!planetRadio || !buildingRadio) return;
-      if (planetRadio.value === "all-planets" || planetRadio.value === "idle-planets") return;
+      if (!planetRadio || !buildingRadio) {
+        if (pbCurDisplay) pbCurDisplay.textContent = "";
+        return;
+      }
+      if (planetRadio.value === "all-planets" || planetRadio.value === "idle-planets") {
+        if (pbCurDisplay) pbCurDisplay.textContent = "";
+        return;
+      }
       const planetState = (storeRef?.state?.planets?.[planetRadio.value] ?? {}) as { buildings?: Record<string, number> };
       const cur = planetState.buildings?.[buildingRadio.value] ?? 0;
       pbLevelInput.value = String(cur + 1);
+      if (pbCurDisplay) pbCurDisplay.textContent = t("auto.297", { cur: String(cur) });
     };
     for (const r of pbPlanetRadios()) r.addEventListener("change", () => { prefillPbLevel(); refreshPbDesc(); });
     for (const r of pbBuildingRadios()) r.addEventListener("change", () => { prefillPbLevel(); refreshPbDesc(); });
