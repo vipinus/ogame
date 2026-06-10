@@ -326,7 +326,9 @@ export function computeOptimizationForGoal(state: WorldState, main: OptimizableG
   // 给 operator 决策颗粒度. mine skip 用 closure 变量, 主循环判断.
   // v0.0.931 — owner 2026-06-07 "改成 9": post-phase skip mine 阈值跟
   // planner.ts:isPostExpeditionPhase 对齐, 同源单一改点.
-  const postPhaseSkipMine = astro >= 9;
+  // v0.0.1045n — owner 2026-06-10 "改成天体物理到达 16": 跟 planner
+  // isPostExpeditionPhase 同源 (单一改点对齐).
+  const postPhaseSkipMine = astro >= 16;
   const planetsMap = state.planets ?? {};
   const MOON_ONLY = new Set(["lunarBase", "sensorPhalanx", "jumpgate"]);
   const findPlanet = (ref: string | undefined): { id?: string; type?: string; coords?: readonly number[]; resources?: { m?: number; c?: number; d?: number; e?: number }; production?: { m_h?: number; c_h?: number; d_h?: number }; buildings?: Record<string, number> } | null => {

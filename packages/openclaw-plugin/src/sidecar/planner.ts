@@ -63,8 +63,10 @@ function isPostExpeditionPhase(state: WorldState): boolean {
   // v0.0.931 — owner 2026-06-07 "改成 9": astro=4 只解锁 1 远征槽, 太早就
   // 不算矿/存储罐的产能 wait, post-phase skip 过激进; astro>=9 = floor(sqrt(9))
   // =3 槽, 远征经济才真正起飞, transport 周期稳定能补给 — 这时 skip 才合理.
+  // v0.0.1045n — owner 2026-06-10 "改成天体物理到达 16": floor(sqrt(16))=4 槽
+  // 远征产出/transport 频率才稳定支撑跨 planet 资源池, 9 (3 槽) 还不够稳.
   const astro = state.research?.levels?.["astrophysics"] ?? 0;
-  return astro >= 9;
+  return astro >= 16;
 }
 
 // Pre-phase storage strategy: when resource bottleneck is crystal or deuterium

@@ -216,9 +216,10 @@ export async function runGrowthDaemonOnce(
   // postPhaseSkipMine 都已用 astrophysics>=9 阈值跳过矿/存储 (post-expedition
   // 经济阶段 transport 接管补给). growth_daemon 必须对齐, 否则同账号 3 处约束
   // 不拉通.
+  // v0.0.1045n — owner 2026-06-10 "改成天体物理到达 16": 3 处一起改到 16.
   const astro = (state as { research?: { levels?: Record<string, number> } }).research?.levels?.["astrophysics"] ?? 0;
-  if (astro >= 9) {
-    console.info(`[growth-daemon] uid=${uid.slice(0,8)} SKIP-ALL astrophysics=${astro} >=9 (post-expedition phase)`);
+  if (astro >= 16) {
+    console.info(`[growth-daemon] uid=${uid.slice(0,8)} SKIP-ALL astrophysics=${astro} >=16 (post-expedition phase)`);
     return { emitted: 0, skipped: 0 };
   }
   const allRows = await goalsStorePg.list(uid);
