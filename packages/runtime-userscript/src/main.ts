@@ -5,6 +5,7 @@ import { wireRuntime } from "./wire_runtime.js";
 import { maybeAutoLoginFromHub } from "./auto_login.js";
 
 declare const GM_getValue: ((key: string, def?: string) => string) | undefined;
+declare const GM_deleteValue: ((key: string) => void) | undefined;
 
 // HTTPS by default — long-poll bridge works through cloud routers that don't
 // proxy WebSocket. wire.ts auto-detects scheme; flip to ws[s]:// when you have
@@ -16,6 +17,39 @@ declare const GM_getValue: ((key: string, def?: string) => string) | undefined;
 // Operators can pin HTTP by setting OGAMEX_BRIDGE_URL=https://fs.7x24hrs.com
 // in localStorage / GM_setValue.
 const DEFAULT_BRIDGE_URL = "wss://fs.7x24hrs.com";
+
+// v1.0.16 — owner 2026-06-10 europa (anyfq.com) decommissioned, uk4
+// (fs.7x24hrs.com) is the only live server. Operators upgraded from any
+// pre-1.0.13 build may have GM_setValue/localStorage residue pointing at the
+// dead europa origin (or the 2026-06-09 typo fs.5x24hrs.com), which would
+// otherwise stick after the cutover and keep BridgeStatusDot red. Clear once
+// on boot — same-key write of DEFAULT_BRIDGE_URL is harmless if owner truly
+// wants the override; they can re-set it explicitly after we wipe.
+const OBSOLETE_BRIDGE_URL_PATTERNS = ["anyfq", "5x24hrs"];
+function migrateObsoleteBridgeConfig(): void {
+  const KEY = "OGAMEX_BRIDGE_URL";
+  let hit: string | null = null;
+  try {
+    if (typeof GM_getValue === "function") {
+      const gv = GM_getValue(KEY, "");
+      if (gv && OBSOLETE_BRIDGE_URL_PATTERNS.some(p => gv.includes(p))) {
+        hit = `GM:${gv}`;
+        if (typeof GM_deleteValue === "function") GM_deleteValue(KEY);
+      }
+    }
+  } catch { /* GM API may be unavailable in sandboxed contexts */ }
+  try {
+    const ls = window.localStorage?.getItem(KEY);
+    if (ls && OBSOLETE_BRIDGE_URL_PATTERNS.some(p => ls.includes(p))) {
+      hit = hit ? `${hit}+LS:${ls}` : `LS:${ls}`;
+      window.localStorage.removeItem(KEY);
+    }
+  } catch { /* localStorage may be unavailable */ }
+  if (hit) {
+    console.info(`[OgameX] v1.0.16 migrated obsolete OGAMEX_BRIDGE_URL (${hit}) → default ${DEFAULT_BRIDGE_URL}`);
+  }
+}
+migrateObsoleteBridgeConfig();
 
 // Build-time placeholder constants. The generic dist/ogame-runtime.user.js
 // ships with the bare placeholder literals below. When ogame-next's
