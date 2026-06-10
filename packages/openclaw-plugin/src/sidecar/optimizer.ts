@@ -326,12 +326,11 @@ export function computeOptimizationForGoal(state: WorldState, main: OptimizableG
   // 给 operator 决策颗粒度. mine skip 用 closure 变量, 主循环判断.
   // v0.0.931 — owner 2026-06-07 "改成 9": post-phase skip mine 阈值跟
   // planner.ts:isPostExpeditionPhase 对齐, 同源单一改点.
-  // v0.0.1045o — owner 2026-06-10 "checkbox 控制自动建矿". 不再用 astro 阈值,
-  // 改读 section_settings.ogamex.auto_build_mine. default checked = 自动建矿.
-  // void astro; 保留变量是因为 dbg log 仍用 astro 展示.
+  // v1.0.4 — owner 2026-06-10 "default unchecked": 反转 default. 显式勾选
+  // auto_build_mine=true/"true" 才不 skip; 其他 (undefined/false) 都 skip mine accel.
   void astro;
   const autoMine = (state as { section_settings?: Record<string, string | boolean> }).section_settings?.["ogamex.auto_build_mine"];
-  const postPhaseSkipMine = autoMine === false || autoMine === "false";
+  const postPhaseSkipMine = !(autoMine === true || autoMine === "true");
   const planetsMap = state.planets ?? {};
   const MOON_ONLY = new Set(["lunarBase", "sensorPhalanx", "jumpgate"]);
   const findPlanet = (ref: string | undefined): { id?: string; type?: string; coords?: readonly number[]; resources?: { m?: number; c?: number; d?: number; e?: number }; production?: { m_h?: number; c_h?: number; d_h?: number }; buildings?: Record<string, number> } | null => {

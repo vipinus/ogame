@@ -59,25 +59,22 @@ export const ENERGY_GATED_BUILDINGS: ReadonlySet<string> = new Set([
 //     → no production calc, simple "waiting for resources" — state refresh
 //       is event-driven via fleet-landing events.
 function isPostExpeditionPhase(state: WorldState): boolean {
-  // v0.0.697 → 931 (astro≥9) → 1045n (astro≥16) → 1045o: 改成 checkbox 控制.
-  // owner 2026-06-10 "不通过天体物理约束 TM 界面 checkbox 自动建矿/存储 默认
-  // checked 状态保持到后台". section_settings JSONB 注入 worldState, 这里直接
-  // 读. default checked = post-phase=false (auto cascade 矿/存储 都跑).
-  // 当 owner 关 auto_storage = true post-phase (planner 不再尝试 storage cascade).
-  // [[single-decision-tree]] — astro 阈值彻底删, owner UI 是唯一决策源.
+  // v0.0.697 → 931 (astro≥9) → 1045n (astro≥16) → 1045o → v1.0.4: default 反转.
+  // v1.0.4 owner 2026-06-10 "自动建矿 自动建存储 默认 unchecked": default
+  // unchecked = 不自动建 = post-phase=true (planner 不试 storage cascade).
+  // 显式勾选 (auto_storage===true/"true") → post-phase=false (cascade 跑).
   const s = state.section_settings ?? {};
   const autoStorage = s["ogamex.auto_build_storage"];
-  // default = true (checked), 显式 false/string"false" 才关
-  if (autoStorage === false || autoStorage === "false") return true;
-  return false;
+  if (autoStorage === true || autoStorage === "true") return false;
+  return true; // default unchecked = post-phase (skip storage cascade)
 }
 
-/** v0.0.1045o — owner checkbox 控制 auto 建矿 cascade. default true. */
+/** v1.0.4 — owner checkbox 控制 auto 建矿 cascade. default unchecked = disabled. */
 function isAutoMineEnabled(state: WorldState): boolean {
   const s = state.section_settings ?? {};
   const v = s["ogamex.auto_build_mine"];
-  if (v === false || v === "false") return false;
-  return true; // default checked
+  if (v === true || v === "true") return true;
+  return false; // default unchecked = disabled
 }
 /** v0.0.1045o — re-export for optimizer / growth_daemon 同源决策 */
 export { isAutoMineEnabled };

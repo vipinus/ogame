@@ -1008,11 +1008,11 @@ function openGoalsSettings(
         <!-- v1.0.0 — owner 2026-06-10 checkbox 自动建矿 / 自动建存储, 替代 astro≥16 阈值. -->
         <div style="display:flex; gap:14px; align-items:center; padding:6px 0; border-top:1px dashed #2a3a52; border-bottom:1px dashed #2a3a52; margin-top:4px;">
           <label style="display:inline-flex; align-items:center; gap:5px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="${escapeHtml(t('auto.295'))}">
-            <input data-pb-auto-mine type="checkbox" checked style="margin:0;"/>
+            <input data-pb-auto-mine type="checkbox" style="margin:0;"/>
             <span>${escapeHtml(t('auto.293'))}</span>
           </label>
           <label style="display:inline-flex; align-items:center; gap:5px; cursor:pointer; color:#d0d8e0; font-size:11px;" title="${escapeHtml(t('auto.296'))}">
-            <input data-pb-auto-storage type="checkbox" checked style="margin:0;"/>
+            <input data-pb-auto-storage type="checkbox" style="margin:0;"/>
             <span>${escapeHtml(t('auto.294'))}</span>
           </label>
         </div>

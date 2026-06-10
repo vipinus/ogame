@@ -211,16 +211,15 @@ export async function runGrowthDaemonOnce(
     console.info(`[growth-daemon] uid=${uid.slice(0, 8)} KILL-SWITCH active (sentinel file present)`);
     return { emitted: 0, skipped: 0 };
   }
-  // v0.0.989b → 1045n (astro≥16) → 1045o: owner 2026-06-10 "checkbox 控制
-  // auto 建矿/建存储". 不再用 astro 阈值, 改读 section_settings 双 key.
-  // 两个都关才全 SKIP (因为 growth_daemon 同时推 mine 跟 storage cascade).
+  // v1.0.4 — owner 2026-06-10 "default unchecked": 反转 default. 显式勾选才 enable.
+  // 两个都没勾选 → SKIP-ALL (growth_daemon 同时推 mine 跟 storage cascade).
   const s = (state as { section_settings?: Record<string, string | boolean> }).section_settings ?? {};
   const autoMine = s["ogamex.auto_build_mine"];
   const autoStorage = s["ogamex.auto_build_storage"];
-  const mineDisabled = autoMine === false || autoMine === "false";
-  const storageDisabled = autoStorage === false || autoStorage === "false";
-  if (mineDisabled && storageDisabled) {
-    console.info(`[growth-daemon] uid=${uid.slice(0,8)} SKIP-ALL — section_settings: auto_mine=off, auto_storage=off`);
+  const mineEnabled = autoMine === true || autoMine === "true";
+  const storageEnabled = autoStorage === true || autoStorage === "true";
+  if (!mineEnabled && !storageEnabled) {
+    console.info(`[growth-daemon] uid=${uid.slice(0,8)} SKIP-ALL — section_settings: auto_mine=off, auto_storage=off (default)`);
     return { emitted: 0, skipped: 0 };
   }
   const allRows = await goalsStorePg.list(uid);
