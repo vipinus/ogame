@@ -2778,23 +2778,23 @@ function openTransportSettings(
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="${shipInputType}" name="tr-ship" value="largeCargo" checked data-tr-ship/> ${escapeHtml(techName('largeCargo'))} (cap ${fmt(ltCap)})</label>
           <label style="cursor:pointer; color:#d0d8e0; font-size:11px;"><input type="${shipInputType}" name="tr-ship" value="smallCargo" data-tr-ship/> ${escapeHtml(techName('smallCargo'))} (cap ${fmt(stCap)})</label>
         </div>
-        <div style="display:flex; gap:10px; padding:4px 0; align-items:center; font-size:11px; flex-wrap:wrap;">
-          <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
+        <div style="display:flex; flex-direction:column; gap:4px; padding:4px 0; font-size:11px;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="m" checked style="margin:0;"/>
-            <span>${escapeHtml(t('auto.215'))}</span>
-            <input data-tr-cargo="m" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
+            <span style="min-width:60px;">${escapeHtml(t('auto.215'))}</span>
+            <input data-tr-cargo="m" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:140px;"/>
             <span data-tr-stock="m" style="color:#7080a0; font-size:10px; font-family:monospace;" title="resource planet stock">/0</span>
           </label>
-          <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="c" checked style="margin:0;"/>
-            <span>${escapeHtml(t('auto.216'))}</span>
-            <input data-tr-cargo="c" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
+            <span style="min-width:60px;">${escapeHtml(t('auto.216'))}</span>
+            <input data-tr-cargo="c" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:140px;"/>
             <span data-tr-stock="c" style="color:#7080a0; font-size:10px; font-family:monospace;" title="resource planet stock">/0</span>
           </label>
-          <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#d0d8e0;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#d0d8e0;">
             <input type="checkbox" data-tr-cargo-enable="d" checked style="margin:0;"/>
-            <span>${escapeHtml(t('auto.217'))}</span>
-            <input data-tr-cargo="d" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:90px;"/>
+            <span style="min-width:60px;">${escapeHtml(t('auto.217'))}</span>
+            <input data-tr-cargo="d" type="number" min="0" step="1000" value="0" onclick="this.select()" style="${inputStyle} width:140px;"/>
             <span data-tr-stock="d" style="color:#7080a0; font-size:10px; font-family:monospace;" title="resource planet stock">/0</span>
           </label>
         </div>
