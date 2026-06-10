@@ -1348,6 +1348,26 @@ function planBuild(building: string, targetLevel: number, planetId: string, ctx:
         return planBuild(storUp, curLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
       }
       const prod = planet.production ?? { m_h: 0, c_h: 0, d_h: 0 };
+      // v0.0.1045l — owner 2026-06-10 "队列里为什么不建重氢工厂" 实证 33628332:
+      // deutSynth=0 + d_h=0 + sD>0 → 老 path 直接给 999999s sentinel block,
+      // planner 不 cascade emit opt-deutSynth → catch-22 (没 deut 永远不建 deut).
+      // 跟 v0.0.859 optimizer 同款修法: production=0 + 该资源 short + 矿 curLvl
+      // < 30 → cascade 升矿一级. m/c 矿 ogame L0 有 base prod, 通常不会触发,
+      // 但 d 矿 L0 真实 d_h=0, 必须靠这条 cascade 解锁.
+      const planetBuildings = planet.buildings ?? {};
+      const PROD_CASCADE_MAX_LVL = 30;
+      if (sD > 0 && (prod.d_h ?? 0) === 0 && (planetBuildings.deuteriumSynth ?? 0) < PROD_CASCADE_MAX_LVL) {
+        const dsLvl = planetBuildings.deuteriumSynth ?? 0;
+        return planBuild("deuteriumSynth", dsLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
+      }
+      if (sM > 0 && (prod.m_h ?? 0) === 0 && (planetBuildings.metalMine ?? 0) < PROD_CASCADE_MAX_LVL) {
+        const mmLvl = planetBuildings.metalMine ?? 0;
+        return planBuild("metalMine", mmLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
+      }
+      if (sC > 0 && (prod.c_h ?? 0) === 0 && (planetBuildings.crystalMine ?? 0) < PROD_CASCADE_MAX_LVL) {
+        const cmLvl = planetBuildings.crystalMine ?? 0;
+        return planBuild("crystalMine", cmLvl + 1, planetId, { ...ctx, depth: ctx.depth + 1 });
+      }
       // v0.0.726 — operator 2026-06-03 "建造 重氫合成器 32 时间评估错误 实际
       // 时间是27分钟" (panel showed 11h12m ≈ 24× over). Root cause: 服务器
       // 经济倍率没乘进 wait formula. ogame's prod field is base per-second
