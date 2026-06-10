@@ -3169,6 +3169,36 @@ function openTransportSettings(
       if (!source) { if (status) { status.textContent = t("auto.093"); status.style.color = "#ff6b6b"; } return; }
       if (!target) { if (status) { status.textContent = t("auto.094"); status.style.color = "#ff6b6b"; } return; }
       if (shipCount <= 0) { if (status) { status.textContent = t("auto.095"); status.style.color = "#ff6b6b"; } return; }
+      // v0.0.1045j — owner 2026-06-10 "4leg TM 运输页面 提交的 没有装载货物": cargo
+      // 超 fleet capacity 时 ogame silently cap → owner 看 fleet 实际装载 < 输入.
+      // [[no-silent-destruction]] — 不让 owner 在不知情下 submit 必丢的 cargo. cap
+      // cargo 到 ship capacity 自动 (m 优先丢, 跟 fleet_api storage overflow 同款
+      // 优先级: deut > crystal > metal).
+      {
+        const shipCapHere = ship === "smallCargo" ? stCap : ltCap;
+        const fleetCapTotal = shipCount * shipCapHere;
+        const wantedTotal = cargoM + cargoC + cargoD;
+        if (wantedTotal > fleetCapTotal) {
+          // strip in REVERSE priority: m first, then c, last d (跟 fleet_api 一致)
+          let remaining = fleetCapTotal;
+          const newD = Math.min(cargoD, remaining); remaining -= newD;
+          const newC = Math.min(cargoC, remaining); remaining -= newC;
+          const newM = Math.min(cargoM, remaining);
+          if (status) {
+            status.textContent = `⚠ cargo ${fmt(wantedTotal)} > fleet capacity ${fmt(fleetCapTotal)} (${shipCount}×${fmt(shipCapHere)}). Auto-cap: m=${fmt(newM)} c=${fmt(newC)} d=${fmt(newD)}. Click submit again to confirm, or adjust.`;
+            status.style.color = "#ffcc40";
+          }
+          // 写回 cargo input 让 owner 看见 auto-cap 值, 再点 submit 才真提交
+          const mi = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
+          const ci = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
+          const di = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
+          if (mi) mi.value = String(newM);
+          if (ci) ci.value = String(newC);
+          if (di) di.value = String(newD);
+          refreshCargoOverflowColors();
+          return;
+        }
+      }
       const targetPlanet = planetsMap[target];
       const targetCoords = (targetPlanet?.coords ?? []).join(":");
       const jgEnabled = (m.querySelector<HTMLInputElement>("[data-tr-jg-enable]")?.checked) ?? false;
