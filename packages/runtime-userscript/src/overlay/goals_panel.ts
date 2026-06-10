@@ -297,7 +297,7 @@ function openEmergencySettings(doc: Document): void {
     const syncToPg = (key: string, value: string): void => {
       try {
         const baseUrl = (window as Window & { __OGAMEX_BRIDGE_URL_RUNTIME?: string }).__OGAMEX_BRIDGE_URL_RUNTIME
-          ?? "https://fs.5x24hrs.com";
+          ?? "https://fs.7x24hrs.com";
         const tok = lsGet("OGAMEX_BRIDGE_TOKEN") ?? "";
         if (!tok) return;
         void fetch(`${baseUrl}/ogamex/v1/section-settings`, {
@@ -752,7 +752,7 @@ function openDiscoverySettings(
         // v0.0.977 — owner 2026-06-08 "HTTP 400" diagnostic: 抓真 POST body
         try {
           const _winF = window as Window & { localStorage?: Storage };
-          const _bU = _winF.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+          const _bU = _winF.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
           const _tk = _winF.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
           void fetch(`${_bU.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
             method: "POST", credentials: "omit",
@@ -770,7 +770,7 @@ function openDiscoverySettings(
           // forensic 失败响应内容
           try {
             const _winF2 = window as Window & { localStorage?: Storage };
-            const _bU2 = _winF2.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+            const _bU2 = _winF2.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
             const _tk2 = _winF2.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
             void fetch(`${_bU2.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
               method: "POST", credentials: "omit",
@@ -3424,7 +3424,7 @@ function openTransportSettings(
 export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle {
   const doc = opts.doc ?? document;
   const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
-  const baseUrl = opts.httpBaseUrl ?? "https://fs.5x24hrs.com";
+  const baseUrl = opts.httpBaseUrl ?? "https://fs.7x24hrs.com";
   const pollMs = opts.pollMs ?? 3000;
   const showTerminal = opts.showTerminal ?? false;
 
@@ -3528,7 +3528,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       try {
         const u = new URL(baseUrl);
         return `${u.protocol}//${u.host}/pricing`;
-      } catch { return "https://fs.5x24hrs.com/pricing"; }
+      } catch { return "https://fs.7x24hrs.com/pricing"; }
     })();
     const overlay = document.createElement("div");
     overlay.id = "ogamex-sub-expired-modal";
@@ -5300,7 +5300,7 @@ export function startGoalsPanel(opts: GoalsPanelOptions = {}): GoalsPanelHandle 
       // sync to PG so flagship/sidecar also see change
       try {
         const baseUrl = (window as Window & { __OGAMEX_BRIDGE_URL_RUNTIME?: string }).__OGAMEX_BRIDGE_URL_RUNTIME
-          ?? "https://fs.5x24hrs.com";
+          ?? "https://fs.7x24hrs.com";
         const tok = window.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") ?? "";
         if (tok) {
           void fetchFn(`${baseUrl}/ogamex/v1/section-settings`, {

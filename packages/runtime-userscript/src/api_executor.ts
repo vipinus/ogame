@@ -382,7 +382,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     if (component === "lfbuildings" || component === "lfresearch") {
       try {
         const ctxWinF = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-        const bridgeF = ctxWinF.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+        const bridgeF = ctxWinF.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
         const tokFor = ctxWinF.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
         const rawResp = (typeof res.raw === "string" ? res.raw : "").slice(0, 600);
         void fetch(`${bridgeF.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
@@ -410,7 +410,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
           );
           const ttHtml = ttRes.status === 200 ? await ttRes.text() : "";
           const ctxWinTT = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-          const bridgeTT = ctxWinTT.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+          const bridgeTT = ctxWinTT.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
           const tokTT = ctxWinTT.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
           void fetch(`${bridgeTT.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
             method: "POST", credentials: "omit",
@@ -797,7 +797,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
             // v0.0.955 — forensic POST raw HTML for ghost-reject path too
             try {
               const ctxWin1 = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-              const bridgeBase1 = ctxWin1.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+              const bridgeBase1 = ctxWin1.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
               const tokG = ctxWin1.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
               void fetch(`${bridgeBase1.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
                 method: "POST", credentials: "omit",
@@ -842,7 +842,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // 拿到 v12 真 schema → 写外科手术级 field 解析.
     try {
       const ctxWin0 = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-      const bridgeBase0 = ctxWin0.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+      const bridgeBase0 = ctxWin0.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
       const tok0 = ctxWin0.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
       const rawStr = JSON.stringify(resp).slice(0, 800);
       void fetch(`${bridgeBase0.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
@@ -897,7 +897,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
         // 立即 fetch htmlLen=0 (ogame 还没准备好 / cp shift race). 跟 sniffer 路径
         // v0.0.977 同款 3 attempt retry (1s/5s/15s), 任一拿到即 commit.
         const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
         const tokF = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
         const tryFetchCd = async (attempt: number, delayMs: number): Promise<boolean> => {
           await new Promise((r) => setTimeout(r, delayMs));
@@ -1165,7 +1165,7 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
       if (ctxWin.localStorage?.getItem("OGAMEX_FORENSIC") === "1") {
         const _postInText = `${directive.action} goal_id=${(directive as { goal_id?: string }).goal_id ?? "?"} dirId=${directive.id} cp=${planetId} → ${tGalaxy}:${tSystem}:${tPos}(type=${destType}) mission=${mission} ships=${JSON.stringify(ships)} cargo=${JSON.stringify(_cargo)}`;
         console.warn(`[ApiExec/POST-IN] ${_postInText}`);
-        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
         void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
           method: "POST", credentials: "omit",
           headers: { "Content-Type": "application/json" },

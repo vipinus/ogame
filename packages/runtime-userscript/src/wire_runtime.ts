@@ -86,7 +86,7 @@ export function wireRuntime(
     // Operator 2026-05-24: "fsm 可以放後臺" — orchestrator reports each
     // successful launch to sidecar's SaveCoordinator; sidecar owns recall
     // scheduling and emits save.recall_now downstream when ready.
-    sidecarBaseUrl: "https://fs.5x24hrs.com",
+    sidecarBaseUrl: "https://fs.7x24hrs.com",
   });
   // Expose recallFleet for bridge wire's save.recall_now handler (sidecar
   // tells us when, we POST it because cookies+token live in the page).

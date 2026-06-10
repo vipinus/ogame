@@ -866,7 +866,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           // 仅 scheduleEntry (LF/常规建造/造船 同 endpoint), 不污染其他流量.
           if (/scheduleEntry/i.test(u)) {
             try {
-              var bUrlS = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.5x24hrs.com";
+              var bUrlS = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.7x24hrs.com";
               var tokS = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
               fetch(bUrlS.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
                 method: "POST", credentials: "omit",
@@ -1047,7 +1047,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                       // 这里 POST raw response 到 /debug/log, 拿 v12 真 schema.
                       // 0 parsing 0 fallback, 只落 raw.
                       try {
-                        var bUrlF = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.5x24hrs.com";
+                        var bUrlF = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.7x24hrs.com";
                         var tokF = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
                         var rawTxt = (typeof t === "string" ? t : "<not-string>").slice(0, 800);
                         var rawBody = (typeof body === "string" ? body : "<form>").slice(0, 300);
@@ -1203,7 +1203,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                     // v0.0.944 — owner manual JG 走 XHR 路径同样落 forensic raw.
                     // 0 parsing 0 fallback 只落 raw, 拿 v12 schema 真值.
                     try {
-                      var bUrlX = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.5x24hrs.com";
+                      var bUrlX = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.7x24hrs.com";
                       var tokX = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
                       var rawTxtX = (typeof t === "string" ? t : "<not-string>").slice(0, 800);
                       var rawBodyX = (typeof reqBody === "string" ? reqBody : "<form>").slice(0, 300);
@@ -1298,7 +1298,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               if (form) {
                 try { bodyStr = new URLSearchParams(new FormData(form)).toString(); } catch(_){}
               }
-              var bUrlC = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.5x24hrs.com";
+              var bUrlC = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.7x24hrs.com";
               var tokC = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
               fetch(bUrlC.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
                 method: "POST", credentials: "omit",
@@ -1329,7 +1329,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                   var bodyRaw = optsObj.data ? (typeof optsObj.data === "string" ? optsObj.data : new URLSearchParams(optsObj.data).toString()) : "";
                   optsObj.success = function(data, status, xhr) {
                     try {
-                      var bUrlJ = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.5x24hrs.com";
+                      var bUrlJ = localStorage.getItem("OGAMEX_BRIDGE_URL") || "https://fs.7x24hrs.com";
                       var tokJ = localStorage.getItem("OGAMEX_BRIDGE_TOKEN") || "smoke-test-token";
                       var respStr = typeof data === "string" ? data : JSON.stringify(data);
                       fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
@@ -1729,7 +1729,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                 const m = html.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
                 const otherCd = m ? parseInt(m[1], 10) : 0;
                 try {
-                  const bUrlJ2 = window.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+                  const bUrlJ2 = window.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
                   const tokJ2 = window.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
                   void fetch(`${bUrlJ2.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
                     method: "POST", credentials: "omit",
@@ -1963,7 +1963,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "1.0.11";
+  const USERSCRIPT_VERSION = "1.0.12";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -2021,7 +2021,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     const lastSeen = cachedServer.last_seen_hostname;
     if (lastSeen && lastSeen !== currentHostname && /\.ogame\.gameforge\.com$/.test(currentHostname)) {
       const bridgeUrl = (env.win as Window & { __OGAMEX_BRIDGE_URL_RUNTIME?: string }).__OGAMEX_BRIDGE_URL_RUNTIME
-        ?? "https://fs.5x24hrs.com";
+        ?? "https://fs.7x24hrs.com";
       const tok = ((): string => {
         try { return env.win.localStorage.getItem("OGAMEX_BRIDGE_TOKEN") ?? ""; }
         catch { return ""; }
@@ -2459,7 +2459,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     const catalog = (LIFEFORM_TECH as Record<string, { buildings?: Record<string, unknown>; research?: Record<string, unknown> }>)[species];
     if (!catalog) { console.warn(`[OgameX/lf-tree-sweep] unknown species: ${species}`); return; }
     const winLts = env.win as Window & { localStorage?: Storage };
-    const bridgeLts = winLts.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+    const bridgeLts = winLts.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
     const tokLts = winLts.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
     const names = [...Object.keys(catalog.buildings ?? {}), ...Object.keys(catalog.research ?? {})];
     console.info(`[OgameX/lf-tree-sweep] species=${species} nodes=${names.length}, fetching technologytree per node...`);
@@ -3406,7 +3406,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       if (page === "lfbuildings" || page === "lfresearch") {
         try {
           const ctxWinR = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-          const bridgeR = ctxWinR.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+          const bridgeR = ctxWinR.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
           const tokR = ctxWinR.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
           // 抓 queue 相关上下文: 找 "active" / "building" / "Residential" / "constructing" 的片段
           const queueIdx = html.search(/(data-status="active"|queueitem|under construction|countdown|inProgress)/i);
@@ -3874,7 +3874,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
           // Send to sidecar so journalctl can show it without operator
           // pasting console — purely diagnostic, fire-and-forget.
           try {
-            const bridgeBase = (env.win.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com");
+            const bridgeBase = (env.win.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com");
             void env.win.fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
               method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ tag: "empire-dump", text: dump }),
@@ -4224,7 +4224,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
               lbHtml = String(moonRow["41_html"] ?? "").slice(0, 600);
             }
           }
-          const bridgeBase = (env.win.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com");
+          const bridgeBase = (env.win.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com");
           void env.win.fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
             method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -4579,7 +4579,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
     const n = Array.isArray(cur) ? cur.length : 0;
     if (n < lastFleetCount) {
       try {
-        const bridgeBase = (env.win.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com");
+        const bridgeBase = (env.win.localStorage.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com");
         void env.win.fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/expedition/trigger`, {
           method: "POST",
           credentials: "omit",

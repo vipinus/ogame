@@ -213,7 +213,7 @@ export async function cpPostWithRetry(opts: CpPostOptions): Promise<CpPostResult
     if (/scheduleEntry/i.test(opts.endpoint)) {
       try {
         const ctxWinCP = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-        const bridgeCP = ctxWinCP.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+        const bridgeCP = ctxWinCP.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
         const tokCP = ctxWinCP.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
         const bodyStrCp = body ? body.toString().replace(/token=[^&]+/, "token=***") : "<no body>";
         void fetch(`${bridgeCP.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
@@ -360,7 +360,7 @@ export async function sendFleet(
     console.warn(`[fleet_api/sendFleet] ${dupMsg}`);
     try {
       const ctxWin = (typeof window !== "undefined" ? window : (globalThis as unknown)) as Window & { localStorage?: Storage };
-      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
       void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
         method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tag: "sendFleet-dedup", text: dupMsg }),
@@ -406,7 +406,7 @@ async function sendFleetInner(
     if (false as boolean) {
     try {
       const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+      const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
       void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
         method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -556,7 +556,7 @@ async function sendFleetInner(
       // 沒人知道 silent strip 發生了。
       try {
         const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+        const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
         void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
           method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

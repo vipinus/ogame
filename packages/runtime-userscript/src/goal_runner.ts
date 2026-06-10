@@ -127,7 +127,7 @@ function clearPendingAck(directiveId: string): void {
 async function sendAckHttp(directiveId: string, msg: { type: "event.directive_completed"; directive_id: string; result: unknown }): Promise<void> {
   try {
     const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-    const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+    const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
     const tok = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
     const url = `${bridgeBase.replace(/\/$/, "")}/ogamex/v1/push`;
     const body = JSON.stringify(msg);
@@ -206,7 +206,7 @@ export function clearPendingEmergency(emergencyId: string): void {
 async function sendEmergencyHttp(emergencyId: string, msg: PendingEmergencyEntry["msg"]): Promise<void> {
   try {
     const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
-    const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.5x24hrs.com";
+    const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
     const tok = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_TOKEN") ?? "smoke-test-token";
     const url = `${bridgeBase.replace(/\/$/, "")}/ogamex/v1/push`;
     const body = JSON.stringify(msg);
