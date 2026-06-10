@@ -287,26 +287,51 @@ export function startEmergencySave(
   };
   // Initial mirror to window for DevTools introspection.
   winRef.__ogamexSpyTriggersSave = isSpyTriggersSaveOn();
+  // v1.0.8 — owner 2026-06-10 "被侦察都没看到自动 FS" 实证 ogame_save_records 24h 0 行.
+  // 4 silent return branch 真因不明, 加 sidecar debug log push 给每个 skip 留痕迹,
+  // 下次 spy 来时能 grep 真因.
+  const debugLog = (tag: string, text: string): void => {
+    try {
+      const winLs = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+      const baseUrl = winLs.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://ogame.anyfq.com";
+      void fetch(`${baseUrl.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+        method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag, text }),
+      }).catch(() => { /* */ });
+    } catch { /* */ }
+  };
   const offSpy = bus.on("emergency.spy", (p: any) => {
+    debugLog("orchestrator-spy", `RECEIVED event_id=${p.event_id} to=${(p.to ?? []).join(":")} to_type=${p.to_type ?? "(none)"} arrives_at=${p.arrives_at}`);
     if (emergencyPaused()) {
-      console.warn(`[orchestrator] emergency PAUSED — spy ${p.event_id} ignored (operator toggled ⏸)`);
+      const msg = `SKIP ${p.event_id}: emergency PAUSED (operator toggled ⏸)`;
+      console.warn(`[orchestrator] ${msg}`);
+      debugLog("orchestrator-spy", msg);
       return;
     }
     const on = isSpyTriggersSaveOn();
     winRef.__ogamexSpyTriggersSave = on;  // keep mirror fresh
     if (!on) {
-      console.info(`[emergency/spy] ${p.event_id} ignored — spy-triggers-save OFF (toggle on panel)`);
+      const msg = `SKIP ${p.event_id}: spy-triggers-save OFF (LS getItem)`;
+      console.info(`[emergency/spy] ${msg}`);
+      debugLog("orchestrator-spy", msg);
       return;
     }
     const sourceId = findTargetPlanet(p.to, p.to_type);
     if (!sourceId) {
-      console.warn(`[emergency/spy] no planet at ${p.to.join(":")} — cannot route to FSM`);
+      const msg = `SKIP ${p.event_id}: findTargetPlanet returned null for to=${p.to.join(":")} to_type=${p.to_type ?? "(none)"}`;
+      console.warn(`[emergency/spy] ${msg}`);
+      debugLog("orchestrator-spy", msg);
       return;
     }
     if (hasNoShips(sourceId)) {
-      console.info(`[emergency/spy] skip FS: ${sourceId} (${p.to.join(":")}) has no ships — nothing to save`);
+      const planet = stateRef.current.planets?.[sourceId];
+      const msg = `SKIP ${p.event_id}: hasNoShips planet=${sourceId} (${p.to.join(":")}, type=${planet?.type ?? "?"}) — nothing to save`;
+      console.info(`[emergency/spy] ${msg}`);
+      debugLog("orchestrator-spy", msg);
       return;
     }
+    debugLog("orchestrator-spy", `FIRE ${p.event_id} → planet=${sourceId} ${p.to.join(":")} routing to full save chain`);
     console.warn(`[emergency/spy] 🚨 spy ${p.event_id} → ${p.to.join(":")}: routing to full save chain (toggle ON)`);
     const fsm = getOrCreateFsm(sourceId);
     baseFleetIds.set(sourceId, new Set(
