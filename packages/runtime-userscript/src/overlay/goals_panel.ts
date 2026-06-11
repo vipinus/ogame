@@ -3057,7 +3057,12 @@ function openTransportSettings(
       // 同上模式下雖然 resource radio 已經 set + dispatched change, 但如果 resInfo
       // 元素查詢發生在這之前就漏了。 這裏直接強制更新一次。
       const resInfo2 = m.querySelector<HTMLElement>("[data-tr-resource-info]");
-      const currentP = planetsMap[ogameCurrentPid];
+      // v1.0.22 — owner 2026-06-11 "永远红框" "两个位置都应该是当前资源":
+      // 真根源, input boot-time 用 planetsMap (snapshot 抓 panel 渲染瞬间),
+      // 但 chip refreshCargoOverflowColors 用 storeRef LIVE (sniffer 真态最新).
+      // 双源 → input vs chip 真态 mismatch → input > chip 永久红框. 改 single
+      // source: 用 LIVE storeRef.state.planets, 跟 chip 同源. [[single-decision-tree]].
+      const currentP = (storeRef?.state?.planets ?? {})[ogameCurrentPid] as StorePlanet | undefined ?? planetsMap[ogameCurrentPid];
       if (resInfo2 && currentP) {
         const m_v = currentP.resources?.m ?? 0;
         const c_v = currentP.resources?.c ?? 0;
@@ -3102,7 +3107,9 @@ function openTransportSettings(
       // 拉平: shortage prefill 和手动模式都跟 needed (按 cargo 反推). haveShips
       // 仍用来做 isShort 红字高亮判定; 不再写进输入框. (推翻 v0.0.671/676 分支.)
       const sourceVal = m.querySelector<HTMLInputElement>('input[name="tr-source-radio"]:checked')?.value ?? "";
-      const sourceP = sourceVal ? planetsMap[sourceVal] : null;
+      // v1.0.22 — owner 真态对齐 single decision tree: LIVE storeRef 真态优先,
+      // planetsMap snapshot 真态 fallback. 同 chip / input auto-fill 同源.
+      const sourceP = sourceVal ? (((storeRef?.state?.planets ?? {})[sourceVal] as StorePlanet | undefined) ?? planetsMap[sourceVal]) : null;
       const shipKey = ship === "smallCargo" ? "smallCargo" : "largeCargo";
       const haveShips = (sourceP?.ships as Record<string, number | undefined> | undefined)?.[shipKey] ?? 0;
       if (countInput) countInput.value = String(needed);
