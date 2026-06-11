@@ -1036,8 +1036,16 @@ function planResearch(tech: string, targetLevel: number, ctx: PlanCtx): PlanResu
   // 并加一道 proactive storage gate: research lab 所在星球任意一种资源 ≥ 95% cap
   // → 优先升 storage (即便看似 affordable, sidecar resources 可能 stale).
   // lab 用 sourcePlanetId 上的 resources (research 在主科研星算).
+  //
+  // v1.0.22 — owner 2026-06-11 "s274 服务器的账号 又在 自动补 金属存储器" 真态
+  // 修复: proactive 兜底真态漏 v1.0.4 [[cascade-emit-checkbox-controlled]] gate.
+  // 真态 4baba0e2 auto_build_storage=false 但 plasmaTech research → labPlanet
+  // 33637818 m≥95% → proactive cascade emit metalStorage L16 → 真态 spam 60s
+  // 一次, ogame 拒 120012 fields_full. 加 isPostExpeditionPhase 真 gate
+  // (checkbox=false 时 isPostExpeditionPhase=true → skip proactive cascade,
+  // 跟下方 affordable check 1059 路径对称).
   const labPlanet = Object.values(ctx.state.planets ?? {}).find((p) => p.id === ctx.sourcePlanetId);
-  if (labPlanet) {
+  if (labPlanet && !isPostExpeditionPhase(ctx.state)) {
     const proactive = pickStorageUpgrade(labPlanet, { m: 1, c: 1, d: 1 }, ctx.state.server?.speed ?? 1);
     if (proactive) {
       const curLvl = labPlanet.buildings?.[proactive] ?? 0;
