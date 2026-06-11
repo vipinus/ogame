@@ -1,5 +1,6 @@
 import {
   SHIP_IDS,
+  fitCargoToCap,
   type ShipKey,
   type ShipCount,
   type Coords,
@@ -24,6 +25,11 @@ export interface SendFleetParams {
    *  picked source=33650372 (3:260:9), but operator was on 33637818
    *  (3:279:7) → fleet flew from 3:279:7 instead. */
   sourcePlanetId?: string;
+  /** v1.0.25 — 真 fleet 总货舱容量 (Σ ships × store ship_cargo_capacity).
+   *  140028 (舱不足) 时 partial trim 用: fitCargoToCap(capacityHint) 只削
+   *  溢出量 (d→c→m priority 反向, m 先 trim), 不再整剥一种资源.
+   *  undefined → 走老 full-peel ladder (FS 直调路径无 store). */
+  capacityHint?: number;
 }
 
 export interface SendFleetCtx {
@@ -396,6 +402,8 @@ async function sendFleetInner(
 
   // Operator 2026-05-28: bumped 2 → 4 attempts for emergency FS save. 140043
   // transient race needs more retry budget than token-invalid edge case.
+  // v1.0.25 — 140028 partial-trim 单次尝试 flag (fit 后仍 140028 → peel 兜底).
+  let capacityFitTried = false;
   for (let attempt = 1; attempt <= 4; attempt++) {
     const sourcePID = p.sourcePlanetId ?? "";
     console.log(`[fleet_api/sendFleet] attempt=${attempt} POST ${endpoint}${sourcePID ? ` (cp=${sourcePID})` : ""} body=${body.toString().replace(/token=[^&]+/, "token=***")}`);
@@ -531,12 +539,42 @@ async function sendFleetInner(
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
       continue;
     }
-    // 140028 storage overflow — peel cargo in REVERSE of operator's
-    // priority (operator 2026-05-28: "優先裝載重氫，其次晶體，最後金屬").
-    // Drop metal first (lowest priority), then crystal, last deuterium
-    // (highest priority — and also fuel + the fleet's escape oxygen).
-    // Each strip retry gives ogame a fresh attempt with less cargo.
+    // 140028 "倉存容量不足" = 舰队货舱不足 (v1.0.25 owner 2026-06-11 纠偏:
+    // "仓的容量和运输量没有关系" — ogame 运输可超填目标仓, 此错误真意是
+    // FLEET cargo hold 不够. 真案: panel 用 stale cap 46552 算 needed=4170 艘,
+    // 真 cap 46532 → 真容量差 60,005 byte → 140028).
+    //
+    // 真修 "装不下，能装多少装多少": capacityHint (Σ ships × store 真 cap)
+    // 存在时 → fitCargoToCap 只削溢出量 (~60K from metal), 不整剥 181M.
+    // hint 缺失 / fit 后仍 140028 → 老 full-peel ladder 兜底.
     const isStorageOverflow = STORAGE_OVERFLOW_RE.test(errMsg) || STORAGE_OVERFLOW_RE.test(String(errCode ?? ""));
+    if (isStorageOverflow && attempt < 4 && p.capacityHint !== undefined && !capacityFitTried
+        && (p.cargo.m > 0 || p.cargo.c > 0 || p.cargo.d > 0)) {
+      capacityFitTried = true;
+      const before = { ...p.cargo };
+      const fitted = fitCargoToCap({ capacity: p.capacityHint, requested: p.cargo });
+      const trimmed = (before.m - fitted.m) + (before.c - fitted.c) + (before.d - fitted.d);
+      if (trimmed > 0) {
+        const msg = `[fleet_api/sendFleet] attempt=${attempt} 140028 fleet-hold overflow — fit to capacityHint=${p.capacityHint}: trim ${trimmed} (m ${before.m}→${fitted.m}, c ${before.c}→${fitted.c}, d ${before.d}→${fitted.d})`;
+        console.warn(msg);
+        try {
+          const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+          const bridgeBase = ctxWin.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
+          void fetch(`${bridgeBase.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+            method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tag: "fleet-trim", text: msg }),
+          }).catch(() => {});
+        } catch { /* */ }
+        p = { ...p, cargo: fitted };
+        if (json.newAjaxToken) {
+          ctx.token.set(json.newAjaxToken);
+          token = json.newAjaxToken;
+        }
+        body = buildBody(p, token);
+        continue;
+      }
+      // fit 没削任何东西 (cargo 已 ≤ hint 但 ogame 仍拒) → hint 高估, 落 peel.
+    }
     if (isStorageOverflow && attempt < 4 && (p.cargo.m > 0 || p.cargo.c > 0 || p.cargo.d > 0)) {
       const stripped = { ...p.cargo };
       let peeled = "";
