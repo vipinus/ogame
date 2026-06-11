@@ -6,6 +6,7 @@ export * from "./schemas.js";
 export { expeditionSlots, TECH_TREE, prerequisitesFor, costFor, OGAME_DATA_TECHNOLOGY, OGAME_DATA_TECHNOLOGY_REVERSE } from "./tech_tree.js";
 export type { TechKind, TechEntry } from "./tech_tree.js";
 export { buildingSec, researchSec, techSec } from "./build_time.js";
+export { storageCapForLevel } from "./storage_cap.js";
 export type { BuildTimeAccel } from "./build_time.js";
 export { planTransportChain, makeTransportChainId } from "./transport_planner.js";
 export type { PlannerPlanet, PlanTransportInput, PlanTransportOutput, TransportGoalBody } from "./transport_planner.js";

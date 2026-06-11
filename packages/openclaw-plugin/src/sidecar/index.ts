@@ -70,7 +70,7 @@ import type {
   UpstreamMsg,
   WorldState,
 } from "@ogamex/shared";
-import { TECH_TREE, LIFEFORM_TECH, techSec } from "@ogamex/shared";
+import { TECH_TREE, LIFEFORM_TECH, techSec, storageCapForLevel } from "@ogamex/shared";
 
 interface PrereqTreeNode {
   tech: string;
@@ -1050,11 +1050,11 @@ export async function startSidecar(
           c: (planet?.production?.c_h ?? 0) * universeSpeed / 3600,
           d: (planet?.production?.d_h ?? 0) * universeSpeed / 3600,
         };
-        // Storage caps (ogame v12 approximate; conservative — caps growth)
+        // v1.0.18 P1 #5 — shared storageCapForLevel helper (was 4× 高估 formula).
         const caps = {
-          m: 5000 * Math.pow(2.5, planet?.buildings?.["metalStorage"] ?? 0),
-          c: 5000 * Math.pow(2.5, planet?.buildings?.["crystalStorage"] ?? 0),
-          d: 5000 * Math.pow(2.5, planet?.buildings?.["deuteriumTank"] ?? 0),
+          m: storageCapForLevel(planet?.buildings?.["metalStorage"] ?? 0),
+          c: storageCapForLevel(planet?.buildings?.["crystalStorage"] ?? 0),
+          d: storageCapForLevel(planet?.buildings?.["deuteriumTank"] ?? 0),
         };
         // Operator 2026-05-29: track ACCELERATOR levels as a mutable
         // baseline so subsequent build-self iterations and dependent

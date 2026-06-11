@@ -21,7 +21,7 @@ import type { Directive, DownstreamMsg, Goal, WorldState } from "@ogamex/shared"
 import type { GoalRow, GoalStatus } from "./goals_types.js";
 import type { IGoalsStoreReader } from "./goals_store_iface.js";
 import { tenantRegistry } from "./tenant_context.js";
-import { getCurrentUserId } from "./user_context.js";
+import { getCurrentUserId, runWithUser } from "./user_context.js";
 
 export interface PriorityMergerDeps {
   // Phase 7c.5.f — store: GoalsStore retired. reader (PG) is the sole read
@@ -160,20 +160,12 @@ export class PriorityMerger {
   private readonly onStatusChange: ((row: GoalRow, userId: string | undefined) => void) | undefined;
   private readonly reader: IGoalsStoreReader | undefined;
   private readonly writer: IGoalsStoreWriter | undefined;
-  /** Set at start of dispatch(), threaded through to onStatusChange so
-   *  the PG mirror knows which tenant the status mutation belongs to. */
-  private currentDispatchUid: string | undefined = undefined;
-  /** Phase 7 transition (2026-06-05) — pinned during each per-row loop iter
-   *  so updateStatusAndMirror can synthesize an updated row when the goal
-   *  is PG-only (created via web POST to /api/me/goals/transport → PG only,
-   *  SQLite has no record). Without this, SQLite's "unknown goal id" throw
-   *  rolls back the whole tick. */
-  private currentRow: GoalRow | undefined = undefined;
-  /** Phase 7c.2 — cached at dispatch() top from reader.list / store.list so
-   *  the per-row chain-prereq gate (line ~445) doesn't re-read SQLite
-   *  cross-tenant per goal. The old this.store.list() was blind to PG-only
-   *  rows; this cache fixes the cross-tick chain prereq for webtx-* legs. */
-  private allRowsForChain: GoalRow[] = [];
+  // v1.0.18 P1 #2 (audit critical) — 3 instance fields 真删, 真态:
+  //   currentDispatchUid → ALS getCurrentUserId() (runWithUser 真 wrap
+  //     _dispatchImpl, 真 await yield 不再串租户)
+  //   currentRow → updateStatusAndMirror 真 explicit row 参数透传
+  //   allRowsForChain → 真 closure local in _dispatchImpl (line 376)
+  // memory [[cross-tenant-globals]] + [[ws-als-wrap]] 落地.
   /** v0.0.765 — global pause kill-switch hook. Injected by setupSidecar so
    *  the merger can short-circuit when ogamex.global.paused=true. */
   public isGlobalPausedFn?: (userId?: string) => boolean;
@@ -195,33 +187,17 @@ export class PriorityMerger {
    *  the PG shadow writer via the onStatusChange callback. Without this
    *  hook the 11 merger-driven updateStatus call sites would stay
    *  SQLite-only (drift observed in Phase 5b: sqlite=13 pg=9). */
-  private async updateStatusAndMirror(goalId: string, status: GoalStatus, reason?: string): Promise<void> {
-    // Phase 7c.2 — PG primary write path. When writer + ALS uid present,
-    // skip SQLite entirely. Eliminates the "unknown goal id" throw for
-    // PG-only goals AND removes the drift surface from dual-write era.
-    const uid = this.currentDispatchUid;
+  private async updateStatusAndMirror(goalId: string, status: GoalStatus, currentRow: GoalRow | undefined, reason?: string): Promise<void> {
+    // v1.0.18 P1 #2 — uid 真 ALS-resolved (was instance field 真 cross-tenant
+    // race), row 真 explicit (was instance field). PG primary write path 真
+    // 不变.
+    const uid = getCurrentUserId();
     if (this.writer && uid) {
-      try {
-        await this.writer.updateGoalStatus(uid, goalId, status, reason ?? null);
-      } catch (e) {
-        // PG write failure is real (network/SQL error). Bubble up so the
-        // dispatch loop's outer try/catch logs it — don't silently mask.
-        throw e;
-      }
-      // Synthesize updated for any onStatusChange observers (memory writer,
-      // legacy mirror). currentRow is pinned per-iter so this matches the
-      // goal we just wrote.
-      if (this.onStatusChange && this.currentRow && this.currentRow.goal.id === goalId) {
-        // v0.0.907 — owner 2026-06-07 "没做完的任务又被删除了". 实证 6 个 build
-        // goal 误标 completed reason="planet not found". 真因: L197 PG UPDATE
-        // 写 status+reason=null 后, 这里合成 row 用 ...this.currentRow spread,
-        // currentRow.reason 是上 tick 的 stale ("planet not found"), reason=
-        // undefined 时旧逻辑保留 stale → onStatusChange→upsertGoal 反 ON CONFLICT
-        // DO UPDATE 用合成 row 把 reason 还原成 "planet not found". 与 L197 的
-        // null 不一致. 修法 — reason 字段显式落地 (undefined → null), 跟 PG 写
-        // 一致, 不再保留 stale.
+      await this.writer.updateGoalStatus(uid, goalId, status, reason ?? null);
+      if (this.onStatusChange && currentRow && currentRow.goal.id === goalId) {
+        // v0.0.907 reason 显式 null spread fix 保留.
         const updated: GoalRow = {
-          ...this.currentRow,
+          ...currentRow,
           status,
           reason: (reason ?? null) as string,
           updated_at: Date.now(),
@@ -231,26 +207,17 @@ export class PriorityMerger {
       }
       return;
     }
-    // Phase 7c.5.f — SQLite legacy fallback retired. When writer + uid
-    // absent we have no place to persist (PG is the only store). Synthesize
-    // updated from currentRow for any onStatusChange observers, but the
-    // status change is in-memory only this iter — operator-driven CRUD
-    // endpoints (with their own PG paths) handle persistent state.
-    let updated: GoalRow | null | undefined;
-    if (this.currentRow && this.currentRow.goal.id === goalId) {
-      updated = {
-        ...this.currentRow,
+    // Phase 7c.5.f SQLite legacy retired; in-memory observer only when
+    // writer + uid absent (boot stage).
+    if (currentRow && currentRow.goal.id === goalId && this.onStatusChange) {
+      const updated: GoalRow = {
+        ...currentRow,
         status,
         ...(reason !== undefined ? { reason } : {}),
         updated_at: Date.now(),
       };
-    }
-    if (updated && this.onStatusChange) {
-      try {
-        this.onStatusChange(updated, this.currentDispatchUid);
-      } catch (e) {
-        console.warn("[merger] onStatusChange threw (swallowed)", e);
-      }
+      try { this.onStatusChange(updated, uid); }
+      catch (e) { console.warn("[merger] onStatusChange threw (swallowed)", e); }
     }
   }
 
@@ -344,6 +311,12 @@ export class PriorityMerger {
     }
     this.inFlightUids.add(uidKey);
     try {
+      // v1.0.18 P1 #2 — runWithUser 真 wrap dispatch body, ALS 真 propagates
+      // uid 真 all updateStatusAndMirror calls 透传 via getCurrentUserId().
+      // 真 await yield 不再串租户 (instance field 真 race 真消除).
+      if (userId) {
+        return await runWithUser(userId, () => this._dispatchImpl(state, userId));
+      }
       return await this._dispatchImpl(state, userId);
     } finally {
       this.inFlightUids.delete(uidKey);
@@ -357,7 +330,6 @@ export class PriorityMerger {
     // returns immediately (identity for non-Promise values).
     // v0.0.670 — Phase 5c: thread userId through so the mirror callback
     // knows the tenant. updateStatusAndMirror reads this each call.
-    this.currentDispatchUid = userId;
     // v0.0.671 — Phase 6a: when `reader` is supplied (env OGAMEX_DB_MODE=
     // pg|dual), pull active rows from the async reader (PG or wrapper).
     // Falls back to SQLite-direct read when reader is absent (mode=
@@ -383,7 +355,6 @@ export class PriorityMerger {
       return { dispatched: [], blocked: [], skipped_terminal: 0 };
     }
     rows = rows.sort(compareRows);
-    this.allRowsForChain = allRowsForChain;
 
     const dispatched: Directive[] = [];
     const blocked: { goal_id: string; reason: string }[] = [];
@@ -434,7 +405,6 @@ export class PriorityMerger {
       // Pin row for updateStatusAndMirror's PG-only fallback. Cleared at
       // end of this iter so the synthesizer never accidentally uses a
       // stale row id from a previous loop.
-      this.currentRow = row;
       // Operator-paused row: skip entirely. Status / reason untouched.
       if (row.status === "blocked" && typeof row.reason === "string" && row.reason.startsWith("PAUSED")) {
         continue;
@@ -449,7 +419,7 @@ export class PriorityMerger {
       if (CHAIN_GATE_ENABLED && typeof chainId === "string" && chainId && chainBlocked.has(chainId)) {
         const reason = "chain prereq: waiting for prior leg";
         if (row.status !== "blocked" || row.reason !== reason) {
-          await this.updateStatusAndMirror(row.goal.id, "blocked", reason);
+          await this.updateStatusAndMirror(row.goal.id, "blocked", row, reason);
         }
         blocked.push({ goal_id: row.goal.id, reason });
         continue;
@@ -475,7 +445,7 @@ export class PriorityMerger {
         // Phase 7c.2 — use dispatch-tick cached list (reader.list when PG)
         // so PG-only chain siblings (web POST → PG only) are visible to
         // the chain prereq gate.
-        const allRows = this.allRowsForChain;
+        const allRows = allRowsForChain;
         const upstream = allRows.filter((r) => {
           const cid = (r.goal.target as { chain_id?: unknown })?.chain_id;
           return cid === chainId && r.goal.id !== row.goal.id && r.goal.priority > row.goal.priority;
@@ -538,7 +508,7 @@ export class PriorityMerger {
             return r.status === "completed";
           });
           if (seg2Done) {
-            await this.updateStatusAndMirror(row.goal.id, "cancelled", `chain superseded: SEG2 delivery ${seg2Done.goal.id.slice(0, 12)} completed, SEG3 cleanup obsolete`);
+            await this.updateStatusAndMirror(row.goal.id, "cancelled", row, `chain superseded: SEG2 delivery ${seg2Done.goal.id.slice(0, 12)} completed, SEG3 cleanup obsolete`);
             continue;
           }
         }
@@ -567,7 +537,7 @@ export class PriorityMerger {
         }
         if (upstreamReason) {
           if (row.status !== "blocked" || row.reason !== upstreamReason) {
-            await this.updateStatusAndMirror(row.goal.id, "blocked", upstreamReason);
+            await this.updateStatusAndMirror(row.goal.id, "blocked", row, upstreamReason);
           }
           blocked.push({ goal_id: row.goal.id, reason: upstreamReason });
           chainBlocked.add(chainId);
@@ -681,7 +651,7 @@ export class PriorityMerger {
           // v0.0.942 — owner 手动 fleet 同源同终同 mission 同 type 同 ship payload
           // 撞型概率极低; type+payload 双重 match 兜住 leg 2 false-complete.
           if (myOutbound.length > 0 && this.dispatchedAt.has(row.goal.id)) {
-            await this.updateStatusAndMirror(row.goal.id, "completed", `fleet airborne mission=${expectedMission} ${srcCoordStr}→${tgtCoordStr || "?"} (outbound matched, sidecar-dispatched)`);
+            await this.updateStatusAndMirror(row.goal.id, "completed", row, `fleet airborne mission=${expectedMission} ${srcCoordStr}→${tgtCoordStr || "?"} (outbound matched, sidecar-dispatched)`);
             this.dispatchedAt.delete(row.goal.id);
             skipped_terminal += 1;
             continue;
@@ -734,7 +704,7 @@ export class PriorityMerger {
         const sinceDispatch = now - dispatchTs;
         if (slotEmpty && snapshotFresher && sinceDispatch >= timeoutMs) {
           this.dispatchedAt.delete(row.goal.id);
-          await this.updateStatusAndMirror(row.goal.id, "pending", `stuck-recovery: empty slot ${Math.round(sinceDispatch / 1000)}s after dispatch, directive presumed lost`);
+          await this.updateStatusAndMirror(row.goal.id, "pending", row, `stuck-recovery: empty slot ${Math.round(sinceDispatch / 1000)}s after dispatch, directive presumed lost`);
           // fall through — re-plan as pending below
         } else {
           // Still within timeout window OR slot busy → wait for ack.
@@ -757,7 +727,7 @@ export class PriorityMerger {
       if (stateStale && isFleetPostType) {
         const reason = `state stale (${Math.round(stateAgeMs / 60000)}min) — fleet POST goals defer to fresh state`;
         if (row.status !== "blocked" || row.reason !== reason) {
-          await this.updateStatusAndMirror(row.goal.id, "blocked", reason);
+          await this.updateStatusAndMirror(row.goal.id, "blocked", row, reason);
         }
         blocked.push({ goal_id: row.goal.id, reason });
         if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
@@ -765,7 +735,7 @@ export class PriorityMerger {
       }
       // v0.0.938 — owner "不要维护三个决策引擎": 把 active rows 一并传进
       // planner, planner 的 picker 路径就读 optimizer 派的 opt-* 当真理.
-      const result = this.planGoal(row.goal, state, this.allRowsForChain);
+      const result = this.planGoal(row.goal, state, allRowsForChain);
       if (isBlocked(result)) {
         // v0.0.1018 → v0.0.1019 — owner 2026-06-09 顶层设计: directive.id 是
         // sidecar 给 fleet 的唯一编码, userscript ack success/failure 是 status
@@ -790,7 +760,7 @@ export class PriorityMerger {
         // target_moon has expected ships) → priorityMerger mark completed,
         // 不再 blocked. 覆盖 sidecar 自动跳完 但 ack/state 未同步 卡死场景.
         if ((result as { auto_complete?: boolean }).auto_complete === true) {
-          await this.updateStatusAndMirror(row.goal.id, "completed");
+          await this.updateStatusAndMirror(row.goal.id, "completed", row);
           skipped_terminal += 1;
           continue;
         }
@@ -845,11 +815,11 @@ export class PriorityMerger {
           if (isMainTerminalComplete) {
             const tgtLabel = tgt?.building ?? tgt?.research ?? "?";
             console.info(`[merger/auto-complete] root goal ${row.goal.id} ${tgtLabel} L${tgtLvl} met @planet=${planetId} (build_q clean, snapshot fresh)`);
-            await this.updateStatusAndMirror(row.goal.id, "completed", result.blocked);
+            await this.updateStatusAndMirror(row.goal.id, "completed", row, result.blocked);
             skipped_terminal += 1;
             continue;
           }
-          await this.updateStatusAndMirror(row.goal.id, "blocked", result.blocked);
+          await this.updateStatusAndMirror(row.goal.id, "blocked", row, result.blocked);
           blocked.push({ goal_id: row.goal.id, reason: result.blocked });
           if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
           continue;
@@ -887,7 +857,7 @@ export class PriorityMerger {
           if (isShortageWait && (row.status === "pending" || row.status === "active") && reasonStable) {
             // 保持原 status, 不写
           } else if (row.status !== "blocked" || !reasonStable) {
-            await this.updateStatusAndMirror(row.goal.id, "blocked", reasonRaw);
+            await this.updateStatusAndMirror(row.goal.id, "blocked", row, reasonRaw);
           }
           blocked.push({ goal_id: row.goal.id, reason: reasonRaw });
           if (typeof chainId === "string" && chainId) chainBlocked.add(chainId);
@@ -900,7 +870,7 @@ export class PriorityMerger {
       if (result.action === "research") {
         if (researchSlot) {
           const reason = "research slot in use";
-          await this.updateStatusAndMirror(row.goal.id, "blocked", reason);
+          await this.updateStatusAndMirror(row.goal.id, "blocked", row, reason);
           blocked.push({ goal_id: row.goal.id, reason });
           continue;
         }
@@ -915,7 +885,7 @@ export class PriorityMerger {
         const slotLabel = isLifeform ? "lf build" : "build";
         if (planetId && slotSet.has(planetId)) {
           const reason = `${slotLabel} slot on ${planetId} in use this tick`;
-          await this.updateStatusAndMirror(row.goal.id, "blocked", reason);
+          await this.updateStatusAndMirror(row.goal.id, "blocked", row, reason);
           blocked.push({ goal_id: row.goal.id, reason });
           continue;
         }
@@ -926,7 +896,7 @@ export class PriorityMerger {
         // research in progress) blocks; ogame 120012 retry storm avoided.
         if (planetId && lfResearchSlot.has(planetId)) {
           const reason = `lf research slot on ${planetId} busy (waiting for prereq)`;
-          await this.updateStatusAndMirror(row.goal.id, "blocked", reason);
+          await this.updateStatusAndMirror(row.goal.id, "blocked", row, reason);
           blocked.push({ goal_id: row.goal.id, reason });
           continue;
         }
@@ -934,13 +904,13 @@ export class PriorityMerger {
       } else if (result.action === "build_ships" || result.action === "build_defense") {
         if (planetId && shipsSlot.has(planetId)) {
           const reason = `shipyard slot on ${planetId} in use this tick`;
-          await this.updateStatusAndMirror(row.goal.id, "blocked", reason);
+          await this.updateStatusAndMirror(row.goal.id, "blocked", row, reason);
           blocked.push({ goal_id: row.goal.id, reason });
           continue;
         }
         if (planetId) shipsSlot.add(planetId);
       }
-      await this.updateStatusAndMirror(row.goal.id, "active");
+      await this.updateStatusAndMirror(row.goal.id, "active", row);
       // v0.0.478: stamp dispatch time for time-anchored stuck-recovery and
       // in-flight dedup. Cleared by clearDispatched() in ack handler.
       this.dispatchedAt.set(row.goal.id, Date.now());

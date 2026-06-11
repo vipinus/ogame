@@ -14,7 +14,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Directive, Goal, GoalType, Planet, WorldState, ShipCount } from "@ogamex/shared";
-import { TECH_TREE, nameToId, LIFEFORM_TECH } from "@ogamex/shared";
+import { TECH_TREE, nameToId, LIFEFORM_TECH, storageCapForLevel } from "@ogamex/shared";
 import { tenantRegistry } from "./tenant_context.js";
 import { getCurrentUserId } from "./user_context.js";
 
@@ -90,7 +90,15 @@ function pickStorageUpgrade(planet: Planet, short: { m: number; c: number; d: nu
   // 在 speed-1 服 OK 但 speed-8 服只剩 ~12 分钟窗口 (60% 距 cap, 实际产量 *8 倍
   // 已要溢出). 改成预测式: 把当前 r + 未来 30min 产出加起来比 cap, 命中 0.95
   // 就 fire. 慢服 m_h≈0 等价于纯静态阈值, 快服自然提前.
-  const cap = (lvl: number): number => Math.floor(5000 * Math.pow(2.5, lvl));
+  // v1.0.18 — owner 2026-06-10 "也没见自动建存储罐 存储都满了" 真因: 老公式
+  // floor(5000 * 2.5^L) L8 = 7.6M, 真 4× 高估 ogame v12 真 cap (实际 L8 = 1.6M).
+  // owner 真 33620666 m=3.37M 真错算 ratio=44% (not full) → 真没 fire cascade.
+  // 真 ogame v12 真公式 floor(2.5*exp(20L/33))*5000 跟 growth_daemon.ts:68
+  // computeStorageCap 真同步 (single source of truth, [[planner_simulate_
+  // shared_helper]] + [[verify-against-first-principles]]).
+  // v1.0.18 P1 #5 — single source of truth (shared helper). v1.0.18 inline 公式
+  // 真正确, 真 extract 让 growth_daemon + index.ts simulate path 真同源.
+  const cap = storageCapForLevel;
   const mStorLvl = planet.buildings?.["metalStorage"] ?? 0;
   const cStorLvl = planet.buildings?.["crystalStorage"] ?? 0;
   const dStorLvl = planet.buildings?.["deuteriumTank"] ?? 0;

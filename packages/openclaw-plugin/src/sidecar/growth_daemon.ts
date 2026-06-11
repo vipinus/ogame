@@ -23,6 +23,7 @@
 
 import type { GoalsStorePg } from "./goals_store_pg.js";
 import type { WorldStateStorePg } from "./world_state_store_pg.js";
+import { storageCapForLevel } from "@ogamex/shared";
 import type { WorldState } from "@ogamex/shared";
 import { mineProdRatio, cumulativeMineCost, buildSecondsForRange } from "./optimizer.js";
 import { tenantRegistry } from "./tenant_context.js";
@@ -66,7 +67,9 @@ const STORAGE_HORIZON_HOURS = 0.5;
 const MIN_ROI_VALUE = 1; // skip if not even +1 value gain
 
 function computeStorageCap(lvl: number): number {
-  return Math.floor(5000 * Math.pow(2.5, lvl));
+  // v1.0.18 P1 #5 — was floor(5000 * 2.5^L) (L8≈7.6M, 真 4× 高估). 真同步
+  // ogame v12 真公式 via shared helper.
+  return storageCapForLevel(lvl);
 }
 
 function valueOfResources(r: { m: number; c: number; d: number }): number {
