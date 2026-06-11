@@ -39,17 +39,22 @@ const COOLDOWN_MS = 30_000;
 const MAX_CLICKS_IN_WINDOW = 20;
 const ABORT_WINDOW_MS = 5 * 60_000;
 
-// v1.0.21 — owner 2026-06-10 "开着TM 点 PLAY loop 回到本页, 不开就能进游戏":
-// 即使 owner 在 /accounts 上 **manual** click PLAY, TM 一开 click 后就 loop 回 lobby.
-// 真态结论: 我 userscript 在 /accounts 上的任何活动 (包括只是 polling) 都让 PLAY click 走异常.
-// 可能根源: gameforge withFetchPatch.js / statichub challenge JS 检测到 TM 注入痕迹.
+// v1.0.22 — owner 2026-06-10 真态金锭出土 (拉 gameforge main.973742d0.js 真源 verify):
 //
-// 顶层设计 v4 极简保守: **只在 /hub 单 click Last played**, /accounts 完全 inert.
-// - /hub: window.open shim + single click Last played 真 anchor (老服 work 老路径)
-// - /accounts: NO touch. owner 自己 manual click PLAY (TM-on/off 等价).
-// - 其他 lobby path: NO touch.
+// gameforge loginIntoGameAccount (hub Last played + /accounts Play 都调它) 真代码:
+//   var y = o || window.open("/loading");   // o = null (quick_join / account_list 两 caller)
+//   return v().then(r => api.post("/users/me/loginLink", {blackbox: r}))
+//             .then(e => new URL(e.url).href)
+//             .then(o => { y !== window ? y.location = o : setTimeout(...y.location=o, 2e3); });
 //
-// owner manual 流程: hub → 点 last played (我 auto 帮点) → 没 work owner 回 /accounts 自己点 PLAY (无 TM 干扰)
+// 真根源: programmatic click (isTrusted=false) → window.open 被 popup blocker block → 返
+// null → 后续 null.location = url 真 throw → React state 污染.
+// 真修法: window.open shim 永远返 Proxy, 拦未来 `popup.location = realGameUrl` 时同 tab nav.
+//
+// 顶层设计 v5 真闭环:
+// - shim 装在**所有 lobby pages** (含 /accounts), 基建非决策, owner manual click 也吃 shim.
+// - /hub: auto click Last played, shim 接 popup → 同 tab 进游戏.
+// - /accounts: 只 shim 不 auto-click. owner manual click PLAY → React open popup → shim 接 → 同 tab 进游戏.
 export function maybeAutoLoginFromHub(win: Window): boolean {
   if (/\.ogame\.gameforge\.com\/game\//.test(win.location.href)) {
     try {
@@ -67,24 +72,33 @@ export function maybeAutoLoginFromHub(win: Window): boolean {
     }
   } catch { /* */ }
 
-  // 真 conservative: 只对 /hub 或 landing 介入. /accounts 完全 inert 防 gameforge 反 bot.
+  // 真基建: shim 必装所有 lobby pages (含 /accounts), owner manual click 也吃 shim.
+  installWindowOpenShim(win);
+
+  // /hub 或 landing: auto click Last played, shim 已就位.
+  // /accounts: shim 装好就完, owner manual click PLAY 时 shim 接 popup → 同 tab nav.
   const path = win.location.pathname;
   const isHubOrLanding = /^\/(?:[a-z]{2}_[A-Z]{2}\/?(?:hub\/?)?)?$/i.test(path);
-  if (!isHubOrLanding) {
-    console.info(`[OgameX/auto-login] non-hub lobby path (${path}) — staying inert. Manual click required.`);
-    return false;
+  if (isHubOrLanding) {
+    runLobbyClicker(win);
+  } else {
+    console.info(`[OgameX/auto-login] non-hub lobby path (${path}) — shim installed, manual click protected.`);
   }
-
-  // 真态基建: shim window.open 防 popup blocker 真态 corrupt React state.
-  installWindowOpenShim(win);
-  runLobbyClicker(win);
   return true;
 }
 
 /**
- * v1.0.21 — 真 shim unsafeWindow.open. ogame React handler 调 window.open()
- * 时返一个 Proxy: 直接 url arg → 同 tab nav; 空 arg → Proxy 拦 `.location = url`.
- * 防 programmatic click 触发 popup blocker 真返 null 抛 throw.
+ * v1.0.22 — 真 shim unsafeWindow.open. 拉 gameforge main.973742d0.js 真源 verify:
+ *   var y = o || window.open("/loading");  // o = null (quick_join / account_list)
+ *   v().then(r => api.post("/users/me/loginLink", {blackbox: r}))
+ *     .then(e => new URL(e.url).href)
+ *     .then(o => { y.location = o; });  // 最后赋值真 trigger nav
+ *
+ * **必须 always return Proxy** — 不能 immediately nav 因为初始 url="/loading" 是 placeholder.
+ * Proxy 拦截 future `.location = realGameUrl` 时才同 tab nav. v1.0.21 误把 /loading 当真 url
+ * 直接 nav 主 tab → owner 主 tab 真态被拉去 /loading 页 → loop 回 lobby.
+ *
+ * 不区分 url arg, 永远返 Proxy 等 future assignment.
  */
 function installWindowOpenShim(win: Window): void {
   const us = ((globalThis as unknown as { unsafeWindow?: Window }).unsafeWindow ?? win) as Window & {
@@ -92,52 +106,52 @@ function installWindowOpenShim(win: Window): void {
   };
   if (us.__ogamexOpenShimmed) return;
   us.__ogamexOpenShimmed = true;
-  const origOpen = us.open?.bind(us);
   us.open = function shimmedOpen(urlArg?: string | URL, _target?: string, _features?: string): Window | null {
-    const url = typeof urlArg === "string" ? urlArg : urlArg ? String(urlArg) : "";
-    console.info(`[OgameX/auto-login] window.open intercepted url=${url || "(empty)"} — redirecting to same tab`);
-    if (url) {
-      try { us.location.href = url; } catch { /* */ }
-      return us;
-    }
-    // 空 url: 返 Proxy, .location = X 时同 tab nav.
-    // 真态兼容 ogame 模式: `popup = window.open(); popup.location = gameUrl`.
+    const url = typeof urlArg === "string" ? urlArg : urlArg ? String(urlArg) : "(empty)";
+    console.info(`[OgameX/auto-login] window.open("${url}") intercepted — returning Proxy (defer nav until popup.location = realUrl)`);
+    // 永远返 Proxy, 不 immediately nav. 拦未来 `y.location = realGameUrl` 真态 trigger nav.
     return new Proxy({} as unknown as Window, {
       set(_t, prop, value): boolean {
         if (prop === "location") {
+          // gameforge 真态: `y.location = o;` 其中 o 是 game URL string
           const href = typeof value === "string" ? value : (value as { href?: string })?.href ?? String(value);
-          console.info(`[OgameX/auto-login] shim popup.location assigned, navigating: ${href}`);
+          console.info(`[OgameX/auto-login] ★ shim popup.location = ${href} → 主 tab nav 同 tab 进游戏`);
           try { us.location.href = href; } catch { /* */ }
-          return true;
-        }
-        if (prop === "href") {
-          console.info(`[OgameX/auto-login] shim popup.href assigned, navigating: ${String(value)}`);
-          try { us.location.href = String(value); } catch { /* */ }
           return true;
         }
         return true;
       },
       get(_t, prop): unknown {
         if (prop === "location") {
-          return new Proxy({} as Record<string, unknown>, {
+          // popup.location.href = url 路径兼容
+          return new Proxy({ href: "" } as Record<string, unknown>, {
             set(_t2, p2, v2): boolean {
-              if (p2 === "href") {
-                console.info(`[OgameX/auto-login] shim popup.location.href = ${String(v2)}`);
-                try { us.location.href = String(v2); } catch { /* */ }
+              if (p2 === "href" || p2 === "assign" || p2 === "replace") {
+                const href = String(v2);
+                console.info(`[OgameX/auto-login] ★ shim popup.location.${String(p2)} = ${href} → 主 tab nav`);
+                try { us.location.href = href; } catch { /* */ }
               }
               return true;
+            },
+            get(_t2, p2): unknown {
+              if (p2 === "assign" || p2 === "replace") {
+                return (href: string) => {
+                  console.info(`[OgameX/auto-login] ★ shim popup.location.${String(p2)}("${href}") → 主 tab nav`);
+                  try { us.location.href = String(href); } catch { /* */ }
+                };
+              }
+              return "";
             },
           });
         }
         if (prop === "closed") return false;
         if (prop === "focus" || prop === "blur" || prop === "close") return () => undefined;
+        if (prop === "document") return us.document;
         return undefined;
       },
     });
-    // unused but suppresses "unused var" lint
-    void origOpen;
   } as typeof window.open;
-  console.info("[OgameX/auto-login] window.open shim installed (popup → same-tab nav)");
+  console.info("[OgameX/auto-login] window.open shim installed (popup defer → main-tab nav at popup.location set)");
 }
 
 /**
