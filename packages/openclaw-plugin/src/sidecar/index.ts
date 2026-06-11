@@ -730,6 +730,26 @@ export async function startSidecar(
   }
   // First trim 30s after boot (don't block startup but don't wait 1h either).
   setTimeout(() => { void trimEventsCron(); }, 30_000);
+
+  // v1.0.18 P3 #27 — payment_events retention. 真 long-term audit log 真 fine
+  // but jsonb payload (full Stripe/PayPal Event blob) grows unbounded. Keep
+  // 180 days (covers chargeback window + Stripe/PayPal max retry).
+  const paymentEventsRetentionCron = async (): Promise<void> => {
+    if (!pgStore) return;
+    try {
+      const sharedSql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+      const result = await sharedSql`
+        DELETE FROM payment_events WHERE processed_at < NOW() - INTERVAL '180 days'
+      `;
+      const rowCount = (result as unknown as { count?: number }).count ?? 0;
+      if (rowCount > 0) console.log(`[payment-events-retention] cron: ${rowCount} rows pruned (>180d)`);
+    } catch (e) { console.warn("[payment-events-retention] threw:", e instanceof Error ? e.message : e); }
+  };
+  const payRetTimer = setInterval(() => { void paymentEventsRetentionCron(); }, 24 * 60 * 60 * 1000); // 24h
+  if (typeof (payRetTimer as unknown as { unref?: () => void }).unref === "function") {
+    (payRetTimer as unknown as { unref: () => void }).unref();
+  }
+  setTimeout(() => { void paymentEventsRetentionCron(); }, 60_000);
   const triggerDispatch = (): void => {
     if (!priorityMergerRef) return;
     // Phase 9c.7 hotfix — read ALS uid. When this runs inside a Bearer-

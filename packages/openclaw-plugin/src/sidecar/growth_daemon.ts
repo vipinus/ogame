@@ -215,9 +215,13 @@ export async function runGrowthDaemonOnce(
   }
   // v1.0.4 — owner 2026-06-10 "default unchecked": 反转 default. 显式勾选才 enable.
   // 两个都没勾选 → SKIP-ALL (growth_daemon 同时推 mine 跟 storage cascade).
-  const s = (state as { section_settings?: Record<string, string | boolean> }).section_settings ?? {};
-  const autoMine = s["ogamex.auto_build_mine"];
-  const autoStorage = s["ogamex.auto_build_storage"];
+  // v1.0.18 P3 #19 — 真 tenantCtx.sectionSettings 真 single source (was
+  // state.section_settings 真 hydrate-from-PG 真 lag window). isGrowth
+  // DaemonKilled (line 37) 已用 tenantRegistry, 真 hot config 同源.
+  const tCtx = tenantRegistry.get(uid);
+  const ss = tCtx.sectionSettings ?? (state as { section_settings?: Record<string, unknown> }).section_settings ?? {};
+  const autoMine = (ss as Record<string, unknown>)["ogamex.auto_build_mine"];
+  const autoStorage = (ss as Record<string, unknown>)["ogamex.auto_build_storage"];
   const mineEnabled = autoMine === true || autoMine === "true";
   const storageEnabled = autoStorage === true || autoStorage === "true";
   if (!mineEnabled && !storageEnabled) {

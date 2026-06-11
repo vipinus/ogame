@@ -2,7 +2,16 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+
+// v1.0.18 P3 #30 — constant-time string compare (audit: side-channel resistance).
+// Pad to equal lengths before timingSafeEqual to avoid throwing on len mismatch.
+function safeStringEqual(a: string, b: string): boolean {
+  const max = Math.max(a.length, b.length);
+  const ab = Buffer.from(a.padEnd(max, "\0"));
+  const bb = Buffer.from(b.padEnd(max, "\0"));
+  return a.length === b.length && timingSafeEqual(ab, bb);
+}
 import type { AddressInfo } from "node:net";
 import type { UpstreamMsg, DownstreamMsg } from "@ogamex/shared";
 import { runWithUser, getCurrentUserId } from "./user_context.js";
@@ -1517,17 +1526,17 @@ export class HttpServer {
   }
 
   private writeCorsHeaders(res: http.ServerResponse): void {
-    // Browsers reject wildcard host patterns (e.g. "*.ogame.org") — only "*"
-    // or an exact origin match works. Echo the Origin back if it matches
-    // ogame.org / ogame.gameforge.com domains; else default to "*" (LAN trust).
-    // Read origin via res.req — Node 10+ back-ref to IncomingMessage.
+    // v1.0.18 P3 #28 — strict whitelist (was '*' wildcard fallback真 audit).
+    // 真 echo Origin only if matches: ogame.org / ogame.gameforge.com /
+    // fs.7x24hrs.com (FlagShip dashboard). 其它 origin 真 NO Allow-Origin
+    // header (real-deny真 CORS preflight).
     const req = (res as { req?: http.IncomingMessage }).req;
     const origin = req?.headers.origin;
-    const allowOrigin = typeof origin === "string" && /^https?:\/\/[^/]*\.ogame\.(org|gameforge\.com)$/.test(origin)
-      ? origin
-      : "*";
-    res.setHeader("Access-Control-Allow-Origin", allowOrigin);
-    res.setHeader("Access-Control-Allow-Private-Network", "true");
+    const ALLOW_RE = /^https?:\/\/(?:[^/]*\.)?(?:ogame\.org|ogame\.gameforge\.com|fs\.7x24hrs\.com|7x24hrs\.com)$/;
+    if (typeof origin === "string" && ALLOW_RE.test(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+    }
+    // Allow-Private-Network removed — was 'true' 真 LAN trust 真 audit footgun.
     res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Max-Age", "600");
@@ -1538,7 +1547,8 @@ export class HttpServer {
     const header = req.headers["authorization"];
     if (typeof header !== "string") return false;
     const expected = `Bearer ${this.opts.token}`;
-    return header === expected;
+    // v1.0.18 P3 #30 — timing-safe compare (was === 真 audit: time-side-channel).
+    return safeStringEqual(header, expected);
   }
 
   private handleDebug(res: http.ServerResponse): void {

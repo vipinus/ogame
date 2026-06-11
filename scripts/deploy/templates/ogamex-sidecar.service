@@ -1,13 +1,17 @@
 [Unit]
-Description=OgameX Sidecar (priority merger + WS bridge + HTTP /v1)
+Description=FlagShip Sidecar (priority merger + WS bridge + HTTP /v1)
 After=network.target postgresql.service
 Wants=postgresql.service
+# v1.0.18 P3 #17 — crash-loop guard (was Restart=always 真 unbounded respawn).
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 WorkingDirectory=${REMOTE_REPO_DIR}
 ExecStart=/usr/bin/node ${REMOTE_HOME}/run_sidecar.mjs
-Restart=always
+# v1.0.18 P3 #17 — Restart=on-failure (was always 真 mask intentional exit codes).
+Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
 Environment=LANG=C.UTF-8

@@ -4,6 +4,15 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import type { UpstreamMsg, DownstreamMsg } from "@ogamex/shared";
 import { runWithUser } from "./user_context.js";
+import { timingSafeEqual } from "node:crypto";
+
+// v1.0.18 P3 #30 — constant-time string compare.
+function safeStringEqual(a: string, b: string): boolean {
+  const max = Math.max(a.length, b.length);
+  const ab = Buffer.from(a.padEnd(max, "\0"));
+  const bb = Buffer.from(b.padEnd(max, "\0"));
+  return a.length === b.length && timingSafeEqual(ab, bb);
+}
 
 export interface WsServerOptions {
   port: number;
@@ -344,22 +353,27 @@ export class WsServer {
    *   forbids custom request headers, so token is smuggled as a subprotocol name)
    */
   private checkAuth(req: IncomingMessage): { ok: boolean; via?: "header" | "subprotocol"; protocol?: string } {
+    // v1.0.18 P3 #30 — timing-safe compare (was === / .includes side-channel).
+    const expected = this.options.token;
     // Path 1: Authorization header
     const auth = req.headers["authorization"];
     if (typeof auth === "string") {
       const m = /^Bearer\s+(.+)$/i.exec(auth);
-      if (m && m[1]?.trim() === this.options.token) {
+      if (m && m[1] && safeStringEqual(m[1].trim(), expected)) {
         return { ok: true, via: "header" };
       }
     }
     // Path 2: Sec-WebSocket-Protocol subprotocol (browser path)
     const proto = req.headers["sec-websocket-protocol"];
     if (typeof proto === "string") {
+      const wanted = `bearer.${expected}`;
       const candidates = proto.split(",").map((s) => s.trim());
-      const wanted = `bearer.${this.options.token}`;
-      if (candidates.includes(wanted)) {
-        return { ok: true, via: "subprotocol", protocol: wanted };
+      // Constant-time scan — iterate all candidates even after match found.
+      let matched = false;
+      for (const c of candidates) {
+        if (safeStringEqual(c, wanted)) matched = true;
       }
+      if (matched) return { ok: true, via: "subprotocol", protocol: wanted };
     }
     return { ok: false };
   }

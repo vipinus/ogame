@@ -301,28 +301,65 @@ cmd_paypal_bootstrap() {
   fi
   log "PayPal product_id: $product_id"
 
-  # 3) Create Billing Plans (monthly $20 + yearly $200)
+  # 3) Create Billing Plans — v1.0.18 P3 #16: idempotent. ENV override 真先;
+  #    否则 GET plans?product_id 真 reuse existing ACTIVE plan by name match.
   local plan_monthly plan_yearly
-  plan_monthly=$(curl -sS -X POST "$base/v1/billing/plans" \
-    -H "Authorization: Bearer $token" -H "Content-Type: application/json" -H "Prefer: return=representation" \
-    -d "{\"product_id\":\"$product_id\",\"name\":\"OgameX Monthly\",\"description\":\"OgameX Monthly\",\"status\":\"ACTIVE\",\"billing_cycles\":[{\"frequency\":{\"interval_unit\":\"MONTH\",\"interval_count\":1},\"tenure_type\":\"REGULAR\",\"sequence\":1,\"total_cycles\":0,\"pricing_scheme\":{\"fixed_price\":{\"value\":\"20.00\",\"currency_code\":\"USD\"}}}],\"payment_preferences\":{\"auto_bill_outstanding\":true,\"setup_fee_failure_action\":\"CONTINUE\",\"payment_failure_threshold\":3}}" \
-    | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+  plan_monthly="${PAYPAL_PLAN_MONTHLY_ID:-}"
+  if [[ -z "$plan_monthly" ]]; then
+    # Try reuse existing
+    plan_monthly=$(curl -sS -H "Authorization: Bearer $token" \
+      "$base/v1/billing/plans?product_id=$product_id&page_size=20" \
+      | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+for p in d.get("plans",[]):
+  if p.get("name")=="FlagShip Monthly" and p.get("status")=="ACTIVE":
+    print(p.get("id","")); break' 2>/dev/null || true)
+  fi
+  if [[ -z "$plan_monthly" ]]; then
+    plan_monthly=$(curl -sS -X POST "$base/v1/billing/plans" \
+      -H "Authorization: Bearer $token" -H "Content-Type: application/json" -H "Prefer: return=representation" \
+      -d "{\"product_id\":\"$product_id\",\"name\":\"FlagShip Monthly\",\"description\":\"FlagShip Monthly\",\"status\":\"ACTIVE\",\"billing_cycles\":[{\"frequency\":{\"interval_unit\":\"MONTH\",\"interval_count\":1},\"tenure_type\":\"REGULAR\",\"sequence\":1,\"total_cycles\":0,\"pricing_scheme\":{\"fixed_price\":{\"value\":\"20.00\",\"currency_code\":\"USD\"}}}],\"payment_preferences\":{\"auto_bill_outstanding\":true,\"setup_fee_failure_action\":\"CONTINUE\",\"payment_failure_threshold\":3}}" \
+      | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+  fi
   [[ -n "$plan_monthly" ]] || die "PayPal createBillingPlan(monthly) failed"
   log "PayPal monthly plan_id: $plan_monthly"
 
-  plan_yearly=$(curl -sS -X POST "$base/v1/billing/plans" \
-    -H "Authorization: Bearer $token" -H "Content-Type: application/json" -H "Prefer: return=representation" \
-    -d "{\"product_id\":\"$product_id\",\"name\":\"OgameX Yearly\",\"description\":\"OgameX Yearly\",\"status\":\"ACTIVE\",\"billing_cycles\":[{\"frequency\":{\"interval_unit\":\"YEAR\",\"interval_count\":1},\"tenure_type\":\"REGULAR\",\"sequence\":1,\"total_cycles\":0,\"pricing_scheme\":{\"fixed_price\":{\"value\":\"200.00\",\"currency_code\":\"USD\"}}}],\"payment_preferences\":{\"auto_bill_outstanding\":true,\"setup_fee_failure_action\":\"CONTINUE\",\"payment_failure_threshold\":3}}" \
-    | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+  plan_yearly="${PAYPAL_PLAN_YEARLY_ID:-}"
+  if [[ -z "$plan_yearly" ]]; then
+    plan_yearly=$(curl -sS -H "Authorization: Bearer $token" \
+      "$base/v1/billing/plans?product_id=$product_id&page_size=20" \
+      | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+for p in d.get("plans",[]):
+  if p.get("name")=="FlagShip Yearly" and p.get("status")=="ACTIVE":
+    print(p.get("id","")); break' 2>/dev/null || true)
+  fi
+  if [[ -z "$plan_yearly" ]]; then
+    plan_yearly=$(curl -sS -X POST "$base/v1/billing/plans" \
+      -H "Authorization: Bearer $token" -H "Content-Type: application/json" -H "Prefer: return=representation" \
+      -d "{\"product_id\":\"$product_id\",\"name\":\"FlagShip Yearly\",\"description\":\"FlagShip Yearly\",\"status\":\"ACTIVE\",\"billing_cycles\":[{\"frequency\":{\"interval_unit\":\"YEAR\",\"interval_count\":1},\"tenure_type\":\"REGULAR\",\"sequence\":1,\"total_cycles\":0,\"pricing_scheme\":{\"fixed_price\":{\"value\":\"200.00\",\"currency_code\":\"USD\"}}}],\"payment_preferences\":{\"auto_bill_outstanding\":true,\"setup_fee_failure_action\":\"CONTINUE\",\"payment_failure_threshold\":3}}" \
+      | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+  fi
   [[ -n "$plan_yearly" ]] || die "PayPal createBillingPlan(yearly) failed"
   log "PayPal yearly plan_id: $plan_yearly"
 
-  # 4) Create Webhook
+  # 4) Create Webhook — v1.0.18 P3 #16: idempotent. GET by URL match.
   local webhook_id
-  webhook_id=$(curl -sS -X POST "$base/v1/notifications/webhooks" \
-    -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-    -d "{\"url\":\"https://$DOMAIN/api/webhooks/paypal\",\"event_types\":[{\"name\":\"BILLING.SUBSCRIPTION.ACTIVATED\"},{\"name\":\"BILLING.SUBSCRIPTION.UPDATED\"},{\"name\":\"BILLING.SUBSCRIPTION.CANCELLED\"},{\"name\":\"BILLING.SUBSCRIPTION.SUSPENDED\"},{\"name\":\"BILLING.SUBSCRIPTION.EXPIRED\"},{\"name\":\"PAYMENT.SALE.COMPLETED\"}]}" \
-    | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+  webhook_id="${PAYPAL_WEBHOOK_ID:-}"
+  if [[ -z "$webhook_id" ]]; then
+    webhook_id=$(curl -sS -H "Authorization: Bearer $token" "$base/v1/notifications/webhooks" \
+      | python3 -c "import json,sys
+d=json.load(sys.stdin)
+for w in d.get('webhooks',[]):
+  if w.get('url')=='https://$DOMAIN/api/webhooks/paypal':
+    print(w.get('id','')); break" 2>/dev/null || true)
+  fi
+  if [[ -z "$webhook_id" ]]; then
+    webhook_id=$(curl -sS -X POST "$base/v1/notifications/webhooks" \
+      -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+      -d "{\"url\":\"https://$DOMAIN/api/webhooks/paypal\",\"event_types\":[{\"name\":\"BILLING.SUBSCRIPTION.ACTIVATED\"},{\"name\":\"BILLING.SUBSCRIPTION.UPDATED\"},{\"name\":\"BILLING.SUBSCRIPTION.CANCELLED\"},{\"name\":\"BILLING.SUBSCRIPTION.SUSPENDED\"},{\"name\":\"BILLING.SUBSCRIPTION.EXPIRED\"},{\"name\":\"PAYMENT.SALE.COMPLETED\"}]}" \
+      | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id",""))')
+  fi
   [[ -n "$webhook_id" ]] || die "PayPal createWebhook failed"
   log "PayPal webhook_id: $webhook_id"
 
