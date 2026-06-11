@@ -39,17 +39,17 @@ const COOLDOWN_MS = 30_000;
 const MAX_CLICKS_IN_WINDOW = 20;
 const ABORT_WINDOW_MS = 5 * 60_000;
 
-// v1.0.20 — owner 2026-06-10 "TM关闭就可以点击 last play" 实证:
-// v1.0.19 retry-3-clicks 在新服 ogame React handler 异常路径污染了内部 state,
-// 后续 manual click 也死. 老服单击能过是因为 React handler 走 location.href
-// 同 tab 跳, 不开 popup; 新服 (Season-of-Anarchy) 走 window.open() popup, 但
-// programmatic .click() isTrusted=false → popup blocker 返 null → null.location=url throw.
+// v1.0.21 — owner 2026-06-10 "开着TM 点 PLAY loop 回到本页, 不开就能进游戏":
+// 即使 owner 在 /accounts 上 **manual** click PLAY, TM 一开 click 后就 loop 回 lobby.
+// 真态结论: 我 userscript 在 /accounts 上的任何活动 (包括只是 polling) 都让 PLAY click 走异常.
+// 可能根源: gameforge withFetchPatch.js / statichub challenge JS 检测到 TM 注入痕迹.
 //
-// 顶层设计: **彻底 0-click 路径**. 用 `win.location.href = '/en_GB/accounts'`
-// 同 tab 跳到 /accounts 选服页. 那里有 server-specific `<a href="s274-en.ogame.gameforge.com/game/...">`
-// 真 anchor (浏览器 native nav), 没 popup 没 isTrusted 问题. 0 React state corruption.
+// 顶层设计 v4 极简保守: **只在 /hub 单 click Last played**, /accounts 完全 inert.
+// - /hub: window.open shim + single click Last played 真 anchor (老服 work 老路径)
+// - /accounts: NO touch. owner 自己 manual click PLAY (TM-on/off 等价).
+// - 其他 lobby path: NO touch.
 //
-// 单一决策树: 老服新服走同一路径, 不区分 React handler 是否 broken.
+// owner manual 流程: hub → 点 last played (我 auto 帮点) → 没 work owner 回 /accounts 自己点 PLAY (无 TM 干扰)
 export function maybeAutoLoginFromHub(win: Window): boolean {
   if (/\.ogame\.gameforge\.com\/game\//.test(win.location.href)) {
     try {
@@ -67,50 +67,112 @@ export function maybeAutoLoginFromHub(win: Window): boolean {
     }
   } catch { /* */ }
 
+  // 真 conservative: 只对 /hub 或 landing 介入. /accounts 完全 inert 防 gameforge 反 bot.
   const path = win.location.pathname;
-  if (/\/accounts(?:\/|$|\?)/.test(path)) {
-    // /en_GB/accounts — 找 game URL anchor 真态 nav
-    runAccountsNavigator(win);
-  } else {
-    // /hub 或 landing — 真态 nav 到 /accounts
-    const lang = path.match(/^\/([a-z]{2}_[A-Z]{2})/)?.[1] ?? "en_GB";
-    const accountsPath = `/${lang}/accounts`;
-    console.info(`[OgameX/auto-login] lobby hub/landing detected → navigating to ${accountsPath} (0-click path)`);
-    win.setTimeout(() => { win.location.href = accountsPath; }, 500);
+  const isHubOrLanding = /^\/(?:[a-z]{2}_[A-Z]{2}\/?(?:hub\/?)?)?$/i.test(path);
+  if (!isHubOrLanding) {
+    console.info(`[OgameX/auto-login] non-hub lobby path (${path}) — staying inert. Manual click required.`);
+    return false;
   }
+
+  // 真态基建: shim window.open 防 popup blocker 真态 corrupt React state.
+  installWindowOpenShim(win);
+  runLobbyClicker(win);
   return true;
 }
 
-// v1.0.20 — /accounts 真态 navigator:
-// 寻找 `s{N}-{lang}.ogame.gameforge.com/game/...` 真 anchor href, 命中 location.href 直接跳.
-// 60s 超时 → 不 loop 回 hub, 直接 give up 让 owner 手点.
-function runAccountsNavigator(win: Window): void {
-  console.info("[OgameX/auto-login] /accounts page — searching for game URL anchor...");
+/**
+ * v1.0.21 — 真 shim unsafeWindow.open. ogame React handler 调 window.open()
+ * 时返一个 Proxy: 直接 url arg → 同 tab nav; 空 arg → Proxy 拦 `.location = url`.
+ * 防 programmatic click 触发 popup blocker 真返 null 抛 throw.
+ */
+function installWindowOpenShim(win: Window): void {
+  const us = ((globalThis as unknown as { unsafeWindow?: Window }).unsafeWindow ?? win) as Window & {
+    __ogamexOpenShimmed?: boolean;
+  };
+  if (us.__ogamexOpenShimmed) return;
+  us.__ogamexOpenShimmed = true;
+  const origOpen = us.open?.bind(us);
+  us.open = function shimmedOpen(urlArg?: string | URL, _target?: string, _features?: string): Window | null {
+    const url = typeof urlArg === "string" ? urlArg : urlArg ? String(urlArg) : "";
+    console.info(`[OgameX/auto-login] window.open intercepted url=${url || "(empty)"} — redirecting to same tab`);
+    if (url) {
+      try { us.location.href = url; } catch { /* */ }
+      return us;
+    }
+    // 空 url: 返 Proxy, .location = X 时同 tab nav.
+    // 真态兼容 ogame 模式: `popup = window.open(); popup.location = gameUrl`.
+    return new Proxy({} as unknown as Window, {
+      set(_t, prop, value): boolean {
+        if (prop === "location") {
+          const href = typeof value === "string" ? value : (value as { href?: string })?.href ?? String(value);
+          console.info(`[OgameX/auto-login] shim popup.location assigned, navigating: ${href}`);
+          try { us.location.href = href; } catch { /* */ }
+          return true;
+        }
+        if (prop === "href") {
+          console.info(`[OgameX/auto-login] shim popup.href assigned, navigating: ${String(value)}`);
+          try { us.location.href = String(value); } catch { /* */ }
+          return true;
+        }
+        return true;
+      },
+      get(_t, prop): unknown {
+        if (prop === "location") {
+          return new Proxy({} as Record<string, unknown>, {
+            set(_t2, p2, v2): boolean {
+              if (p2 === "href") {
+                console.info(`[OgameX/auto-login] shim popup.location.href = ${String(v2)}`);
+                try { us.location.href = String(v2); } catch { /* */ }
+              }
+              return true;
+            },
+          });
+        }
+        if (prop === "closed") return false;
+        if (prop === "focus" || prop === "blur" || prop === "close") return () => undefined;
+        return undefined;
+      },
+    });
+    // unused but suppresses "unused var" lint
+    void origOpen;
+  } as typeof window.open;
+  console.info("[OgameX/auto-login] window.open shim installed (popup → same-tab nav)");
+}
+
+/**
+ * v1.0.21 — 真 single-click 策略. 找 hub Last played OR accounts page first row Play
+ * 按钮; 找到就**单次** click; 60s 找不到给 up. window.open shim 已 install, click 触发
+ * React handler 时 popup 流程被代理同 tab nav, 不抛 throw, 不污染 state.
+ */
+function runLobbyClicker(win: Window): void {
+  console.info("[OgameX/auto-login] looking for login button (Last played on /hub OR Play on /accounts)...");
   const startedAt = Date.now();
   const tick = (): void => {
     if (Date.now() - startedAt > TIMEOUT_MS) {
-      console.warn("[OgameX/auto-login] /accounts: no game URL anchor in 60s — manual click required");
-      const anchors = Array.from(win.document.querySelectorAll<HTMLAnchorElement>("a[href]"));
-      console.warn(`[OgameX/auto-login] /accounts: ${anchors.length} anchors visible. Sample:`,
-        JSON.stringify(anchors.slice(0, 15).map((a) => ({
-          href: a.href.slice(0, 80),
-          text: (a.textContent ?? "").trim().slice(0, 30),
-        })), null, 2));
+      console.warn("[OgameX/auto-login] 60s gave up — no clickable login button found.");
       return;
     }
-    // 真 game URL pattern: s\d+-\w+.ogame.gameforge.com/game/ OR *.ogame.gameforge.com/game/
-    const anchors = Array.from(win.document.querySelectorAll<HTMLAnchorElement>("a[href]"));
-    const gameLink = anchors.find((a) =>
-      /\.ogame\.gameforge\.com\/game\//i.test(a.href) && isVisible(a),
-    );
-    if (gameLink) {
-      console.info(`[OgameX/auto-login] /accounts: found game URL anchor, navigating: ${gameLink.href}`);
-      win.location.href = gameLink.href;
-      return;
+    const target = findLoginButton(win.document);
+    if (target) {
+      console.info(`[OgameX/auto-login] clicking: ${describe(target)} (window.open shim active, single attempt)`);
+      try { target.click(); } catch (e) { console.warn("[OgameX/auto-login] click threw:", e); }
+      return; // 真单次, 不 retry (避免 [[no-spam-ogame]] / React state 污染)
     }
     win.setTimeout(tick, POLL_MS);
   };
   tick();
+}
+
+/** v1.0.21 — find Last played button on /hub (Play button on /accounts removed per v1.0.21 conservatism). */
+function findLoginButton(doc: Document): HTMLElement | null {
+  for (const sel of LAST_PLAY_SELECTORS) {
+    try {
+      const el = doc.querySelector<HTMLElement>(sel);
+      if (el && isVisible(el) && isLobbyReady(el)) return el;
+    } catch { /* */ }
+  }
+  return null;
 }
 
 /** v0.0.989k — extract serverDetails text from hub to use as per-account
