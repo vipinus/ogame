@@ -3301,24 +3301,32 @@ function openTransportSettings(
       const cargoMClamped = Math.min(cargoMRaw, liveM_v1022);
       const cargoCClamped = Math.min(cargoCRaw, liveC_v1022);
       const cargoDClamped = Math.min(cargoDRaw, liveD_v1022);
-      // 然后 fit 到船 cap (clamp 后 sum 通常 ≪ cap, 但仍 fit 保险).
-      // v1.0.22 — 真 re-read store.server.ship_cargo_capacity (上面 fetchShips 真态刷新过).
-      const shipCount_v1022 = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
+      // v1.0.22 — owner 2026-06-11 "船不够，也不要空着，能装多少就装多少":
+      // 同款 fit pattern 应用到 ship count: effective = min(input, haveShips).
+      // 船真不够时不 reject, 不装空, dispatch 真实有 ship 数, cap 按实有算,
+      // 再 fitCargoToCap. 跟 cargo "不空着" spec 同源.
+      const shipCountInput_v1022 = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
       const shipKind_v1022 = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
+      const sourcePlanetLive_v1022 = source ? (storeRef?.state?.planets ?? {})[source] as StorePlanet | undefined : undefined;
+      const haveShips_v1022 = ((sourcePlanetLive_v1022?.ships as Record<string, number | undefined> | undefined)?.[shipKind_v1022]) ?? shipCountInput_v1022;
+      const effectiveShips_v1022 = Math.min(shipCountInput_v1022, haveShips_v1022);
+      // 真 re-read store.server.ship_cargo_capacity (上面 fetchShips 真态刷新过).
       const liveCapMap_v1022 = storeRef?.state?.server?.ship_cargo_capacity ?? {};
       const perShipCap_v1022 = (liveCapMap_v1022 as Record<string, number>)[shipKind_v1022] ?? (shipKind_v1022 === "smallCargo" ? stCap : ltCap);
       const fitted_v1022 = fitCargoToCap({
-        capacity: shipCount_v1022 * perShipCap_v1022,
+        capacity: effectiveShips_v1022 * perShipCap_v1022,
         requested: { m: cargoMClamped, c: cargoCClamped, d: cargoDClamped },
       });
       const cargoM = fitted_v1022.m;
       const cargoC = fitted_v1022.c;
       const cargoD = fitted_v1022.d;
-      // 真态 log: 输入 vs ogame真 vs dispatched 对账, owner 真态 debug 可见.
-      console.info(`[OgameX/transport] cargo input=${cargoMRaw}/${cargoCRaw}/${cargoDRaw} ogame真=${liveM_v1022}/${liveC_v1022}/${liveD_v1022} dispatched=${cargoM}/${cargoC}/${cargoD}`);
+      // 真态 log: 输入 vs ogame真 vs effective ships vs dispatched 对账.
+      console.info(`[OgameX/transport] cargo input=${cargoMRaw}/${cargoCRaw}/${cargoDRaw} ogame真=${liveM_v1022}/${liveC_v1022}/${liveD_v1022} ships input=${shipCountInput_v1022} have=${haveShips_v1022} effective=${effectiveShips_v1022} dispatched cargo=${cargoM}/${cargoC}/${cargoD}`);
       if (!source) { if (status) { status.textContent = t("auto.093"); status.style.color = "#ff6b6b"; } return; }
       if (!target) { if (status) { status.textContent = t("auto.094"); status.style.color = "#ff6b6b"; } return; }
-      if (shipCount <= 0) { if (status) { status.textContent = t("auto.095"); status.style.color = "#ff6b6b"; } return; }
+      // v1.0.22 — owner 2026-06-11 "船不够，也不要空着": effective 真 ship count
+      // 跟 cargo "不空" 同源 spec — 真零船才拒, 不够就 dispatch 真有的.
+      if (effectiveShips_v1022 <= 0) { if (status) { status.textContent = t("auto.095"); status.style.color = "#ff6b6b"; } return; }
       const targetPlanet = planetsMap[target];
       const targetCoords = (targetPlanet?.coords ?? []).join(":");
       const jgEnabled = (m.querySelector<HTMLInputElement>("[data-tr-jg-enable]")?.checked) ?? false;
@@ -3334,7 +3342,7 @@ function openTransportSettings(
       // web dashboard (/api/me/goals/transport) reuses the EXACT same rules
       // (same-coord shortcut, JG-only-empty, moon buffers, 3 segments).
       const chainId = makeTransportChainId(Date.now());
-      const ships = { [ship]: shipCount };
+      const ships = { [ship]: effectiveShips_v1022 };
       const stopoverIdRaw = m.querySelector<HTMLInputElement>('input[name="tr-stopover-radio"]:checked')?.value ?? "";
       const toPlannerPlanet = (p: StorePlanet | undefined): PlannerPlanet | null => {
         if (!p?.coords || p.coords.length < 3) return null;
