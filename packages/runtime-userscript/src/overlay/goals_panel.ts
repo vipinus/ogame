@@ -13,7 +13,7 @@
  */
 import { LIFEFORM_TECH } from "@ogamex/shared";
 import { TECH_ID_BY_NAME } from "@ogamex/shared";
-import { planTransportChain, makeTransportChainId, type PlannerPlanet, fitCargoToCap } from "@ogamex/shared";
+import { planTransportChain, makeTransportChainId, type PlannerPlanet } from "@ogamex/shared";
 import { t } from "../i18n/t.js";
 import { techName } from "../i18n/tech_name.js";
 import { setVisibleInterval } from "../util/visible_interval.js";
@@ -3270,70 +3270,20 @@ function openTransportSettings(
       const ship = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
       const shipCount = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
       // v0.0.531 — 未勾選的資源 cargo = 0
-      const cargoMRaw = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
-      const cargoCRaw = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
-      const cargoDRaw = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
-      // v1.0.22 — owner 2026-06-11 选项 2 真彻底: SEND 真态前主动 GET 真 ogame
-      // resources, 不信任 sniffer 缓存 (推 stale 派 m=181M 真态 planet 只有 0).
-      //
-      // 真路径: window.__ogamexRefreshPlanetResources(resourceSrc) → ogame
-      // /game/index.php?page=fetchResources&ajax=1 cp=resourceSrc → JSON
-      // m/c/d → updates storeRef.state.planets[resourceSrc].resources. 然后
-      // clamp 输入框值到 min(input, ogame真值) 真 ground truth, 再 fit 船 cap.
-      //
-      // owner 真态接受 1 次 fetchResources / SEND 真 cost (跟 [[no-spam-ogame]]
-      // 不冲突 — 真 owner 主动 SEND 才触发, 非循环). 真单决策树拉通 ogame.
-      const resourceSrcLive_v1022 = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio"]:checked')?.value ?? "";
-      const winLive_v1022 = window as Window & {
-        __ogamexRefreshPlanetResources?: (pid: string) => Promise<void>;
-        __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>>;
-      };
-      const fetchResLive_v1022 = winLive_v1022.__ogamexRefreshPlanetResources;
-      const fetchShipsLive_v1022 = winLive_v1022.__ogamexFetchPlanetShips;
-      if (resourceSrcLive_v1022) {
-        if (status) { status.textContent = "拉 ogame 真 resources + cap..."; status.style.color = "#7080a0"; }
-        // 真态并行: fetchResources (m/c/d) + fetchPlanetShips (counts + cargoCapacity).
-        // 后者 v1.0.22 extension 真态 also extract shipsData → cacheShipsData →
-        // store.server.ship_cargo_capacity 同步刷新, 真 owner 不再被 stale cap 骗.
-        const refreshAll: Promise<unknown>[] = [];
-        if (fetchResLive_v1022) refreshAll.push(fetchResLive_v1022(resourceSrcLive_v1022).catch((e: unknown) => console.warn("[OgameX/transport] resources refresh threw", e)));
-        if (fetchShipsLive_v1022) refreshAll.push(fetchShipsLive_v1022(resourceSrcLive_v1022).catch((e: unknown) => console.warn("[OgameX/transport] ships+cap refresh threw", e)));
-        if (refreshAll.length > 0) await Promise.all(refreshAll);
-        console.info(`[OgameX/transport] LIVE refresh ${resourceSrcLive_v1022} done (resources + cap)`);
-      }
-      const liveResP_v1022 = resourceSrcLive_v1022 ? (storeRef?.state?.planets ?? {})[resourceSrcLive_v1022] as StorePlanet | undefined : undefined;
-      const liveM_v1022 = liveResP_v1022?.resources?.m ?? cargoMRaw;
-      const liveC_v1022 = liveResP_v1022?.resources?.c ?? cargoCRaw;
-      const liveD_v1022 = liveResP_v1022?.resources?.d ?? cargoDRaw;
-      const cargoMClamped = Math.min(cargoMRaw, liveM_v1022);
-      const cargoCClamped = Math.min(cargoCRaw, liveC_v1022);
-      const cargoDClamped = Math.min(cargoDRaw, liveD_v1022);
-      // v1.0.22 — owner 2026-06-11 "船不够，也不要空着，能装多少就装多少":
-      // 同款 fit pattern 应用到 ship count: effective = min(input, haveShips).
-      // 船真不够时不 reject, 不装空, dispatch 真实有 ship 数, cap 按实有算,
-      // 再 fitCargoToCap. 跟 cargo "不空着" spec 同源.
-      const shipCountInput_v1022 = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
-      const shipKind_v1022 = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
-      const sourcePlanetLive_v1022 = source ? (storeRef?.state?.planets ?? {})[source] as StorePlanet | undefined : undefined;
-      const haveShips_v1022 = ((sourcePlanetLive_v1022?.ships as Record<string, number | undefined> | undefined)?.[shipKind_v1022]) ?? shipCountInput_v1022;
-      const effectiveShips_v1022 = Math.min(shipCountInput_v1022, haveShips_v1022);
-      // 真 re-read store.server.ship_cargo_capacity (上面 fetchShips 真态刷新过).
-      const liveCapMap_v1022 = storeRef?.state?.server?.ship_cargo_capacity ?? {};
-      const perShipCap_v1022 = (liveCapMap_v1022 as Record<string, number>)[shipKind_v1022] ?? (shipKind_v1022 === "smallCargo" ? stCap : ltCap);
-      const fitted_v1022 = fitCargoToCap({
-        capacity: effectiveShips_v1022 * perShipCap_v1022,
-        requested: { m: cargoMClamped, c: cargoCClamped, d: cargoDClamped },
-      });
-      const cargoM = fitted_v1022.m;
-      const cargoC = fitted_v1022.c;
-      const cargoD = fitted_v1022.d;
-      // 真态 log: 输入 vs ogame真 vs effective ships vs dispatched 对账.
-      console.info(`[OgameX/transport] cargo input=${cargoMRaw}/${cargoCRaw}/${cargoDRaw} ogame真=${liveM_v1022}/${liveC_v1022}/${liveD_v1022} ships input=${shipCountInput_v1022} have=${haveShips_v1022} effective=${effectiveShips_v1022} dispatched cargo=${cargoM}/${cargoC}/${cargoD}`);
+      // v1.0.22 ROLLBACK — owner 2026-06-11 "回滚这些掉错误的补丁": 撤掉本轮
+      // SEND 干预层 (LIVE re-fetch + clamp + fitCargoToCap + effectiveShips).
+      // 真态复盘: m=0 真因是 chain leg 抢跑 (leg3 4621 LC 还在飞, leg4 32 秒后
+      // 就从 2:75:7 派 4170 LC, 真态 planet 只有 ~267 LC, ogame clamp 船数 →
+      // cap 12.4M 真用满 → m 装载顺序末位被砍 0). 我的 clamp/fit 打错靶 —
+      // planet resource cache 没错, 是 chain timing. 且 [[cargo-capacity-formula]]
+      // v0.0.1045j 反例已证: ogame 自己处理 cap, userscript 端 cargo 干预 =
+      // silent destruction 风险. dispatch 真态恢复"所见即所发".
+      const cargoM = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
+      const cargoC = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
+      const cargoD = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
       if (!source) { if (status) { status.textContent = t("auto.093"); status.style.color = "#ff6b6b"; } return; }
       if (!target) { if (status) { status.textContent = t("auto.094"); status.style.color = "#ff6b6b"; } return; }
-      // v1.0.22 — owner 2026-06-11 "船不够，也不要空着": effective 真 ship count
-      // 跟 cargo "不空" 同源 spec — 真零船才拒, 不够就 dispatch 真有的.
-      if (effectiveShips_v1022 <= 0) { if (status) { status.textContent = t("auto.095"); status.style.color = "#ff6b6b"; } return; }
+      if (shipCount <= 0) { if (status) { status.textContent = t("auto.095"); status.style.color = "#ff6b6b"; } return; }
       const targetPlanet = planetsMap[target];
       const targetCoords = (targetPlanet?.coords ?? []).join(":");
       const jgEnabled = (m.querySelector<HTMLInputElement>("[data-tr-jg-enable]")?.checked) ?? false;
@@ -3349,7 +3299,7 @@ function openTransportSettings(
       // web dashboard (/api/me/goals/transport) reuses the EXACT same rules
       // (same-coord shortcut, JG-only-empty, moon buffers, 3 segments).
       const chainId = makeTransportChainId(Date.now());
-      const ships = { [ship]: effectiveShips_v1022 };
+      const ships = { [ship]: shipCount };
       const stopoverIdRaw = m.querySelector<HTMLInputElement>('input[name="tr-stopover-radio"]:checked')?.value ?? "";
       const toPlannerPlanet = (p: StorePlanet | undefined): PlannerPlanet | null => {
         if (!p?.coords || p.coords.length < 3) return null;
