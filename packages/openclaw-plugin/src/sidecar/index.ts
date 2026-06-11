@@ -70,7 +70,7 @@ import type {
   UpstreamMsg,
   WorldState,
 } from "@ogamex/shared";
-import { TECH_TREE, LIFEFORM_TECH, techSec, storageCapForLevel } from "@ogamex/shared";
+import { TECH_TREE, LIFEFORM_TECH, techSec, storageCapForLevel, filterSectionSettings } from "@ogamex/shared";
 
 interface PrereqTreeNode {
   tech: string;
@@ -703,6 +703,33 @@ export async function startSidecar(
   if (typeof (persistTimer as unknown as { unref?: () => void }).unref === "function") {
     (persistTimer as unknown as { unref: () => void }).unref();
   }
+
+  // v1.0.18 P2 #4 — ogame_events trim cron (audit critical: trimEvents 真零
+  // caller, 注释承诺 retention 但实际不 trim). Every 60min, for each tenant
+  // with active goals, trim to most-recent 10K events. PG indexed by
+  // (user_id, created_at), DELETE 真 fast (id NOT IN top-N).
+  const EVENTS_KEEP = 10_000;
+  const trimEventsCron = async (): Promise<void> => {
+    if (!pgStore) return;
+    try {
+      const sharedSql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
+      const tenantRows = await sharedSql`SELECT DISTINCT user_id FROM ogame_goals WHERE status IN ('active','blocked','pending')`;
+      let totalDeleted = 0;
+      for (const r of (tenantRows as unknown as Array<{ user_id: string }>)) {
+        try {
+          await pgStore.trimEvents(r.user_id, EVENTS_KEEP);
+          totalDeleted++;
+        } catch (e) { console.warn(`[events-trim] uid=${r.user_id.slice(0,8)} threw:`, e instanceof Error ? e.message : e); }
+      }
+      if (totalDeleted > 0) console.log(`[events-trim] cron: ${totalDeleted} tenants trimmed (keep last ${EVENTS_KEEP})`);
+    } catch (e) { console.warn("[events-trim] outer threw:", e instanceof Error ? e.message : e); }
+  };
+  const trimTimer = setInterval(() => { void trimEventsCron(); }, 60 * 60 * 1000); // 60 min
+  if (typeof (trimTimer as unknown as { unref?: () => void }).unref === "function") {
+    (trimTimer as unknown as { unref: () => void }).unref();
+  }
+  // First trim 30s after boot (don't block startup but don't wait 1h either).
+  setTimeout(() => { void trimEventsCron(); }, 30_000);
   const triggerDispatch = (): void => {
     if (!priorityMergerRef) return;
     // Phase 9c.7 hotfix — read ALS uid. When this runs inside a Bearer-
@@ -822,27 +849,10 @@ export async function startSidecar(
             }
           },
           sectionSettingsWrite: async (uid: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> => {
-            // v0.0.1045o — owner 2026-06-10 加 auto_build_mine / auto_build_storage.
-            // v1.0.17 — owner 2026-06-10 "全部改 PG": jsonb-valued keys
-            // (ogamex.expedition_config / ogamex.expedition_state /
-            // ogamex.growth_daemon_disabled) 也允许; filter 改 typeof != "function"
-            // 容纳 string|boolean|object|array (jsonb 全谱).
-            const ALLOWED = new Set([
-              "ogamex.emergency.paused", "OGAMEX_SPY_TRIGGERS_SAVE",
-              "ogamex.expedition.paused", "OGAMEX_EMERGENCY_SOUND_ALARM",
-              "ogamex.global.paused", "ogamex.auto_build_mine", "ogamex.auto_build_storage",
-              // v1.0.17 — file → PG migration
-              "ogamex.expedition_config", "ogamex.expedition_state",
-              "ogamex.growth_daemon_disabled",
-            ]);
-            const filtered: Record<string, unknown> = {};
-            for (const [k, v] of Object.entries(patch)) {
-              if (!ALLOWED.has(k)) continue;
-              const t = typeof v;
-              if (t === "string" || t === "boolean" || t === "number" || (t === "object" && v !== null)) {
-                filtered[k] = v;
-              }
-            }
+            // v1.0.18 P2 #25 — single-source whitelist via @ogamex/shared
+            // filterSectionSettings (was inline ALLOWED set, 真 drift with
+            // Next route's 5-key subset → 网页勾选静默失败).
+            const filtered = filterSectionSettings(patch);
             const sql = (pgStore as unknown as { sql: import("postgres").Sql }).sql;
             const existing = await sql`SELECT section_settings FROM user_settings WHERE user_id = ${uid} LIMIT 1`;
             const cur = (existing[0] as { section_settings?: Record<string, unknown> } | undefined)?.section_settings ?? {};

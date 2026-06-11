@@ -7,6 +7,13 @@ export { expeditionSlots, TECH_TREE, prerequisitesFor, costFor, OGAME_DATA_TECHN
 export type { TechKind, TechEntry } from "./tech_tree.js";
 export { buildingSec, researchSec, techSec } from "./build_time.js";
 export { storageCapForLevel } from "./storage_cap.js";
+export {
+  SECTION_SETTING_KEYS,
+  SECTION_SETTING_KEY_SET,
+  isValidSectionSettingValue,
+  filterSectionSettings,
+} from "./section_settings.js";
+export type { SectionSettingKey } from "./section_settings.js";
 export type { BuildTimeAccel } from "./build_time.js";
 export { planTransportChain, makeTransportChainId } from "./transport_planner.js";
 export type { PlannerPlanet, PlanTransportInput, PlanTransportOutput, TransportGoalBody } from "./transport_planner.js";
