@@ -3277,15 +3277,22 @@ function openTransportSettings(
       // owner 真态接受 1 次 fetchResources / SEND 真 cost (跟 [[no-spam-ogame]]
       // 不冲突 — 真 owner 主动 SEND 才触发, 非循环). 真单决策树拉通 ogame.
       const resourceSrcLive_v1022 = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio"]:checked')?.value ?? "";
-      const fetchPlanetLive_v1022 = (window as Window & { __ogamexRefreshPlanetResources?: (pid: string) => Promise<void> }).__ogamexRefreshPlanetResources;
-      if (fetchPlanetLive_v1022 && resourceSrcLive_v1022) {
-        try {
-          if (status) { status.textContent = "拉 ogame 真 resources..."; status.style.color = "#7080a0"; }
-          await fetchPlanetLive_v1022(resourceSrcLive_v1022);
-          console.info(`[OgameX/transport] LIVE refresh ${resourceSrcLive_v1022} OK`);
-        } catch (e) {
-          console.warn(`[OgameX/transport] LIVE refresh threw, fallback to sniffer cache`, e);
-        }
+      const winLive_v1022 = window as Window & {
+        __ogamexRefreshPlanetResources?: (pid: string) => Promise<void>;
+        __ogamexFetchPlanetShips?: (pid: string) => Promise<Record<string, number>>;
+      };
+      const fetchResLive_v1022 = winLive_v1022.__ogamexRefreshPlanetResources;
+      const fetchShipsLive_v1022 = winLive_v1022.__ogamexFetchPlanetShips;
+      if (resourceSrcLive_v1022) {
+        if (status) { status.textContent = "拉 ogame 真 resources + cap..."; status.style.color = "#7080a0"; }
+        // 真态并行: fetchResources (m/c/d) + fetchPlanetShips (counts + cargoCapacity).
+        // 后者 v1.0.22 extension 真态 also extract shipsData → cacheShipsData →
+        // store.server.ship_cargo_capacity 同步刷新, 真 owner 不再被 stale cap 骗.
+        const refreshAll: Promise<unknown>[] = [];
+        if (fetchResLive_v1022) refreshAll.push(fetchResLive_v1022(resourceSrcLive_v1022).catch((e: unknown) => console.warn("[OgameX/transport] resources refresh threw", e)));
+        if (fetchShipsLive_v1022) refreshAll.push(fetchShipsLive_v1022(resourceSrcLive_v1022).catch((e: unknown) => console.warn("[OgameX/transport] ships+cap refresh threw", e)));
+        if (refreshAll.length > 0) await Promise.all(refreshAll);
+        console.info(`[OgameX/transport] LIVE refresh ${resourceSrcLive_v1022} done (resources + cap)`);
       }
       const liveResP_v1022 = resourceSrcLive_v1022 ? (storeRef?.state?.planets ?? {})[resourceSrcLive_v1022] as StorePlanet | undefined : undefined;
       const liveM_v1022 = liveResP_v1022?.resources?.m ?? cargoMRaw;
@@ -3295,9 +3302,11 @@ function openTransportSettings(
       const cargoCClamped = Math.min(cargoCRaw, liveC_v1022);
       const cargoDClamped = Math.min(cargoDRaw, liveD_v1022);
       // 然后 fit 到船 cap (clamp 后 sum 通常 ≪ cap, 但仍 fit 保险).
+      // v1.0.22 — 真 re-read store.server.ship_cargo_capacity (上面 fetchShips 真态刷新过).
       const shipCount_v1022 = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
       const shipKind_v1022 = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
-      const perShipCap_v1022 = shipKind_v1022 === "smallCargo" ? stCap : ltCap;
+      const liveCapMap_v1022 = storeRef?.state?.server?.ship_cargo_capacity ?? {};
+      const perShipCap_v1022 = (liveCapMap_v1022 as Record<string, number>)[shipKind_v1022] ?? (shipKind_v1022 === "smallCargo" ? stCap : ltCap);
       const fitted_v1022 = fitCargoToCap({
         capacity: shipCount_v1022 * perShipCap_v1022,
         requested: { m: cargoMClamped, c: cargoCClamped, d: cargoDClamped },

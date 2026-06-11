@@ -4346,6 +4346,23 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // Format: `var shipsOnPlanet = [{"id":203,"number":4500}, ...];`
       // IDs not listed = 0 ships (write zeros so downstream `have < need`
       // comparisons work correctly).
+      // v1.0.22 — owner 2026-06-11 "sniffer cache 有bug" 真态修: fleetdispatch
+      // chunk 真 same response also has `var shipsData = {...};` block 真 contain
+      // cargoCapacity per ship (真 includes HT + class + LF 全部 bonus). 真态
+      // extract + cacheShipsData → store.server.ship_cargo_capacity 同步刷新.
+      // 真 owner 不用等下次 expedition checkTarget 才更新 cap, SEND 即刷.
+      // [[no-Math.max-stale-fallback]] + [[single-decision-tree]].
+      const shipsDataMatch = html.match(/var\s+shipsData\s*=\s*(\{[\s\S]*?\})\s*;/);
+      if (shipsDataMatch) {
+        try {
+          const shipsData = JSON.parse(shipsDataMatch[1]!) as Record<string, { id?: number; cargoCapacity?: number; baseCargoCapacity?: number }>;
+          const { cacheShipsData } = await import("./api/ship_cargo_cache.js");
+          cacheShipsData(shipsData, env.win);
+          console.info(`[OgameX/fetchShips] ${pid} via inline shipsData: ${Object.keys(shipsData).length} ship types, cargo cap真态 cached`);
+        } catch (e) {
+          console.warn(`[OgameX/fetchShips] inline shipsData parse/cache failed:`, e);
+        }
+      }
       const onPlanetMatch = html.match(/var\s+shipsOnPlanet\s*=\s*(\[[\s\S]*?\])\s*;/);
       if (onPlanetMatch) {
         try {
