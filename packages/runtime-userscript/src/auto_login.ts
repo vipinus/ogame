@@ -147,26 +147,58 @@ const LAST_PLAY_SELECTORS = [
 const LAST_PLAY_TEXT_RE =
   /(?:last\s*play(?:ed)?|continuer|continuar|forts(?:e|ä)tzen|上次遊玩|上次游玩|最后游玩|最後遊玩|繼續遊戲|继续游戏)/i;
 
+// v1.0.19 — owner 2026-06-10 "新服无法自动登录"
+//
+// 真态 log: text="Last playedTitania – Players: " — `Players:` 后面**空**, 没数字.
+// 底层逻辑: ogame lobby 异步拉 accounts API, .serverDetails span 占位先渲染出来,
+// player count 后填. 此时 click 触发的 React handler 引用 `accounts[lastIndex]`
+// 还是 null → ogame 自家 main.js 抛 `Cannot set properties of null (setting 'location')`.
+// → 命中 button 后强制 verify "Players: \d+" 真完成才返回, 否则继续 poll.
+// 不引入新 timeout, 复用 runLastPlayClicker 60s 大窗口.
+const LOBBY_READY_RE = /players?\s*:\s*\d/i;
+
+function isLobbyReady(btn: HTMLElement): boolean {
+  const txt = (btn.textContent ?? "").trim();
+  if (!LOBBY_READY_RE.test(txt)) return false;
+  // 副 check: .serverDetails 必须存在且文本含数字 (双源 verify 防 Last played 被
+  // 其他 button text 假阳).
+  const sd = btn.querySelector<HTMLElement>(".serverDetails");
+  if (!sd) return true; // 兼容老 skin (无 .serverDetails 也可能合法)
+  return LOBBY_READY_RE.test((sd.textContent ?? "").trim());
+}
+
 function findLastPlayButton(doc: Document): HTMLElement | null {
   for (const sel of LAST_PLAY_SELECTORS) {
     try {
       const el = doc.querySelector<HTMLElement>(sel);
-      if (el && isVisible(el)) return el;
+      if (el && isVisible(el) && isLobbyReady(el)) return el;
     } catch { /* invalid (e.g. :has not supported) — skip */ }
   }
   // Strategy: text-content match across all clickables.
   const clickables = Array.from(doc.querySelectorAll<HTMLElement>("a, button, [role='button']"));
   for (const c of clickables) {
     const t = (c.textContent ?? "").trim();
-    if (LAST_PLAY_TEXT_RE.test(t) && isVisible(c)) return c;
+    if (LAST_PLAY_TEXT_RE.test(t) && isVisible(c) && isLobbyReady(c)) return c;
   }
   return null;
 }
+
+// v1.0.19 — owner 2026-06-10 "新服无法自动登录, 老服 s274 没问题":
+// gf-connect 后端 token mint 在新服 (Season-of-Anarchy 刚开服, GF 账号 cache 冷)
+// 异步还在 fly 时 button 已渲染 "Players: N". programmatic .click() 抢跑撞
+// `Cannot set properties of null (setting 'location')`.
+//   防御 1: 命中后强等 1500ms 让 gf-connect 后端落地再 click;
+//   防御 2: click 后 4s watch URL — 没变就 retry 1 次 (最多 2 次), 第 1 次 click
+//          warms gf-connect token cache, 第 2 次大概率成功. 老服 cache 热第 1 次就过.
+const POST_DETECT_DELAY_MS = 1500;
+const POST_CLICK_WATCH_MS = 4000;
+const MAX_CLICK_RETRIES = 2;
 
 function runLastPlayClicker(win: Window, customSelector: string): void {
   const label = customSelector ? `custom selector "${customSelector}"` : "Last Play button";
   console.info(`[OgameX/auto-login] looking for ${label}...`);
   const startedAt = Date.now();
+  let firstDetectedAt = 0;
   const tick = (): void => {
     if (Date.now() - startedAt > TIMEOUT_MS) {
       console.warn("[OgameX/auto-login] gave up — Last Play button not found. " +
@@ -190,13 +222,40 @@ function runLastPlayClicker(win: Window, customSelector: string): void {
     }
     if (!target) target = findLastPlayButton(win.document);
     if (target) {
-      // v0.0.1004 — owner 2026-06-09 "不能登录 新老账号统一点last play登录游戏":
-      // 撤掉 v0.0.994 3s 跳 /en_GB/accounts 兜底 — 它会把 owner 从 hub 拉去
-      // 账号列表页 → 新 lobby URL → maybeAutoLoginFromHub 再触发 → 找不到
-      // Last Played → 死循环卡 lobby. 统一只做一件事: click Last Played.
-      // gameforge React 真崩了 owner 自己刷新, 我们不偷偷跳别处.
+      // v1.0.19 hot-detect → cold-click: 命中后强等 POST_DETECT_DELAY_MS 让
+      // gf-connect 后端 token mint 真落地. 新服 cache 冷此差就是 throw 的根因.
+      if (firstDetectedAt === 0) {
+        firstDetectedAt = Date.now();
+        console.info(`[OgameX/auto-login] found ${describe(target)} — waiting ${POST_DETECT_DELAY_MS}ms for gf-connect token mint`);
+        win.setTimeout(tick, POST_DETECT_DELAY_MS);
+        return;
+      }
+      // v0.0.1004 — 不偷偷跳 /accounts 兜底防死循环.
+      const urlBefore = win.location.href;
       console.info(`[OgameX/auto-login] clicking: ${describe(target)}`);
       try { target.click(); } catch (e) { console.warn("[OgameX/auto-login] click failed", e); }
+      // v1.0.19 retry: 4s 后 watch URL — 没变就 retry click 1 次 (max 2 次)
+      let retries = 0;
+      const watchUrl = (): void => {
+        if (!/lobby\.ogame\.gameforge\.com/i.test(win.location.href)) {
+          console.info("[OgameX/auto-login] URL changed — click succeeded");
+          return;
+        }
+        if (retries >= MAX_CLICK_RETRIES) {
+          console.warn(`[OgameX/auto-login] gave up after ${MAX_CLICK_RETRIES + 1} clicks — URL still ${win.location.href}`);
+          return;
+        }
+        retries++;
+        const t = findLastPlayButton(win.document);
+        if (!t) {
+          console.warn("[OgameX/auto-login] retry: button vanished, stopping");
+          return;
+        }
+        console.info(`[OgameX/auto-login] retry ${retries}/${MAX_CLICK_RETRIES} — URL still ${urlBefore}`);
+        try { t.click(); } catch (e) { console.warn("[OgameX/auto-login] retry click failed", e); }
+        win.setTimeout(watchUrl, POST_CLICK_WATCH_MS);
+      };
+      win.setTimeout(watchUrl, POST_CLICK_WATCH_MS);
       return;
     }
     win.setTimeout(tick, POLL_MS);

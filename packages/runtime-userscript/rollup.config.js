@@ -5,7 +5,7 @@ import commonjs from "@rollup/plugin-commonjs";
 const banner = `// ==UserScript==
 // @name         OgameX Runtime
 // @namespace    https://github.com/ddxs/ogamex
-// @version      1.0.17
+// @version      1.0.19
 // @match        *://*.ogame.org/*
 // @match        *://*.ogame.gameforge.com/*
 // @match        *://lobby.ogame.gameforge.com/*
