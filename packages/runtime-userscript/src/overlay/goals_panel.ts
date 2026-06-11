@@ -3167,8 +3167,15 @@ function openTransportSettings(
     const fmtStockChip = (n: number): string => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M`
       : n >= 1_000 ? `${(n/1_000).toFixed(0)}K` : String(n);
     const refreshCargoOverflowColors = (): void => {
+      // v1.0.22 — owner 2026-06-11 截图实证: 资源星球 1:486:7, input 跟显示
+      // cap 真态相同 (e.g. 11449888 == /11.4M) 却仍标红框. 真根源: planetsMap
+      // 是 panel render snapshot, 但资源选 radio 自动填用 storeRef.state.planets
+      // (LIVE, line 3134). 矿场持续产 → live > snapshot → input>snapshot.cap
+      // 误标红. 真修法: refreshCargoOverflowColors 同源 LIVE store, 跟 input
+      // 自动填同步. [[single-decision-tree]] + [[no-Math.max-stale-fallback]].
       const sel = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio"]:checked')?.value ?? "";
-      const src = sel ? planetsMap[sel] : null;
+      const liveP = sel ? ((storeRef?.state?.planets ?? {})[sel] as StorePlanet | undefined) : null;
+      const src = liveP ?? (sel ? planetsMap[sel] : null);
       const bank = {
         m: src?.resources?.m ?? Infinity,
         c: src?.resources?.c ?? Infinity,
