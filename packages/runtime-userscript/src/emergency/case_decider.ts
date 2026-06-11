@@ -1,4 +1,4 @@
-import { Mission } from "@ogamex/shared";
+import { Mission, fitCargoToCap } from "@ogamex/shared";
 import type { WorldState, Coords, ShipCount, MissionCode } from "@ogamex/shared";
 
 export type CaseLetter = "A" | "B" | "C";
@@ -73,24 +73,16 @@ export function decideCase(state: WorldState, sourcePlanetId: string): CaseDecis
     const perShip = cargoMap[k] ?? CARGO_BASE[k] ?? 0;
     capacity += perShip * (n ?? 0);
   }
-  // Operator 2026-05-24 priority: 重氫 → 晶體 → 金屬. When cargo doesn't
-  // fit everything, fill deuterium first (also the fleet fuel — keep it
-  // off the planet for the attacker), then crystal, finally metal.
-  // Moon source reserves 50K deut on the moon for jump-gate fuel before
-  // the priority fill.
+  // v1.0.22 — owner 2026-06-11 "这个装载逻辑复用在所有需要装载的地方":
+  // inline d→c→m greedy fill 真态 extract 到 shared fitCargoToCap, transport
+  // panel + FS 同源. priority + moon deut reserve 真态保留 (owner 2026-05-24
+  // directive). [[planner-simulate-shared-helper]] + [[single-decision-tree]].
   const MOON_DEUT_RESERVE = 50_000;
-  const dReserve = source.type === "moon" ? MOON_DEUT_RESERVE : 0;
-  const requested = {
-    m: source.resources.m,
-    c: source.resources.c,
-    d: Math.max(0, source.resources.d - dReserve),
-  };
-  // Greedy fill in priority order. Each resource gets min(requested, remaining).
-  let remaining = Math.max(0, capacity);
-  const dLoad = Math.min(requested.d, remaining); remaining -= dLoad;
-  const cLoad = Math.min(requested.c, remaining); remaining -= cLoad;
-  const mLoad = Math.min(requested.m, remaining); remaining -= mLoad;
-  const cargo = { m: mLoad, c: cLoad, d: dLoad };
+  const cargo = fitCargoToCap({
+    capacity,
+    requested: source.resources,
+    reserve: { d: source.type === "moon" ? MOON_DEUT_RESERVE : 0 },
+  });
 
   // Operator 2026-05-24 strategy update:
   //   1. 從星球FS → 同坐標月球 @ 10% (transport)   ← Case B

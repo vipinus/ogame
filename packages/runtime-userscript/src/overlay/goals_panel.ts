@@ -13,7 +13,7 @@
  */
 import { LIFEFORM_TECH } from "@ogamex/shared";
 import { TECH_ID_BY_NAME } from "@ogamex/shared";
-import { planTransportChain, makeTransportChainId, type PlannerPlanet } from "@ogamex/shared";
+import { planTransportChain, makeTransportChainId, type PlannerPlanet, fitCargoToCap } from "@ogamex/shared";
 import { t } from "../i18n/t.js";
 import { techName } from "../i18n/tech_name.js";
 import { setVisibleInterval } from "../util/visible_interval.js";
@@ -3263,9 +3263,24 @@ function openTransportSettings(
       const ship = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
       const shipCount = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
       // v0.0.531 — 未勾選的資源 cargo = 0
-      const cargoM = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
-      const cargoC = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
-      const cargoD = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
+      const cargoMRaw = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
+      const cargoCRaw = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
+      const cargoDRaw = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
+      // v1.0.22 — owner 2026-06-11 "这个装载逻辑复用在所有需要装载的地方".
+      // 真态 fit cargo to ship cap before dispatch. 真态 caller (user) 输入
+      // m+c+d 可能超 cap (race / ogame 真态 per-ship cap 微差), 真 fit 后保证
+      // sum ≤ shipCount × cap 真满载, 不"空着". Priority d → c → m 跟 FS 同源
+      // (case_decider). 拉通 [[planner-simulate-shared-helper]].
+      const shipCount_v1022 = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
+      const shipKind_v1022 = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
+      const perShipCap_v1022 = shipKind_v1022 === "smallCargo" ? stCap : ltCap;
+      const fitted_v1022 = fitCargoToCap({
+        capacity: shipCount_v1022 * perShipCap_v1022,
+        requested: { m: cargoMRaw, c: cargoCRaw, d: cargoDRaw },
+      });
+      const cargoM = fitted_v1022.m;
+      const cargoC = fitted_v1022.c;
+      const cargoD = fitted_v1022.d;
       if (!source) { if (status) { status.textContent = t("auto.093"); status.style.color = "#ff6b6b"; } return; }
       if (!target) { if (status) { status.textContent = t("auto.094"); status.style.color = "#ff6b6b"; } return; }
       if (shipCount <= 0) { if (status) { status.textContent = t("auto.095"); status.style.color = "#ff6b6b"; } return; }

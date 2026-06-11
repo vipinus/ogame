@@ -17,3 +17,5 @@ export type { SectionSettingKey } from "./section_settings.js";
 export type { BuildTimeAccel } from "./build_time.js";
 export { planTransportChain, makeTransportChainId } from "./transport_planner.js";
 export type { PlannerPlanet, PlanTransportInput, PlanTransportOutput, TransportGoalBody } from "./transport_planner.js";
+export { fitCargoToCap } from "./cargo_fit.js";
+export type { FitCargoInput, FitCargoOutput } from "./cargo_fit.js";
