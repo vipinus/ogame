@@ -3266,16 +3266,27 @@ function openTransportSettings(
       const cargoMRaw = cargoEnabled("m") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]')?.value ?? "0"), 10) || 0) : 0;
       const cargoCRaw = cargoEnabled("c") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]')?.value ?? "0"), 10) || 0) : 0;
       const cargoDRaw = cargoEnabled("d") ? (parseInt((m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]')?.value ?? "0"), 10) || 0) : 0;
-      // v1.0.22 — owner 2026-06-11 "又发了一个任务又没有装金属":
-      // 真根源 (recall 实证): panel input cached planet snapshot OLD, sidecar
-      // sniffer stale → 输入框值 > ogame 端 planet 实际 m → dispatch m=181M
-      // 但 ogame 真有 m=0 → 装载 m=0. 真态是 stale cache, 不是 cap 问题.
+      // v1.0.22 — owner 2026-06-11 选项 2 真彻底: SEND 真态前主动 GET 真 ogame
+      // resources, 不信任 sniffer 缓存 (推 stale 派 m=181M 真态 planet 只有 0).
       //
-      // 真修法 (clamp to LIVE store): SEND 真态前 re-read storeRef.state.planets
-      // [resourceSrc] 真最新 sniffer 值, 把输入框值 clamp 到 min(input, live).
-      // 防止"输入 > planet 真有" 这种 stale 误派. 再走 fitCargoToCap 真 fit cap.
-      // [[no-Math.max-stale-fallback]] [[verify-against-first-principles]] 真态对齐.
+      // 真路径: window.__ogamexRefreshPlanetResources(resourceSrc) → ogame
+      // /game/index.php?page=fetchResources&ajax=1 cp=resourceSrc → JSON
+      // m/c/d → updates storeRef.state.planets[resourceSrc].resources. 然后
+      // clamp 输入框值到 min(input, ogame真值) 真 ground truth, 再 fit 船 cap.
+      //
+      // owner 真态接受 1 次 fetchResources / SEND 真 cost (跟 [[no-spam-ogame]]
+      // 不冲突 — 真 owner 主动 SEND 才触发, 非循环). 真单决策树拉通 ogame.
       const resourceSrcLive_v1022 = m.querySelector<HTMLInputElement>('input[name="tr-resource-radio"]:checked')?.value ?? "";
+      const fetchPlanetLive_v1022 = (window as Window & { __ogamexRefreshPlanetResources?: (pid: string) => Promise<void> }).__ogamexRefreshPlanetResources;
+      if (fetchPlanetLive_v1022 && resourceSrcLive_v1022) {
+        try {
+          if (status) { status.textContent = "拉 ogame 真 resources..."; status.style.color = "#7080a0"; }
+          await fetchPlanetLive_v1022(resourceSrcLive_v1022);
+          console.info(`[OgameX/transport] LIVE refresh ${resourceSrcLive_v1022} OK`);
+        } catch (e) {
+          console.warn(`[OgameX/transport] LIVE refresh threw, fallback to sniffer cache`, e);
+        }
+      }
       const liveResP_v1022 = resourceSrcLive_v1022 ? (storeRef?.state?.planets ?? {})[resourceSrcLive_v1022] as StorePlanet | undefined : undefined;
       const liveM_v1022 = liveResP_v1022?.resources?.m ?? cargoMRaw;
       const liveC_v1022 = liveResP_v1022?.resources?.c ?? cargoCRaw;
@@ -3283,7 +3294,7 @@ function openTransportSettings(
       const cargoMClamped = Math.min(cargoMRaw, liveM_v1022);
       const cargoCClamped = Math.min(cargoCRaw, liveC_v1022);
       const cargoDClamped = Math.min(cargoDRaw, liveD_v1022);
-      // 然后 fit 到船 cap (cargoMClamped+cClamped+dClamped 通常 ≤ cap, 但仍 fit 保险).
+      // 然后 fit 到船 cap (clamp 后 sum 通常 ≪ cap, 但仍 fit 保险).
       const shipCount_v1022 = parseInt((m.querySelector<HTMLInputElement>("[data-tr-ship-count]")?.value ?? "0"), 10) || 0;
       const shipKind_v1022 = m.querySelector<HTMLInputElement>('input[name="tr-ship"]:checked')?.value ?? "largeCargo";
       const perShipCap_v1022 = shipKind_v1022 === "smallCargo" ? stCap : ltCap;
@@ -3294,8 +3305,8 @@ function openTransportSettings(
       const cargoM = fitted_v1022.m;
       const cargoC = fitted_v1022.c;
       const cargoD = fitted_v1022.d;
-      // 真态 log: 输入 vs clamp vs fit 对账, 防 stale 误报.
-      console.info(`[OgameX/transport] cargo input=${cargoMRaw}/${cargoCRaw}/${cargoDRaw} live=${liveM_v1022}/${liveC_v1022}/${liveD_v1022} dispatched=${cargoM}/${cargoC}/${cargoD}`);
+      // 真态 log: 输入 vs ogame真 vs dispatched 对账, owner 真态 debug 可见.
+      console.info(`[OgameX/transport] cargo input=${cargoMRaw}/${cargoCRaw}/${cargoDRaw} ogame真=${liveM_v1022}/${liveC_v1022}/${liveD_v1022} dispatched=${cargoM}/${cargoC}/${cargoD}`);
       if (!source) { if (status) { status.textContent = t("auto.093"); status.style.color = "#ff6b6b"; } return; }
       if (!target) { if (status) { status.textContent = t("auto.094"); status.style.color = "#ff6b6b"; } return; }
       if (shipCount <= 0) { if (status) { status.textContent = t("auto.095"); status.style.color = "#ff6b6b"; } return; }
