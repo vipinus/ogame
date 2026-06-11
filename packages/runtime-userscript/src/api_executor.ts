@@ -20,7 +20,7 @@
  * fails with "token invalid".
  */
 import type { Directive } from "@ogamex/shared";
-import { TECH_ID_BY_NAME } from "@ogamex/shared";
+import { TECH_ID_BY_NAME, storageCapForLevel } from "@ogamex/shared";
 import type { DirectiveExecutor } from "./directive_executor_iface.js";
 import { cacheShipsData } from "./api/ship_cargo_cache.js";
 import { fetchWithCpBypassBusy, restoreSessionCp } from "./api/safe_fetch.js";
@@ -1160,6 +1160,74 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
     // on, sidecar journal grew + browser fetch queue + console spam. Default
     // off; turn on for debugging: localStorage.setItem("OGAMEX_FORENSIC","1").
     const _cargo = { m: resources["m"] ?? 0, c: resources["c"] ?? 0, d: resources["d"] ?? 0 };
+    // v1.0.23 — owner 2026-06-11 选项 B 智能部分装载. 真案 journal 实锤:
+    // 13:17:23 deploy 2:75:7 → 3:279:7 m=181,450,578 被 ogame 拒 140028
+    // "倉存容量不足" (目标 3:279:7 金属仓 199.5M / cap 203.5M, 真 free 仅 ~4M),
+    // fleet_api self-heal 整剥金属成 0 retry → owner "金属没有装载上".
+    // 真修: dispatch 前按目标真仓余量 clamp 每种资源 — "能装多少就装多少".
+    //   free = storageCapForLevel(dest 仓等级) − dest 当前库存
+    //   vanilla 公式是真 cap 下界 (LF bonus 只加不减) → clamp 永不超 ogame
+    //   真 free → 不再触发 140028 → 不再整剥.
+    // 范围: 仅 destType=1 (自有 planet 在 store) + 对应仓 building level ≥ 1
+    // 才 clamp; moon / debris / 外人 planet / 无数据 → 不动 (fleet_api 140028
+    // peel 仍是 last-resort 兜底). [[no-silent-destruction]]: clamp 真 console
+    // + debug/log 双可见.
+    if (destTypeNum === 1 && (_cargo.m > 0 || _cargo.c > 0 || _cargo.d > 0)) {
+      try {
+        const storeAll = (this.win as Window & { __ogamexStore?: { state?: { planets?: Record<string, { type?: string; coords?: number[]; buildings?: Record<string, number>; resources?: { m?: number; c?: number; d?: number }; storage?: { m_max?: number; c_max?: number; d_max?: number } }> } } }).__ogamexStore;
+        const destKey = `${tGalaxy}:${tSystem}:${tPos}`;
+        const destPlanet = Object.values(storeAll?.state?.planets ?? {}).find(
+          (pl) => pl.type !== "moon" && (pl.coords ?? []).join(":") === destKey,
+        );
+        if (destPlanet) {
+          const STORAGE_KEY = { m: "metalStorage", c: "crystalStorage", d: "deuteriumTank" } as const;
+          const STORE_MAX_KEY = { m: "m_max", c: "c_max", d: "d_max" } as const;
+          const clamps: string[] = [];
+          for (const k of ["m", "c", "d"] as const) {
+            if (_cargo[k] <= 0) continue;
+            const bank = destPlanet.resources?.[k] ?? 0;
+            // cap 真值优先级: store.storage (ogame DOM tooltip 真值, 含 LF bonus)
+            // > vanilla storageCapForLevel(等级) 公式下界. store cap 仅当前浏览
+            // planet 被 extractStorage 填, 其他 planet 多为 0 → fallback vanilla.
+            const storeMax = destPlanet.storage?.[STORE_MAX_KEY[k]] ?? 0;
+            const lvl = destPlanet.buildings?.[STORAGE_KEY[k]] ?? 0;
+            let cap = 0;
+            let capSrc = "";
+            if (storeMax > 0) {
+              cap = storeMax;
+              capSrc = "store-dom";
+            } else if (lvl > 0) {
+              cap = storageCapForLevel(lvl);
+              capSrc = `vanilla-L${lvl}`;
+              // guard: bank > vanilla cap = 公式 provably 低估真 cap (LF bonus /
+              // 等级 stale) → 0 信心, 跳过该资源 clamp (留 fleet_api peel 兜底).
+              if (bank > cap) continue;
+            } else {
+              continue; // 无任何 cap 数据 → 不 clamp
+            }
+            const free = Math.max(0, cap - bank);
+            if (_cargo[k] > free) {
+              clamps.push(`${k}: ${_cargo[k]} → ${free} (cap=${cap} src=${capSrc} bank=${bank})`);
+              _cargo[k] = free;
+            }
+          }
+          if (clamps.length > 0) {
+            const msg = `[ApiExec/dest-clamp] ${directive.action} → ${destKey}: ${clamps.join("; ")}`;
+            console.warn(msg);
+            try {
+              const ctxWin2 = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
+              const bridgeBase2 = ctxWin2.localStorage?.getItem("OGAMEX_BRIDGE_URL") ?? "https://fs.7x24hrs.com";
+              void fetch(`${bridgeBase2.replace(/\/$/, "")}/ogamex/v1/debug/log`, {
+                method: "POST", credentials: "omit", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ tag: "dest-clamp", text: msg }),
+              }).catch(() => { /* */ });
+            } catch { /* */ }
+          }
+        }
+      } catch (e) {
+        console.warn(`[ApiExec/dest-clamp] non-fatal:`, e);
+      }
+    }
     try {
       const ctxWin = (typeof window !== "undefined" ? window : globalThis) as Window & { localStorage?: Storage };
       if (ctxWin.localStorage?.getItem("OGAMEX_FORENSIC") === "1") {
