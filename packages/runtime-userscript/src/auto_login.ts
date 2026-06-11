@@ -39,6 +39,17 @@ const COOLDOWN_MS = 30_000;
 const MAX_CLICKS_IN_WINDOW = 20;
 const ABORT_WINDOW_MS = 5 * 60_000;
 
+// v1.0.20 — owner 2026-06-10 "TM关闭就可以点击 last play" 实证:
+// v1.0.19 retry-3-clicks 在新服 ogame React handler 异常路径污染了内部 state,
+// 后续 manual click 也死. 老服单击能过是因为 React handler 走 location.href
+// 同 tab 跳, 不开 popup; 新服 (Season-of-Anarchy) 走 window.open() popup, 但
+// programmatic .click() isTrusted=false → popup blocker 返 null → null.location=url throw.
+//
+// 顶层设计: **彻底 0-click 路径**. 用 `win.location.href = '/en_GB/accounts'`
+// 同 tab 跳到 /accounts 选服页. 那里有 server-specific `<a href="s274-en.ogame.gameforge.com/game/...">`
+// 真 anchor (浏览器 native nav), 没 popup 没 isTrusted 问题. 0 React state corruption.
+//
+// 单一决策树: 老服新服走同一路径, 不区分 React handler 是否 broken.
 export function maybeAutoLoginFromHub(win: Window): boolean {
   if (/\.ogame\.gameforge\.com\/game\//.test(win.location.href)) {
     try {
@@ -49,21 +60,57 @@ export function maybeAutoLoginFromHub(win: Window): boolean {
   }
   const isLobby = /lobby\.ogame\.gameforge\.com/i.test(win.location.href);
   if (!isLobby) return false;
-  // v0.0.1003 — owner 2026-06-09 "不要限制登录, 你不spam就不会被封":
-  // 撤掉所有 cooldown / kill-switch / per-account counter. owner 自己控制
-  // 不 spam, sidecar 也不会主动循环 (v0.0.1000 节流). 入 lobby = 直接 click
-  // Last Played, 3s URL 不变就 fallback /en_GB/accounts (v0.0.994 兜底).
-  // 显式 kill 仍保留: localStorage.OGAMEX_AUTO_LOGIN_DISABLED=1.
   try {
     if (win.localStorage.getItem(DISABLE_KEY) === "1") {
       console.info("[OgameX/auto-login] DISABLED via OGAMEX_AUTO_LOGIN_DISABLED");
       return false;
     }
   } catch { /* */ }
-  let savedSelector = "";
-  try { savedSelector = win.localStorage.getItem(SELECTOR_KEY) ?? ""; } catch { /* */ }
-  runLastPlayClicker(win, savedSelector);
+
+  const path = win.location.pathname;
+  if (/\/accounts(?:\/|$|\?)/.test(path)) {
+    // /en_GB/accounts — 找 game URL anchor 真态 nav
+    runAccountsNavigator(win);
+  } else {
+    // /hub 或 landing — 真态 nav 到 /accounts
+    const lang = path.match(/^\/([a-z]{2}_[A-Z]{2})/)?.[1] ?? "en_GB";
+    const accountsPath = `/${lang}/accounts`;
+    console.info(`[OgameX/auto-login] lobby hub/landing detected → navigating to ${accountsPath} (0-click path)`);
+    win.setTimeout(() => { win.location.href = accountsPath; }, 500);
+  }
   return true;
+}
+
+// v1.0.20 — /accounts 真态 navigator:
+// 寻找 `s{N}-{lang}.ogame.gameforge.com/game/...` 真 anchor href, 命中 location.href 直接跳.
+// 60s 超时 → 不 loop 回 hub, 直接 give up 让 owner 手点.
+function runAccountsNavigator(win: Window): void {
+  console.info("[OgameX/auto-login] /accounts page — searching for game URL anchor...");
+  const startedAt = Date.now();
+  const tick = (): void => {
+    if (Date.now() - startedAt > TIMEOUT_MS) {
+      console.warn("[OgameX/auto-login] /accounts: no game URL anchor in 60s — manual click required");
+      const anchors = Array.from(win.document.querySelectorAll<HTMLAnchorElement>("a[href]"));
+      console.warn(`[OgameX/auto-login] /accounts: ${anchors.length} anchors visible. Sample:`,
+        JSON.stringify(anchors.slice(0, 15).map((a) => ({
+          href: a.href.slice(0, 80),
+          text: (a.textContent ?? "").trim().slice(0, 30),
+        })), null, 2));
+      return;
+    }
+    // 真 game URL pattern: s\d+-\w+.ogame.gameforge.com/game/ OR *.ogame.gameforge.com/game/
+    const anchors = Array.from(win.document.querySelectorAll<HTMLAnchorElement>("a[href]"));
+    const gameLink = anchors.find((a) =>
+      /\.ogame\.gameforge\.com\/game\//i.test(a.href) && isVisible(a),
+    );
+    if (gameLink) {
+      console.info(`[OgameX/auto-login] /accounts: found game URL anchor, navigating: ${gameLink.href}`);
+      win.location.href = gameLink.href;
+      return;
+    }
+    win.setTimeout(tick, POLL_MS);
+  };
+  tick();
 }
 
 /** v0.0.989k — extract serverDetails text from hub to use as per-account
