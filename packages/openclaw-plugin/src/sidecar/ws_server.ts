@@ -135,7 +135,8 @@ export class WsServer {
     await new Promise<void>((resolve, reject) => {
       const onErr = (e: Error) => reject(e);
       http.once("error", onErr);
-      http.listen(this.options.port, "0.0.0.0", () => {
+      // v1.0.18 P0 #15 — bind 127.0.0.1 (nginx proxy 真 same-host).
+      http.listen(this.options.port, "127.0.0.1", () => {
         http.off("error", onErr);
         resolve();
       });

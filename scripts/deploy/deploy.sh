@@ -47,8 +47,11 @@ TEMPLATES="$REPO_ROOT/scripts/deploy/templates"
 NEXT_REPO="${NEXT_REPO:-$(cd "$REPO_ROOT/../ogame-next" 2>/dev/null && pwd)}"
 
 # defaults — owner can override at call site
-: "${AUTH_SECRET:=fanq-fs-secret-change-me}"
-: "${BRIDGE_TOKEN:=smoke-test-token}"
+# v1.0.18 P0 #1 — placeholder default 真 ship prod 真 critical (audit confirmed).
+# 默认 empty: 真 first deploy 真 unset 真 cmd_env / cmd_systemd / cmd_paypal_bootstrap
+# 真 require_secrets() 真 fail-fast die. owner 真 export 真 strong random 真 后 reset.
+: "${AUTH_SECRET:=}"
+: "${BRIDGE_TOKEN:=}"
 : "${PG_DSN:=postgres://ogamex:ogamex@127.0.0.1:5432/ogamex}"
 : "${DISCORD_CHANNEL_ID:=}"
 : "${GEMINI_API_KEY:=}"
@@ -68,10 +71,30 @@ NEXT_REPO="${NEXT_REPO:-$(cd "$REPO_ROOT/../ogame-next" 2>/dev/null && pwd)}"
 : "${PAYPAL_CLIENT_ID:=}"
 : "${PAYPAL_CLIENT_SECRET:=}"
 : "${PAYPAL_ENV:=live}"
+# Email provider (v1.0.18). Resend REST API (推荐), fallback SMTP, fallback console.
+: "${RESEND_API_KEY:=}"
+: "${EMAIL_FROM:=FlagShip <noreply@fs.7x24hrs.com>}"
+# v1.0.18 P0 #11 — SMTP tier 2 真 render env (was 注释-only, tier 2 是死的).
+: "${SMTP_HOST:=}"
+: "${SMTP_PORT:=587}"
+: "${SMTP_USER:=}"
+: "${SMTP_PASS:=}"
+: "${SMTP_FROM:=}"
 
 log()  { printf '\033[1;36m[deploy]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[die]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# v1.0.18 P0 #1 — fail-fast guard for prod secrets. cmd_env / cmd_systemd /
+# cmd_paypal_bootstrap / cmd_all 真 call before render/push.
+require_secrets() {
+  [[ -n "$AUTH_SECRET" ]] || die "AUTH_SECRET unset. Generate: export AUTH_SECRET=\$(openssl rand -base64 32)"
+  [[ "$AUTH_SECRET" == *change-me* ]] && die "AUTH_SECRET 真 placeholder. Rotate."
+  [[ ${#AUTH_SECRET} -ge 24 ]] || warn "AUTH_SECRET <24 chars (recommend openssl rand -base64 32)"
+  [[ -n "$BRIDGE_TOKEN" ]] || die "BRIDGE_TOKEN unset. Generate: export BRIDGE_TOKEN=\"bk_operator_\$(openssl rand -hex 16)\""
+  [[ "$BRIDGE_TOKEN" == "smoke-test-token" ]] && die "BRIDGE_TOKEN 真 placeholder. Rotate."
+  [[ ${#BRIDGE_TOKEN} -ge 24 ]] || warn "BRIDGE_TOKEN <24 chars (recommend bk_operator_\$(openssl rand -hex 16))"
+}
 
 # Parse "user@host[:port]" → SSH_USER_HOST + SSH_PORT + SCP_PORT
 parse_host() {
@@ -104,6 +127,13 @@ render() {
   STRIPE_PRICE_ID_MONTHLY="$STRIPE_PRICE_ID_MONTHLY" \
   STRIPE_PRICE_ID_YEARLY="$STRIPE_PRICE_ID_YEARLY" \
   STRIPE_BILLING_PORTAL_CONFIGURATION_ID="$STRIPE_BILLING_PORTAL_CONFIGURATION_ID" \
+  RESEND_API_KEY="$RESEND_API_KEY" \
+  EMAIL_FROM="$EMAIL_FROM" \
+  SMTP_HOST="$SMTP_HOST" \
+  SMTP_PORT="$SMTP_PORT" \
+  SMTP_USER="$SMTP_USER" \
+  SMTP_PASS="$SMTP_PASS" \
+  SMTP_FROM="$SMTP_FROM" \
     envsubst < "$TEMPLATES/$tmpl"
 }
 
@@ -192,6 +222,7 @@ cmd_env() {
   parse_host "$1"
   DOMAIN="$2"
   OPERATOR_USER_ID="$3"
+  require_secrets   # v1.0.18 P0 #1 — die on placeholder/empty
   log "render + push .env.production → $REMOTE_HOME/ogame-next/"
   log "  (覆盖已有! 改 secret 会让 owner cookie 解不开, 改前 backup)"
   ssh "${SSH_OPTS[@]}" "$SSH_USER_HOST" "

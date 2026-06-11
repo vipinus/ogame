@@ -317,7 +317,10 @@ export class HttpServer {
     return new Promise((resolve, reject) => {
       const server = http.createServer((req, res) => this.handleRequest(req, res));
       server.once("error", reject);
-      server.listen(this.opts.port, "0.0.0.0", () => {
+      // v1.0.18 P0 #15 — bind 127.0.0.1 only. nginx (本机) reverse-proxies
+      // to this port; 0.0.0.0 真 expose 真 sidecar /v1/state etc 到公网,
+      // 真 audit 实证 curl :28791 真 leak 全 tenant 世界态.
+      server.listen(this.opts.port, "127.0.0.1", () => {
         server.removeListener("error", reject);
         this.server = server;
         resolve();
