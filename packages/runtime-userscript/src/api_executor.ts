@@ -1180,34 +1180,23 @@ export class ApiDirectiveExecutor implements DirectiveExecutor {
           (pl) => pl.type !== "moon" && (pl.coords ?? []).join(":") === destKey,
         );
         if (destPlanet) {
+          // 单一权威源 (owner 2026-06-11 "为什么要用两个源？不好维护"):
+          // cap = storageCapForLevel(dest 仓 building 等级), [[single-decision-tree]].
+          // guard 不是第二源 — 是信心检查: bank > cap 说明公式对该 planet
+          // provably 低估 (LF bonus / 等级 stale), 数据矛盾时不动 (skip clamp,
+          // ogame 自己处理, fleet_api 140028 peel 兜底), 不发明 fallback 值.
           const STORAGE_KEY = { m: "metalStorage", c: "crystalStorage", d: "deuteriumTank" } as const;
-          const STORE_MAX_KEY = { m: "m_max", c: "c_max", d: "d_max" } as const;
           const clamps: string[] = [];
           for (const k of ["m", "c", "d"] as const) {
             if (_cargo[k] <= 0) continue;
-            const bank = destPlanet.resources?.[k] ?? 0;
-            // cap 真值优先级: store.storage (ogame DOM tooltip 真值, 含 LF bonus)
-            // > vanilla storageCapForLevel(等级) 公式下界. store cap 仅当前浏览
-            // planet 被 extractStorage 填, 其他 planet 多为 0 → fallback vanilla.
-            const storeMax = destPlanet.storage?.[STORE_MAX_KEY[k]] ?? 0;
             const lvl = destPlanet.buildings?.[STORAGE_KEY[k]] ?? 0;
-            let cap = 0;
-            let capSrc = "";
-            if (storeMax > 0) {
-              cap = storeMax;
-              capSrc = "store-dom";
-            } else if (lvl > 0) {
-              cap = storageCapForLevel(lvl);
-              capSrc = `vanilla-L${lvl}`;
-              // guard: bank > vanilla cap = 公式 provably 低估真 cap (LF bonus /
-              // 等级 stale) → 0 信心, 跳过该资源 clamp (留 fleet_api peel 兜底).
-              if (bank > cap) continue;
-            } else {
-              continue; // 无任何 cap 数据 → 不 clamp
-            }
-            const free = Math.max(0, cap - bank);
+            if (lvl <= 0) continue; // 无等级数据 → 不 clamp
+            const bank = destPlanet.resources?.[k] ?? 0;
+            const cap = storageCapForLevel(lvl);
+            if (bank > cap) continue; // 公式低估 guard → 不 clamp
+            const free = cap - bank;
             if (_cargo[k] > free) {
-              clamps.push(`${k}: ${_cargo[k]} → ${free} (cap=${cap} src=${capSrc} bank=${bank})`);
+              clamps.push(`${k}: ${_cargo[k]} → ${free} (vanilla-L${lvl} cap=${cap} bank=${bank})`);
               _cargo[k] = free;
             }
           }
