@@ -40,8 +40,8 @@ src/boot.ts:2591
 src/boot.ts:2902
 src/boot.ts:3164
 src/boot.ts:3389
-src/boot.ts:4333
-src/boot.ts:4557
+src/boot.ts:4339
+src/boot.ts:4563
 EOF
 )
 
