@@ -2919,6 +2919,23 @@ function openTransportSettings(
       if (rr) {
         rr.checked = true;
         rr.dispatchEvent(new Event("change", { bubbles: true }));
+        // v1.0.28 — owner 2026-06-12 "当资源星球等于舰船星球checked 的时候,
+        // 选择舰船星球的时候, 用选择星球的资源数量更新资源输入框":
+        // 程序 dispatch isTrusted=false 走 fill-when-empty (v0.0.504) 不覆盖
+        // 已有值 → owner 换舰船星球后输入框留着上一个星球的资源. 此处
+        // sameAsShip 勾选 = owner 明确"资源就用舰船星球的" → 强制覆盖,
+        // LIVE store 同源 (跟 trusted click override 同语义).
+        const liveP = (storeRef?.state?.planets ?? {})[sourcePid] as StorePlanet | undefined;
+        if (liveP) {
+          const mi = m.querySelector<HTMLInputElement>('[data-tr-cargo="m"]');
+          const ci = m.querySelector<HTMLInputElement>('[data-tr-cargo="c"]');
+          const di = m.querySelector<HTMLInputElement>('[data-tr-cargo="d"]');
+          if (mi) mi.value = String(liveP.resources?.m ?? 0);
+          if (ci) ci.value = String(liveP.resources?.c ?? 0);
+          if (di) di.value = String(liveP.resources?.d ?? 0);
+          updateShipCount();
+          refreshCargoOverflowColors();
+        }
       }
     };
     resourceSameAsShipCb?.addEventListener("change", () => {
