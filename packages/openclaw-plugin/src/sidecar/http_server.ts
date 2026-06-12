@@ -873,7 +873,26 @@ export class HttpServer {
       // operator-only LAN). Body: JSON {source_planet, galaxy, base_system,
       // range}. Returns {ok, goal_id}.
       if (url === "/ogamex/v1/discovery/create") {
-        void this.handleDiscoveryCreate(req, res);
+        // v1.0.27 — owner 2026-06-12 "发现任务，有账号之间相互干扰": 此路由
+        // Phase 9c.7 漏 wrap (隔壁 goals/create 有). 无 runWithUser →
+        // createDiscoveryGoal 里 getCurrentUserId()=undefined → 固定退
+        // legacy operator uid → 小号建的发现任务落老账号 goal 表. 补齐
+        // resolveBearer + runWithUser, 跟 goals/create 同款 (panel 端
+        // authHeadersGlobal 早就带 Bearer, 纯服务端漏).
+        void (async () => {
+          const r = await this.resolveBearer(req);
+          if (r.kind === "forbidden") {
+            this.writeCorsHeaders(res);
+            res.statusCode = 401;
+            res.end();
+            return;
+          }
+          if (r.kind === "user") {
+            runWithUser(r.uid, () => { void this.handleDiscoveryCreate(req, res); });
+          } else {
+            void this.handleDiscoveryCreate(req, res);
+          }
+        })();
         return;
       }
       // M4 — generic goal creation. Body: { type, target, planet?, priority? }.
