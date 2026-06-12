@@ -234,6 +234,11 @@ function fleetPageBusyNow(): boolean {
   } catch { return false; }
   return ownerIdleMs() < FLEET_PAGE_IDLE_RELEASE_MS;
 }
+/** v1.0.27 — 周期 poller (pollFetchResources 等) 在发船页 hold 时直接跳过
+ *  本 tick, 不进 defer 队列 (防 5s poller 灌满 cap=50 触发 evict 放行洞). */
+export function isFleetPageHold(): boolean {
+  return fleetPageBusyNow();
+}
 
 function startDrainTimerIfNeeded(): void {
   if (deferDrainTimer) return;
@@ -379,6 +384,14 @@ export async function fetchWithCp(
       // deferral so caller doesn't lose work. The fetch still goes through
       // acquireCpSlot below; click-intercept fallback covers race window.
       console.warn(`[safe_fetch/defer] proceeding without defer for ${baseUrl.slice(0, 60)}:`, (e as Error).message ?? e);
+    }
+    // v1.0.27 — owner 2026-06-11 "可用船舰不足，有切cp的情况" (1.0.26 实测仍中):
+    // 真洞 = 队列满 evict-oldest → 上面 catch "proceeding without defer" →
+    // cp= fetch 在 owner 发船中照样开火切 session-cp → ogame 验船对错星球 →
+    // 140054. 堵死: 发船页 hold 期间无论 defer 队列怎么溢出, 非 emergency
+    // 一律等待循环到 gate 释放 (owner 离页 / 空闲 30s), 永不放行.
+    while (!opts.emergency && fleetPageBusyNow()) {
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
   // v0.0.461: register THIS fetch as in-flight BEFORE acquiring the cp slot.

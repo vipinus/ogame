@@ -2,7 +2,7 @@ import type { WorldState } from "@ogamex/shared";
 import { EventBus } from "./event_bus.js";
 import { StateStore } from "./state_store.js";
 import type { IndexedKv } from "./store/indexed_db.js";
-import { initSafeFetch, fetchWithCp, BusyDeferredError, cpInFlightCount } from "./api/safe_fetch.js";
+import { initSafeFetch, fetchWithCp, BusyDeferredError, cpInFlightCount, isFleetPageHold } from "./api/safe_fetch.js";
 import { setVisibleInterval } from "./util/visible_interval.js";
 import { setLocaleDocSource } from "./i18n/locale.js";
 import { t } from "./i18n/t.js";
@@ -1400,41 +1400,15 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
                             // 双边的cd 导致两个JG级别不同的时候CD出错": 老代码 fetch
                             // 一边 overlay (cp=src) 拿到 srcCd 直接当双边 commit, 异
                             // level (src JG L4 / tgt JG L7) 时 tgt 真实 cd 被覆盖.
-                            // 修: parallel 两路 fetch (cp=src + cp=tgt), 各自 regex,
-                            // 拿到 srcCd 和 tgtCd 后调 4-arg __ogamexCommitJgCd 双边
-                            // atomic write (helper v0.0.832 已支持 tgtCdSec).
-                            var overlayUrlSrc = "/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1&cp=" + jgSrcId;
-                            var overlayUrlTgt = "/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1&cp=" + jgTgtId;
-                            var jgFetchTry = function(delayMs, attempt) {
-                              setTimeout(function() {
-                                var pSrc = fetch(overlayUrlSrc, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } })
-                                  .then(function(r) { return r.ok ? r.text() : ""; }).catch(function(){ return ""; });
-                                var pTgt = fetch(overlayUrlTgt, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } })
-                                  .then(function(r) { return r.ok ? r.text() : ""; }).catch(function(){ return ""; });
-                                Promise.all([pSrc, pTgt]).then(function(htmls) {
-                                  var htmlSrc = htmls[0], htmlTgt = htmls[1];
-                                  var mSrc = htmlSrc ? htmlSrc.match(/simpleCountdown\\s*\\([^,]+,\\s*(\\d+)/) : null;
-                                  var mTgt = htmlTgt ? htmlTgt.match(/simpleCountdown\\s*\\([^,]+,\\s*(\\d+)/) : null;
-                                  var srcCd = mSrc ? parseInt(mSrc[1], 10) : 0;
-                                  var tgtCd = mTgt ? parseInt(mTgt[1], 10) : 0;
-                                  fetch(bUrlJ.replace(/\\/$/, "") + "/ogamex/v1/debug/log", {
-                                    method: "POST", credentials: "omit",
-                                    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tokJ },
-                                    body: JSON.stringify({ tag: "JG-CD-POST-ACK-v1005", text: "attempt=" + attempt + " src=" + jgSrcId + " tgt=" + jgTgtId + " srcCd=" + srcCd + " tgtCd=" + tgtCd + " srcHtmlLen=" + htmlSrc.length + " tgtHtmlLen=" + htmlTgt.length })
-                                  }).catch(function(){});
-                                  if ((srcCd > 0 || tgtCd > 0) && window.__ogamexCommitJgCd) {
-                                    // 任一 cd 拿到就 commit. 单边失败 (overlay 404 / 503)
-                                    // 时 helper 退回单值复用 (tgtCdSec undefined → 沿用 srcCd).
-                                    var effSrc = srcCd > 0 ? srcCd : tgtCd;
-                                    var effTgt = tgtCd > 0 ? tgtCd : srcCd;
-                                    window.__ogamexCommitJgCd(jgSrcId, jgTgtId, effSrc, effTgt);
-                                  }
-                                });
-                              }, delayMs);
-                            };
-                            jgFetchTry(1000, 1);
-                            jgFetchTry(5000, 2);
-                            jgFetchTry(15000, 3);
+                            // v1.0.27 — owner 2026-06-11 "是不是有切cp的请求没有走
+                            // 管理通道，直接请求了？" 正中: 此处原是 page-world 裸
+                            // fetch(cp=src)+fetch(cp=tgt) ×3 波 = 手动跳门后 15s 内
+                            // 6 连切 session-cp 无 restore 无 mutex → owner 发船撞
+                            // "可用艦船不足" + 顶栏跳. 改: page-world 只 postMessage,
+                            // 抓 CD 收编 userscript 侧 fetchWithCp 管理通道
+                            // (mutex + restore + 发船页 gate). 见 boot.ts
+                            // ogamex:jgManualAck 监听.
+                            window.postMessage({ source: "ogamex:jgManualAck", srcMoonId: jgSrcId, tgtMoonId: jgTgtId }, location.origin);
                           }
                         } catch(_){}
                       }
@@ -1700,6 +1674,48 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
       // Operator 2026-05-26: 跳躍事件驅動 update jumpgate cooldown.
       // Sniffer 監聽 component=jumpgate POST/GET response, post message 含
       // sourceMoonId / targetMoonId / cooldownSec → 寫 store, ticker 自動倒計時.
+      if (data.source === "ogamex:jgManualAck") {
+        // v1.0.27 — 手动跳门 CD 抓取收编管理通道 (替代 page-world 裸 fetch
+        // v1005 路径, owner "是不是有切cp的请求没有走管理通道"). 同 api_executor
+        // v1015 同款: 3 波 (1s/5s/15s) 双边 overlay via fetchWithCpBypassBusy
+        // (mutex + restore + 发船页 gate), simpleCountdown regex →
+        // __ogamexCommitJgCd 双边 commit. 任一波拿到即停.
+        const e = data as unknown as { srcMoonId?: string; tgtMoonId?: string };
+        const srcId = e.srcMoonId ?? "";
+        const tgtId = e.tgtMoonId ?? "";
+        if (srcId && tgtId) {
+          const overlayUrl = `/game/index.php?page=ajax&component=jumpgate&overlay=1&ajax=1`;
+          let committed = false;
+          const tryWave = async (attempt: number, delayMs: number): Promise<void> => {
+            await new Promise((r) => env.win.setTimeout(r, delayMs));
+            if (committed) return;
+            let srcHtml = "", tgtHtml = "";
+            try {
+              const [rs, rt] = await Promise.all([
+                fetchWithCp(overlayUrl, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } }, srcId, { bypassBusy: true }).catch(() => null),
+                fetchWithCp(overlayUrl, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } }, tgtId, { bypassBusy: true }).catch(() => null),
+              ]);
+              srcHtml = rs && rs.status === 200 ? await rs.text() : "";
+              tgtHtml = rt && rt.status === 200 ? await rt.text() : "";
+            } catch { /* */ }
+            const mS = srcHtml.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
+            const mT = tgtHtml.match(/simpleCountdown\s*\([^,]+,\s*(\d+)/);
+            const srcCd = mS ? parseInt(mS[1]!, 10) : 0;
+            const tgtCd = mT ? parseInt(mT[1]!, 10) : 0;
+            console.info(`[OgameX/jg-manual-cd] attempt=${attempt} src=${srcId} tgt=${tgtId} srcCd=${srcCd} tgtCd=${tgtCd}`);
+            if (srcCd > 0 || tgtCd > 0) {
+              committed = true;
+              const commit = (env.win as Window & { __ogamexCommitJgCd?: (s: string, t: string, c: number, t2?: number) => void }).__ogamexCommitJgCd;
+              if (typeof commit === "function") {
+                commit(srcId, tgtId, srcCd > 0 ? srcCd : tgtCd, tgtCd > 0 ? tgtCd : srcCd);
+              }
+            }
+          };
+          void tryWave(1, 1000);
+          void tryWave(2, 5000);
+          void tryWave(3, 15000);
+        }
+      }
       if (data.source === "ogamex:jumpgateEvent") {
         // v0.0.951 — owner 2026-06-08 "异 level 两边各 fetch": 新加
         // targetCooldownSec 字段. 同 level → 单 cd 双写 (老路径), 异 level →
@@ -1963,7 +1979,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "1.0.26";
+  const USERSCRIPT_VERSION = "1.0.27";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -3150,6 +3166,9 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // returns resources + queue + production + planet data atomically.
   // Way faster than HTML page scraping. Updates state every 5s.
   async function pollFetchResources(): Promise<void> {
+    // v1.0.27 — 发船页 hold 时跳过本 tick (防 5s poller 灌满 defer 队列
+    // cap=50 触发 evict 放行洞). cd 数据 30s 后自然恢复.
+    if (isFleetPageHold()) return;
     try {
       // Only poll CURRENT planet. Earlier we rotated through all planets
       // to refresh stale lifeform_resources, but every cp= GET sets the
