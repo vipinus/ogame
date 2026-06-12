@@ -1963,7 +1963,7 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   // Stamp our userscript version into the snapshot so /v1/state lets the
   // operator see which version is actually running (vs the served bundle).
   // Manually kept in sync with rollup.config.js @version banner.
-  const USERSCRIPT_VERSION = "1.0.25";
+  const USERSCRIPT_VERSION = "1.0.26";
   console.log(`[OgameX] runtime version ${USERSCRIPT_VERSION} booting on ${location.href}`);
   // Operator 2026-05-29: expose for panel title + update-check button.
   (env.win as Window & { __ogamexVersion?: string }).__ogamexVersion = USERSCRIPT_VERSION;
@@ -3716,6 +3716,12 @@ export async function boot(env: BootEnv): Promise<BootHandle> {
   };
   env.doc.addEventListener("mousedown", _markUserActive, true);
   env.doc.addEventListener("keydown", _markUserActive, true);
+  // v1.0.26 — owner 2026-06-11 方案 A "前端恢复活动了就继续暂停": 发船页
+  // 30s gate 活动判定含 mousemove/滚轮/触摸 (owner 看页面动鼠标 = 活动).
+  // 纯时间戳写无开销, 同一 __ogamexLastUserActivity 单一活动源.
+  env.doc.addEventListener("mousemove", _markUserActive, { capture: true, passive: true });
+  env.doc.addEventListener("wheel", _markUserActive, { capture: true, passive: true });
+  env.doc.addEventListener("touchstart", _markUserActive, { capture: true, passive: true });
   scheduleBurst(refreshOnePage, 8000);
   // v0.0.965 — silent audio keep-alive (v0.0.963) 紧急下线. owner 2026-06-08
   // "卡的动不了" 联合 v0.0.959 sweep 冻结浏览器. 后台 throttle 痛点改日重设计.

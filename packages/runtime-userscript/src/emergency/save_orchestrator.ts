@@ -81,6 +81,8 @@ export function startEmergencySave(
               ships: decision.ships, cargo: decision.cargo, coords: decision.destCoords,
               destType: decision.destType, mission: decision.mission, speed: decision.speed,
               sourcePlanetId: decision.sourcePlanetId,
+              // v1.0.26 — FS 保命链: 发船页 30s gate 直放.
+              emergency: true,
             }, { fetch: opts.fetch, token: opts.tokenManager });
           },
           recallFleet: (id) => recallFleet(id, { fetch: opts.fetch, token: opts.tokenManager }),

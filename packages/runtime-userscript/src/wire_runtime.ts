@@ -104,7 +104,7 @@ export function wireRuntime(
     // restoreSessionCp 由 fleet_api.sendFleet 內部 fetchWithCpBypassBusy 自動處理.
     try {
       const res = await sendFleet(
-        { ships, cargo: { m: 0, c: 0, d: 0 }, coords: p, destType: 3, mission: 4, speed: 10, sourcePlanetId: sourceId },
+        { ships, cargo: { m: 0, c: 0, d: 0 }, coords: p, destType: 3, mission: 4, speed: 10, sourcePlanetId: sourceId, emergency: true },
         { fetch: opts.fetch, token: tokenManager },
       );
       return { ok: true, message: `fleetId=${res.fleetId}` };

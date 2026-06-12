@@ -149,6 +149,12 @@ export interface FetchWithCpOpts {
    *  executeJump, and any callsite where deferral would corrupt timing-sensitive
    *  semantics. Background pollers / refreshers MUST NOT set this. */
   bypassBusy?: boolean;
+  /** v1.0.26 — owner 2026-06-11 "发船界面经常卡住" 方案 A: emergency 旗.
+   *  fleetPageBusyNow (owner 在 component=fleetdispatch 页且 30s 内有活动)
+   *  时, 所有 cp=/token 流量【含 bypassBusy】都 defer — 唯 emergency=true
+   *  (FS save 保命链) 直放. 跟 bypassBusy 的区别: bypassBusy 只跳老 5s
+   *  owner-busy gate, emergency 额外跳发船页 30s gate. */
+  emergency?: boolean;
   /** Skip the post-fetch session-cp restore. Use when you know operatorCp===sourcePID
    *  (no shift happened) or caller will do its own restore. */
   skipRestore?: boolean;
@@ -214,6 +220,21 @@ function ownerBusyNow(): boolean {
   return ownerIdleMs() < OWNER_IDLE_THRESHOLD_MS;
 }
 
+// v1.0.26 — owner 2026-06-11 方案 A: "前端在 component=fleetdispatch 页 →
+// 暂停后台; 空闲超过 30 秒放行; 恢复活动继续暂停". 真根因: 后台 POST 每单
+// 轮换全局 ajax token, ogame 发船 UI 持有的 token 被转 stale → 手动发船
+// 失败/无响应 = 卡住 (journal 实锤: 我方每 POST attempt=1 100001 → attempt=2,
+// ogame UI 没有 retry). 活动源复用 __ogamexLastUserActivity 单一时间戳.
+const FLEET_PAGE_IDLE_RELEASE_MS = 30_000;
+function fleetPageBusyNow(): boolean {
+  if (!_winRef) return false;
+  try {
+    const search = _winRef.location?.search ?? "";
+    if (!search.includes("component=fleetdispatch")) return false;
+  } catch { return false; }
+  return ownerIdleMs() < FLEET_PAGE_IDLE_RELEASE_MS;
+}
+
 function startDrainTimerIfNeeded(): void {
   if (deferDrainTimer) return;
   deferDrainTimer = setInterval(() => {
@@ -221,7 +242,7 @@ function startDrainTimerIfNeeded(): void {
       if (deferDrainTimer) { clearInterval(deferDrainTimer); deferDrainTimer = null; }
       return;
     }
-    if (ownerBusyNow()) return;
+    if (ownerBusyNow() || fleetPageBusyNow()) return; // v1.0.26 双 gate 同步
     // Idle — drain one at a time with a small gap to avoid burst.
     const head = deferredQueue.shift();
     if (head) head.resolve();
@@ -231,7 +252,7 @@ function startDrainTimerIfNeeded(): void {
       // DEFER_DRAIN_GAP_MS via setTimeout to avoid hammering ogame when
       // multiple deferred fetches are queued).
       setTimeout(() => {
-        if (deferredQueue.length > 0 && !ownerBusyNow()) {
+        if (deferredQueue.length > 0 && !ownerBusyNow() && !fleetPageBusyNow()) {
           const next = deferredQueue.shift();
           if (next) next.resolve();
         }
@@ -347,7 +368,8 @@ export async function fetchWithCp(
   // for the bulk of background pollers (build_q refresh, fetchResources,
   // empire polls, etc). Emergency callsites (bypassBusy=true) bypass this
   // gate — they cannot defer (FS save, sendFleet retry, JG executeJump).
-  if (!opts.bypassBusy && ownerBusyNow()) {
+  // v1.0.26 — 发船页 gate: 含 bypassBusy 的所有流量都 defer, 唯 emergency 直放.
+  if ((!opts.bypassBusy && ownerBusyNow()) || (!opts.emergency && fleetPageBusyNow())) {
     cpStats.deferred += 1;
     mirrorCpStats();
     try {

@@ -30,6 +30,9 @@ export interface SendFleetParams {
    *  溢出量 (d→c→m priority 反向, m 先 trim), 不再整剥一种资源.
    *  undefined → 走老 full-peel ladder (FS 直调路径无 store). */
   capacityHint?: number;
+  /** v1.0.26 — FS 保命链旗: 发船页 30s gate (safe_fetch fleetPageBusyNow)
+   *  直放. 仅 emergency/save_orchestrator + wire_runtime FS 路径设置. */
+  emergency?: boolean;
 }
 
 export interface SendFleetCtx {
@@ -437,7 +440,9 @@ async function sendFleetInner(
             body: body.toString(),
             credentials: "same-origin",
             signal: sendAc.signal,
-          }, sourcePID)
+            // v1.0.26 — emergency 旗透传: FS 保命链发船页 gate 直放,
+            // 其他 (goal_runner directive 等) 发船页 hold.
+          }, sourcePID, p.emergency ? { emergency: true } : {})
         : await ctx.fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
