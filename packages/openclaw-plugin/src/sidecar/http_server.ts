@@ -922,13 +922,25 @@ export class HttpServer {
         return;
       }
       // Save-coordinator endpoints (operator 2026-05-24 "fsm 可以放后台").
-      // Public no-auth like discovery/expedition triggers — LAN-only trust.
+      // v1.0.28 — owner 2026-06-12 选 1: save/* 补 Bearer wrap (跨户召回隔离).
+      // 无 wrap → recordSaveLaunched getCurrentUserId()=undefined → 退 legacy
+      // 单例 saveCoordinator → 小号 FS save 记录串到 legacy → 召回 miss = 丢
+      // 舰队. userscript 端 (save_orchestrator + wire.ts) 已同步加 Bearer.
+      // unknown Bearer → fall through unwrapped (legacy 单例, 向后兼容).
       if (url === "/ogamex/v1/save/launched") {
-        void this.handleSaveLaunched(req, res);
+        void (async () => {
+          const r = await this.resolveBearer(req);
+          if (r.kind === "user") runWithUser(r.uid, () => { void this.handleSaveLaunched(req, res); });
+          else void this.handleSaveLaunched(req, res);
+        })();
         return;
       }
       if (url === "/ogamex/v1/save/recall-confirmed") {
-        void this.handleSaveRecallConfirmed(req, res);
+        void (async () => {
+          const r = await this.resolveBearer(req);
+          if (r.kind === "user") runWithUser(r.uid, () => { void this.handleSaveRecallConfirmed(req, res); });
+          else void this.handleSaveRecallConfirmed(req, res);
+        })();
         return;
       }
       // Operator 2026-05-26: "远征的 stop 按钮无效" — pause/resume 端点之前

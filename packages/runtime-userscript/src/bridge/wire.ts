@@ -736,7 +736,7 @@ export async function wireBridge(
         try {
           void fetch("https://fs.7x24hrs.com/ogamex/v1/save/recall-confirmed", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...(opts.bridgeToken ? { Authorization: `Bearer ${opts.bridgeToken}` } : {}) },
             body: JSON.stringify({ fleet_id: m.fleet_id, note: "frontend FSM already recalled" }),
           });
         } catch (_) { /* */ }
@@ -778,7 +778,7 @@ export async function wireBridge(
         try {
           await fetch("https://fs.7x24hrs.com/ogamex/v1/save/recall-confirmed", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...(opts.bridgeToken ? { Authorization: `Bearer ${opts.bridgeToken}` } : {}) },
             body: JSON.stringify({ fleet_id: fidFinal }),
           });
         } catch (e) {
@@ -802,7 +802,7 @@ export async function wireBridge(
             try {
               await fetch("https://fs.7x24hrs.com/ogamex/v1/save/recall-confirmed", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", ...(opts.bridgeToken ? { Authorization: `Bearer ${opts.bridgeToken}` } : {}) },
                 body: JSON.stringify({ fleet_id: fidFinal, note: "fleet already landed; treated as confirmed" }),
               });
             } catch (_) { /* */ }

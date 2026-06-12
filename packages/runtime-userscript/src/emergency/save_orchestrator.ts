@@ -13,6 +13,11 @@ export interface OrchestratorOptions {
    *  reports each successful launch to /v1/save/launched so the backend
    *  SaveCoordinator owns recall scheduling. */
   sidecarBaseUrl?: string;
+  /** v1.0.28 — per-user bridge token. save/launched 必须带 Bearer 否则
+   *  sidecar resolveBearer 拿不到 uid → recordSaveLaunched 退 legacy
+   *  单例 saveCoordinator → 小号 FS save 记录串到 legacy → 召回 miss
+   *  = 丢舰队. ([[cross-tenant-globals]] 家族, owner 2026-06-12). */
+  bridgeToken?: string;
 }
 
 export interface OrchestratorHandle {
@@ -217,7 +222,13 @@ export function startEmergencySave(
     try {
       await opts.fetch(`${opts.sidecarBaseUrl}/ogamex/v1/save/launched`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // v1.0.28 — per-user Bearer so sidecar tags this save record to
+          // the owning uid (else recordSaveLaunched falls to legacy单例 →
+          // 跨户召回 miss → 丢舰队).
+          ...(opts.bridgeToken ? { Authorization: `Bearer ${opts.bridgeToken}` } : {}),
+        },
         body: JSON.stringify({
           planet_id: sourceId,
           fleet_id: snap.fleetId,

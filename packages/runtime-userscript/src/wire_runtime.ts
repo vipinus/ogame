@@ -87,6 +87,8 @@ export function wireRuntime(
     // successful launch to sidecar's SaveCoordinator; sidecar owns recall
     // scheduling and emits save.recall_now downstream when ready.
     sidecarBaseUrl: "https://fs.7x24hrs.com",
+    // v1.0.28 — per-user Bearer 透传到 save/launched (跨户召回隔离).
+    ...(opts.goalsPanelBridgeToken ? { bridgeToken: opts.goalsPanelBridgeToken } : {}),
   });
   // Expose recallFleet for bridge wire's save.recall_now handler (sidecar
   // tells us when, we POST it because cookies+token live in the page).
